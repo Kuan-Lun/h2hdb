@@ -58,13 +58,12 @@ from h2hdb.vnext_identity import (
     CanonicalValuePage,
     GalleryObservationNodeKind,
     artifact_id,
-    artifact_locator_components,
     artifact_policy_digest,
     artifact_producer_fingerprint_sha256,
     artifact_semantics_digest,
+    artifact_storage_key_components,
     canonical_value_digest,
     canonical_value_page_digest,
-    encode_artifact_locator,
     encode_artifact_policy,
     encode_artifact_semantics,
     encode_canonical_value_page,
@@ -224,6 +223,7 @@ def _publication_commit(
     source_revision: int = 1,
     generation: int = 1,
     publication_count: int = 1,
+    artifact_count: int | None = None,
     committed_at: int = 1000000,
     receipt_id: bytes = b"r" * 16,
     candidate_id: bytes = b"c" * 16,
@@ -242,10 +242,13 @@ def _publication_commit(
         "VALUES (%s, %s, %s)",
         (source_revision, b"default", snapshot_manifest_sha256),
     )
+    sealed_artifact_count = (
+        publication_count if artifact_count is None else artifact_count
+    )
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
-        "(revision, publication_count) VALUES (%s, %s)",
-        (revision, publication_count),
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
+        (revision, publication_count, sealed_artifact_count),
     )
     connector.execute(
         "INSERT INTO catalog_source_revision_provenance "
@@ -619,7 +622,7 @@ def _artifact_fixture(
     *,
     publication_key_value: bytes,
     gid: int = 123,
-) -> dict[str, bytes]:
+) -> dict[str, Any]:
     producer_tuple = _READER_PRODUCER
     producer = artifact_producer_fingerprint_sha256(*producer_tuple)
     registered = seed_artifact_producer_fingerprint(
@@ -700,18 +703,12 @@ def _artifact_fixture(
 
     artifact_bytes = b"reader-artifact"
     artifact_sha256 = sha256(artifact_bytes).digest()
-    locator_components = artifact_locator_components(artifact_sha256)
-    locator = _canonical(
-        connector,
-        "artifact_locator_bytes_v1",
-        encode_artifact_locator(locator_components),
-    )
+    storage_key_components = artifact_storage_key_components(gid)
     identifier = artifact_id(gid, artifact_sha256)
     connector.execute(
         "INSERT INTO catalog_artifact_blobs "
-        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-        "VALUES (%s, %s, %s)",
-        (artifact_sha256, len(artifact_bytes), locator),
+        "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+        (artifact_sha256, len(artifact_bytes)),
     )
     _, inserted = ensure_catalog_artifact_family(
         connector,
@@ -726,7 +723,7 @@ def _artifact_fixture(
     return {
         "artifact_id": identifier,
         "artifact_sha256": artifact_sha256,
-        "locator": locator,
+        "storage_key_components": storage_key_components,
         "semantics": semantics,
         "source_manifest": source_manifest,
         "member_plan": member_plan,
@@ -752,12 +749,10 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
             page = reader.list_publications(
                 connector, revision=revision, offset=0, limit=10
             )
-            artifact_page = reader.list_publications(
+            artifact_page = reader.list_artifact_publications(
                 connector,
                 revision=revision,
-                offset=0,
                 limit=10,
-                require_artifact=True,
             )
             by_id = reader.get_publication(
                 connector, "urn:h2h:gallery:123", revision=revision
@@ -794,10 +789,9 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
         assert publication.subjects[0].name == "測試"
         assert artifact is not None
         assert artifact.name == "h2h-123.cbz"
-        assert artifact.location == Path(
-            "sha256",
-            artifact_values["artifact_sha256"].hex()[:2],
-            f"{artifact_values['artifact_sha256'].hex()}.cbz",
+        assert artifact.storage_key.codec == "gid-sha256-12-v1"
+        assert (
+            artifact.storage_key.segments == artifact_values["storage_key_components"]
         )
         assert artifact.sha256 == artifact_values["artifact_sha256"].hex()
     finally:
@@ -1029,36 +1023,53 @@ def test_single_publication_lookup_rejects_missing_atomic_title_row(
         connector.close()
 
 
-def test_artifact_reader_rejects_a_safe_but_noncanonical_locator(
+def test_artifact_reader_derives_storage_key_only_from_the_publication_gid(
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-artifact-locator.sqlite3")
+    connector = _database(tmp_path / "reader-artifact-storage-key.sqlite3")
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        wrong_locator = _canonical(
-            connector,
-            "artifact_locator_bytes_v1",
-            encode_artifact_locator(("safe", "wrong.cbz")),
-        )
-        connector.execute(
-            "UPDATE catalog_artifact_blobs SET artifact_locator_sha256 = %s "
-            "WHERE artifact_sha256 = %s",
-            (wrong_locator, artifact_values["artifact_sha256"]),
-        )
         reader = VNextCatalogReaderRepository(backend="sqlite")
-        with (
-            connector.read_transaction(),
-            pytest.raises(VNextCatalogReadError, match="content-addressed identity"),
-        ):
-            reader.get_artifact(
+        with connector.read_transaction():
+            artifact = reader.get_artifact(
                 connector,
                 artifact_values["artifact_id"].decode("ascii"),
                 revision=1,
             )
+        assert artifact is not None
+        assert artifact.storage_key.segments == artifact_storage_key_components(123)
+        assert artifact.storage_key.segments[-1] == "h2h-123.cbz"
+        assert artifact_values["artifact_sha256"].hex() not in "/".join(
+            artifact.storage_key.segments
+        )
+    finally:
+        connector.close()
+
+
+def test_artifact_feed_rejects_a_missing_tail_row_without_counting(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-artifact-missing-tail.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        connector.execute(
+            "DELETE FROM catalog_artifacts WHERE revision = 1 AND publication_key = %s",
+            (values["publication_key"],),
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="artifact_count"),
+        ):
+            reader.list_artifact_publications(connector, limit=1)
     finally:
         connector.close()
 
@@ -1116,7 +1127,7 @@ def test_reader_uses_public_revision_not_found_error(tmp_path: Path) -> None:
 
         connector.execute(
             "INSERT INTO catalog_revision_descriptors "
-            "(revision, publication_count) VALUES (1, 0)"
+            "(revision, publication_count, artifact_count) VALUES (1, 0, 0)"
         )
         with (
             connector.read_transaction(),
@@ -1307,7 +1318,6 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             values["content"],
             values["contributor"],
             values["tag_value"],
-            artifact_values["locator"],
             artifact_values["semantics"],
             artifact_values["source_manifest"],
             artifact_values["member_plan"],

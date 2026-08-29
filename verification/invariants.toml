@@ -658,8 +658,8 @@ id = "runtime.data.publication-atomicity"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "supporting"
-claim = "The executable manifest checker validates exact publication relation roles, declared READY/CAS terms, transition gates, and the prohibition on audit digests as authority."
-assumptions = ["The runtime backend must execute the checked head, receipt, and revision changes in one correctly isolated transaction."]
+claim = "The executable manifest checker validates exact publication relation roles, a sealed DB_COMMITTED commit that remains reader-invisible, bounded library activation before terminal finalization, the READY-gated CAS to the PUBLISHED reader head, transition gates, and the prohibition on audit digests as authority."
+assumptions = ["The runtime backend must execute each checked DB commit and terminal head-CAS boundary in one correctly isolated transaction; adapter durability and COMPLETE response-loss recovery require the production orchestration evidence."]
 [[evidence.location]]
 path = "verification/schema/check_contract.py"
 symbol = "_validate_publication_atomic_contract"
@@ -927,7 +927,7 @@ id = "runtime.production.published-baseline-prune"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production publication-finalization terminal transaction derives the published analysis only from the immutable commit, source provenance and snapshot binding, requires one COMPLETE sealed self-only depth-zero result, exact-deletes its obsolete working baseline with the PROJECTION_FINALIZED marker, and retains every positive-depth baseline."
+claim = "The production publication-finalization terminal transaction derives the published analysis only from the immutable commit, source provenance and snapshot binding, requires one COMPLETE sealed self-only depth-zero result, exact-deletes its obsolete working baseline with the PUBLISHED marker, and retains every positive-depth baseline."
 assumptions = ["Publication commit and source provenance identities are immutable after commit; generated foreign keys preserve their declared lineage."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_publication_finalization_repository.py"
@@ -1029,7 +1029,7 @@ id = "integration.sqlite.artifact-preparation"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production authority audit, canonical archive construction, bounded input and delta projection, content-addressed byte and locator persistence, exact PENDING intent seal, external adapter protection, evidence-bound PENDING-to-PREPARED confirmation with occurrence insertion, and response-loss retry with the same token and generation."
+claim = "Generated SQLite E2E executes production authority audit, canonical archive construction, bounded input and delta projection, content-digest integrity plus GID-derived neutral storage-key validation, exact PENDING intent seal, external adapter protection, evidence-bound PENDING-to-PREPARED confirmation with occurrence insertion, and response-loss retry with the same token and generation."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
@@ -1184,8 +1184,8 @@ id = "runtime.production.publication"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, seals the common commit last, and swaps its single receipt head; the finalization repository separately issues bounded pages, performs external release outside every transaction, and atomically advances the checkpoint, inserts one current receipt, deletes its safely acknowledged predecessor, and writes the PK-only terminal marker while retaining the terminal current receipt as finalized_at authority."
-assumptions = ["The connector transaction covers every pointer mutation and the recovery receipt as one commit boundary."]
+claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, then seals a DB_COMMITTED receipt without changing the reader head.  The receipt-pinned library reader exposes immutable artifacts in keyset pages capped at 128 while the ingest publication orchestrator durably spools and reconciles them through the adapter.  Only adapter READY permits bounded external protection release and terminal finalization; that terminal transaction records PUBLISHED, CASes the exact successor into the reader head, and deletes its working roots.  Adapter COMPLETE is durable and idempotent, so response loss replays only the remaining database COMPLETE cleanup without repeating finalization or adapter effects."
+assumptions = ["Each repository mutation is covered by its connector transaction; library adapter methods provide their declared durable, idempotent checkpoint semantics outside database transactions."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_publication_repository.py"
 symbol = "PublicationRepository"
@@ -1193,22 +1193,37 @@ symbol = "PublicationRepository"
 path = "src/h2hdb/vnext_publication_finalization_repository.py"
 symbol = "PublicationFinalizationRepository"
 [[evidence.location]]
+path = "src/h2hdb/vnext_library_activation_repository.py"
+symbol = "LibraryActivationArtifactRepository"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "VNextIngestPublication"
+[[evidence.location]]
 path = "src/h2hdb/vnext_publication_repository.py"
 symbol = "commit"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "_commit_action"
 
 [[evidence]]
 id = "fault.production.publication"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Publication tests race the common receipt head and deletion-generation authority, inject every common-commit mutation failure, reject missing or conflicting O(1) authority, exercise post-external finalization races, and inject every current-only finalization commit mutation failure while proving atomic rollback, predecessor pruning, current recovery replay, and stale rejection of a superseded key."
-assumptions = ["Injected connector and storage-adapter exceptions use the same transaction rollback and idempotent external-release paths as production exceptions."]
+claim = "Publication tests race the exact predecessor head and deletion-generation authority, inject every DB_COMMITTED and terminal mutation failure, and prove an initial commit cannot change reader visibility or release working roots.  Activation tests reject corrupt receipt-pinned pages and recover the adapter-owned cursor after response loss.  Finalization and orchestration tests exercise post-external races, require READY before terminal head activation, prove the PUBLISHED marker, head CAS and working-root cleanup roll back atomically, and after a durably persisted adapter COMPLETE loses its response, replay only the remaining database cleanup."
+assumptions = ["Injected connector and storage-adapter exceptions use the same transaction rollback and idempotent adapter paths as production exceptions."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
 symbol = "test_head_races_fail_without_partial_publication"
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
 symbol = "test_each_pointer_mutation_fault_rolls_back_the_whole_publication"
+[[evidence.location]]
+path = "tests/test_vnext_library_activation_repository.py"
+symbol = "test_sealed_projection_corruption_is_not_silently_omitted"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_publication.py"
+symbol = "test_restart_after_database_commit_uses_adapter_owned_cursor"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_post_external_races_fail_closed"
@@ -1221,14 +1236,20 @@ symbol = "test_missing_finalization_predecessor_rolls_back_successor_and_checkpo
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_publication.py"
+symbol = "test_terminal_head_activation_continues_to_complete_library_marker"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_publication.py"
+symbol = "test_complete_persisted_before_response_loss_replays_cleanup"
 
 [[evidence]]
 id = "integration.sqlite.publication"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production genesis and successor publication through one sealed common commit and receipt-head swap, then exercises bounded current-only finalization, atomic predecessor pruning, terminal-marker/timestamp derivation from the retained current receipt, and response-loss replay after transient candidate cleanup."
-assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
+claim = "SQLite repository E2E executes genesis and successor publication as reader-invisible DB_COMMITTED receipts with both working roots retained, reads their immutable activation artifacts through receipt-pinned keyset pages capped at 128, and then atomically derives PUBLISHED, advances the exact reader head, and releases the working roots only in terminal finalization.  Orchestration regressions additionally establish READY-before-finalization ordering, COMPLETE adapter cleanup, and replay when either terminal head activation or the persisted COMPLETE acknowledgement loses its response."
+assumptions = ["Repository locations execute SQLite; orchestration locations use a durable checkpoint test double for the adapter protocol, and the COMPLETE-response-loss case executes the production SQLite source-working cleanup, but these locations do not establish MariaDB or a concrete filesystem adapter."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
 symbol = "test_atomic_publication_genesis_and_successor"
@@ -1236,18 +1257,30 @@ symbol = "test_atomic_publication_genesis_and_successor"
 path = "tests/test_vnext_publication_repository.py"
 symbol = "test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping"
 [[evidence.location]]
+path = "tests/test_vnext_library_activation_repository.py"
+symbol = "test_db_committed_projection_pages_are_bounded_and_empty_terminal"
+[[evidence.location]]
+path = "tests/test_vnext_library_activation_repository.py"
+symbol = "test_receipt_pinned_continuation_is_independent_of_reader_head"
+[[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_current_batch_replays_after_cleanup_and_expired_gate"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_publication.py"
+symbol = "test_terminal_head_activation_continues_to_complete_library_marker"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_publication.py"
+symbol = "test_complete_persisted_before_response_loss_replays_cleanup"
 
 [[evidence]]
 id = "integration.mariadb-shape.publication"
 layer = "integration"
 strength = "runtime_integration"
 directness = "supporting"
-claim = "A MariaDB recorder checks production common receipt-head locks and server placeholders without executing the sealed common-commit transaction against a MariaDB server."
+claim = "A MariaDB recorder checks the production predecessor-head lock and server placeholders used to validate a DB_COMMITTED successor without asserting that the initial commit changes reader visibility; it does not execute library activation or the terminal PUBLISHED head CAS against a MariaDB server."
 assumptions = ["SQL-shape recording cannot establish MariaDB isolation, locking, rollback, constraints, or recovery behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
@@ -1388,7 +1421,7 @@ id = "runtime.production.cleanup"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production cleanup repository uses the fixed twenty-two-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. CATALOG_PUBLICATION removes only finalized non-head payload after the current head is projection-finalized and live predecessor pins release; PUBLICATION_CANDIDATE retains every unresolved PENDING or PREPARED protection family; generic OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement under an exact frozen receipt/preparation authority before its unreachable commit family."
+claim = "The production cleanup repository uses the fixed twenty-two-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. CATALOG_PUBLICATION removes only finalized non-head payload after the current head is published and live predecessor pins release; PUBLICATION_CANDIDATE retains every unresolved PENDING or PREPARED protection family; generic OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement under an exact frozen receipt/preparation authority before its unreachable commit family."
 assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_cleanup_repository.py"
@@ -1946,7 +1979,7 @@ lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.source-baseline-channel", "runtime.production.writer-bindings", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.publication"] }
 fault = { status = "covered", evidence = ["fault.production.source-build", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.publication"] }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.publication"], blocker = "SQLite executes the exact common-base-receipt and single common-head CAS workflow, while MariaDB evidence records SQL shape only; no live MariaDB source-baseline publication and stale-head race has run." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.publication"], blocker = "SQLite executes exact common-base validation, a reader-invisible DB_COMMITTED successor, and the later terminal PUBLISHED reader-head CAS, while MariaDB evidence records SQL shape only; no live MariaDB source-baseline activation and stale-head race has run." }
 
 [[invariant]]
 id = "catalog.incremental-impact.v1"
@@ -1991,7 +2024,7 @@ lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication"] }
 fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication"] }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication"], blocker = "SQLite executes projection, durable PENDING artifact-intent seal, external protect, exact PREPARED confirmation, the sealed common commit with its OPEN permanent checkpoint and single receipt-head swap, bounded issue/external-release/commit batches with current-only predecessor pruning, the exact terminal current receipt and marker, and response-loss replay after candidate cleanup; MariaDB evidence checks SQL shape only, so no live MariaDB atomic publication and current-only finalization workflow or artifact protect/release race has run." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication"], blocker = "SQLite executes projection, durable PENDING artifact-intent seal, external protect, exact PREPARED confirmation, a sealed reader-invisible DB_COMMITTED commit, receipt-pinned bounded library activation, READY-gated external-release/finalization pages, the terminal PUBLISHED reader-head CAS with working-root cleanup, and COMPLETE response-loss replay; MariaDB evidence checks SQL shape only, so no live MariaDB library activation, atomic terminal publication, or artifact protect/release race has run." }
 
 [[invariant]]
 id = "catalog.state-machines.v1"
@@ -2000,7 +2033,7 @@ lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.state-machines", "runtime.production.writer-bindings", "runtime.production.source-build", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.artifact-release", "runtime.production.publication"] }
 fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.source-build", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.artifact-release", "fault.production.publication"], blocker = "Production rollback tests cover all bound state-machine slices and their major CAS paths, including exact PENDING-to-PREPARED confirmation and PENDING-or-PREPARED-to-COMMITTED orphan release, but no closed matrix attempts every illegal enum transition and every timestamp-presence edge through repository callsites." }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.artifact-release", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.publication"], blocker = "SQLite executes every bound production state-machine slice including exact artifact preparation and release replay, but MariaDB evidence records lock, CAS, and release-page shape only and no live MariaDB end-to-end transition workflow has run." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.artifact-release", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.publication"], blocker = "SQLite executes every bound production state-machine slice, including DB_COMMITTED reader invisibility, bounded activation, READY-gated PUBLISHED head activation, exact artifact release, and COMPLETE response-loss replay; MariaDB evidence records lock, CAS, and release-page shape only and no live MariaDB end-to-end transition workflow has run." }
 
 [[invariant]]
 id = "catalog.role-derivation.v1"

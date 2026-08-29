@@ -238,7 +238,7 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "artifact_zip_writer_policy",
         "artifact_storage_codec_anchor",
         "artifact_storage_codec_adapter_id",
-        "artifact_storage_codec_locator_codec_version",
+        "artifact_storage_codec_storage_key_codec_version",
         "artifact_storage_codec_protection_token_codec_version",
         "artifact_storage_codec_seal",
         "artifact_policy_semantics_anchor",

@@ -10,14 +10,17 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import test_vnext_publication_repository as publication_fixtures
 
 import h2hdb
 import h2hdb.vnext_ingest_publication as publication
 from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
     ArtifactReleaseStorageEvidence,
-    VNextCurrentProjectionItem,
+    ArtifactStorageKey,
     VNextIngestSession,
+    VNextLibraryActivationItem,
+    artifact_storage_key,
 )
 from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_artifact_preparation_repository import ArtifactPreparationRepository
@@ -27,20 +30,22 @@ from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
 )
-from h2hdb.vnext_current_projection_repository import (
-    CurrentProjectionArtifactItem,
-    CurrentProjectionArtifactPage,
-    CurrentProjectionArtifactRepository,
-)
 from h2hdb.vnext_download_ingest_repository import DownloadIngestRepository
 from h2hdb.vnext_identity import (
-    artifact_locator_components,
-    artifact_locator_digest,
+    artifact_storage_key_digest,
     encode_artifact_protection_token,
     publication_key,
 )
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
-from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
+from h2hdb.vnext_library_activation_repository import (
+    LibraryActivationArtifactItem,
+    LibraryActivationArtifactPage,
+    LibraryActivationArtifactRepository,
+)
+from h2hdb.vnext_maintenance_gate_repository import (
+    GateLease,
+    MaintenanceGateRepository,
+)
 from h2hdb.vnext_operational_event_repository import (
     OperationalEffectRepository,
     RemovedGid,
@@ -54,7 +59,8 @@ from h2hdb.vnext_publication_finalization_repository import (
     PublicationFinalizationPage,
     PublicationFinalizationRepository,
 )
-from h2hdb.vnext_transaction import LockRank, encode_lock_key
+from h2hdb.vnext_publication_repository import PublicationRepository
+from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 
 def _context(path: Path) -> RepositoryContext:
@@ -92,17 +98,17 @@ def _probe_begin_immediate(path: Path) -> None:
 
 def test_publication_contract_is_top_level_and_facade_owned() -> None:
     assert {
-        "CurrentProjectionCheckpoint",
-        "CurrentProjectionStatus",
-        "VNextCurrentProjectionAdapter",
+        "LibraryActivationCheckpoint",
+        "LibraryActivationStatus",
+        "VNextLibraryActivationAdapter",
         "VNextIssuedPublicationStep",
         "VNextPreparedPublicationStep",
     } <= set(h2hdb.__all__)
     assert "VNextIngestPublication" not in h2hdb.__all__
-    assert h2hdb.CurrentProjectionCheckpoint is publication.CurrentProjectionCheckpoint
-    assert h2hdb.CurrentProjectionStatus is publication.CurrentProjectionStatus
-    assert h2hdb.VNextCurrentProjectionAdapter is (
-        publication.VNextCurrentProjectionAdapter
+    assert h2hdb.LibraryActivationCheckpoint is publication.LibraryActivationCheckpoint
+    assert h2hdb.LibraryActivationStatus is publication.LibraryActivationStatus
+    assert h2hdb.VNextLibraryActivationAdapter is (
+        publication.VNextLibraryActivationAdapter
     )
     assert h2hdb.VNextIssuedPublicationStep is (publication.VNextIssuedPublicationStep)
     assert h2hdb.VNextPreparedPublicationStep is (
@@ -118,7 +124,7 @@ def test_publication_contract_is_top_level_and_facade_owned() -> None:
         "issued",
         "artifact_adapters",
         "finalization_adapters",
-        "current_projection",
+        "library_activation",
     )
     assert tuple(
         inspect.signature(h2hdb.VNextIngestFacade.commit_publication_step).parameters
@@ -162,17 +168,18 @@ def _session(*, expires_at: int = 100, owner: bytes = b"i" * 16) -> VNextIngestS
     )
 
 
-class _ProjectionAdapter:
+class _LibraryActivationAdapter:
     def __init__(
         self,
-        checkpoint: publication.CurrentProjectionCheckpoint,
+        checkpoint: publication.LibraryActivationCheckpoint,
         *,
         callback: Callable[[], None] | None = None,
     ) -> None:
         self.checkpoint = checkpoint
-        self.appended: list[tuple[VNextCurrentProjectionItem, ...]] = []
+        self.appended: list[tuple[VNextLibraryActivationItem, ...]] = []
         self.sealed = False
         self.reconciled = False
+        self.completed = False
         self.guard_depth = 0
         self.callback = callback
 
@@ -195,25 +202,25 @@ class _ProjectionAdapter:
         self,
         revision: int,
         receipt_id: bytes,
-    ) -> publication.CurrentProjectionCheckpoint:
+    ) -> publication.LibraryActivationCheckpoint:
         self._called()
         assert revision == self.checkpoint.revision
         assert receipt_id == self.checkpoint.receipt_id
         return self.checkpoint
 
-    def append_page(
+    def activate_page(
         self,
         revision: int,
-        items: Sequence[VNextCurrentProjectionItem],
+        items: Sequence[VNextLibraryActivationItem],
     ) -> None:
         self._called()
         assert revision == self.checkpoint.revision
         self.appended.append(tuple(items))
         if items:
-            self.checkpoint = publication.CurrentProjectionCheckpoint(
+            self.checkpoint = publication.LibraryActivationCheckpoint(
                 revision,
                 self.checkpoint.receipt_id,
-                publication.CurrentProjectionStatus.SPOOL,
+                publication.LibraryActivationStatus.SPOOL,
                 items[-1].publication_key,
             )
 
@@ -221,33 +228,58 @@ class _ProjectionAdapter:
         self._called()
         assert revision == self.checkpoint.revision
         self.sealed = True
-        self.checkpoint = publication.CurrentProjectionCheckpoint(
+        self.checkpoint = publication.LibraryActivationCheckpoint(
             revision,
             self.checkpoint.receipt_id,
-            publication.CurrentProjectionStatus.RECONCILE,
+            publication.LibraryActivationStatus.RECONCILE,
             None,
         )
 
-    def reconcile(self, revision: int) -> None:
+    def reconcile_page(
+        self,
+        revision: int,
+        receipt_id: bytes,
+        *,
+        limit: int,
+    ) -> publication.LibraryActivationCheckpoint:
         self._called()
         assert revision == self.checkpoint.revision
+        assert receipt_id == self.checkpoint.receipt_id
+        assert limit == 128
         self.reconciled = True
-        self.checkpoint = publication.CurrentProjectionCheckpoint(
+        self.checkpoint = publication.LibraryActivationCheckpoint(
             revision,
             self.checkpoint.receipt_id,
-            publication.CurrentProjectionStatus.COMPLETE,
+            publication.LibraryActivationStatus.READY,
+            None,
+        )
+        return self.checkpoint
+
+    def complete(self, revision: int, receipt_id: bytes) -> None:
+        self._called()
+        assert revision == self.checkpoint.revision
+        assert receipt_id == self.checkpoint.receipt_id
+        assert self.checkpoint.status in {
+            publication.LibraryActivationStatus.READY,
+            publication.LibraryActivationStatus.COMPLETE,
+        }
+        self.completed = True
+        self.checkpoint = publication.LibraryActivationCheckpoint(
+            revision,
+            receipt_id,
+            publication.LibraryActivationStatus.COMPLETE,
             None,
         )
 
 
-def _projection_item(gid: int) -> CurrentProjectionArtifactItem:
+def _library_activation_item(gid: int) -> LibraryActivationArtifactItem:
     artifact = gid.to_bytes(32, "big")
-    return CurrentProjectionArtifactItem(
+    return LibraryActivationArtifactItem(
         publication_key(gid),
         gid,
         f"gallery-{gid}",
         gid,
-        artifact_locator_components(artifact),
+        artifact_storage_key(gid),
         artifact,
         gid,
     )
@@ -256,56 +288,56 @@ def _projection_item(gid: int) -> CurrentProjectionArtifactItem:
 def test_checkpoint_is_receipt_scoped_and_cursor_is_spool_only() -> None:
     receipt = b"r" * 16
     cursor = publication_key(1)
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         cursor,
     )
-    assert checkpoint.last_publication_key == cursor
+    assert checkpoint.cursor == cursor
 
-    with pytest.raises(ValueError, match="only an open projection spool"):
-        publication.CurrentProjectionCheckpoint(
+    with pytest.raises(ValueError, match="terminal activation checkpoint"):
+        publication.LibraryActivationCheckpoint(
             3,
             receipt,
-            publication.CurrentProjectionStatus.COMPLETE,
+            publication.LibraryActivationStatus.COMPLETE,
             cursor,
         )
     with pytest.raises(ValueError, match="another receipt"):
-        publication._require_projection_checkpoint(
+        publication._require_library_activation_checkpoint(
             checkpoint,
             revision=3,
             receipt_id=b"x" * 16,
         )
 
 
-def test_current_projection_maps_repository_items_to_the_shared_neutral_type(
+def test_library_activation_maps_repository_items_to_the_shared_neutral_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     receipt = b"r" * 16
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         None,
     )
-    adapter = _ProjectionAdapter(checkpoint)
-    page = CurrentProjectionArtifactPage(
+    adapter = _LibraryActivationAdapter(checkpoint)
+    page = LibraryActivationArtifactPage(
         receipt,
         3,
-        (_projection_item(1),),
+        (_library_activation_item(1),),
         publication_key(1),
         False,
     )
     calls: list[tuple[bytes | None, int]] = []
 
-    def list_page(_connector: object, **kwargs: Any) -> CurrentProjectionArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
         calls.append((kwargs["cursor"], kwargs["page_limit"]))
         return page
 
     monkeypatch.setattr(
-        CurrentProjectionArtifactRepository,
+        LibraryActivationArtifactRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -315,15 +347,15 @@ def test_current_projection_maps_repository_items_to_the_shared_neutral_type(
     with adapter.publication_guard():
         prepared = cast(
             Any, machine
-        )._VNextIngestPublication__prepare_current_projection(
-            publication._ProjectionWork(receipt, 3, checkpoint), adapter
+        )._VNextIngestPublication__prepare_library_activation(
+            publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
         )
 
     assert prepared.processed_rows == 1
     assert prepared.terminal_page is False
     assert calls == [(None, 128)]
     assert len(adapter.appended) == 1
-    assert type(adapter.appended[0][0]) is VNextCurrentProjectionItem
+    assert type(adapter.appended[0][0]) is VNextLibraryActivationItem
 
 
 def test_restart_after_database_commit_uses_adapter_owned_cursor(
@@ -332,21 +364,21 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
 ) -> None:
     receipt = b"r" * 16
     cursor = publication_key(1)
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         cursor,
     )
-    adapter = _ProjectionAdapter(checkpoint)
+    adapter = _LibraryActivationAdapter(checkpoint)
     observed: list[bytes | None] = []
 
-    def list_page(_connector: object, **kwargs: Any) -> CurrentProjectionArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
         observed.append(kwargs["cursor"])
-        return CurrentProjectionArtifactPage(receipt, 3, (), None, True)
+        return LibraryActivationArtifactPage(receipt, 3, (), None, True)
 
     monkeypatch.setattr(
-        CurrentProjectionArtifactRepository,
+        LibraryActivationArtifactRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -356,8 +388,8 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
     with adapter.publication_guard():
         result = cast(
             Any, restarted
-        )._VNextIngestPublication__prepare_current_projection(
-            publication._ProjectionWork(receipt, 3, checkpoint), adapter
+        )._VNextIngestPublication__prepare_library_activation(
+            publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
         )
 
     assert observed == [cursor]
@@ -366,25 +398,25 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
     assert adapter.sealed is True
 
 
-def test_projection_page_hard_cap_is_always_128(
+def test_library_activation_page_hard_cap_is_always_128(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     receipt = b"r" * 16
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         None,
     )
-    adapter = _ProjectionAdapter(checkpoint)
+    adapter = _LibraryActivationAdapter(checkpoint)
     items = tuple(
         sorted(
-            (_projection_item(gid) for gid in range(1, 129)),
+            (_library_activation_item(gid) for gid in range(1, 129)),
             key=lambda item: item.publication_key,
         )
     )
-    page = CurrentProjectionArtifactPage(
+    page = LibraryActivationArtifactPage(
         receipt,
         3,
         items,
@@ -392,35 +424,35 @@ def test_projection_page_hard_cap_is_always_128(
         False,
     )
 
-    def list_page(_connector: object, **kwargs: Any) -> CurrentProjectionArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
         assert kwargs["page_limit"] == 128
         return page
 
     monkeypatch.setattr(
-        CurrentProjectionArtifactRepository,
+        LibraryActivationArtifactRepository,
         "list_page",
         staticmethod(list_page),
     )
     machine = publication.VNextIngestPublication(_context(tmp_path / "cap.sqlite3"))
     with adapter.publication_guard():
-        result = cast(Any, machine)._VNextIngestPublication__prepare_current_projection(
-            publication._ProjectionWork(receipt, 3, checkpoint), adapter
+        result = cast(Any, machine)._VNextIngestPublication__prepare_library_activation(
+            publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
         )
     assert result.processed_rows == 128
     assert len(adapter.appended[0]) == 128
 
 
-def test_projection_adapter_io_runs_under_only_the_callers_outer_guard(
+def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "projection-boundary.sqlite3"
     sqlite3.connect(path).close()
     receipt = b"r" * 16
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         None,
     )
     probes: list[str] = []
@@ -429,22 +461,22 @@ def test_projection_adapter_io_runs_under_only_the_callers_outer_guard(
         _probe_begin_immediate(path)
         probes.append("adapter")
 
-    adapter = _ProjectionAdapter(checkpoint, callback=probe)
+    adapter = _LibraryActivationAdapter(checkpoint, callback=probe)
 
-    def list_page(connector: Any, **_kwargs: Any) -> CurrentProjectionArtifactPage:
+    def list_page(connector: Any, **_kwargs: Any) -> LibraryActivationArtifactPage:
         with connector.read_transaction():
             assert connector.fetch_one("SELECT 1") == (1,)
-        return CurrentProjectionArtifactPage(receipt, 3, (), None, True)
+        return LibraryActivationArtifactPage(receipt, 3, (), None, True)
 
     monkeypatch.setattr(
-        CurrentProjectionArtifactRepository,
+        LibraryActivationArtifactRepository,
         "list_page",
         staticmethod(list_page),
     )
     machine = publication.VNextIngestPublication(_context(path))
     with adapter.publication_guard():
-        result = cast(Any, machine)._VNextIngestPublication__prepare_current_projection(
-            publication._ProjectionWork(receipt, 3, checkpoint), adapter
+        result = cast(Any, machine)._VNextIngestPublication__prepare_library_activation(
+            publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
         )
         with pytest.raises(RuntimeError, match="nested publication guard"):
             with adapter.publication_guard():
@@ -453,7 +485,7 @@ def test_projection_adapter_io_runs_under_only_the_callers_outer_guard(
     assert result.terminal_page is True
     assert probes == ["adapter", "adapter", "adapter"]
     assert (
-        "current_projection"
+        "library_activation"
         not in inspect.signature(
             publication.VNextIngestPublication.issue_step
         ).parameters
@@ -471,18 +503,27 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
         ingest_lease_expires_at=200,
     )
     foreign = replace(renewed, ingest_owner_token=b"x" * 16)
+    root = publication._Root(
+        b"b" * 16,
+        b"a" * 16,
+        1,
+        None,
+        b"r" * 16,
+        1,
+        "PUBLISHED",
+    )
     issued = publication.VNextIssuedPublicationStep(
         action=publication._Action.COMPLETE,
-        payload=object(),
+        payload=root,
         session=original,
         _token=publication._STEP_TOKEN,
     )
     machine = publication.VNextIngestPublication(_context(tmp_path / "session.sqlite3"))
-    adapter = _ProjectionAdapter(
-        publication.CurrentProjectionCheckpoint(
+    adapter = _LibraryActivationAdapter(
+        publication.LibraryActivationCheckpoint(
             1,
             b"r" * 16,
-            publication.CurrentProjectionStatus.COMPLETE,
+            publication.LibraryActivationStatus.COMPLETE,
             None,
         )
     )
@@ -492,19 +533,21 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
         lambda *_args, **_kwargs: object(),
     )
 
-    prepared = machine.prepare_step(
-        issued,
-        artifact_adapters={},
-        finalization_adapters={},
-        current_projection=adapter,
-    )
+    with adapter.publication_guard():
+        prepared = machine.prepare_step(
+            issued,
+            artifact_adapters={},
+            finalization_adapters={},
+            library_activation=adapter,
+        )
     machine.commit_step(renewed, prepared)
-    foreign_prepared = machine.prepare_step(
-        issued,
-        artifact_adapters={},
-        finalization_adapters={},
-        current_projection=adapter,
-    )
+    with adapter.publication_guard():
+        foreign_prepared = machine.prepare_step(
+            issued,
+            artifact_adapters={},
+            finalization_adapters={},
+            library_activation=adapter,
+        )
     with pytest.raises(ValueError, match="another ingest session authority"):
         machine.commit_step(
             foreign,
@@ -523,7 +566,15 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
         clock=lambda: 10,
     )
     session = _session()
-    root = publication._Root(b"b" * 16, b"a" * 16, 1, None, None, None, None)
+    root = publication._Root(
+        b"b" * 16,
+        b"a" * 16,
+        1,
+        None,
+        b"r" * 16,
+        1,
+        "PUBLISHED",
+    )
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
     monkeypatch.setattr(
         publication,
@@ -541,13 +592,13 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
         "_commit_action",
         lambda *_args, **_kwargs: object(),
     )
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         1,
         b"r" * 16,
-        publication.CurrentProjectionStatus.COMPLETE,
+        publication.LibraryActivationStatus.COMPLETE,
         None,
     )
-    adapter = _ProjectionAdapter(checkpoint)
+    adapter = _LibraryActivationAdapter(checkpoint)
 
     issued = machine.issue_step(session, cast(Any, object()))
     assert begins == ["BEGIN IMMEDIATE"]
@@ -556,7 +607,7 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
             issued,
             artifact_adapters={},
             finalization_adapters={},
-            current_projection=adapter,
+            library_activation=adapter,
         )
     assert begins == ["BEGIN IMMEDIATE"]
     machine.commit_step(session, prepared)
@@ -673,7 +724,9 @@ def test_reused_sealed_canonical_requires_and_then_accepts_current_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = b"same complete canonical preimage"
-    plan = CanonicalValueUploadPlan.from_parts("artifact_locator_bytes_v1", (payload,))
+    plan = CanonicalValueUploadPlan.from_parts(
+        "artifact_storage_key_bytes_v1", (payload,)
+    )
     connector = _CanonicalStateConnector()
     sealed = CanonicalValueReadReceipt(
         plan.value_sha256,
@@ -737,7 +790,7 @@ def test_reused_sealed_canonical_requires_and_then_accepts_current_claim(
 def test_canonical_claim_foreign_and_malformed_rows_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts("artifact_locator_bytes_v1", (b"x",))
+    plan = CanonicalValueUploadPlan.from_parts("artifact_storage_key_bytes_v1", (b"x",))
     connector = _CanonicalStateConnector()
     monkeypatch.setattr(
         publication,
@@ -767,7 +820,9 @@ def test_canonical_claim_foreign_and_malformed_rows_fail_closed(
 def test_fresh_canonical_keeps_allocate_page_and_seal_progression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts("artifact_locator_bytes_v1", (b"new",))
+    plan = CanonicalValueUploadPlan.from_parts(
+        "artifact_storage_key_bytes_v1", (b"new",)
+    )
     connector = _CanonicalStateConnector()
     family: object | None = None
     monkeypatch.setattr(
@@ -831,7 +886,9 @@ def test_sealed_canonical_full_preimage_mismatch_rejects_even_exact_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = b"expected"
-    plan = CanonicalValueUploadPlan.from_parts("artifact_locator_bytes_v1", (payload,))
+    plan = CanonicalValueUploadPlan.from_parts(
+        "artifact_storage_key_bytes_v1", (payload,)
+    )
     connector = _CanonicalStateConnector((1, plan.value_sha256))
     sealed = CanonicalValueReadReceipt(
         plan.value_sha256,
@@ -876,7 +933,7 @@ def test_sealed_canonical_full_preimage_mismatch_rejects_even_exact_claim(
 def test_partial_sealed_canonical_family_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts("artifact_locator_bytes_v1", (b"x",))
+    plan = CanonicalValueUploadPlan.from_parts("artifact_storage_key_bytes_v1", (b"x",))
     connector = _CanonicalStateConnector()
 
     def partial(*_args: object, **_kwargs: object) -> None:
@@ -1189,7 +1246,7 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
     cast(publication._ArtifactPrepared, second).receipt.close()
 
 
-def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
+def test_terminal_head_activation_continues_to_complete_library_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1198,14 +1255,14 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
     candidate_id = b"c" * 16
     artifact_sha256 = b"z" * 32
     key = publication_key(1)
-    components = artifact_locator_components(artifact_sha256)
-    locator_sha256 = artifact_locator_digest(components)
+    storage_key = artifact_storage_key(1)
+    storage_key_sha256 = artifact_storage_key_digest(storage_key.segments)
     token = encode_artifact_protection_token(
         1,
         candidate_id,
         key,
         artifact_sha256,
-        locator_sha256,
+        storage_key_sha256,
         1,
         101,
     )
@@ -1213,8 +1270,8 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
         candidate_id,
         key,
         artifact_sha256,
-        locator_sha256,
-        components,
+        storage_key_sha256,
+        storage_key,
         101,
         1,
         1,
@@ -1222,12 +1279,12 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
         b"store",
         "PREPARED",
     )
-    projection_item = CurrentProjectionArtifactItem(
+    activation_item = LibraryActivationArtifactItem(
         key,
         1,
         "gallery-1",
         10,
-        components,
+        storage_key,
         artifact_sha256,
         101,
     )
@@ -1242,13 +1299,13 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
         "DB_COMMITTED",
     )
     session = _session()
-    checkpoint = publication.CurrentProjectionCheckpoint(
+    checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt_id,
-        publication.CurrentProjectionStatus.SPOOL,
+        publication.LibraryActivationStatus.SPOOL,
         None,
     )
-    adapter = _ProjectionAdapter(checkpoint)
+    adapter = _LibraryActivationAdapter(checkpoint)
 
     class ReleaseAdapter:
         adapter_id = b"store"
@@ -1258,11 +1315,15 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
 
         def release(
             self,
-            locator_components: tuple[str, ...],
+            exact_storage_key: ArtifactStorageKey,
+            expected_artifact_sha256: bytes,
+            expected_size_bytes: int,
             protection_token: bytes,
         ) -> ArtifactReleaseStorageEvidence:
             assert adapter.guard_depth == 1
-            assert locator_components == components
+            assert exact_storage_key == storage_key
+            assert expected_artifact_sha256 == artifact_sha256
+            assert expected_size_bytes == 101
             _probe_begin_immediate(database_path)
             self.tokens.append(protection_token)
             return ArtifactReleaseStorageEvidence(True)
@@ -1283,9 +1344,12 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
     def issue_database_action(*_args: object, **_kwargs: object) -> tuple[Any, Any]:
         if state["finalized"]:
             return publication._Action.COMPLETE, root
-        return publication._Action.CURRENT_PROJECTION, publication._ProjectionWork(
-            receipt_id,
-            3,
+        return (
+            publication._Action.LIBRARY_ACTIVATION,
+            publication._LibraryActivationWork(
+                receipt_id,
+                3,
+            ),
         )
 
     monkeypatch.setattr(
@@ -1294,21 +1358,21 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
         issue_database_action,
     )
 
-    def list_page(_connector: object, **kwargs: Any) -> CurrentProjectionArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
         assert kwargs["page_limit"] == 128
         if kwargs["cursor"] is None:
-            return CurrentProjectionArtifactPage(
+            return LibraryActivationArtifactPage(
                 receipt_id,
                 3,
-                (projection_item,),
+                (activation_item,),
                 key,
                 False,
             )
         assert kwargs["cursor"] == key
-        return CurrentProjectionArtifactPage(receipt_id, 3, (), None, True)
+        return LibraryActivationArtifactPage(receipt_id, 3, (), None, True)
 
     monkeypatch.setattr(
-        CurrentProjectionArtifactRepository,
+        LibraryActivationArtifactRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -1385,18 +1449,221 @@ def test_genesis_one_gallery_vertical_flow_holds_one_outer_guard(
                 issued,
                 artifact_adapters={},
                 finalization_adapters={b"store": releaser},
-                current_projection=adapter,
+                library_activation=adapter,
             )
             result = machine.commit_step(session, prepared)
             if result.terminal:
                 break
         else:  # pragma: no cover - fail-closed diagnostic
             raise AssertionError("vertical publication flow did not terminate")
-        operations.append(machine.issue_step(session, cast(Any, object())).operation)
-
-    assert operations.count("CURRENT_PROJECTION") == 6
+    assert operations.count("LIBRARY_ACTIVATION") == 5
     assert operations.count("FINALIZE") == 2
     assert operations[-1] == "COMPLETE"
     assert releaser.tokens == [token]
     assert adapter.reconciled is True
-    assert type(adapter.appended[0][0]) is VNextCurrentProjectionItem
+    assert adapter.completed is True
+    assert type(adapter.appended[0][0]) is VNextLibraryActivationItem
+
+
+def test_complete_persisted_before_response_loss_replays_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recover COMPLETE from the adapter without repeating terminal effects."""
+
+    database_path = tmp_path / "complete-response-loss.sqlite3"
+    connector = publication_fixtures._generated_database(database_path)
+    gate, first_turn = publication_fixtures._authorities(connector)
+    publication_fixtures._seed_candidate(connector, first_turn)
+    published, replay_turn = publication_fixtures._prepare_finalized_replay(
+        connector,
+        gate,
+        first_turn,
+    )
+    build_id = publication_fixtures._BUILD
+    receipt_id = published.receipt_id
+    root = publication._Root(
+        build_id,
+        publication_fixtures._ANALYSIS,
+        1,
+        None,
+        receipt_id,
+        published.revision,
+        "PUBLISHED",
+    )
+    session = VNextIngestSession(
+        gate.owner_token,
+        gate.gate_generation,
+        gate.slots[0],
+        gate.lease_expires_at,
+        replay_turn.generation,
+        replay_turn.owner_token,
+        replay_turn.lease_expires_at,
+        None,
+        None,
+        None,
+        None,
+    )
+    policy = cast(Any, object())
+    adapter_journal = {"present": True}
+    finalization_calls: list[str] = []
+    cleanup_calls: list[tuple[bytes, bytes]] = []
+    original_cleanup = PublicationRepository.release_replayed_source_working
+    assert connector.fetch_one(
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    ) == (build_id,)
+    original_head = connector.fetch_one(
+        "SELECT receipt_id, revision, generation "
+        "FROM catalog_publication_commit_heads WHERE channel = %s",
+        (publication_fixtures._CHANNEL,),
+    )
+    connector.close()
+
+    class PersistThenLoseResponseAdapter(_LibraryActivationAdapter):
+        def __init__(self) -> None:
+            super().__init__(
+                publication.LibraryActivationCheckpoint(
+                    published.revision,
+                    receipt_id,
+                    publication.LibraryActivationStatus.READY,
+                    None,
+                )
+            )
+            self.complete_calls = 0
+
+        def complete(self, revision: int, exact_receipt_id: bytes) -> None:
+            self.complete_calls += 1
+            super().complete(revision, exact_receipt_id)
+            # The adapter transaction committed COMPLETE and removed its journal,
+            # but its acknowledgement never reached the orchestrator.
+            adapter_journal["present"] = False
+            if self.complete_calls == 1:
+                raise ConnectionError("lost COMPLETE acknowledgement")
+
+    adapter = PersistThenLoseResponseAdapter()
+    monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
+    monkeypatch.setattr(
+        publication,
+        "_resume_authority",
+        lambda _work, current, _now: current.ingest_generation,
+    )
+    monkeypatch.setattr(publication, "_load_root", lambda *_args: root)
+
+    def forbid_finalization(*_args: object, **_kwargs: object) -> object:
+        finalization_calls.append("forbidden")
+        raise AssertionError("published COMPLETE replay attempted finalization")
+
+    monkeypatch.setattr(
+        PublicationFinalizationRepository,
+        "issue_page",
+        staticmethod(forbid_finalization),
+    )
+    monkeypatch.setattr(
+        publication,
+        "_release_finalization_page",
+        forbid_finalization,
+    )
+    monkeypatch.setattr(
+        PublicationRepository,
+        "activate_finalized_commit",
+        staticmethod(forbid_finalization),
+    )
+
+    def cleanup_once(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        receipt_id: bytes,
+        now: int,
+    ) -> bool:
+        cleanup_calls.append((build_id, receipt_id))
+        return original_cleanup(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            build_id=build_id,
+            receipt_id=receipt_id,
+            now=now,
+        )
+
+    monkeypatch.setattr(
+        PublicationRepository,
+        "release_replayed_source_working",
+        staticmethod(cleanup_once),
+    )
+
+    first_machine = publication.VNextIngestPublication(
+        _context(database_path),
+        clock=lambda: 120,
+    )
+    with adapter.publication_guard():
+        issued = first_machine.issue_step(session, policy)
+        assert issued.operation == "COMPLETE"
+        with pytest.raises(
+            ConnectionError,
+            match="lost COMPLETE acknowledgement",
+        ):
+            first_machine.prepare_step(
+                issued,
+                artifact_adapters={},
+                finalization_adapters={},
+                library_activation=adapter,
+            )
+
+    assert adapter.checkpoint.status is publication.LibraryActivationStatus.COMPLETE
+    assert adapter.complete_calls == 1
+    assert adapter_journal == {"present": False}
+    assert cleanup_calls == []
+    connector = publication_fixtures._generated_database(database_path)
+    assert connector.fetch_one(
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    ) == (build_id,)
+    connector.close()
+
+    # A new process has no in-memory activation hint. It recovers COMPLETE from
+    # the adapter, skips complete()/finalization/release, and performs only the
+    # idempotent database marker cleanup that did not run before response loss.
+    restarted_machine = publication.VNextIngestPublication(
+        _context(database_path),
+        clock=lambda: 120,
+    )
+    with adapter.publication_guard():
+        replayed_issue = restarted_machine.issue_step(session, policy)
+        assert replayed_issue.operation == "COMPLETE"
+        replayed_preparation = restarted_machine.prepare_step(
+            replayed_issue,
+            artifact_adapters={},
+            finalization_adapters={},
+            library_activation=adapter,
+        )
+        result = restarted_machine.commit_step(session, replayed_preparation)
+
+    assert result == h2hdb.VNextIngestAdvanceResult(
+        h2hdb.VNextIngestPhase.FINALIZATION,
+        0,
+        True,
+        False,
+    )
+    assert adapter.complete_calls == 1
+    assert cleanup_calls == [(build_id, receipt_id)]
+    assert finalization_calls == []
+    assert adapter_journal == {"present": False}
+    connector = publication_fixtures._generated_database(database_path)
+    assert not connector.fetch_one(
+        "SELECT 1 FROM operational_source_working_builds WHERE slot = 1"
+    )
+    assert connector.fetch_one(
+        "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
+        (receipt_id,),
+    ) == ("PUBLISHED",)
+    assert (
+        connector.fetch_one(
+            "SELECT receipt_id, revision, generation "
+            "FROM catalog_publication_commit_heads WHERE channel = %s",
+            (publication_fixtures._CHANNEL,),
+        )
+        == original_head
+    )
+    connector.close()

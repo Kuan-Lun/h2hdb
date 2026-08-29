@@ -261,7 +261,7 @@ key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "catalog_publication_finalized_before_finalized_current_head_v1"
 blocker_query_id = "catalog_publication_finalized_current_head_and_live_predecessor_v1"
 writer_hook = "h2hdb.cleanup.catalog_publication.v1"
-retention_roots = ["the publication occurrence for the current publication_commit_head receipt", "every prior occurrence while the current publication head receipt is DB_COMMITTED or otherwise not PROJECTION_FINALIZED", "every occurrence whose own revision lacks a PROJECTION_FINALIZED receipt", "every predecessor revision pinned through publication_candidate_base_publication_commit by the live catalog_working_candidate", "every predecessor revision pinned through source_build_base_publication_commit by the live source_working_build", "the exact catalog revision descriptor and sealed commit audit families, which outlive payload cleanup at O(revision) cardinality"]
+retention_roots = ["the publication occurrence for the current publication_commit_head receipt", "every prior occurrence while the current publication head receipt is DB_COMMITTED or otherwise not PUBLISHED", "every occurrence whose own revision lacks a PUBLISHED receipt", "every predecessor revision pinned through publication_candidate_base_publication_commit by the live catalog_working_candidate", "every predecessor revision pinned through source_build_base_publication_commit by the live source_working_build", "the exact catalog revision descriptor and sealed commit audit families, which outlive payload cleanup at O(revision) cardinality"]
 retained_fk_edges = []
 phases = [
   { phase = "CP_STORAGE", order = 1, relations = ["catalog_publication_storage"] },
@@ -285,7 +285,7 @@ eligible_predicate_id = "publication_commit_unreachable_finalized_v2"
 blocker_query_id = "publication_commit_reachability_v2"
 writer_hook = "h2hdb.cleanup.publication_commit.v2"
 preparation_control_handoff_rule = "under the exact live EXCLUSIVE maintenance gate, an unreachable finalized commit is initially eligible only with its exact candidate_id/preparation_id binding, a unique COMPLETE preparation and effect seal whose operational_policy_id matches the commit, no source or catalog working root, and no PENDING or PREPARED prepared-artifact protection. The begin transaction freezes each eligible exact (receipt_id, preparation_id) anchor/commit authority in cleanup_cycle_root and includes both identities in the sealed root-set digest; later phases select by receipt_id but fail closed if the commit preparation differs from the frozen pair. The exact closed-world order is RELEASE_BASE, PREP_BINDING, PREP_BATCH, PREP_CHECKPOINT, PREP, EVENT, FINALIZATION_MARKER, FINALIZATION_BATCH, COMMIT_EFFECT_ROOT, FINALIZATION_CHECKPOINT, ANCHOR; every phase requires the exact prior COMPLETE cleanup receipt and prior relation absence. Operational events are per-preparation publication-owned transient current/retry snapshots rather than cross-revision delta or delivery history. The compound EVENT phase locks each base event with exactly one type-matching subtype and atomically deletes subtype then event; a durable (receipt_id, preparation_id, sequence_no) cursor permits only fully absent covered subtype/event coordinates, while partial, mismatched, or ahead-of-cursor absence fails closed. An OPEN PCOM job may temporarily retain the unreachable non-head commit and seal after covered coordinates are gone; the full CHECK accepts that state only for the matching frozen OPEN PCOM job and EVENT cursor/receipt chain before COMMIT_EFFECT_ROOT, while public reads remain current-head-only and exact COMPLETE preparation authority is already removed. COMMIT_EFFECT_ROOT rechecks every pin, prior receipt, child absence, and every cursor-uncovered exact receipt_id/preparation_id commit, effect-seal, and event-stream triple; because the frozen root set is capped at 256, one bounded transaction exact-deletes commit, effect seal, and event stream in FK order with affected-count one for every triple, then commits its cleanup receipt/checkpoint CAS last. Any partial authority, mismatch, or fault rolls back the whole batch. A nonempty compound cursor must equal the final frozen receipt/preparation coordinate, start from the empty cursor, report row_count equal to frozen_root_count, and have every frozen commit, preparation, event, effect seal, and event stream absent; its monotone receipt/checkpoint chain, frozen pair authority, and full CHECK owner/orphan rejection are the durable covered-root proof. The exact empty root set instead uses the terminal empty-cursor receipt as its proof. Separately receipted finalization-checkpoint and anchor phases then complete."
-retention_roots = ["current publication_commit_head receipt", "a source_build_base_publication_commit whose consuming build has OPEN work, an incomplete analysis, or no exact newer PROJECTION_FINALIZED handoff for every COMPLETE analysis", "publication_candidate_base_publication_commit.base_receipt_id", "PENDING or PREPARED prepared-artifact protection", "a source_working_build for the commit preparation build", "a catalog_working_candidate for the commit candidate", "a commit whose replacement head is not yet PROJECTION_FINALIZED", "the exact COMPLETE operational_preparation remains commit-to-build retry lineage until this same cleanup lifecycle has released the safe build base and removed the exact candidate/preparation binding"]
+retention_roots = ["current publication_commit_head receipt", "a source_build_base_publication_commit whose consuming build has OPEN work, an incomplete analysis, or no exact newer PUBLISHED handoff for every COMPLETE analysis", "publication_candidate_base_publication_commit.base_receipt_id", "PENDING or PREPARED prepared-artifact protection", "a source_working_build for the commit preparation build", "a catalog_working_candidate for the commit candidate", "a commit whose replacement head is not yet PUBLISHED", "the exact COMPLETE operational_preparation remains commit-to-build retry lineage until this same cleanup lifecycle has released the safe build base and removed the exact candidate/preparation binding"]
 retained_fk_edges = [
   { relation = "publication_commit_head_receipt", attributes = ["receipt_id"] },
   { relation = "publication_candidate_base_publication_commit", attributes = ["base_receipt_id"] },
@@ -544,7 +544,6 @@ retained_fk_edges = [
   { relation = "catalog_publication_content", attributes = ["content_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["source_title_sha256"] },
   { relation = "catalog_contributor", attributes = ["contributor_name_sha256"] },
-  { relation = "artifact_blob", attributes = ["artifact_locator_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["summary_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["language_sha256"] },
 ]
@@ -1498,7 +1497,7 @@ version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
 value = [{ attribute = "phase", type = "ascii_enum", text = "PCOM_RELEASE_BUILD_BASE" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_COMMIT" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "Release only a source-build baseline whose exact consuming analyses have terminal, newer, projection-finalized publication handoffs."
+invariant = "Release only a source-build baseline whose exact consuming analyses have terminal, newer, published handoffs."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pcom-preparation-binding.v1"
@@ -2850,7 +2849,7 @@ declared_keys = [["revision"]]
 
 [[external_relation]]
 name = "catalog_revision_descriptor"
-attributes = ["revision", "publication_count"]
+attributes = ["revision", "publication_count", "artifact_count"]
 declared_keys = [["revision"]]
 
 [[external_relation]]

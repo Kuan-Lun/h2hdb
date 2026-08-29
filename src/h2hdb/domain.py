@@ -30,6 +30,9 @@ __all__ = [
     "CatalogSourceFilePage",
     "CatalogSnapshot",
     "CatalogArtifact",
+    "CatalogArtifactCursor",
+    "CatalogArtifactPage",
+    "ArtifactStorageKey",
     "CatalogContributor",
     "CatalogPage",
     "CatalogPublishResult",
@@ -92,8 +95,7 @@ __all__ = [
     "VNextArtifactProducer",
     "VNextArtifactStoragePolicy",
     "VNextArtifactZipPolicy",
-    "VNextCurrentProjectionItem",
-    "VNextCurrentProjectionPage",
+    "VNextLibraryActivationItem",
     "VNextIngestAdvanceResult",
     "VNextIngestCompletionReceipt",
     "VNextIngestGalleryObservation",
@@ -104,6 +106,7 @@ __all__ = [
     "VNextIngestSession",
     "VNextIngestSourceReceipt",
     "VNextResolvedIngestPolicy",
+    "artifact_storage_key",
 ]
 
 from collections.abc import Iterable
@@ -126,10 +129,11 @@ from .vnext_domains import (
 from .vnext_identity import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
-    artifact_locator_components,
     artifact_policy_digest,
     artifact_producer_fingerprint_sha256,
+    artifact_storage_key_components,
     canonical_value_digest,
+    decode_artifact_name,
     encode_source_relative_locator,
     publication_key,
     validate_file_name,
@@ -200,7 +204,7 @@ class CatalogBuildOperationalPhase(StrEnum):
 
 class CatalogProjectionPublicationState(StrEnum):
     database_committed = "DB_COMMITTED"
-    projection_finalized = "PROJECTION_FINALIZED"
+    published = "PUBLISHED"
 
 
 class CatalogAnalysisPhase(StrEnum):
@@ -1645,18 +1649,55 @@ class CatalogSubject:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactStorageKey:
+    """Neutral, versioned segments for one stable artifact storage identity."""
+
+    codec: str
+    segments: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.codec != "gid-sha256-12-v1":
+            raise ValueError("artifact storage key codec is not registered")
+        if not isinstance(self.segments, tuple):
+            raise TypeError("artifact storage key segments must be an exact tuple")
+        if len(self.segments) != 4:
+            raise ValueError("artifact storage key must contain exactly four segments")
+        try:
+            gid = decode_artifact_name(
+                self.segments[-1].encode("ascii", errors="strict")
+            )
+        except (UnicodeError, ValueError) as error:
+            raise ValueError(
+                "artifact storage key leaf is not a canonical artifact name"
+            ) from error
+        if self.segments != artifact_storage_key_components(gid):
+            raise ValueError("artifact storage key does not match its GID shard")
+
+
+def artifact_storage_key(gid: int) -> ArtifactStorageKey:
+    """Return the only registered stable storage key for ``gid``."""
+
+    return ArtifactStorageKey(
+        codec="gid-sha256-12-v1",
+        segments=artifact_storage_key_components(gid),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogArtifact:
     artifact_id: str
-    # Neutral, user-facing download name. The physical/content-addressed path
-    # belongs in ``location`` and must not be inferred from this value.
+    # Neutral, user-facing download name. Consumers locate bytes only through
+    # the separately versioned storage key.
     name: str
-    location: Path
+    storage_key: ArtifactStorageKey
     media_type: str
     size_bytes: int
     sha256: str
     modified_at: datetime
 
     def __post_init__(self) -> None:
+        if not isinstance(self.storage_key, ArtifactStorageKey):
+            raise TypeError("artifact storage_key must be ArtifactStorageKey")
         if self.size_bytes < 0:
             raise ValueError("Artifact size must not be negative")
         if len(self.sha256) != 64:
@@ -1665,6 +1706,41 @@ class CatalogArtifact:
             bytes.fromhex(self.sha256)
         except ValueError as error:
             raise ValueError("Artifact SHA-256 is not hexadecimal") from error
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogArtifactCursor:
+    """Current-revision seek cursor issued and revalidated by the catalog."""
+
+    revision: int
+    position: int
+    publication_id: str
+
+    def __post_init__(self) -> None:
+        if self.revision <= 0:
+            raise ValueError("artifact cursor revision must be positive")
+        if self.position < 0:
+            raise ValueError("artifact cursor position must not be negative")
+        if not self.publication_id:
+            raise ValueError("artifact cursor publication_id must not be blank")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogArtifactPage:
+    """One bounded artifact-only page addressed by an immutable seek cursor."""
+
+    revision: CatalogRevision
+    publications: tuple[CatalogPublication, ...]
+    next_cursor: CatalogArtifactCursor | None
+    limit: int
+    total: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "publications", tuple(self.publications))
+        if self.limit <= 0 or len(self.publications) > self.limit:
+            raise ValueError("artifact page must honor its positive limit")
+        if self.total < len(self.publications):
+            raise ValueError("artifact page total is smaller than its page")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1811,6 +1887,15 @@ class CatalogRevision:
     revision: int
     published_at: datetime
     publication_count: int
+    artifact_count: int
+
+    def __post_init__(self) -> None:
+        if self.revision <= 0:
+            raise ValueError("catalog revision must be positive")
+        if min(self.publication_count, self.artifact_count) < 0:
+            raise ValueError("catalog revision counts must not be negative")
+        if self.artifact_count not in {0, self.publication_count}:
+            raise ValueError("artifact_count must be zero or equal publication_count")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2022,103 +2107,50 @@ class ArtifactReleaseStorageEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class VNextCurrentProjectionItem:
-    """Neutral immutable facts for one current content-addressed artifact."""
+class VNextLibraryActivationItem:
+    """Neutral immutable facts for one stable current-library artifact."""
 
     publication_key: bytes
     gid: int
     source_gallery_name: str
     upload_time: int
-    artifact_locator_components: tuple[str, ...]
+    storage_key: ArtifactStorageKey
     artifact_sha256: bytes
     size_bytes: int
 
     def __post_init__(self) -> None:
         key = require_digest32(
             self.publication_key,
-            field="current projection publication_key",
+            field="library activation publication_key",
         )
-        gid = require_positive_int63(self.gid, field="current projection gid")
+        gid = require_positive_int63(self.gid, field="library activation gid")
         if publication_key(gid) != key:
             raise ValueError(
-                "current projection publication_key disagrees with its GID"
+                "library activation publication_key disagrees with its GID"
             )
         if not isinstance(self.source_gallery_name, str):
-            raise TypeError("current projection source_gallery_name must be str")
+            raise TypeError("library activation source_gallery_name must be str")
         source_name = self.source_gallery_name.encode("utf-8", errors="strict")
         require_bounded_bytes(
             source_name,
-            field="current projection source_gallery_name UTF-8",
+            field="library activation source_gallery_name UTF-8",
             minimum=1,
             maximum=255,
         )
         if b"\x00" in source_name:
-            raise ValueError("current projection source_gallery_name contains NUL")
-        require_int63(self.upload_time, field="current projection upload_time")
-        artifact = require_digest32(
+            raise ValueError("library activation source_gallery_name contains NUL")
+        require_int63(self.upload_time, field="library activation upload_time")
+        require_digest32(
             self.artifact_sha256,
-            field="current projection artifact_sha256",
+            field="library activation artifact_sha256",
         )
-        if not isinstance(
-            self.artifact_locator_components, tuple
-        ) or self.artifact_locator_components != artifact_locator_components(artifact):
-            raise ValueError(
-                "current projection artifact locator is not content-addressed"
-            )
-        size = require_int63(self.size_bytes, field="current projection size_bytes")
+        if not isinstance(self.storage_key, ArtifactStorageKey):
+            raise TypeError("library activation storage_key is not registered")
+        if self.storage_key != artifact_storage_key(gid):
+            raise ValueError("library activation storage_key disagrees with its GID")
+        size = require_int63(self.size_bytes, field="library activation size_bytes")
         if size < 0:
-            raise ValueError("current projection size_bytes must be non-negative")
-
-
-@dataclass(frozen=True, slots=True)
-class VNextCurrentProjectionPage:
-    """One bounded keyset page pinned to an immutable publication receipt."""
-
-    receipt_id: bytes
-    catalog_revision: int
-    items: tuple[VNextCurrentProjectionItem, ...]
-    next_cursor: bytes | None
-    terminal: bool
-
-    def __post_init__(self) -> None:
-        require_bounded_bytes(
-            self.receipt_id,
-            field="current projection receipt_id",
-            minimum=16,
-            maximum=16,
-        )
-        require_positive_int63(
-            self.catalog_revision,
-            field="current projection catalog_revision",
-        )
-        if not isinstance(self.items, tuple):
-            raise TypeError("current projection items must be an exact tuple")
-        if len(self.items) > 128:
-            raise ValueError("current projection page cannot exceed 128 items")
-        keys: list[bytes] = []
-        for item in self.items:
-            if not isinstance(item, VNextCurrentProjectionItem):
-                raise TypeError("current projection page contains a foreign item")
-            item.__post_init__()
-            keys.append(item.publication_key)
-        if keys != sorted(set(keys)):
-            raise ValueError(
-                "current projection publication keys must be strictly ordered"
-            )
-        if type(self.terminal) is not bool:
-            raise TypeError("current projection terminal must be bool")
-        if not keys:
-            if not self.terminal or self.next_cursor is not None:
-                raise ValueError("an empty current projection page must be terminal")
-            return
-        cursor = require_digest32(
-            self.next_cursor,
-            field="current projection next_cursor",
-        )
-        if self.terminal or cursor != keys[-1]:
-            raise ValueError(
-                "a nonempty current projection page must advance its exact cursor"
-            )
+            raise ValueError("library activation size_bytes must be non-negative")
 
 
 def _require_positive_uint32(value: object, *, field_name: str) -> int:
@@ -2170,7 +2202,7 @@ class VNextArtifactStoragePolicy:
 
     adapter_id: bytes
     storage_codec_version: int = 1
-    locator_codec_version: int = 1
+    storage_key_codec_version: int = 1
     protection_token_codec_version: int = 1
 
     def __post_init__(self) -> None:
@@ -2182,7 +2214,7 @@ class VNextArtifactStoragePolicy:
         )
         for field_name in (
             "storage_codec_version",
-            "locator_codec_version",
+            "storage_key_codec_version",
             "protection_token_codec_version",
         ):
             _require_positive_uint32(

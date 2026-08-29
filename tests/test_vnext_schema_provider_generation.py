@@ -1263,10 +1263,10 @@ def test_batch_zero_b_view_drift_remains_semantically_visible(
                 "THEN 'OPEN' ELSE 'COMPLETE'",
                 1,
             )
-        elif "THEN 'DB_COMMITTED' ELSE 'PROJECTION_FINALIZED'" in sql:
+        elif "THEN 'DB_COMMITTED' ELSE 'PUBLISHED'" in sql:
             wrong = sql.replace(
-                "THEN 'DB_COMMITTED' ELSE 'PROJECTION_FINALIZED'",
-                "THEN 'PROJECTION_FINALIZED' ELSE 'DB_COMMITTED'",
+                "THEN 'DB_COMMITTED' ELSE 'PUBLISHED'",
+                "THEN 'PUBLISHED' ELSE 'DB_COMMITTED'",
                 1,
             )
         else:

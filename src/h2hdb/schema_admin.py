@@ -29,7 +29,7 @@ from .sql_connector import SQLConnector
 
 @dataclass(frozen=True, slots=True)
 class SchemaEpochReadiness:
-    """Exact durable READY marker for the injected v2 schema manifest."""
+    """Exact durable READY marker for the injected v3 schema manifest."""
 
     epoch: int
     schema_version: int
@@ -40,13 +40,13 @@ class SchemaEpochReadiness:
 
 
 class VNextSchemaAdmin:
-    """Administer the sole epoch-2 production schema."""
+    """Administer the sole epoch-3 production schema."""
 
     def __init__(self, context: RepositoryContext) -> None:
         self._context = context
 
     def initialize(self) -> SchemaEpochReport:
-        """Create/resume epoch v2, or fully validate an existing READY epoch."""
+        """Create/resume epoch v3, or fully validate an existing READY epoch."""
 
         resolved, _ = self._resolve_provider()
         with self._context.SQLConnector() as connector:
@@ -79,7 +79,7 @@ class VNextSchemaAdmin:
         self,
     ) -> tuple[SchemaEpochProvider, SchemaEpochDefinition]:
         # Keep the generated multi-thousand-object artifact off ordinary
-        # production facade imports; only explicit epoch-v2 administration
+        # production facade imports; only explicit epoch-v3 administration
         # loads and validates it.  This is intentionally not an injection seam:
         # the production administrator accepts only the wheel-owned provider.
         from .vnext_schema_provider import GeneratedVNextSchemaProvider
@@ -122,7 +122,7 @@ class VNextSchemaAdmin:
     ) -> SchemaEpochReadiness:
         if not connector.check_table_exists(SCHEMA_EPOCH_CONTROL_TABLE):
             raise SchemaEpochAdmissionError(
-                "Schema epoch v2 is not initialized: its control table is missing"
+                "Schema epoch v3 is not initialized: its control table is missing"
             )
         try:
             rows = connector.fetch_all("""
@@ -134,32 +134,32 @@ class VNextSchemaAdmin:
                 """)
         except Exception as error:
             raise SchemaEpochValidationError(
-                "Schema epoch v2 readiness marker is unreadable"
+                "Schema epoch v3 readiness marker is unreadable"
             ) from error
         if len(rows) != 1 or len(rows[0]) != 6:
             raise SchemaEpochAdmissionError(
-                "Schema epoch v2 readiness requires exactly one control row"
+                "Schema epoch v3 readiness requires exactly one control row"
             )
         epoch, schema_version, state, manifest, started_at, ready_at = rows[0]
         if not isinstance(epoch, int) or isinstance(epoch, bool):
-            raise SchemaEpochValidationError("Schema epoch v2 epoch is invalid")
+            raise SchemaEpochValidationError("Schema epoch v3 epoch is invalid")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool):
             raise SchemaEpochValidationError(
-                "Schema epoch v2 schema version is invalid"
+                "Schema epoch v3 schema version is invalid"
             )
         if epoch != definition.epoch or schema_version != definition.schema_version:
             raise SchemaEpochAdmissionError(
-                "Schema epoch v2 marker does not match the expected epoch/version"
+                "Schema epoch v3 marker does not match the expected epoch/version"
             )
         if state != "READY":
             raise SchemaEpochAdmissionError(
-                f"Schema epoch v2 is not READY (state={state!r})"
+                f"Schema epoch v3 is not READY (state={state!r})"
             )
         if not isinstance(manifest, (bytes, bytearray)) or bytes(
             manifest
         ) != bytes.fromhex(definition.manifest_sha256):
             raise SchemaEpochAdmissionError(
-                "Schema epoch v2 marker does not match the expected manifest"
+                "Schema epoch v3 marker does not match the expected manifest"
             )
         if (
             not isinstance(started_at, int)
@@ -170,7 +170,7 @@ class VNextSchemaAdmin:
             or ready_at < started_at
         ):
             raise SchemaEpochValidationError(
-                "Schema epoch v2 READY timestamps are invalid"
+                "Schema epoch v3 READY timestamps are invalid"
             )
         return SchemaEpochReadiness(
             epoch=epoch,

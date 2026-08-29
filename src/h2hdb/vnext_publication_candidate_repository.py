@@ -1102,6 +1102,9 @@ class PublicationCandidateRepository:
             work,
             authority,
             publication_count=plan.publication_count,
+            artifact_count=(
+                plan.publication_count if authority.candidate.artifacts_required else 0
+            ),
             now=now,
         )
         for child in rows:
@@ -2722,24 +2725,31 @@ def _ensure_reserved_catalog_revision(
     authority: _MutationAuthority,
     *,
     publication_count: int,
+    artifact_count: int,
     now: int,
 ) -> None:
     count = require_int63(publication_count, field="catalog revision publication_count")
+    artifacts = require_int63(artifact_count, field="catalog revision artifact_count")
+    if artifacts > count:
+        raise PublicationCandidateConflictError(
+            "catalog revision artifact count exceeds publication count"
+        )
     timestamp = require_int63(now, field="catalog revision descriptor now")
     if timestamp < authority.candidate.created_at:
         raise PublicationCandidateNotReadyError(
             "catalog revision descriptor timestamp precedes its candidate"
         )
     row = work.connector.fetch_one(
-        "SELECT revision, publication_count "
+        "SELECT revision, publication_count, artifact_count "
         f"FROM {_CATALOG_REVISION_DESCRIPTOR_TABLE} WHERE revision = %s",
         (authority.candidate.reserved_revision,),
     )
     if row:
         if (
-            len(row) != 2
+            len(row) != 3
             or row[0] != authority.candidate.reserved_revision
             or row[1] != count
+            or row[2] != artifacts
         ):
             raise PublicationCandidateConflictError(
                 "reserved catalog revision differs from selection authority"
@@ -2747,8 +2757,8 @@ def _ensure_reserved_catalog_revision(
         return
     work.connector.execute(
         f"INSERT INTO {_CATALOG_REVISION_DESCRIPTOR_TABLE} "
-        "(revision, publication_count) VALUES (%s, %s)",
-        (authority.candidate.reserved_revision, count),
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
+        (authority.candidate.reserved_revision, count, artifacts),
     )
 
 

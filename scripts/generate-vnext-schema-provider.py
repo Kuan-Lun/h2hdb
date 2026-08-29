@@ -49,7 +49,7 @@ def _ddl_identifier(value: str) -> str:
     return f"{value[:50]}_{hashlib.sha256(encoded).hexdigest()[:12]}"
 
 
-EPOCH = 2
+EPOCH = 3
 SCHEMA_VERSION = 1
 CONTROL_RELATION = "schema_epoch_control"
 CONTROL_TABLE = "h2hdb_schema_epoch"
@@ -2073,7 +2073,7 @@ def _render_publication_receipt_view(
         "CASE WHEN finalized."
         f"{q(_column_name(finalization, 'receipt_id'))} IS NULL THEN "
         f"{literal('DB_COMMITTED')} ELSE "
-        f"{literal('PROJECTION_FINALIZED')} END"
+        f"{literal('PUBLISHED')} END"
     )
     finalized_at_expression = (
         "CASE WHEN finalized."

@@ -2,8 +2,8 @@
 
 The public facade delegates one ``issue -> prepare -> commit`` step at a time
 to :class:`VNextIngestPublication`.  Issue and commit calls own fresh, short
-database transactions.  Rendering, storage protection/release, and current
-projection work happen only after the issuing transaction has ended.
+database transactions.  Rendering, storage protection/release, and library
+activation work happen only after the issuing transaction has ended.
 
 The caller never supplies a stage, cursor, count, digest, batch key, or
 publication identity.  The next action is reconstructed from sealed database
@@ -15,9 +15,9 @@ lease expiry, so the commit side accepts a renewed copy of the same authority.
 from __future__ import annotations
 
 __all__ = [
-    "CurrentProjectionCheckpoint",
-    "CurrentProjectionStatus",
-    "VNextCurrentProjectionAdapter",
+    "LibraryActivationCheckpoint",
+    "LibraryActivationStatus",
+    "VNextLibraryActivationAdapter",
     "VNextIngestPublication",
     "VNextIssuedPublicationStep",
     "VNextPreparedPublicationStep",
@@ -35,11 +35,12 @@ from . import vnext_identity as identity
 from .domain import (
     ArtifactReleaseStorageEvidence,
     ArtifactStorageEvidence,
-    VNextCurrentProjectionItem,
     VNextIngestAdvanceResult,
     VNextIngestPhase,
     VNextIngestSession,
+    VNextLibraryActivationItem,
     VNextResolvedIngestPolicy,
+    artifact_storage_key,
 )
 from .ports import ArtifactReleaseAdapter, ArtifactStorageAdapter
 from .repository import RepositoryContext
@@ -81,10 +82,6 @@ from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
 )
-from .vnext_current_projection_repository import (
-    CurrentProjectionArtifactItem,
-    CurrentProjectionArtifactRepository,
-)
 from .vnext_domains import (
     require_bounded_bytes,
     require_digest32,
@@ -98,6 +95,10 @@ from .vnext_download_ingest_repository import (
     HandoffKind,
 )
 from .vnext_ingest_fence_repository import IngestTurn
+from .vnext_library_activation_repository import (
+    LibraryActivationArtifactItem,
+    LibraryActivationArtifactRepository,
+)
 from .vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
@@ -116,6 +117,7 @@ from .vnext_publication_candidate_repository import (
     PublicationCatalogProjectionPlan,
 )
 from .vnext_publication_finalization_repository import (
+    _PRELOCKED_GATE_CAPABILITY,
     PublicationFinalizationAcknowledgement,
     PublicationFinalizationPage,
     PublicationFinalizationRepository,
@@ -154,60 +156,76 @@ def _now_microseconds() -> int:
     return time_ns() // 1_000
 
 
-class CurrentProjectionStatus(StrEnum):
-    """Durable state owned by the current-projection adapter."""
+class LibraryActivationStatus(StrEnum):
+    """Durable state owned by the library-activation adapter."""
 
     SPOOL = "SPOOL"
     RECONCILE = "RECONCILE"
+    READY = "READY"
     COMPLETE = "COMPLETE"
 
 
 @dataclass(frozen=True, slots=True)
-class CurrentProjectionCheckpoint:
+class LibraryActivationCheckpoint:
     """Adapter-owned restart checkpoint; its cursor is never caller input."""
 
     revision: int
     receipt_id: bytes
-    status: CurrentProjectionStatus
-    last_publication_key: bytes | None
+    status: LibraryActivationStatus
+    cursor: bytes | None
 
     def __post_init__(self) -> None:
         require_positive_int63(
             self.revision,
-            field="current projection adapter revision",
+            field="library activation adapter revision",
         )
         require_uuid16(
             self.receipt_id,
-            field="current projection adapter receipt_id",
+            field="library activation adapter receipt_id",
         )
-        if not isinstance(self.status, CurrentProjectionStatus):
-            raise TypeError("current projection status is not registered")
-        cursor = self.last_publication_key
+        if not isinstance(self.status, LibraryActivationStatus):
+            raise TypeError("library activation status is not registered")
+        cursor = self.cursor
         if cursor is not None:
-            require_digest32(cursor, field="current projection adapter cursor")
-        if self.status is not CurrentProjectionStatus.SPOOL and cursor is not None:
-            raise ValueError("only an open projection spool may expose a cursor")
+            require_digest32(cursor, field="library activation adapter cursor")
+        if (
+            self.status
+            in {
+                LibraryActivationStatus.READY,
+                LibraryActivationStatus.COMPLETE,
+            }
+            and cursor is not None
+        ):
+            raise ValueError("a terminal activation checkpoint cannot expose a cursor")
 
 
 @runtime_checkable
-class VNextCurrentProjectionAdapter(Protocol):
-    """Neutral crash-safe current-projection port consumed by core."""
+class VNextLibraryActivationAdapter(Protocol):
+    """Neutral crash-safe stable-library activation port consumed by core."""
 
     def begin(
         self,
         revision: int,
         receipt_id: bytes,
-    ) -> CurrentProjectionCheckpoint: ...
+    ) -> LibraryActivationCheckpoint: ...
 
-    def append_page(
+    def activate_page(
         self,
         revision: int,
-        items: Sequence[VNextCurrentProjectionItem],
+        items: Sequence[VNextLibraryActivationItem],
     ) -> None: ...
 
     def seal(self, revision: int) -> None: ...
 
-    def reconcile(self, revision: int) -> None: ...
+    def reconcile_page(
+        self,
+        revision: int,
+        receipt_id: bytes,
+        *,
+        limit: int,
+    ) -> LibraryActivationCheckpoint: ...
+
+    def complete(self, revision: int, receipt_id: bytes) -> None: ...
 
 
 class _Action(StrEnum):
@@ -234,7 +252,7 @@ class _Action(StrEnum):
     VALIDATE_REMOVED = "VALIDATE_REMOVED"
     VALIDATE_DUPLICATE = "VALIDATE_DUPLICATE"
     COMMIT_PUBLICATION = "COMMIT_PUBLICATION"
-    CURRENT_PROJECTION = "CURRENT_PROJECTION"
+    LIBRARY_ACTIVATION = "LIBRARY_ACTIVATION"
     FINALIZE = "FINALIZE"
     COMPLETE = "COMPLETE"
     CANONICAL_ALLOCATE = "CANONICAL_ALLOCATE"
@@ -285,11 +303,11 @@ class _ArtifactPrepared:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProjectionWork:
+class _LibraryActivationWork:
     receipt_id: bytes
     revision: int
-    checkpoint: CurrentProjectionCheckpoint | None = None
-    items: tuple[VNextCurrentProjectionItem, ...] | None = None
+    checkpoint: LibraryActivationCheckpoint | None = None
+    items: tuple[VNextLibraryActivationItem, ...] | None = None
     terminal: bool = False
 
 
@@ -301,9 +319,9 @@ class _CanonicalWork:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProjectionPrepared:
+class _LibraryActivationPrepared:
     receipt_id: bytes
-    checkpoint: CurrentProjectionCheckpoint | None
+    checkpoint: LibraryActivationCheckpoint | None
     processed_rows: int
     terminal_page: bool
     ready_for_finalization: bool
@@ -385,8 +403,8 @@ class VNextIngestPublication:
         "__backend",
         "__clock",
         "__context",
-        "__projection_cursors",
-        "__projection_ready",
+        "__activation_checkpoints",
+        "__activation_ready",
     )
 
     def __init__(
@@ -403,9 +421,9 @@ class VNextIngestPublication:
         self.__backend = context.sql_type
         self.__clock = clock
         # Disposable hints only.  A new process recovers both from the durable
-        # projection adapter before it performs any irreversible work.
-        self.__projection_cursors: dict[bytes, CurrentProjectionCheckpoint] = {}
-        self.__projection_ready: set[bytes] = set()
+        # library adapter before it performs any irreversible work.
+        self.__activation_checkpoints: dict[bytes, LibraryActivationCheckpoint] = {}
+        self.__activation_ready: set[bytes] = set()
 
     def issue_step(
         self,
@@ -430,18 +448,18 @@ class VNextIngestPublication:
                     now=now,
                 )
 
-        if action is _Action.CURRENT_PROJECTION:
-            projection = cast(_ProjectionWork, payload)
-            if projection.receipt_id in self.__projection_ready:
+        if action is _Action.LIBRARY_ACTIVATION:
+            activation = cast(_LibraryActivationWork, payload)
+            if activation.receipt_id in self.__activation_ready:
                 action, payload = self.__issue_finalization(
                     gate=gate,
-                    receipt_id=projection.receipt_id,
+                    receipt_id=activation.receipt_id,
                     now=now,
                 )
             else:
-                checkpoint = self.__projection_cursors.get(projection.receipt_id)
+                checkpoint = self.__activation_checkpoints.get(activation.receipt_id)
                 if checkpoint is not None:
-                    payload = replace(projection, checkpoint=checkpoint)
+                    payload = replace(activation, checkpoint=checkpoint)
 
         return VNextIssuedPublicationStep(
             action=action,
@@ -456,12 +474,12 @@ class VNextIngestPublication:
         *,
         artifact_adapters: Mapping[bytes, ArtifactStorageAdapter],
         finalization_adapters: Mapping[bytes, ArtifactReleaseAdapter],
-        current_projection: VNextCurrentProjectionAdapter,
+        library_activation: VNextLibraryActivationAdapter,
     ) -> VNextPreparedPublicationStep:
         """Prepare local work; no fenced database write occurs here."""
 
         exact = _require_issued(issued)
-        _require_projection_adapter(current_projection)
+        _require_library_activation_adapter(library_activation)
         issued_session = exact._session
         action = exact._action
         payload: object = exact._payload
@@ -526,21 +544,16 @@ class VNextIngestPublication:
                 cast(_ArtifactWork, payload),
                 artifact_adapters,
             )
-            try:
-                if prepared_artifact.intent is None:
-                    payload, action = self.__prepare_artifact_action(
-                        issued_session,
-                        prepared_artifact,
-                    )
-                else:
-                    payload = prepared_artifact
-            except BaseException:
-                prepared_artifact.receipt.close()
-                raise
-        elif action is _Action.CURRENT_PROJECTION:
-            payload = self.__prepare_current_projection(
-                cast(_ProjectionWork, payload),
-                current_projection,
+            payload = prepared_artifact
+        elif action is _Action.LIBRARY_ACTIVATION:
+            payload = self.__prepare_library_activation(
+                cast(_LibraryActivationWork, payload),
+                library_activation,
+            )
+        elif action is _Action.COMPLETE:
+            self.__complete_library_activation(
+                cast(_Root, payload),
+                library_activation,
             )
         elif action is _Action.FINALIZE:
             payload = _release_finalization_page(
@@ -579,14 +592,14 @@ class VNextIngestPublication:
                         turn=coordinated.ingest_turn,
                         now=now,
                     )
-            if exact._action is _Action.CURRENT_PROJECTION:
-                projection = cast(_ProjectionPrepared, exact._payload)
-                if projection.checkpoint is not None:
-                    self.__projection_cursors[projection.receipt_id] = (
-                        projection.checkpoint
+            if exact._action is _Action.LIBRARY_ACTIVATION:
+                activation = cast(_LibraryActivationPrepared, exact._payload)
+                if activation.checkpoint is not None:
+                    self.__activation_checkpoints[activation.receipt_id] = (
+                        activation.checkpoint
                     )
-                if projection.ready_for_finalization:
-                    self.__projection_ready.add(projection.receipt_id)
+                if activation.ready_for_finalization:
+                    self.__activation_ready.add(activation.receipt_id)
             elif exact._action is _Action.FINALIZE and bool(
                 getattr(outcome, "terminal", False)
             ):
@@ -594,7 +607,7 @@ class VNextIngestPublication:
                     PublicationFinalizationAcknowledgement,
                     exact._payload,
                 )
-                self.__projection_ready.discard(acknowledgement.page.receipt_id)
+                self.__activation_ready.discard(acknowledgement.page.receipt_id)
             return _advance_result(exact._action, outcome)
         finally:
             exact.close()
@@ -619,24 +632,6 @@ class VNextIngestPublication:
                 )
         if selected is None:
             return replace(fallback, payload=plan), fallback_action
-        return selected
-
-    def __prepare_artifact_action(
-        self,
-        session: VNextIngestSession,
-        prepared: _ArtifactPrepared,
-    ) -> tuple[object, _Action]:
-        with self.__context.SQLConnector() as connector:
-            with connector.read_transaction():
-                selected = _next_canonical_work(
-                    connector,
-                    backend=self.__backend,
-                    session=session,
-                    plans=(prepared.receipt.locator_plan,),
-                    owner=prepared.receipt,
-                )
-        if selected is None:
-            return prepared, _Action.PREPARE_ARTIFACT
         return selected
 
     def __prepare_artifact(
@@ -684,74 +679,117 @@ class VNextIngestPublication:
             receipt.close()
             raise
 
-    def __prepare_current_projection(
+    def __prepare_library_activation(
         self,
-        work: _ProjectionWork,
-        adapter: VNextCurrentProjectionAdapter,
-    ) -> _ProjectionPrepared:
-        current = _require_projection_checkpoint(
+        work: _LibraryActivationWork,
+        adapter: VNextLibraryActivationAdapter,
+    ) -> _LibraryActivationPrepared:
+        current = _require_library_activation_checkpoint(
             adapter.begin(work.revision, work.receipt_id),
             revision=work.revision,
             receipt_id=work.receipt_id,
         )
         checkpoint = work.checkpoint
         if checkpoint is None:
-            if current.status is CurrentProjectionStatus.SPOOL:
-                return _ProjectionPrepared(
+            if current.status is LibraryActivationStatus.SPOOL:
+                return _LibraryActivationPrepared(
                     work.receipt_id,
                     current,
                     0,
                     False,
                     False,
                 )
-            if current.status is CurrentProjectionStatus.RECONCILE:
-                adapter.reconcile(work.revision)
-                return _ProjectionPrepared(
+            if current.status is LibraryActivationStatus.RECONCILE:
+                reconciled = _require_library_activation_checkpoint(
+                    adapter.reconcile_page(
+                        work.revision,
+                        work.receipt_id,
+                        limit=_MAX_PAGE_ROWS,
+                    ),
+                    revision=work.revision,
+                    receipt_id=work.receipt_id,
+                )
+                if reconciled.status not in {
+                    LibraryActivationStatus.RECONCILE,
+                    LibraryActivationStatus.READY,
+                }:
+                    raise RuntimeError(
+                        "library reconcile page returned an invalid state"
+                    )
+                return _LibraryActivationPrepared(
+                    work.receipt_id,
+                    None,
+                    0,
+                    reconciled.status is LibraryActivationStatus.READY,
+                    reconciled.status is LibraryActivationStatus.READY,
+                )
+            if current.status is LibraryActivationStatus.READY:
+                return _LibraryActivationPrepared(
                     work.receipt_id,
                     None,
                     0,
                     True,
-                    False,
+                    True,
                 )
-            return _ProjectionPrepared(
+            return _LibraryActivationPrepared(
                 work.receipt_id,
                 None,
                 0,
                 True,
                 True,
             )
-        exact = _require_projection_checkpoint(
+        exact = _require_library_activation_checkpoint(
             checkpoint,
             revision=work.revision,
             receipt_id=work.receipt_id,
         )
         if current != exact:
             raise RuntimeError(
-                "current projection checkpoint advanced after page issue"
+                "library activation checkpoint advanced after page issue"
             )
-        if exact.status is not CurrentProjectionStatus.SPOOL:
-            raise RuntimeError("issued current projection page is not a spool page")
+        if exact.status is not LibraryActivationStatus.SPOOL:
+            raise RuntimeError("issued library activation page is not a spool page")
         with self.__context.SQLConnector() as connector:
-            page = CurrentProjectionArtifactRepository.list_page(
+            page = LibraryActivationArtifactRepository.list_page(
                 connector,
                 receipt_id=work.receipt_id,
-                cursor=exact.last_publication_key,
+                cursor=exact.cursor,
                 page_limit=_MAX_PAGE_ROWS,
             )
-        items = tuple(_to_projection_item(item) for item in page.items)
-        adapter.append_page(work.revision, items)
+        items = tuple(_to_library_activation_item(item) for item in page.items)
+        adapter.activate_page(work.revision, items)
         if page.terminal:
             adapter.seal(work.revision)
         # Adapter progress is durable even if commit response is lost.  Force
         # the next turn to recover its cursor from the adapter.
-        self.__projection_cursors.pop(work.receipt_id, None)
-        return _ProjectionPrepared(
+        self.__activation_checkpoints.pop(work.receipt_id, None)
+        return _LibraryActivationPrepared(
             work.receipt_id,
             None,
             len(items),
             page.terminal,
             False,
         )
+
+    @staticmethod
+    def __complete_library_activation(
+        root: _Root,
+        adapter: VNextLibraryActivationAdapter,
+    ) -> None:
+        if root.receipt_id is None or root.revision is None:
+            raise RuntimeError("completed publication lacks activation identity")
+        checkpoint = _require_library_activation_checkpoint(
+            adapter.begin(root.revision, root.receipt_id),
+            revision=root.revision,
+            receipt_id=root.receipt_id,
+        )
+        if checkpoint.status is LibraryActivationStatus.READY:
+            adapter.complete(root.revision, root.receipt_id)
+            return
+        if checkpoint.status is not LibraryActivationStatus.COMPLETE:
+            raise RuntimeError(
+                "published library activation is neither READY nor COMPLETE"
+            )
 
     def __issue_finalization(
         self,
@@ -801,7 +839,6 @@ def _render_prepared_artifact(
         )
     archive = cast(BinaryIO, TemporaryFile(mode="w+b"))
     archive_owned = True
-    locator_plan: CanonicalValueUploadPlan | None = None
     try:
         _write_canonical_archive(archive_plan, archive, audit, adapter)
         artifact_sha256, size_bytes = _hash_stream(archive)
@@ -811,34 +848,22 @@ def _render_prepared_artifact(
             audit,
             expected_size=size_bytes,
         )
-        components = identity.artifact_locator_components(artifact_sha256)
-        locator_plan = CanonicalValueUploadPlan.from_parts(
-            "artifact_locator_bytes_v1",
-            identity.iter_artifact_locator_payload(components),
-        )
-        locator_sha256 = identity.artifact_locator_digest(components)
-        if locator_plan.value_sha256 != locator_sha256:
-            raise ArtifactPreparationConflictError(
-                "rendered artifact locator plan has the wrong digest"
-            )
+        storage_key = artifact_storage_key(authority.gid)
+        storage_key_sha256 = identity.artifact_storage_key_digest(storage_key.segments)
         receipt = ArtifactPreparationReceipt(
             audit=audit,
             artifact_sha256=artifact_sha256,
             size_bytes=size_bytes,
-            locator_components=components,
-            artifact_locator_sha256=locator_sha256,
+            storage_key=storage_key,
+            artifact_storage_key_sha256=storage_key_sha256,
             storage_codec_version=authority.storage_codec[0],
-            locator_plan=locator_plan,
             archive=archive,
             _capability=_PREPARATION_RECEIPT_TOKEN,
         )
-        locator_plan = None
         archive_owned = False
         return receipt
     finally:
         archive_plan.close()
-        if locator_plan is not None:
-            locator_plan.close()
         if archive_owned:
             archive.close()
 
@@ -857,8 +882,8 @@ def _protect_prepared_artifact_local(
         authority.publication_key,
         receipt.artifact_sha256,
         receipt.size_bytes,
-        receipt.locator_components,
-        receipt.artifact_locator_sha256,
+        receipt.storage_key,
+        receipt.artifact_storage_key_sha256,
         receipt.storage_codec_version,
     )
     actual = (
@@ -866,8 +891,8 @@ def _protect_prepared_artifact_local(
         intent.publication_key,
         intent.artifact_sha256,
         intent.size_bytes,
-        intent.locator_components,
-        intent.artifact_locator_sha256,
+        intent.storage_key,
+        intent.artifact_storage_key_sha256,
         intent.storage_codec_version,
     )
     if intent.state != "PENDING" or actual != expected:
@@ -899,7 +924,9 @@ def _protect_prepared_artifact_local(
     receipt._archive.seek(0)
     evidence = adapter.protect(
         receipt._archive,
-        intent.locator_components,
+        intent.storage_key,
+        intent.artifact_sha256,
+        intent.size_bytes,
         intent.protection_token,
     )
     if type(evidence) is not ArtifactStorageEvidence or not evidence.stored:
@@ -920,17 +947,19 @@ def _protect_prepared_artifact_local(
 
 def _intent_from_durable_family(
     family: PreparedArtifactFamily,
+    *,
+    gid: int,
 ) -> ArtifactProtectionIntent:
     family.__post_init__()
     token = identity.decode_artifact_protection_token(family.protection_token)
-    components = identity.artifact_locator_components(family.artifact_sha256)
+    storage_key = artifact_storage_key(gid)
     return ArtifactProtectionIntent(
         family.candidate_id,
         family.publication_key,
         family.artifact_sha256,
         token.size_bytes,
-        components,
-        token.artifact_locator_sha256,
+        storage_key,
+        token.artifact_storage_key_sha256,
         family.storage_codec_version,
         family.storage_generation,
         family.protection_token,
@@ -940,15 +969,15 @@ def _intent_from_durable_family(
     )
 
 
-def _to_projection_item(
-    item: CurrentProjectionArtifactItem,
-) -> VNextCurrentProjectionItem:
-    return VNextCurrentProjectionItem(
+def _to_library_activation_item(
+    item: LibraryActivationArtifactItem,
+) -> VNextLibraryActivationItem:
+    return VNextLibraryActivationItem(
         item.publication_key,
         item.gid,
         item.source_gallery_name,
         item.upload_time,
-        item.artifact_locator_components,
+        item.storage_key,
         item.artifact_sha256,
         item.size_bytes,
     )
@@ -963,7 +992,9 @@ def _release_finalization_page(
     resolved = _resolve_adapters(adapters, page.items)
     for item in page.items:
         evidence = resolved[item.adapter_id].release(
-            item.locator_components,
+            item.storage_key,
+            item.artifact_sha256,
+            item.size_bytes,
             item.protection_token,
         )
         if (
@@ -985,13 +1016,13 @@ def _issue_database_action(
     now: int,
 ) -> tuple[_Action, object]:
     if root.receipt_id is not None:
-        if root.receipt_state == "PROJECTION_FINALIZED":
+        if root.receipt_state == "PUBLISHED":
             return _Action.COMPLETE, root
         if root.receipt_state != "DB_COMMITTED" or root.revision is None:
             raise RuntimeError("publication receipt has an invalid durable state")
         return (
-            _Action.CURRENT_PROJECTION,
-            _ProjectionWork(
+            _Action.LIBRARY_ACTIVATION,
+            _LibraryActivationWork(
                 root.receipt_id,
                 root.revision,
             ),
@@ -1167,7 +1198,11 @@ def _issue_artifact_or_operational(
             publication_key=publication,
             backend=work.backend,
         )
-        intent = None if family is None else _intent_from_durable_family(family)
+        intent = (
+            None
+            if family is None
+            else _intent_from_durable_family(family, gid=authority.gid)
+        )
         if intent is not None and intent.state != "PENDING":
             raise RuntimeError("next artifact durable intent is not PENDING")
         return _Action.PREPARE_ARTIFACT, _ArtifactWork(
@@ -1206,7 +1241,7 @@ def _commit_action(
     turn: IngestTurn,
     now: int,
 ) -> object:
-    if action is _Action.CURRENT_PROJECTION:
+    if action is _Action.LIBRARY_ACTIVATION:
         _resume_authority(work, session, now)
         return payload
     if action is _Action.COMPLETE:
@@ -1344,12 +1379,32 @@ def _commit_action(
         acknowledgement = cast(PublicationFinalizationAcknowledgement, payload)
         renewed_page = _renew_finalization_page(acknowledgement.page, session)
         renewed = replace(acknowledgement, page=renewed_page)
-        return PublicationFinalizationRepository.commit_page(
+        activation = (
+            PublicationRepository.prepare_finalized_commit_activation(
+                work,
+                gate_lease=gate,
+                ingest_turn=turn,
+                receipt_id=renewed_page.receipt_id,
+                now=now,
+            )
+            if renewed_page.terminal
+            else None
+        )
+        receipt = PublicationFinalizationRepository.commit_page(
             work,
             acknowledgement=renewed,
             now=now,
+            _prelocked_gate_capability=(
+                _PRELOCKED_GATE_CAPABILITY if activation is not None else None
+            ),
         )
-    if isinstance(payload, _ProjectionPrepared):
+        if receipt.terminal and activation is not None:
+            PublicationRepository.activate_finalized_commit(
+                work,
+                authority=activation,
+            )
+        return receipt
+    if isinstance(payload, _LibraryActivationPrepared):
         return _resume_authority(work, session, now)
     raise RuntimeError(f"unsupported publication action {action.value}")
 
@@ -1452,7 +1507,10 @@ def _load_root(
         "SELECT working.candidate_id FROM operational_catalog_working_candidates "
         "AS working JOIN catalog_publication_candidates AS candidate "
         "ON candidate.candidate_id = working.candidate_id "
-        "WHERE working.slot = 1 AND candidate.analysis_id = %s",
+        "LEFT JOIN catalog_publication_commits AS committed "
+        "ON committed.candidate_id = candidate.candidate_id "
+        "WHERE working.slot = 1 AND candidate.analysis_id = %s "
+        "AND committed.candidate_id IS NULL",
         (analysis_id,),
     )
     if candidate:
@@ -1863,26 +1921,26 @@ def _require_policy(policy: VNextResolvedIngestPolicy) -> None:
     policy.__post_init__()
 
 
-def _require_projection_adapter(
-    adapter: VNextCurrentProjectionAdapter,
+def _require_library_activation_adapter(
+    adapter: VNextLibraryActivationAdapter,
 ) -> None:
-    if not isinstance(adapter, VNextCurrentProjectionAdapter):
-        raise TypeError("current_projection must implement its neutral adapter port")
+    if not isinstance(adapter, VNextLibraryActivationAdapter):
+        raise TypeError("library_activation must implement its neutral adapter port")
 
 
-def _require_projection_checkpoint(
-    checkpoint: CurrentProjectionCheckpoint,
+def _require_library_activation_checkpoint(
+    checkpoint: LibraryActivationCheckpoint,
     *,
     revision: int | None = None,
     receipt_id: bytes | None = None,
-) -> CurrentProjectionCheckpoint:
-    if not isinstance(checkpoint, CurrentProjectionCheckpoint):
-        raise TypeError("current projection adapter returned a foreign checkpoint")
+) -> LibraryActivationCheckpoint:
+    if not isinstance(checkpoint, LibraryActivationCheckpoint):
+        raise TypeError("library activation adapter returned a foreign checkpoint")
     checkpoint.__post_init__()
     if revision is not None and checkpoint.revision != revision:
-        raise ValueError("current projection checkpoint belongs to another revision")
+        raise ValueError("library activation checkpoint belongs to another revision")
     if receipt_id is not None and checkpoint.receipt_id != receipt_id:
-        raise ValueError("current projection checkpoint belongs to another receipt")
+        raise ValueError("library activation checkpoint belongs to another receipt")
     return checkpoint
 
 
@@ -1925,7 +1983,7 @@ def _owned_resource(payload: object) -> object:
 def _advance_result(action: _Action, outcome: object) -> VNextIngestAdvanceResult:
     phase = (
         VNextIngestPhase.FINALIZATION
-        if action in {_Action.CURRENT_PROJECTION, _Action.FINALIZE, _Action.COMPLETE}
+        if action in {_Action.LIBRARY_ACTIVATION, _Action.FINALIZE, _Action.COMPLETE}
         else VNextIngestPhase.PUBLICATION
     )
     rows = 0
@@ -1935,10 +1993,8 @@ def _advance_result(action: _Action, outcome: object) -> VNextIngestAdvanceResul
         rows = outcome.row_count
     elif hasattr(outcome, "row_count"):
         rows = require_int63(getattr(outcome, "row_count"), field="publication rows")
-    elif isinstance(outcome, _ProjectionPrepared):
+    elif isinstance(outcome, _LibraryActivationPrepared):
         rows = outcome.processed_rows
-    if action is _Action.FINALIZE:
-        terminal = bool(getattr(outcome, "terminal", False))
     return VNextIngestAdvanceResult(phase, rows, terminal, replayed)
 
 

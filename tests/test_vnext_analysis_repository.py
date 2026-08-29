@@ -635,8 +635,8 @@ def _seed_published_commit(
         (candidate_id, analysis_id, revision, 1, 1, 0, committed_at - 1),
     )
     connector.execute(
-        "INSERT INTO catalog_revision_descriptors (revision, publication_count) "
-        "VALUES (%s, 0)",
+        "INSERT INTO catalog_revision_descriptors "
+        "(revision, publication_count, artifact_count) VALUES (%s, 0, 0)",
         (revision,),
     )
     connector.execute(

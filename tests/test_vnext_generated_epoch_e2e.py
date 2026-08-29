@@ -142,7 +142,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     admin = VNextDatabaseAdminFacade(config)
 
     initialized = admin.initialize()
-    assert initialized.epoch == ARTIFACT["epoch"] == 2
+    assert initialized.epoch == ARTIFACT["epoch"] == 3
     assert initialized.schema_version == ARTIFACT["schema_version"] == 1
     assert initialized.state == "READY"
     assert initialized.transitioned_to_ready
@@ -198,6 +198,18 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
                     "VALUES (%s, %s, %s, %s)",
                     (1, b"g" * 32, b"s" * 32, b"l" * 32),
                 )
+        for revision, publication_count, artifact_count in (
+            (0, 1, 1),
+            (1, 2, 1),
+        ):
+            with pytest.raises(DatabaseDuplicateKeyError):
+                with connector.transaction():
+                    connector.execute(
+                        "INSERT INTO catalog_revision_descriptors "
+                        "(revision, publication_count, artifact_count) "
+                        "VALUES (%s, %s, %s)",
+                        (revision, publication_count, artifact_count),
+                    )
 
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])

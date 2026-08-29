@@ -19,8 +19,8 @@ __all__ = [
     "ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION",
     "ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION",
     "ARTIFACT_SEMANTICS_CODEC_VERSION",
-    "ARTIFACT_LOCATOR_CODEC_VERSION",
-    "ARTIFACT_LOCATOR_MAXIMUM_BYTES",
+    "ARTIFACT_STORAGE_KEY_CODEC_VERSION",
+    "ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES",
     "ANALYSIS_STATE_COMPONENTS",
     "ANALYSIS_ALREADY_UPLOADED_MARKER",
     "EFFECTIVE_CONTENT_ENCODING_VERSION",
@@ -53,7 +53,7 @@ __all__ = [
     "FILESYSTEM_STAT_FINGERPRINT_BYTES",
     "CATALOG_SUMMARY_DIGEST_DOMAIN",
     "CATALOG_LANGUAGE_DIGEST_DOMAIN",
-    "ARTIFACT_LOCATOR_DIGEST_DOMAIN",
+    "ARTIFACT_STORAGE_KEY_DIGEST_DOMAIN",
     "ByteDomainError",
     "CanonicalIdentityCollisionError",
     "DigestFormatError",
@@ -112,8 +112,8 @@ __all__ = [
     "artifact_selected_digest",
     "artifact_semantics_digest",
     "artifact_source_manifest_digest",
-    "artifact_locator_digest",
-    "artifact_locator_components",
+    "artifact_storage_key_digest",
+    "artifact_storage_key_components",
     "analysis_candidate_has_already_uploaded",
     "count_analysis_title_scalars",
     "catalog_summary_digest",
@@ -133,9 +133,9 @@ __all__ = [
     "validate_source_relative_locator_parts",
     "decode_artifact_id",
     "decode_artifact_name",
-    "decode_artifact_locator",
+    "decode_artifact_storage_key",
     "decode_artifact_protection_token",
-    "iter_decode_artifact_locator",
+    "iter_decode_artifact_storage_key",
     "decode_source_root",
     "validate_source_root_parts",
     "decode_gallery_observation_page",
@@ -146,10 +146,10 @@ __all__ = [
     "digest_from_hex",
     "digest_to_hex",
     "encode_source_relative_locator",
-    "encode_artifact_locator",
+    "encode_artifact_storage_key",
     "encode_artifact_protection_token",
     "encode_artifact_producer_fingerprint",
-    "iter_artifact_locator_payload",
+    "iter_artifact_storage_key_payload",
     "iter_source_relative_locator_payload",
     "encode_source_root",
     "iter_source_root_payload",
@@ -247,8 +247,8 @@ ARTIFACT_POLICY_CODEC_VERSION = 2
 ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION = 1
 ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION = 1
 ARTIFACT_SEMANTICS_CODEC_VERSION = 1
-ARTIFACT_LOCATOR_CODEC_VERSION = 1
-ARTIFACT_LOCATOR_MAXIMUM_BYTES = 4096
+ARTIFACT_STORAGE_KEY_CODEC_VERSION = 1
+ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES = 4096
 ZIP_COMMENT_CODEC_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION = 1
 GALLERY_OBSERVATION_DESCRIPTOR_CODEC_VERSION = 1
@@ -294,7 +294,7 @@ ARTIFACT_SEMANTICS_DIGEST_DOMAIN = "artifact_semantics_v1"
 GALLERY_OBSERVATION_DIGEST_DOMAIN = "gallery_observation_v1"
 CATALOG_SUMMARY_DIGEST_DOMAIN = "catalog_summary_utf8_v1"
 CATALOG_LANGUAGE_DIGEST_DOMAIN = "catalog_language_utf8_v1"
-ARTIFACT_LOCATOR_DIGEST_DOMAIN = "artifact_locator_bytes_v1"
+ARTIFACT_STORAGE_KEY_DIGEST_DOMAIN = "artifact_storage_key_bytes_v1"
 CONTENT_FILE_ROLE = b"CONTENT"
 METADATA_FILE_ROLE = b"METADATA"
 METADATA_FILE_NAME = b"galleryinfo.txt"
@@ -314,6 +314,7 @@ _ARTIFACT_PRODUCER_EQUIVALENCE_PREFIX = (
 )
 _ARTIFACT_STORAGE_RECEIPT_PREFIX = b"h2hdb-vnext-artifact-storage-receipt\0"
 _ARTIFACT_PROTECTION_PREFIX = b"h2hdb-vnext-artifact-protection\0"
+_ARTIFACT_STORAGE_SHARD_PREFIX = b"h2hdb-media-gid-shard-v1\0"
 _ARTIFACT_SEMANTICS_PREFIX = b"h2hdb-vnext-artifact-semantics\0"
 _PUBLICATION_ID_PREFIX = b"urn:h2h:gallery:"
 _ARTIFACT_ID_PREFIX = b"urn:h2h:artifact:cbz:"
@@ -1315,7 +1316,7 @@ class ArtifactProtectionToken:
     candidate_id: bytes
     publication_key: bytes
     artifact_sha256: bytes
-    artifact_locator_sha256: bytes
+    artifact_storage_key_sha256: bytes
     receipt_id: bytes
     storage_generation: int
     size_bytes: int
@@ -1337,8 +1338,8 @@ class ArtifactProtectionToken:
         _require_digest(self.publication_key, field_name="publication_key")
         _require_digest(self.artifact_sha256, field_name="artifact_sha256")
         _require_digest(
-            self.artifact_locator_sha256,
-            field_name="artifact_locator_sha256",
+            self.artifact_storage_key_sha256,
+            field_name="artifact_storage_key_sha256",
         )
         receipt = _require_bytes(self.receipt_id, field_name="receipt_id")
         if len(receipt) != 16:
@@ -1349,7 +1350,7 @@ class ArtifactProtectionToken:
             candidate,
             self.publication_key,
             self.artifact_sha256,
-            self.artifact_locator_sha256,
+            self.artifact_storage_key_sha256,
             self.storage_generation,
             self.size_bytes,
         )
@@ -3423,42 +3424,52 @@ def source_relative_locator_digest(
     )
 
 
-def artifact_locator_components(artifact_sha256: bytes) -> tuple[str, str, str]:
-    """Derive the only registered managed-filesystem locator from artifact bytes."""
+def artifact_storage_key_components(gid: int) -> tuple[str, str, str, str]:
+    """Derive the stable v1 storage segments for one immutable gallery GID."""
 
-    digest = _require_digest(artifact_sha256, field_name="artifact_sha256")
-    lowerhex = digest.hex()
-    return ("sha256", lowerhex[:2], f"{lowerhex}.cbz")
-
-
-def encode_artifact_locator(
-    components: Sequence[str],
-    *,
-    codec_version: int = ARTIFACT_LOCATOR_CODEC_VERSION,
-) -> bytes:
-    """Materialize one small artifact locator for APIs, tests, and decoding.
-
-    Production canonical-value writers must use
-    :func:`iter_artifact_locator_payload`; this convenience helper deliberately
-    returns one bytes object and therefore is not a bounded-memory write path.
-    """
-
-    return b"".join(
-        iter_artifact_locator_payload(components, codec_version=codec_version)
+    exact_gid = _require_positive_int63(gid, field_name="artifact storage GID")
+    shard = sha256(
+        _ARTIFACT_STORAGE_SHARD_PREFIX + exact_gid.to_bytes(8, "big")
+    ).hexdigest()
+    return (
+        "hash-v1",
+        shard[:2],
+        shard[2],
+        artifact_name(exact_gid).decode("ascii"),
     )
 
 
-def iter_artifact_locator_payload(
+def encode_artifact_storage_key(
     components: Sequence[str],
     *,
-    codec_version: int = ARTIFACT_LOCATOR_CODEC_VERSION,
+    codec_version: int = ARTIFACT_STORAGE_KEY_CODEC_VERSION,
+) -> bytes:
+    """Materialize one small neutral storage key for APIs and tests.
+
+    Production canonical-value writers must use
+    :func:`iter_artifact_storage_key_payload`; this convenience helper returns
+    one bytes object and therefore is not a bounded-memory write path.
+    """
+
+    return b"".join(
+        iter_artifact_storage_key_payload(components, codec_version=codec_version)
+    )
+
+
+def iter_artifact_storage_key_payload(
+    components: Sequence[str],
+    *,
+    codec_version: int = ARTIFACT_STORAGE_KEY_CODEC_VERSION,
 ) -> Iterator[bytes]:
-    """Validate the complete bounded locator, then yield its exact pieces."""
+    """Validate the complete bounded storage key, then yield its pieces."""
 
-    yield from _artifact_locator_payload_parts(components, codec_version=codec_version)
+    yield from _artifact_storage_key_payload_parts(
+        components,
+        codec_version=codec_version,
+    )
 
 
-def _artifact_locator_payload_parts(
+def _artifact_storage_key_payload_parts(
     components: Sequence[str],
     *,
     codec_version: int,
@@ -3466,47 +3477,50 @@ def _artifact_locator_payload_parts(
 
     version = _require_registered_version(
         codec_version,
-        registered=ARTIFACT_LOCATOR_CODEC_VERSION,
-        field_name="artifact locator codec_version",
+        registered=ARTIFACT_STORAGE_KEY_CODEC_VERSION,
+        field_name="artifact storage key codec_version",
     )
     if isinstance(components, (str, bytes, bytearray)):
-        raise ByteDomainError("artifact locator components must be a segment sequence")
-    if not components:
-        raise ByteDomainError("artifact locator must contain a component")
-    if len(components) > _UINT32_MAX:
-        raise ByteDomainError("artifact locator has too many components")
-    if 8 + 5 * len(components) > ARTIFACT_LOCATOR_MAXIMUM_BYTES:
         raise ByteDomainError(
-            f"artifact locator exceeds {ARTIFACT_LOCATOR_MAXIMUM_BYTES} bytes"
+            "artifact storage key components must be a segment sequence"
+        )
+    if not components:
+        raise ByteDomainError("artifact storage key must contain a component")
+    if len(components) > _UINT32_MAX:
+        raise ByteDomainError("artifact storage key has too many components")
+    if 8 + 5 * len(components) > ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES:
+        raise ByteDomainError(
+            f"artifact storage key exceeds {ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES} bytes"
         )
     output = [version.to_bytes(4, "big"), len(components).to_bytes(4, "big")]
     byte_count = 8
     for component in components:
         encoded = _validate_utf8_leaf(
             component,
-            field_name="artifact locator component",
+            field_name="artifact storage key component",
             maximum_bytes=255,
         )
         byte_count += 4 + len(encoded)
-        if byte_count > ARTIFACT_LOCATOR_MAXIMUM_BYTES:
+        if byte_count > ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES:
             raise ByteDomainError(
-                f"artifact locator exceeds {ARTIFACT_LOCATOR_MAXIMUM_BYTES} bytes"
+                "artifact storage key exceeds "
+                f"{ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES} bytes"
             )
         output.extend((len(encoded).to_bytes(4, "big"), encoded))
     return tuple(output)
 
 
-def decode_artifact_locator(payload: bytes) -> tuple[str, ...]:
-    """Materialize one decoded locator (convenience/oracle API)."""
+def decode_artifact_storage_key(payload: bytes) -> tuple[str, ...]:
+    """Materialize one decoded storage key (convenience/oracle API)."""
 
-    return tuple(iter_decode_artifact_locator((payload,)))
+    return tuple(iter_decode_artifact_storage_key((payload,)))
 
 
 def artifact_storage_receipt_id(
     candidate_id: bytes,
     publication_key_value: bytes,
     artifact_sha256: bytes,
-    artifact_locator_sha256: bytes,
+    artifact_storage_key_sha256: bytes,
     storage_generation: int,
     size_bytes: int,
 ) -> bytes:
@@ -3520,9 +3534,9 @@ def artifact_storage_receipt_id(
         field_name="publication_key",
     )
     artifact = _require_digest(artifact_sha256, field_name="artifact_sha256")
-    locator = _require_digest(
-        artifact_locator_sha256,
-        field_name="artifact_locator_sha256",
+    storage_key = _require_digest(
+        artifact_storage_key_sha256,
+        field_name="artifact_storage_key_sha256",
     )
     generation = _require_int63(
         storage_generation,
@@ -3536,7 +3550,7 @@ def artifact_storage_receipt_id(
                 candidate,
                 publication,
                 artifact,
-                locator,
+                storage_key,
                 generation.to_bytes(8, "big"),
                 size.to_bytes(8, "big"),
             )
@@ -3549,7 +3563,7 @@ def encode_artifact_protection_token(
     candidate_id: bytes,
     publication_key_value: bytes,
     artifact_sha256: bytes,
-    artifact_locator_sha256: bytes,
+    artifact_storage_key_sha256: bytes,
     storage_generation: int,
     size_bytes: int,
     *,
@@ -3561,7 +3575,7 @@ def encode_artifact_protection_token(
         candidate_id,
         publication_key_value,
         artifact_sha256,
-        artifact_locator_sha256,
+        artifact_storage_key_sha256,
         storage_generation,
         size_bytes,
     )
@@ -3571,7 +3585,7 @@ def encode_artifact_protection_token(
         candidate_id=candidate_id,
         publication_key=publication_key_value,
         artifact_sha256=artifact_sha256,
-        artifact_locator_sha256=artifact_locator_sha256,
+        artifact_storage_key_sha256=artifact_storage_key_sha256,
         receipt_id=receipt,
         storage_generation=storage_generation,
         size_bytes=size_bytes,
@@ -3584,7 +3598,7 @@ def encode_artifact_protection_token(
             token.candidate_id,
             token.publication_key,
             token.artifact_sha256,
-            token.artifact_locator_sha256,
+            token.artifact_storage_key_sha256,
             token.receipt_id,
             token.storage_generation.to_bytes(8, "big"),
             token.size_bytes.to_bytes(8, "big"),
@@ -3619,7 +3633,7 @@ def decode_artifact_protection_token(payload: bytes) -> ArtifactProtectionToken:
         candidate_id=take(16),
         publication_key=take(32),
         artifact_sha256=take(32),
-        artifact_locator_sha256=take(32),
+        artifact_storage_key_sha256=take(32),
         receipt_id=take(16),
         storage_generation=int.from_bytes(take(8), "big"),
         size_bytes=int.from_bytes(take(8), "big"),
@@ -3629,22 +3643,23 @@ def decode_artifact_protection_token(payload: bytes) -> ArtifactProtectionToken:
     return token
 
 
-def iter_decode_artifact_locator(parts: Iterable[bytes]) -> Iterator[str]:
+def iter_decode_artifact_storage_key(parts: Iterable[bytes]) -> Iterator[str]:
     """Validate exact EOF within the v1 cap before exposing any component."""
 
     payload = bytearray()
     for part in parts:
-        exact = _require_bytes(part, field_name="artifact locator part")
-        if len(payload) + len(exact) > ARTIFACT_LOCATOR_MAXIMUM_BYTES:
+        exact = _require_bytes(part, field_name="artifact storage key part")
+        if len(payload) + len(exact) > ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES:
             raise ByteDomainError(
-                f"artifact locator exceeds {ARTIFACT_LOCATOR_MAXIMUM_BYTES} bytes"
+                "artifact storage key exceeds "
+                f"{ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES} bytes"
             )
         payload.extend(exact)
-    yield from _decode_artifact_locator_payload(bytes(payload))
+    yield from _decode_artifact_storage_key_payload(bytes(payload))
 
 
-def _decode_artifact_locator_payload(payload: bytes) -> tuple[str, ...]:
-    """Decode one fully buffered, bounded locator after exact EOF is known."""
+def _decode_artifact_storage_key_payload(payload: bytes) -> tuple[str, ...]:
+    """Decode one fully buffered, bounded storage key after exact EOF."""
 
     phase = "VERSION"
     carry = bytearray()
@@ -3653,12 +3668,12 @@ def _decode_artifact_locator_payload(payload: bytes) -> tuple[str, ...]:
     segment_size = 0
     components: list[str] = []
     for part in (payload,):
-        exact = _require_bytes(part, field_name="artifact locator part")
+        exact = _require_bytes(part, field_name="artifact storage key part")
         offset = 0
         while offset < len(exact):
             if phase == "DONE":
                 raise ByteDomainError(
-                    "artifact locator payload contains trailing bytes"
+                    "artifact storage key payload contains trailing bytes"
                 )
             required = segment_size if phase == "SEGMENT" else 4
             amount = min(required - len(carry), len(exact) - offset)
@@ -3670,21 +3685,24 @@ def _decode_artifact_locator_payload(payload: bytes) -> tuple[str, ...]:
             carry.clear()
             if phase == "VERSION":
                 version = int.from_bytes(value, "big")
-                if version != ARTIFACT_LOCATOR_CODEC_VERSION:
+                if version != ARTIFACT_STORAGE_KEY_CODEC_VERSION:
                     raise IntegerDomainError(
-                        f"artifact locator codec_version {version} is not registered"
+                        "artifact storage key codec_version "
+                        f"{version} is not registered"
                     )
                 phase = "COUNT"
             elif phase == "COUNT":
                 component_count = int.from_bytes(value, "big")
                 if component_count == 0:
-                    raise ByteDomainError("artifact locator must contain a component")
+                    raise ByteDomainError(
+                        "artifact storage key must contain a component"
+                    )
                 phase = "LENGTH"
             elif phase == "LENGTH":
                 segment_size = int.from_bytes(value, "big")
                 if not 1 <= segment_size <= 255:
                     raise ByteDomainError(
-                        "artifact locator component length must be in [1, 255]"
+                        "artifact storage key component length must be in [1, 255]"
                     )
                 phase = "SEGMENT"
             else:
@@ -3692,33 +3710,34 @@ def _decode_artifact_locator_payload(payload: bytes) -> tuple[str, ...]:
                     component = value.decode("utf-8", errors="strict")
                 except UnicodeDecodeError as error:
                     raise ByteDomainError(
-                        "artifact locator component must be exact UTF-8"
+                        "artifact storage key component must be exact UTF-8"
                     ) from error
                 validated = _validate_utf8_leaf(
                     component,
-                    field_name="artifact locator component",
+                    field_name="artifact storage key component",
                     maximum_bytes=255,
                 )
                 if validated != value:  # pragma: no cover - strict UTF-8 is unique
                     raise ByteDomainError(
-                        "artifact locator component is not canonical UTF-8"
+                        "artifact storage key component is not canonical UTF-8"
                     )
                 emitted += 1
                 phase = "DONE" if emitted == component_count else "LENGTH"
                 components.append(component)
     if phase != "DONE" or carry:
-        raise ByteDomainError("artifact locator payload is truncated")
+        raise ByteDomainError("artifact storage key payload is truncated")
     return tuple(components)
 
 
-def artifact_locator_digest(components: Sequence[str]) -> bytes:
-    """Stream the canonical digest of exact artifact storage locator bytes."""
+def artifact_storage_key_digest(components: Sequence[str]) -> bytes:
+    """Stream the canonical digest of exact neutral storage-key bytes."""
 
-    parts = _artifact_locator_payload_parts(
-        components, codec_version=ARTIFACT_LOCATOR_CODEC_VERSION
+    parts = _artifact_storage_key_payload_parts(
+        components,
+        codec_version=ARTIFACT_STORAGE_KEY_CODEC_VERSION,
     )
     return canonical_value_digest_parts(
-        ARTIFACT_LOCATOR_DIGEST_DOMAIN,
+        ARTIFACT_STORAGE_KEY_DIGEST_DOMAIN,
         sum(len(part) for part in parts),
         parts,
     )

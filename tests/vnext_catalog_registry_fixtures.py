@@ -192,11 +192,11 @@ def seed_artifact_storage_codec(
     *,
     storage_codec_version: int = 1,
     adapter_id: bytes = b"managed-filesystem",
-    locator_codec_version: int = 1,
+    storage_key_codec_version: int = 1,
     protection_token_codec_version: int = 1,
 ) -> ArtifactStorageCodecRecord:
     existing = connector.fetch_one(
-        "SELECT storage_codec_version, adapter_id, locator_codec_version, "
+        "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
         "protection_token_codec_version FROM catalog_artifact_storage_codecs "
         "WHERE storage_codec_version = %s",
         (storage_codec_version,),
@@ -204,7 +204,7 @@ def seed_artifact_storage_codec(
     expected = ArtifactStorageCodecRecord(
         storage_codec_version,
         adapter_id,
-        locator_codec_version,
+        storage_key_codec_version,
         protection_token_codec_version,
     )
     if existing:
@@ -215,12 +215,12 @@ def seed_artifact_storage_codec(
         )
     connector.execute(
         "INSERT INTO catalog_artifact_storage_codecs "
-        "(storage_codec_version, adapter_id, locator_codec_version, "
+        "(storage_codec_version, adapter_id, storage_key_codec_version, "
         "protection_token_codec_version) VALUES (%s, %s, %s, %s)",
         (
             expected.storage_codec_version,
             expected.adapter_id,
-            expected.locator_codec_version,
+            expected.storage_key_codec_version,
             expected.protection_token_codec_version,
         ),
     )

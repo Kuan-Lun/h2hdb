@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 __all__ = [
-    "CurrentProjectionCheckpoint",
-    "CurrentProjectionStatus",
+    "LibraryActivationCheckpoint",
+    "LibraryActivationStatus",
     "GalleryStagingCapacityError",
     "GalleryStagingRetiredError",
     "VNextAnalysisAdvanceResult",
-    "VNextCurrentProjectionAdapter",
-    "VNextCurrentProjectionContinuationError",
-    "VNextCurrentProjectionError",
-    "VNextCurrentProjectionUnavailableError",
+    "VNextLibraryActivationAdapter",
     "VNextCurrentOnlyMaintenanceOutcome",
     "VNextIngestFacade",
     "VNextIssuedAnalysisStep",
@@ -34,8 +31,6 @@ from typing import TypeVar
 
 from .config_loader import CoreConfig
 from .domain import (
-    VNextCurrentProjectionItem,
-    VNextCurrentProjectionPage,
     VNextIngestAdvanceResult,
     VNextIngestCompletionReceipt,
     VNextIngestPage,
@@ -63,13 +58,6 @@ from .vnext_cleanup_repository import (
     CleanupBatchResult,
     CleanupCycle,
     VNextCleanupRepository,
-)
-from .vnext_current_projection_repository import (
-    CurrentProjectionArtifactPage,
-    CurrentProjectionArtifactRepository,
-    CurrentProjectionCursorError,
-    CurrentProjectionReadError,
-    CurrentProjectionUnavailableError,
 )
 from .vnext_domains import require_int63, require_positive_int63
 from .vnext_download_ingest_repository import (
@@ -111,11 +99,11 @@ from .vnext_ingest_analysis import (
 from .vnext_ingest_fence_repository import IngestTurn
 from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from .vnext_ingest_publication import (
-    CurrentProjectionCheckpoint,
-    CurrentProjectionStatus,
-    VNextCurrentProjectionAdapter,
+    LibraryActivationCheckpoint,
+    LibraryActivationStatus,
     VNextIngestPublication,
     VNextIssuedPublicationStep,
+    VNextLibraryActivationAdapter,
     VNextPreparedPublicationStep,
 )
 from .vnext_maintenance_gate_repository import (
@@ -155,21 +143,6 @@ _CURRENT_ONLY_BATCHES_PER_ATTEMPT = 16
 
 def _now_microseconds() -> int:
     return time_ns() // 1_000
-
-
-class VNextCurrentProjectionError(RuntimeError):
-    """Public fail-closed error for current-projection reads."""
-
-
-class VNextCurrentProjectionContinuationError(
-    VNextCurrentProjectionError,
-    ValueError,
-):
-    """A receipt/cursor continuation does not identify exact pinned state."""
-
-
-class VNextCurrentProjectionUnavailableError(VNextCurrentProjectionError):
-    """The requested current or pinned publication receipt is unavailable."""
 
 
 class VNextSourceManifestMismatchError(RuntimeError):
@@ -963,7 +936,7 @@ class VNextIngestFacade:
         *,
         artifact_adapters: Mapping[bytes, ArtifactStorageAdapter],
         finalization_adapters: Mapping[bytes, ArtifactReleaseAdapter],
-        current_projection: VNextCurrentProjectionAdapter,
+        library_activation: VNextLibraryActivationAdapter,
     ) -> VNextPreparedPublicationStep:
         """Perform publication adapter work outside fenced DB transactions."""
 
@@ -971,7 +944,7 @@ class VNextIngestFacade:
             issued,
             artifact_adapters=artifact_adapters,
             finalization_adapters=finalization_adapters,
-            current_projection=current_projection,
+            library_activation=library_activation,
         )
 
     def commit_publication_step(
@@ -1406,52 +1379,6 @@ class VNextIngestFacade:
             )
         )
 
-    def list_current_projection_artifacts(
-        self,
-        *,
-        channel: bytes = b"default",
-        page_limit: int = 128,
-    ) -> VNextCurrentProjectionPage:
-        """Pin the current channel head and return its first bounded page."""
-
-        return self.__projection_read(
-            lambda connector: CurrentProjectionArtifactRepository.list_page(
-                connector,
-                channel=channel,
-                page_limit=page_limit,
-            )
-        )
-
-    def continue_current_projection_artifacts(
-        self,
-        receipt_id: bytes,
-        next_cursor: bytes,
-    ) -> VNextCurrentProjectionPage:
-        """Continue only the immutable receipt/cursor returned by a prior page."""
-
-        return self.__projection_read(
-            lambda connector: CurrentProjectionArtifactRepository.list_page(
-                connector,
-                receipt_id=receipt_id,
-                cursor=next_cursor,
-                page_limit=128,
-            )
-        )
-
-    def __projection_read(
-        self,
-        operation: Callable[[SQLConnector], CurrentProjectionArtifactPage],
-    ) -> VNextCurrentProjectionPage:
-        try:
-            page = self.__read(operation)
-        except CurrentProjectionCursorError as error:
-            raise VNextCurrentProjectionContinuationError(str(error)) from error
-        except CurrentProjectionUnavailableError as error:
-            raise VNextCurrentProjectionUnavailableError(str(error)) from error
-        except CurrentProjectionReadError as error:
-            raise VNextCurrentProjectionError(str(error)) from error
-        return _public_current_projection_page(page)
-
     def __analysis_orchestrator(self) -> VNextIngestAnalysisOrchestrator:
         orchestrator = self.__analysis
         if orchestrator is None:
@@ -1508,32 +1435,6 @@ def _public_session(
         handoff_owner_token=turn.handoff_owner_token,
         handoff_kind=linked_kind,
         consumed_at=turn.consumed_at,
-    )
-
-
-def _public_current_projection_page(
-    page: CurrentProjectionArtifactPage,
-) -> VNextCurrentProjectionPage:
-    if not isinstance(page, CurrentProjectionArtifactPage):
-        raise RuntimeError("current projection repository returned a foreign page")
-    page.__post_init__()
-    return VNextCurrentProjectionPage(
-        receipt_id=page.receipt_id,
-        catalog_revision=page.catalog_revision,
-        items=tuple(
-            VNextCurrentProjectionItem(
-                publication_key=item.publication_key,
-                gid=item.gid,
-                source_gallery_name=item.source_gallery_name,
-                upload_time=item.upload_time,
-                artifact_locator_components=item.artifact_locator_components,
-                artifact_sha256=item.artifact_sha256,
-                size_bytes=item.size_bytes,
-            )
-            for item in page.items
-        ),
-        next_cursor=page.next_cursor,
-        terminal=page.terminal,
     )
 
 

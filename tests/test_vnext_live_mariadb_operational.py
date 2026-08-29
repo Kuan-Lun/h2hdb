@@ -1066,8 +1066,8 @@ def test_live_mariadb_operational_writer_workflows(
     )
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
-        "(revision, publication_count) VALUES (%s, %s)",
-        (catalog_revision, 0),
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
+        (catalog_revision, 0, 0),
     )
     producer = seed_artifact_producer_fingerprint(
         connector,

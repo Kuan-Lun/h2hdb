@@ -162,10 +162,7 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "row_count",
         "sealed_at",
     ),
-    "catalog_artifact_blobs": (
-        "size_bytes",
-        "artifact_locator_sha256",
-    ),
+    "catalog_artifact_blobs": ("size_bytes",),
     "catalog_artifact_policy_semantics": (
         "max_image_short_side",
         "producer_fingerprint_sha256",
@@ -189,7 +186,7 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
     ),
     "catalog_artifact_storage_codecs": (
         "adapter_id",
-        "locator_codec_version",
+        "storage_key_codec_version",
         "protection_token_codec_version",
     ),
     "catalog_artifact_zip_writer_policies": (

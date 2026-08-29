@@ -211,7 +211,7 @@ def _catalog_descriptor(
 ) -> None:
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
-        "(revision, publication_count) VALUES (%s, %s)",
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, 0)",
         (revision, publication_count),
     )
 
@@ -521,21 +521,36 @@ def _commit(
 def _finalize_empty_publication(
     connector: SQLiteConnector,
     *,
+    gate: GateLease,
+    turn: IngestTurn,
     receipt_id: bytes,
     finalized_at: int,
 ) -> None:
-    seed_publication_finalization(
-        connector,
-        receipt_id=receipt_id,
-        cursor=b"",
-        processed_count=0,
-        finalized_at=finalized_at,
-    )
+    with connector.transaction():
+        work = VNextUnitOfWork(connector, backend="sqlite")
+        authority = PublicationRepository.prepare_finalized_commit_activation(
+            work,
+            gate_lease=gate,
+            ingest_turn=turn,
+            receipt_id=receipt_id,
+            now=finalized_at,
+        )
+        seed_publication_finalization(
+            connector,
+            receipt_id=receipt_id,
+            cursor=b"",
+            processed_count=0,
+            finalized_at=finalized_at,
+        )
+        assert PublicationRepository.activate_finalized_commit(
+            work,
+            authority=authority,
+        )
     assert connector.fetch_one(
         "SELECT state, finalized_at FROM catalog_publication_receipts "
         "WHERE receipt_id = %s",
         (receipt_id,),
-    ) == ("PROJECTION_FINALIZED", finalized_at)
+    ) == ("PUBLISHED", finalized_at)
 
 
 def _prepare_finalized_replay(
@@ -548,6 +563,8 @@ def _prepare_finalized_replay(
     published = _commit(connector, gate, turn)
     _finalize_empty_publication(
         connector,
+        gate=gate,
+        turn=turn,
         receipt_id=published.receipt_id,
         finalized_at=101,
     )
@@ -617,16 +634,23 @@ def test_atomic_publication_genesis_and_successor(
     assert receipt.revision == reserved
     assert receipt.source_revision == reserved
     assert not receipt.replayed
-    assert connector.fetch_one(
-        "SELECT source_revision, generation FROM catalog_source_heads "
-        "WHERE channel = %s",
-        (_CHANNEL,),
-    ) == (reserved, 2 if with_base else 1)
-    assert connector.fetch_one(
-        "SELECT revision, generation FROM catalog_publication_commit_heads "
-        "WHERE channel = %s",
-        (_CHANNEL,),
-    ) == (reserved, 2 if with_base else 1)
+    expected_base = (1, 1) if with_base else ()
+    assert (
+        connector.fetch_one(
+            "SELECT source_revision, generation FROM catalog_source_heads "
+            "WHERE channel = %s",
+            (_CHANNEL,),
+        )
+        == expected_base
+    )
+    assert (
+        connector.fetch_one(
+            "SELECT revision, generation FROM catalog_publication_commit_heads "
+            "WHERE channel = %s",
+            (_CHANNEL,),
+        )
+        == expected_base
+    )
     assert connector.fetch_one(
         "SELECT source_revision, generation "
         "FROM catalog_source_revision_generations WHERE source_revision = %s",
@@ -638,6 +662,33 @@ def test_atomic_publication_genesis_and_successor(
         (reserved,),
     ) == (reserved, 2 if with_base else 1)
     assert _candidate_lifecycle(connector) == "PUBLISHED"
+    assert connector.fetch_one(
+        "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
+        (_BUILD,),
+    )
+    assert connector.fetch_one(
+        "SELECT 1 FROM operational_catalog_working_candidates WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    )
+
+    _finalize_empty_publication(
+        connector,
+        gate=gate,
+        turn=turn,
+        receipt_id=receipt.receipt_id,
+        finalized_at=101,
+    )
+
+    assert connector.fetch_one(
+        "SELECT source_revision, generation FROM catalog_source_heads "
+        "WHERE channel = %s",
+        (_CHANNEL,),
+    ) == (reserved, 2 if with_base else 1)
+    assert connector.fetch_one(
+        "SELECT revision, generation FROM catalog_publication_commit_heads "
+        "WHERE channel = %s",
+        (_CHANNEL,),
+    ) == (reserved, 2 if with_base else 1)
     assert not connector.fetch_one(
         "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
         (_BUILD,),
@@ -747,15 +798,33 @@ def test_publication_commit_deletes_exact_working_assignment_capability(
             )
         return original_execute_affected(query, data)
 
-    with (
-        patch.object(
-            connector,
-            "execute_affected",
-            side_effect=race_assignment,
-        ),
-        pytest.raises(PublicationHeadRaceError, match="working|changed"),
-    ):
-        _commit(connector, gate, turn)
+    receipt = _commit(connector, gate, turn)
+    with pytest.raises(PublicationHeadRaceError, match="working|changed"):
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend="sqlite")
+            authority = PublicationRepository.prepare_finalized_commit_activation(
+                work,
+                gate_lease=gate,
+                ingest_turn=turn,
+                receipt_id=receipt.receipt_id,
+                now=101,
+            )
+            seed_publication_finalization(
+                connector,
+                receipt_id=receipt.receipt_id,
+                cursor=b"",
+                processed_count=0,
+                finalized_at=101,
+            )
+            with patch.object(
+                connector,
+                "execute_affected",
+                side_effect=race_assignment,
+            ):
+                PublicationRepository.activate_finalized_commit(
+                    work,
+                    authority=authority,
+                )
     assert raced
     assert connector.fetch_one(
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
@@ -767,7 +836,10 @@ def test_publication_commit_deletes_exact_working_assignment_capability(
         "operational_catalog_working_candidates WHERE slot = %s",
         (1,),
     ) == (_CANDIDATE, 36)
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_receipts")
+    assert connector.fetch_one(
+        "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
+        (receipt.receipt_id,),
+    ) == ("DB_COMMITTED",)
     connector.close()
 
 
@@ -1115,11 +1187,14 @@ def test_v3_source_build_fresh_publication_and_replay_reject_creation_time_tampe
     )
     with pytest.raises(PublicationCorruptionError, match="identity|predecessor"):
         _commit(connector, gate, turn, now=102)
-    assert connector.fetch_one(
-        "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
-        "WHERE channel = %s",
-        (_CHANNEL,),
-    ) == (first.receipt_id,)
+    assert (
+        connector.fetch_one(
+            "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
+            "WHERE channel = %s",
+            (_CHANNEL,),
+        )
+        == ()
+    )
     connector.close()
 
 
@@ -1155,7 +1230,7 @@ def test_response_loss_replay_requires_exact_source_provenance_lineage(
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
-    ) == (published.receipt_id,)
+    ) == (b"h" * 16,)
     assert connector.fetch_one(
         "SELECT candidate_id FROM catalog_publication_commits WHERE receipt_id = %s",
         (published.receipt_id,),
@@ -1259,7 +1334,7 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
-    ) == (published.receipt_id,)
+    ) == ((published.receipt_id,) if pathway == "release" else (b"h" * 16,))
     connector.close()
 
 

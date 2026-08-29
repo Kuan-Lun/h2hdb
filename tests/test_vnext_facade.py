@@ -56,13 +56,11 @@ from h2hdb.vnext_identity import (
     CanonicalValuePage,
     GalleryObservationNodeKind,
     artifact_id,
-    artifact_locator_components,
     artifact_policy_digest,
     artifact_producer_fingerprint_sha256,
     artifact_semantics_digest,
     canonical_value_digest,
     canonical_value_page_digest,
-    encode_artifact_locator,
     encode_artifact_policy,
     encode_artifact_semantics,
     encode_canonical_value_page,
@@ -304,8 +302,9 @@ def _publication_commit_fixture(
             ),
             (
                 "INSERT INTO catalog_revision_descriptors "
-                "(revision, publication_count) VALUES (%s, %s)",
-                (1, 1),
+                "(revision, publication_count, artifact_count) "
+                "VALUES (%s, %s, %s)",
+                (1, 1, 1),
             ),
             (
                 "INSERT INTO catalog_publication_generation_nodes "
@@ -520,16 +519,10 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
     artifact_bytes = b"facade-artifact"
     artifact_sha256 = sha256(artifact_bytes).digest()
     artifact_identifier = artifact_id(gid, artifact_sha256)
-    artifact_locator = _canonical(
-        connector,
-        "artifact_locator_bytes_v1",
-        encode_artifact_locator(artifact_locator_components(artifact_sha256)),
-    )
     connector.execute(
         "INSERT INTO catalog_artifact_blobs "
-        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-        "VALUES (%s, %s, %s)",
-        (artifact_sha256, len(artifact_bytes), artifact_locator),
+        "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+        (artifact_sha256, len(artifact_bytes)),
     )
     ensure_catalog_artifact_family(
         connector,
@@ -575,7 +568,12 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
         revision=revision,
     )
 
-    assert revision == CatalogRevision(revision.revision, revision.published_at, 1)
+    assert revision == CatalogRevision(
+        revision.revision,
+        revision.published_at,
+        1,
+        1,
+    )
     assert isinstance(page, CatalogPage)
     assert page.publications == (publication,)
     assert by_name == {"h2h-123.cbz": publication}
@@ -828,7 +826,7 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(Path("unused"), backend="mariadb")
-    catalog_recorder = _MariaRecorder([(7, 0, 1_000_000, 1)])
+    catalog_recorder = _MariaRecorder([(7, 0, 0, 1_000_000, 1)])
     monkeypatch.setattr(
         RepositoryContext,
         "from_config",

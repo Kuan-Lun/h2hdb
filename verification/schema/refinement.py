@@ -2849,7 +2849,7 @@ def _render_derived_view(
         state_expression = (
             f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "
             f"IS NULL THEN {finalization_literal('DB_COMMITTED')} ELSE "
-            f"{finalization_literal('PROJECTION_FINALIZED')} END"
+            f"{finalization_literal('PUBLISHED')} END"
         )
         finalized_at_expression = (
             f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "

@@ -18,6 +18,12 @@ def test_check_table_exists(connector: SQLiteConnector) -> None:
         assert connector.check_table_exists("widgets") is True
 
 
+def test_connect_pins_durable_sqlite_settings(connector: SQLiteConnector) -> None:
+    with connector:
+        assert connector.fetch_one("PRAGMA synchronous") == (2,)
+        assert connector.fetch_one("PRAGMA journal_mode")[0] not in {"off", "memory"}
+
+
 def test_execute_and_fetch_round_trip(connector: SQLiteConnector) -> None:
     with connector:
         connector.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT)")

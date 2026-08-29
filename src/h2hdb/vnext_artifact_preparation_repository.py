@@ -39,7 +39,7 @@ from tempfile import TemporaryDirectory, TemporaryFile
 from typing import Any, BinaryIO, cast
 
 from . import vnext_identity as identity
-from .domain import ArtifactStorageEvidence
+from .domain import ArtifactStorageEvidence, ArtifactStorageKey, artifact_storage_key
 from .ports import ArtifactStorageAdapter
 from .sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from .vnext_analysis_family import (
@@ -62,7 +62,6 @@ from .vnext_artifact_family import (
 )
 from .vnext_canonical_value_family import (
     load_sealed_value_identities,
-    load_sealed_value_identity,
 )
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
@@ -414,8 +413,8 @@ class ArtifactProtectionIntent:
     publication_key: bytes
     artifact_sha256: bytes
     size_bytes: int
-    locator_components: tuple[str, ...]
-    artifact_locator_sha256: bytes
+    storage_key: ArtifactStorageKey
+    artifact_storage_key_sha256: bytes
     storage_codec_version: int
     storage_generation: int
     protection_token: bytes
@@ -436,16 +435,17 @@ class ArtifactProtectionIntent:
             field="intent artifact_sha256",
         )
         size = require_int63(self.size_bytes, field="intent size_bytes")
-        if tuple(self.locator_components) != identity.artifact_locator_components(
-            artifact
-        ):
-            raise ValueError("artifact intent locator is not content-addressed")
-        locator = require_digest32(
-            self.artifact_locator_sha256,
-            field="intent artifact_locator_sha256",
+        if not isinstance(self.storage_key, ArtifactStorageKey):
+            raise TypeError("artifact intent storage_key is not registered")
+        storage_key_sha256 = require_digest32(
+            self.artifact_storage_key_sha256,
+            field="intent artifact_storage_key_sha256",
         )
-        if identity.artifact_locator_digest(self.locator_components) != locator:
-            raise ValueError("artifact intent locator digest disagrees")
+        if (
+            identity.artifact_storage_key_digest(self.storage_key.segments)
+            != storage_key_sha256
+        ):
+            raise ValueError("artifact intent storage-key digest disagrees")
         codec = require_positive_int63(
             self.storage_codec_version,
             field="intent storage_codec_version",
@@ -465,7 +465,7 @@ class ArtifactProtectionIntent:
             token.candidate_id != candidate
             or token.publication_key != publication
             or token.artifact_sha256 != artifact
-            or token.artifact_locator_sha256 != locator
+            or token.artifact_storage_key_sha256 != storage_key_sha256
             or token.storage_codec_version != codec
             or token.storage_generation != generation
             or token.size_bytes != size
@@ -504,7 +504,7 @@ class ArtifactProtectionEvidence:
 
 
 class ArtifactPreparationReceipt:
-    """Opaque verified archive plus its bounded canonical locator plan.
+    """Opaque verified archive plus its GID-derived neutral storage key.
 
     No external storage protection has happened when this value is returned.
     The owned archive remains open until the receipt is closed so protection
@@ -514,12 +514,11 @@ class ArtifactPreparationReceipt:
     __slots__ = (
         "audit",
         "_archive",
-        "_artifact_locator_sha256",
+        "_artifact_storage_key_sha256",
         "_artifact_sha256",
         "_capability",
         "_closed",
-        "_locator_components",
-        "_locator_plan",
+        "_storage_key",
         "_size_bytes",
         "_storage_codec_version",
     )
@@ -530,10 +529,9 @@ class ArtifactPreparationReceipt:
         audit: ArtifactPreparationInputAudit,
         artifact_sha256: bytes,
         size_bytes: int,
-        locator_components: tuple[str, ...],
-        artifact_locator_sha256: bytes,
+        storage_key: ArtifactStorageKey,
+        artifact_storage_key_sha256: bytes,
         storage_codec_version: int,
-        locator_plan: CanonicalValueUploadPlan,
         archive: BinaryIO,
         _capability: object,
     ) -> None:
@@ -546,26 +544,22 @@ class ArtifactPreparationReceipt:
             artifact_sha256, field="prepared artifact_sha256"
         )
         self._size_bytes = require_int63(size_bytes, field="prepared size_bytes")
-        if tuple(locator_components) != identity.artifact_locator_components(
-            self._artifact_sha256
-        ):
-            raise ValueError("prepared locator is not content-addressed")
-        self._locator_components = tuple(locator_components)
-        self._artifact_locator_sha256 = require_digest32(
-            artifact_locator_sha256, field="prepared artifact_locator_sha256"
+        if storage_key != artifact_storage_key(audit.authority.gid):
+            raise ValueError("prepared storage key disagrees with authority GID")
+        self._storage_key = storage_key
+        self._artifact_storage_key_sha256 = require_digest32(
+            artifact_storage_key_sha256,
+            field="prepared artifact_storage_key_sha256",
         )
-        if identity.artifact_locator_digest(self._locator_components) != (
-            self._artifact_locator_sha256
+        if identity.artifact_storage_key_digest(self._storage_key.segments) != (
+            self._artifact_storage_key_sha256
         ):
-            raise ValueError("prepared locator digest disagrees")
+            raise ValueError("prepared storage-key digest disagrees")
         self._storage_codec_version = require_positive_int63(
             storage_codec_version, field="prepared storage_codec_version"
         )
-        if locator_plan.value_sha256 != self._artifact_locator_sha256:
-            raise ValueError("locator upload plan disagrees with receipt")
         if not hasattr(archive, "read") or not hasattr(archive, "seek"):
             raise TypeError("prepared archive must be one seekable binary stream")
-        self._locator_plan = locator_plan
         self._archive = archive
         self._capability = _capability
         self._closed = False
@@ -573,10 +567,7 @@ class ArtifactPreparationReceipt:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            try:
-                self._locator_plan.close()
-            finally:
-                self._archive.close()
+            self._archive.close()
 
     def __enter__(self) -> ArtifactPreparationReceipt:
         if self._closed:
@@ -595,20 +586,16 @@ class ArtifactPreparationReceipt:
         return self._size_bytes
 
     @property
-    def locator_components(self) -> tuple[str, ...]:
-        return self._locator_components
+    def storage_key(self) -> ArtifactStorageKey:
+        return self._storage_key
 
     @property
-    def artifact_locator_sha256(self) -> bytes:
-        return self._artifact_locator_sha256
+    def artifact_storage_key_sha256(self) -> bytes:
+        return self._artifact_storage_key_sha256
 
     @property
     def storage_codec_version(self) -> int:
         return self._storage_codec_version
-
-    @property
-    def locator_plan(self) -> CanonicalValueUploadPlan:
-        return self._locator_plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -616,7 +603,7 @@ class ArtifactPersistenceReceipt:
     candidate_id: bytes
     publication_key: bytes
     artifact_sha256: bytes
-    artifact_locator_sha256: bytes
+    artifact_storage_key_sha256: bytes
     protection_token: bytes
     state: str
     replayed: bool
@@ -626,8 +613,8 @@ class ArtifactPersistenceReceipt:
         require_digest32(self.publication_key, field="persisted publication_key")
         require_digest32(self.artifact_sha256, field="persisted artifact_sha256")
         require_digest32(
-            self.artifact_locator_sha256,
-            field="persisted artifact_locator_sha256",
+            self.artifact_storage_key_sha256,
+            field="persisted artifact_storage_key_sha256",
         )
         require_bounded_bytes(
             self.protection_token,
@@ -1497,7 +1484,6 @@ class ArtifactPreparationRepository:
         )
         archive = TemporaryFile(mode="w+b")
         archive_owned = True
-        locator_plan: CanonicalValueUploadPlan | None = None
         try:
             _write_canonical_archive(archive_plan, archive, audit, adapter)
             artifact_sha256, size_bytes = _hash_stream(archive)
@@ -1507,33 +1493,23 @@ class ArtifactPreparationRepository:
                 audit,
                 expected_size=size_bytes,
             )
-            locator_components = identity.artifact_locator_components(artifact_sha256)
-            locator_plan = CanonicalValueUploadPlan.from_parts(
-                "artifact_locator_bytes_v1",
-                identity.iter_artifact_locator_payload(locator_components),
+            storage_key = artifact_storage_key(authority.gid)
+            storage_key_sha256 = identity.artifact_storage_key_digest(
+                storage_key.segments
             )
-            locator_digest = identity.artifact_locator_digest(locator_components)
-            if locator_plan.value_sha256 != locator_digest:
-                raise ArtifactPreparationConflictError(
-                    "artifact locator upload plan has the wrong digest"
-                )
             receipt = ArtifactPreparationReceipt(
                 audit=audit,
                 artifact_sha256=artifact_sha256,
                 size_bytes=size_bytes,
-                locator_components=locator_components,
-                artifact_locator_sha256=locator_digest,
+                storage_key=storage_key,
+                artifact_storage_key_sha256=storage_key_sha256,
                 storage_codec_version=authority.storage_codec[0],
-                locator_plan=locator_plan,
                 archive=archive,
                 _capability=_PREPARATION_RECEIPT_TOKEN,
             )
-            locator_plan = None
             archive_owned = False
             return receipt
         finally:
-            if locator_plan is not None:
-                locator_plan.close()
             if archive_owned:
                 archive.close()
             archive_plan.close()
@@ -1584,8 +1560,8 @@ class ArtifactPreparationRepository:
             authority.publication_key,
             receipt.artifact_sha256,
             receipt.size_bytes,
-            receipt.locator_components,
-            receipt.artifact_locator_sha256,
+            receipt.storage_key,
+            receipt.artifact_storage_key_sha256,
             receipt.storage_codec_version,
         )
         actual = (
@@ -1593,8 +1569,8 @@ class ArtifactPreparationRepository:
             intent.publication_key,
             intent.artifact_sha256,
             intent.size_bytes,
-            intent.locator_components,
-            intent.artifact_locator_sha256,
+            intent.storage_key,
+            intent.artifact_storage_key_sha256,
             intent.storage_codec_version,
         )
         if actual != expected or intent.state != "PENDING":
@@ -1629,7 +1605,9 @@ class ArtifactPreparationRepository:
         receipt._archive.seek(0)
         raw = adapter.protect(
             receipt._archive,
-            intent.locator_components,
+            intent.storage_key,
+            intent.artifact_sha256,
+            intent.size_bytes,
             intent.protection_token,
         )
         if not isinstance(raw, ArtifactStorageEvidence) or not raw.stored:
@@ -1698,43 +1676,12 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationNotReadyError(
                 "new artifact storage intent requires the live projection generation"
             )
-        locator = receipt.locator_plan
-        if locator.value_sha256 != receipt.artifact_locator_sha256:
-            raise ArtifactPreparationConflictError(
-                "prepared locator plan changed before persistence"
-            )
-        sealed = load_sealed_value_identity(
-            work.connector,
-            value_sha256=receipt.artifact_locator_sha256,
-        )
-        if (
-            sealed is None
-            or sealed.digest_domain != b"artifact_locator_bytes_v1"
-            or sealed.byte_count != locator.byte_count
-        ):
-            raise ArtifactPreparationNotReadyError(
-                "artifact locator canonical value is not exactly sealed"
-            )
-        require_digest32(
-            sealed.root_page_sha256,
-            field="artifact locator root page",
-        )
-        claim = work.connector.fetch_one(
-            "SELECT generation, value_sha256 "
-            "FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (live_generation, receipt.artifact_locator_sha256),
-        )
-        if claim != (live_generation, receipt.artifact_locator_sha256):
-            raise ArtifactPreparationNotReadyError(
-                "artifact locator first consumer lacks its upload claim"
-            )
         protection_token = identity.encode_artifact_protection_token(
             receipt.storage_codec_version,
             authority.candidate_id,
             authority.publication_key,
             receipt.artifact_sha256,
-            receipt.artifact_locator_sha256,
+            receipt.artifact_storage_key_sha256,
             live_generation,
             receipt.size_bytes,
         )
@@ -1744,15 +1691,6 @@ class ArtifactPreparationRepository:
             storage_generation=live_generation,
             protection_token=protection_token,
         )
-        deleted = work.connector.execute_affected(
-            "DELETE FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (live_generation, receipt.artifact_locator_sha256),
-        )
-        if deleted != 1:
-            raise ArtifactPreparationConflictError(
-                "artifact locator claim changed during consumer handoff"
-            )
         persisted = _load_prepared_family_or_conflict(
             work.connector,
             candidate_id=authority.candidate_id,
@@ -1905,7 +1843,7 @@ class ArtifactPreparationRepository:
             authority.candidate_id,
             authority.publication_key,
             receipt.artifact_sha256,
-            receipt.artifact_locator_sha256,
+            receipt.artifact_storage_key_sha256,
             family.protection_token,
             family.state,
             not was_pending,
@@ -2722,7 +2660,7 @@ def _load_storage_codec(
     return (
         record.storage_codec_version,
         record.adapter_id,
-        record.locator_codec_version,
+        record.storage_key_codec_version,
         record.protection_token_codec_version,
     )
 
@@ -4377,7 +4315,7 @@ def _validate_prepared_row(
         mutation.candidate.candidate_id,
         publication_key,
         prepared.artifact_sha256,
-        token.artifact_locator_sha256,
+        token.artifact_storage_key_sha256,
         token.size_bytes,
     )
     actual_token = (
@@ -4385,7 +4323,7 @@ def _validate_prepared_row(
         token.candidate_id,
         token.publication_key,
         token.artifact_sha256,
-        token.artifact_locator_sha256,
+        token.artifact_storage_key_sha256,
         token.size_bytes,
     )
     if actual_token != expected_token:
@@ -4408,37 +4346,15 @@ def _validate_prepared_row(
         raise ArtifactPreparationConflictError(
             "prepared artifact storage codec is not registered"
         )
-    locator_parts = bytearray()
-
-    def consume_locator(part: bytes) -> None:
-        if len(locator_parts) > 4096 - len(part):
-            raise ArtifactPreparationConflictError(
-                "prepared artifact locator exceeds its registered bound"
-            )
-        locator_parts.extend(part)
-
-    try:
-        receipt = CanonicalValueRepository.stream_and_validate(
-            work,
-            value_sha256=token.artifact_locator_sha256,
-            consume_provisional=consume_locator,
-        )
-        components = identity.decode_artifact_locator(bytes(locator_parts))
-    except (
-        CanonicalValueCollisionError,
-        CanonicalValueNotReadyError,
-        identity.VNextIdentityError,
-    ) as error:
-        raise ArtifactPreparationConflictError(
-            "prepared artifact locator is incomplete or malformed"
-        ) from error
+    gid = require_positive_int63(operation[2], field="prepared artifact GID")
+    storage_key = artifact_storage_key(gid)
     if (
-        receipt.digest_domain != b"artifact_locator_bytes_v1"
-        or components != identity.artifact_locator_components(prepared.artifact_sha256)
-        or identity.artifact_locator_digest(components) != token.artifact_locator_sha256
+        identity.publication_key(gid) != publication_key
+        or identity.artifact_storage_key_digest(storage_key.segments)
+        != token.artifact_storage_key_sha256
     ):
         raise ArtifactPreparationConflictError(
-            "prepared artifact locator differs from content-addressed bytes"
+            "prepared artifact storage key differs from its publication GID"
         )
 
 
@@ -4503,13 +4419,17 @@ def _seal_projection(
             "artifact input count differs from byte-producing plus unchanged"
         )
     revision = work.connector.fetch_one(
-        "SELECT publication_count FROM catalog_revision_descriptors "
+        "SELECT publication_count, artifact_count "
+        "FROM catalog_revision_descriptors "
         "WHERE revision = %s",
         (mutation.candidate.reserved_revision,),
     )
-    if revision != (publication_count,):
+    expected_artifact_count = (
+        publication_count if mutation.candidate.artifacts_required else 0
+    )
+    if revision != (publication_count, expected_artifact_count):
         raise ArtifactPreparationConflictError(
-            "reserved catalog revision count differs from selection"
+            "reserved catalog revision counts differ from selection"
         )
     preparation = work.connector.fetch_one(
         "SELECT binding.preparation_id, preparation.build_id, preparation.state, "
@@ -4560,22 +4480,12 @@ def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
     require_digest32(receipt.artifact_sha256, field="prepared artifact_sha256")
     require_int63(receipt.size_bytes, field="prepared artifact size_bytes")
     require_digest32(
-        receipt.artifact_locator_sha256,
-        field="prepared artifact_locator_sha256",
+        receipt.artifact_storage_key_sha256,
+        field="prepared artifact_storage_key_sha256",
     )
     require_positive_int63(
         receipt.storage_codec_version,
         field="prepared storage_codec_version",
-    )
-    if type(receipt.locator_plan) is not CanonicalValueUploadPlan:
-        raise TypeError("prepared locator plan must be exact")
-    require_digest32(
-        receipt.locator_plan.value_sha256,
-        field="prepared locator plan value_sha256",
-    )
-    require_int63(
-        receipt.locator_plan.byte_count,
-        field="prepared locator plan byte_count",
     )
     if _hash_stream(receipt._archive) != (
         receipt.artifact_sha256,
@@ -4584,15 +4494,15 @@ def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
         raise ArtifactPreparationConflictError(
             "verified artifact archive bytes changed before durable persistence"
         )
-    expected_components = identity.artifact_locator_components(receipt.artifact_sha256)
+    expected_key = artifact_storage_key(authority.gid)
     if (
-        receipt.locator_components != expected_components
-        or identity.artifact_locator_digest(expected_components)
-        != receipt.artifact_locator_sha256
+        receipt.storage_key != expected_key
+        or identity.artifact_storage_key_digest(expected_key.segments)
+        != receipt.artifact_storage_key_sha256
         or receipt.storage_codec_version != authority.storage_codec[0]
     ):
         raise ArtifactPreparationConflictError(
-            "verified artifact receipt differs from derived locator or codec"
+            "verified artifact receipt differs from derived storage key or codec"
         )
 
 
@@ -4618,8 +4528,8 @@ def _intent_facts(intent: ArtifactProtectionIntent) -> tuple[Any, ...]:
         intent.publication_key,
         intent.artifact_sha256,
         intent.size_bytes,
-        intent.locator_components,
-        intent.artifact_locator_sha256,
+        intent.storage_key,
+        intent.artifact_storage_key_sha256,
         intent.storage_codec_version,
         intent.storage_generation,
         intent.protection_token,
@@ -4673,7 +4583,7 @@ def _protection_intent_from_family(
         authority.candidate_id,
         authority.publication_key,
         receipt.artifact_sha256,
-        receipt.artifact_locator_sha256,
+        receipt.artifact_storage_key_sha256,
         receipt.storage_codec_version,
         family.storage_generation,
         receipt.size_bytes,
@@ -4682,7 +4592,7 @@ def _protection_intent_from_family(
         token.candidate_id,
         token.publication_key,
         token.artifact_sha256,
-        token.artifact_locator_sha256,
+        token.artifact_storage_key_sha256,
         token.storage_codec_version,
         token.storage_generation,
         token.size_bytes,
@@ -4705,8 +4615,8 @@ def _protection_intent_from_family(
         authority.publication_key,
         receipt.artifact_sha256,
         receipt.size_bytes,
-        receipt.locator_components,
-        receipt.artifact_locator_sha256,
+        receipt.storage_key,
+        receipt.artifact_storage_key_sha256,
         receipt.storage_codec_version,
         family.storage_generation,
         family.protection_token,
@@ -4727,17 +4637,13 @@ def _persist_artifact_byte_identities(
     _insert_or_compare(
         work,
         "catalog_artifact_blobs",
-        ("artifact_sha256", "size_bytes", "artifact_locator_sha256"),
+        ("artifact_sha256", "size_bytes"),
         (
             receipt.artifact_sha256,
             receipt.size_bytes,
-            receipt.artifact_locator_sha256,
         ),
-        key_where="artifact_sha256 = %s OR artifact_locator_sha256 = %s",
-        key_parameters=(
-            receipt.artifact_sha256,
-            receipt.artifact_locator_sha256,
-        ),
+        key_where="artifact_sha256 = %s",
+        key_parameters=(receipt.artifact_sha256,),
         conflict_label="artifact blob",
     )
     try:

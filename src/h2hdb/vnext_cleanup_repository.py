@@ -328,7 +328,7 @@ class VNextCleanupRepository:
                 "catalog cleanup current-receipt probe returned an invalid shape"
             )
         state = _as_text(current[0], field="catalog cleanup current receipt state")
-        if state != "PROJECTION_FINALIZED" or current[1] is None:
+        if state != "PUBLISHED" or current[1] is None:
             return CatalogPublicationMaintenanceState.BLOCKED
         require_int63(current[1], field="catalog cleanup current finalized_at")
 
@@ -3876,14 +3876,14 @@ _CATALOG_PUBLICATION_ELIGIBILITY = """
 EXISTS (
     SELECT 1 FROM catalog_publication_receipts finalized
     WHERE finalized.revision = r.revision
-      AND finalized.state = 'PROJECTION_FINALIZED'
+      AND finalized.state = 'PUBLISHED'
       AND finalized.finalized_at IS NOT NULL)
 AND EXISTS (
     SELECT 1 FROM catalog_publication_commit_head_receipts head
     JOIN catalog_publication_receipts current
       ON current.receipt_id = head.receipt_id
     WHERE current.revision > r.revision
-      AND current.state = 'PROJECTION_FINALIZED'
+      AND current.state = 'PUBLISHED'
       AND current.finalized_at IS NOT NULL)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_publication_candidate_base_publication_commits base
@@ -3919,7 +3919,7 @@ EXISTS (
       ON replacement_receipt.receipt_id = replacement.receipt_id
     WHERE committed.receipt_id = r.receipt_id
       AND replacement.revision > committed.revision
-      AND replacement_receipt.state = 'PROJECTION_FINALIZED'
+      AND replacement_receipt.state = 'PUBLISHED'
       AND replacement_receipt.finalized_at IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM catalog_publication_commit_head_receipts retained_head
@@ -3995,7 +3995,7 @@ AND NOT EXISTS (
                         AND handoff_head.channel = base_source.channel
                         AND handoff_source.channel = handoff_head.channel
                         AND handoff.revision > base_commit.revision
-                        AND handoff_receipt.state = 'PROJECTION_FINALIZED'
+                        AND handoff_receipt.state = 'PUBLISHED'
                         AND handoff_receipt.finalized_at IS NOT NULL))))))
 """
 
@@ -5735,8 +5735,6 @@ AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.language_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.source_title_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_blobs x
-                WHERE x.artifact_locator_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_display_title_choices choice
     WHERE (choice.source_title_sha256 = r.value_sha256

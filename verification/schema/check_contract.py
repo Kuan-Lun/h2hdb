@@ -545,17 +545,19 @@ class ArtifactNameContract:
 
 
 @dataclass(frozen=True)
-class ArtifactLocatorContract:
-    relation: str
-    artifact_attribute: str
-    locator_attribute: str
+class ArtifactStorageKeyContract:
+    publication_relation: str
+    gid_attribute: str
     storage_codec_version: int
-    locator_codec_version: int
+    key_codec: str
+    key_codec_version: int
     components: tuple[str, ...]
+    shard_derivation: str
     derivation: str
-    golden_artifact_sha256: str
+    golden_gid: int
+    golden_components: tuple[str, ...]
     golden_payload_hex: str
-    golden_locator_sha256: str
+    golden_storage_key_sha256: str
     runtime_obligation: str
 
 
@@ -1121,7 +1123,7 @@ class Contract:
     source_root_contract: SourceRootContract | None = None
     gallery_observation_page_contract: GalleryObservationPageContract | None = None
     artifact_name_contract: ArtifactNameContract | None = None
-    artifact_locator_contract: ArtifactLocatorContract | None = None
+    artifact_storage_key_contract: ArtifactStorageKeyContract | None = None
     artifact_protection_token_contract: ArtifactProtectionTokenContract | None = None
     vertical_families: tuple[VerticalFamily, ...] = ()
     generation_streams: tuple[GenerationStream, ...] = ()
@@ -1535,10 +1537,10 @@ def load_contract(path: str | Path) -> Contract:
             "artifact_name_contract",
             _parse_artifact_name_contract,
         )
-        artifact_locator_contract = _parse_optional_contract_table(
+        artifact_storage_key_contract = _parse_optional_contract_table(
             document,
-            "artifact_locator_contract",
-            _parse_artifact_locator_contract,
+            "artifact_storage_key_contract",
+            _parse_artifact_storage_key_contract,
         )
         artifact_protection_token_contract = _parse_optional_contract_table(
             document,
@@ -1730,7 +1732,7 @@ def load_contract(path: str | Path) -> Contract:
         source_root_contract,
         gallery_observation_page_contract,
         artifact_name_contract,
-        artifact_locator_contract,
+        artifact_storage_key_contract,
         artifact_protection_token_contract,
         vertical_families,
         generation_streams,
@@ -3157,7 +3159,7 @@ def validate_cross_manifest_contracts(
             {frozenset({"source_revision"})},
         ),
         "catalog_revision_descriptor": (
-            ("revision", "publication_count"),
+            ("revision", "publication_count", "artifact_count"),
             {frozenset({"revision"})},
         ),
         "publication_commit": (
@@ -3565,7 +3567,7 @@ def _validate_retention_contract(
         "exact next-run delta base",
     )
     inactive_terms = (
-        "replacement common head is PROJECTION_FINALIZED",
+        "replacement common head is PUBLISHED",
         "source_revision_provenance is an ANALYSIS_RUN cleanup child",
         "every baseline/protection pin releases",
         "delete the inactive analysis/build",
@@ -3583,7 +3585,7 @@ def _validate_retention_contract(
         for token in (
             "current common head",
             "active/reachable working baseline",
-            "replacement head is PROJECTION_FINALIZED",
+            "replacement head is PUBLISHED",
             "all dynamic pins release",
             "child-first",
             "instead of preserving source history",
@@ -3610,7 +3612,7 @@ def _validate_retention_contract(
             "explicit historical revisions fail closed",
             "head advance",
             "DB_COMMITTED",
-            "PROJECTION_FINALIZED",
+            "PUBLISHED",
             "CATALOG_PUBLICATION",
         )
     ):
@@ -4098,7 +4100,7 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "artifact_member_plan_contract.runtime_obligation",
         "artifact_member_plan_contract.ready_obligation",
         "artifact_name_contract.runtime_obligation",
-        "artifact_locator_contract.runtime_obligation",
+        "artifact_storage_key_contract.runtime_obligation",
         "artifact_protection_token_contract.runtime_obligation",
         "publication_atomic_contract.selection_rule",
         "publication_atomic_contract.cursor_codec_rule",
@@ -4374,6 +4376,7 @@ def _validate_canonical_reference_roles_and_bootstrap(
         for domain in (
             {role.digest_domain for role in roles}
             | set(_FILESYSTEM_HASH_CACHE_DIGEST_DOMAINS)
+            | {"artifact_storage_key_bytes_v1"}
         )
     }
     expected_rows = expected_domain_rows | {
@@ -4412,7 +4415,7 @@ def _validate_canonical_reference_roles_and_bootstrap(
             (
                 "storage_codec_version",
                 "adapter_id",
-                "locator_codec_version",
+                "storage_key_codec_version",
                 "protection_token_codec_version",
             ),
             ("1", "managed-filesystem", "1", "1"),
@@ -5366,10 +5369,10 @@ def _validate_publication_atomic_contract(
         "byte digest",
         "ZIP comment",
         "protection token",
-        "locator",
+        "stable storage key",
         "digest/count",
-        "compare-and-swap",
-        "base head",
+        "compares the candidate-pinned base head",
+        "CASes the PUBLISHED revision",
         "partial revision",
         "catalog_summary_utf8_v1",
         "catalog_language_utf8_v1",
@@ -5378,9 +5381,9 @@ def _validate_publication_atomic_contract(
         "minimum gallery tag position",
         "exact ASCII bytes und",
         "without normalization or trimming",
-        "artifact_locator_bytes_v1",
+        "artifact_storage_key_bytes_v1",
         "at most 4096 bytes",
-        "iter_artifact_locator_payload",
+        "iter_artifact_storage_key_payload",
         "exact EOF",
         "u32be(segment_count)",
         "strict_utf8_segment",
@@ -5637,7 +5640,12 @@ def _validate_publication_atomic_contract(
             f"{prefix} permanent receipt-owned finalization DAG is incomplete"
         )
     finalization_terms = (
-        "DB_COMMITTED",
+        "reader-invisible DB_COMMITTED successor",
+        "without changing the common head",
+        "stable GID storage-key pages",
+        "batches of at most 128",
+        "reconciles at most 128 installs or removals per call",
+        "durable checkpoint reports READY",
         "permanent receipt-owned wide checkpoint",
         "exact generation",
         "bounded PREPARED page",
@@ -5651,10 +5659,13 @@ def _validate_publication_atomic_contract(
         "Retained batch-key or start-generation replay",
         "zero DML",
         "pruned retries return stale/not-found",
-        "empty terminal page writes the COMPLETE checkpoint",
-        "publication_commit_finalization marker together",
+        "empty terminal transaction writes the COMPLETE checkpoint and PUBLISHED marker",
+        "CASes the common head",
+        "exact-deletes both working roots atomically",
         "terminal current receipt",
         "committed_at remains finalized_at authority",
+        "subsequent adapter COMPLETE call is idempotent",
+        "response loss resumes cleanup without republishing",
         "no arbitrary historical receipt, MAX, marker timestamp or transient candidate state",
     )
     if contract.finalization_stage != "FINALIZE_ARTIFACTS" or any(
@@ -7419,64 +7430,55 @@ def _validate_artifact_derived_identity_contracts(
                 "collision-checked stored-pair validation"
             )
 
-    locator = contract.artifact_locator_contract
+    storage_key = contract.artifact_storage_key_contract
     expected_components = (
-        "sha256",
-        "lowerhex_artifact_sha256_prefix_2",
-        "lowerhex_artifact_sha256_64_plus_dot_cbz",
+        "hash-v1",
+        "domain_separated_gid_sha256_hex_0_2",
+        "domain_separated_gid_sha256_hex_2",
+        "canonical_artifact_name",
     )
-    if locator is None:
-        errors.append("artifact locator contract is missing")
+    if storage_key is None:
+        errors.append("artifact storage-key contract is missing")
     else:
-        location_relation = relation_by_name.get(locator.relation)
-        expected_location_keys = {
-            frozenset({locator.artifact_attribute}),
-            frozenset({locator.locator_attribute}),
-        }
         if (
-            locator.relation != "artifact_blob"
-            or locator.artifact_attribute != "artifact_sha256"
-            or locator.locator_attribute != "artifact_locator_sha256"
-            or locator.storage_codec_version != 1
-            or locator.locator_codec_version != 1
-            or locator.components != expected_components
-            or locator.derivation
-            != "artifact_locator_components(raw32 artifact_sha256) = "
-            "('sha256', lowerhex[0:2], lowerhex64 + '.cbz')"
-            or "reject caller components" not in locator.runtime_obligation
-            or "exact-compare both candidate keys" not in locator.runtime_obligation
+            storage_key.publication_relation != "publication_identity"
+            or storage_key.gid_attribute != "gid"
+            or storage_key.storage_codec_version != 1
+            or storage_key.key_codec != "gid-sha256-12-v1"
+            or storage_key.key_codec_version != 1
+            or storage_key.components != expected_components
+            or storage_key.shard_derivation
+            != "lowerhex(SHA256(ascii('h2hdb-media-gid-shard-v1\\0') || "
+            "u64be(positive gid)))[0:3]"
+            or storage_key.derivation
+            != "artifact_storage_key_components(gid) = "
+            "('hash-v1', shard[0:2], shard[2], artifact_name(gid))"
+            or "reject caller components" not in storage_key.runtime_obligation
+            or "recompute the key digest" not in storage_key.runtime_obligation
         ):
-            errors.append("artifact locator contract drifts from content codec v1")
-        if (
-            location_relation is None
-            or set(location_relation.attributes)
-            != {locator.artifact_attribute, "size_bytes", locator.locator_attribute}
-            or set(location_relation.declared_keys) != expected_location_keys
-            or not _has_fk(
-                location_relation,
-                (locator.locator_attribute,),
-                "canonical_value_identity",
-                ("value_sha256",),
-            )
+            errors.append("artifact storage-key contract drifts from GID codec v1")
+        publication_relation = relation_by_name.get(storage_key.publication_relation)
+        if publication_relation is None or storage_key.gid_attribute not in (
+            publication_relation.attributes
         ):
-            errors.append(
-                "artifact locator relation lacks exact bidirectional keys/FKs"
-            )
-        artifact_sha256 = _decode_exact_lower_hex(
-            locator.golden_artifact_sha256,
-            32,
-            "artifact locator golden artifact SHA-256",
-            errors,
-        )
+            errors.append("artifact storage-key contract lacks GID authority")
         payload = _decode_exact_lower_hex(
-            locator.golden_payload_hex,
+            storage_key.golden_payload_hex,
             None,
-            "artifact locator golden payload",
+            "artifact storage-key golden payload",
             errors,
         )
-        if artifact_sha256 is not None and payload is not None:
-            lowerhex = artifact_sha256.hex().encode("ascii")
-            segments = (b"sha256", lowerhex[:2], lowerhex + b".cbz")
+        if payload is not None:
+            shard = hashlib.sha256(
+                b"h2hdb-media-gid-shard-v1\0"
+                + storage_key.golden_gid.to_bytes(8, "big")
+            ).hexdigest()
+            segments = (
+                b"hash-v1",
+                shard[:2].encode("ascii"),
+                shard[2].encode("ascii"),
+                f"h2h-{storage_key.golden_gid}.cbz".encode("ascii"),
+            )
             expected_payload = b"".join(
                 (
                     (1).to_bytes(4, "big"),
@@ -7487,25 +7489,30 @@ def _validate_artifact_derived_identity_contracts(
                     ),
                 )
             )
-            if payload != expected_payload:
-                errors.append("artifact locator golden payload is not SHA-derived")
-            if _canonical_value_sha256("artifact_locator_bytes_v1", payload) != (
-                locator.golden_locator_sha256
+            if (
+                storage_key.golden_components
+                != tuple(segment.decode("ascii") for segment in segments)
+                or payload != expected_payload
             ):
-                errors.append("artifact locator golden canonical digest does not hash")
+                errors.append("artifact storage-key golden is not GID-derived")
+            if _canonical_value_sha256(
+                "artifact_storage_key_bytes_v1",
+                payload,
+            ) != (storage_key.golden_storage_key_sha256):
+                errors.append("artifact storage-key golden digest does not hash")
 
     protection = contract.artifact_protection_token_contract
     expected_receipt_framing = (
         "SHA256(ascii('h2hdb-vnext-artifact-storage-receipt\\0') || "
         "raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || "
-        "raw32(artifact_locator_sha256) || u64be(storage_generation) || "
+        "raw32(artifact_storage_key_sha256) || u64be(storage_generation) || "
         "u64be(size_bytes))[0:16]"
     )
     expected_token_framing = (
         "ascii('h2hdb-vnext-artifact-protection\\0') || u32be(codec_version=1) || "
         "u32be(storage_codec_version) || raw16(candidate_id) || "
         "raw32(publication_key) || raw32(artifact_sha256) || "
-        "raw32(artifact_locator_sha256) || raw16(receipt_id) || "
+        "raw32(artifact_storage_key_sha256) || raw16(receipt_id) || "
         "u64be(storage_generation) || u64be(size_bytes)"
     )
     if protection is None:
@@ -7557,7 +7564,7 @@ def _validate_artifact_derived_identity_contracts(
             candidate = bytes.fromhex("11" * 16)
             publication = bytes.fromhex("22" * 32)
             artifact = bytes.fromhex("33" * 32)
-            artifact_locator = bytes.fromhex("44" * 32)
+            artifact_storage_key = bytes.fromhex("44" * 32)
             generation = (7).to_bytes(8, "big")
             size = (9).to_bytes(8, "big")
             expected_receipt = hashlib.sha256(
@@ -7565,7 +7572,7 @@ def _validate_artifact_derived_identity_contracts(
                 + candidate
                 + publication
                 + artifact
-                + artifact_locator
+                + artifact_storage_key
                 + generation
                 + size
             ).digest()[:16]
@@ -7576,7 +7583,7 @@ def _validate_artifact_derived_identity_contracts(
                 + candidate
                 + publication
                 + artifact
-                + artifact_locator
+                + artifact_storage_key
                 + expected_receipt
                 + generation
                 + size
@@ -9425,7 +9432,6 @@ def _validate_long_value_storage_contract(
         "policy_component_sha256",
         "summary_sha256",
         "language_sha256",
-        "artifact_locator_sha256",
     }
     expected_direct = {
         "metadata_fingerprint",
@@ -10537,12 +10543,15 @@ def _validate_publication_commit_contract(
         "complete wide publication_commit last",
         "replay is candidate/preparation-key local O(1)",
         "candidate_id recovery is permanent",
-        "common head stores only one receipt",
-        "CASes in the same transaction",
+        "common head stores only one PUBLISHED receipt",
+        "reader-invisible DB_COMMITTED successor",
+        "bounded external library activation reports READY",
+        "CAS the common head",
+        "exact-delete both working roots atomically",
         "operational_activation is a derived read-only inline projection",
         "not a SQL schema object",
         "never inserted or updated",
-        "append-only marker",
+        "append-only PUBLISHED marker",
         "retained current terminal FINALIZE_ARTIFACTS receipt",
     )
     ready_terms = (
@@ -10551,7 +10560,10 @@ def _validate_publication_commit_contract(
         "candidate/revision/source/generation/preparation candidate-key uniqueness",
         "contiguous successor edges inside that window",
         "no fork/orphan/gap after the compacted floor",
-        "unique maximum no-successor head",
+        "every common head is PUBLISHED",
+        "at most one reader-invisible DB_COMMITTED direct successor",
+        "unique maximum no-successor tip",
+        "retaining both working roots",
         "oldest retained positive node may be the floor",
         "quick check_readiness remains epoch-only O(1)",
         "no OPDS hot path",
@@ -13063,21 +13075,23 @@ def _parse_artifact_name_contract(
     )
 
 
-def _parse_artifact_locator_contract(
+def _parse_artifact_storage_key_contract(
     value: Mapping[str, Any],
-) -> ArtifactLocatorContract:
-    context = "contract.artifact_locator_contract"
-    return ArtifactLocatorContract(
-        relation=_string(value, "relation", context),
-        artifact_attribute=_string(value, "artifact_attribute", context),
-        locator_attribute=_string(value, "locator_attribute", context),
+) -> ArtifactStorageKeyContract:
+    context = "contract.artifact_storage_key_contract"
+    return ArtifactStorageKeyContract(
+        publication_relation=_string(value, "publication_relation", context),
+        gid_attribute=_string(value, "gid_attribute", context),
         storage_codec_version=_integer(value, "storage_codec_version", context),
-        locator_codec_version=_integer(value, "locator_codec_version", context),
+        key_codec=_string(value, "key_codec", context),
+        key_codec_version=_integer(value, "key_codec_version", context),
         components=_string_tuple(value, "components", context),
+        shard_derivation=_string(value, "shard_derivation", context),
         derivation=_string(value, "derivation", context),
-        golden_artifact_sha256=_string(value, "golden_artifact_sha256", context),
+        golden_gid=_integer(value, "golden_gid", context),
+        golden_components=_string_tuple(value, "golden_components", context),
         golden_payload_hex=_string(value, "golden_payload_hex", context),
-        golden_locator_sha256=_string(value, "golden_locator_sha256", context),
+        golden_storage_key_sha256=_string(value, "golden_storage_key_sha256", context),
         runtime_obligation=_string(value, "runtime_obligation", context),
     )
 

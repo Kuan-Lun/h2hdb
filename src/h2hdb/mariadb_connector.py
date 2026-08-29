@@ -21,6 +21,7 @@ from .sql_connector import (
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 MAX_ALLOWED_PACKET_QUERY = "SELECT @@SESSION.max_allowed_packet"
+INNODB_DURABILITY_QUERY = "SELECT @@GLOBAL.innodb_flush_log_at_trx_commit"
 INSERT_PACKET_BUDGET_PERCENT = 80
 PACKET_PROTOCOL_RESERVE_BYTES = 1024
 PARAMETER_LITERAL_RESERVE_BYTES = 32
@@ -102,6 +103,25 @@ class MariaDBConnector(SQLConnector):
         connection_params = self.params.model_dump(exclude={"read_only"})
         self.connection = SQLConnect(**connection_params)
         self._in_transaction = False
+        try:
+            durability = self.fetch_one(INNODB_DURABILITY_QUERY)
+            if (
+                len(durability) != 1
+                or isinstance(durability[0], bool)
+                or int(durability[0]) != 1
+            ):
+                raise DatabaseConfigurationError(
+                    "MariaDB must provide @@GLOBAL.innodb_flush_log_at_trx_commit=1"
+                )
+        except (TypeError, ValueError) as error:
+            self.connection.close()
+            raise DatabaseConfigurationError(
+                "MariaDB returned an invalid "
+                "@@GLOBAL.innodb_flush_log_at_trx_commit value"
+            ) from error
+        except BaseException:
+            self.connection.close()
+            raise
         if self.params.read_only:
             with MariaDBCursor(self.connection) as cursor:
                 cursor.execute("SET SESSION TRANSACTION READ ONLY")

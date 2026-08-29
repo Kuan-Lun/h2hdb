@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-__all__ = ["CatalogIdentifierError", "CatalogRevisionNotFoundError"]
+__all__ = [
+    "CatalogCursorError",
+    "CatalogIdentifierError",
+    "CatalogRevisionNotFoundError",
+]
 
 
 class CatalogIdentifierError(RuntimeError):
     """A public catalog identifier is not in its exact canonical grammar."""
+
+
+class CatalogCursorError(CatalogIdentifierError):
+    """A catalog seek cursor is malformed, stale, or not server-derived."""
 
 
 class CatalogRevisionNotFoundError(LookupError):

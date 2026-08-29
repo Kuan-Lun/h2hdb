@@ -45,14 +45,12 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
     publication_key = b"\x80\xff" + b"publication-key-binary-value!".ljust(30, b"!")
     artifact_sha256 = b"\x81" + b"artifact-digest-value".ljust(31, b"!")
     semantics_sha256 = b"\x82" + b"semantics-digest-value".ljust(31, b"!")
-    locator_sha256 = b"\x83" + b"locator-digest-value".ljust(31, b"!")
     assert all(
         len(value) == 32
         for value in (
             publication_key,
             artifact_sha256,
             semantics_sha256,
-            locator_sha256,
         )
     )
     try:
@@ -60,9 +58,8 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                "VALUES (%s, %s, %s)",
-                (artifact_sha256, 123, locator_sha256),
+                "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+                (artifact_sha256, 123),
             )
             connector.execute(
                 "INSERT INTO catalog_artifacts "
@@ -84,7 +81,6 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
             publication_key: (
                 artifact_sha256,
                 123,
-                locator_sha256,
                 semantics_sha256,
             )
         }

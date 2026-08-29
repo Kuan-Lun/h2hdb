@@ -183,8 +183,12 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "start_cursor",
         "next_cursor",
     }
-    assert {"summary_sha256", "language_sha256", "artifact_locator_sha256"} <= set(
+    assert {"summary_sha256", "language_sha256"} <= set(
         long_value_contract.canonical_reference_attributes
+    )
+    assert (
+        "artifact_storage_key_sha256"
+        not in long_value_contract.canonical_reference_attributes
     )
     assert set(long_value_contract.opaque_audit_references) == {
         "analysis_snapshot_manifest.snapshot_manifest_sha256",
@@ -2138,10 +2142,9 @@ def test_long_value_boundary_rejects_direct_payload_key_promotion() -> None:
     (
         ("catalog_publication_storage", "summary_sha256"),
         ("catalog_publication_storage", "language_sha256"),
-        ("artifact_blob", "artifact_locator_sha256"),
     ),
 )
-def test_unbounded_publication_and_locator_values_require_canonical_fks(
+def test_unbounded_publication_values_require_canonical_fks(
     relation_name: str,
     attribute: str,
 ) -> None:
@@ -2174,7 +2177,11 @@ def test_publication_locator_requires_bounded_exact_streaming_codec() -> None:
     contract = checker.load_contract(CATALOG)
     publication = contract.publication_atomic_contract
     assert publication is not None
-    for term in ("at most 4096 bytes", "iter_artifact_locator_payload", "exact EOF"):
+    for term in (
+        "at most 4096 bytes",
+        "iter_artifact_storage_key_payload",
+        "exact EOF",
+    ):
         invalid = replace(
             contract,
             publication_atomic_contract=replace(
@@ -3352,10 +3359,10 @@ def test_artifact_name_is_normalized_identity_not_delta_state() -> None:
             "artifact name contract drifts",
         ),
         (
-            "artifact_locator_contract",
+            "artifact_storage_key_contract",
             "golden_payload_hex",
             "00",
-            "artifact locator golden payload is not SHA-derived",
+            "artifact storage-key golden payload is not GID-derived",
         ),
         (
             "artifact_protection_token_contract",

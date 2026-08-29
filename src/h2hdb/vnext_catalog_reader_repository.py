@@ -19,17 +19,23 @@ __all__ = [
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
 
 from . import vnext_identity as identity
-from .catalog_errors import CatalogIdentifierError, CatalogRevisionNotFoundError
+from .catalog_errors import (
+    CatalogCursorError,
+    CatalogIdentifierError,
+    CatalogRevisionNotFoundError,
+)
 from .domain import (
     CatalogArtifact,
+    CatalogArtifactCursor,
+    CatalogArtifactPage,
     CatalogContributor,
     CatalogPage,
     CatalogPublication,
     CatalogRevision,
     CatalogSubject,
+    artifact_storage_key,
 )
 from .sql_connector import SQLConnector
 from .vnext_canonical_value_repository import (
@@ -202,6 +208,7 @@ class VNextCatalogReaderRepository:
         )
         row = connector.fetch_one(
             "SELECT committed.revision, descriptor.publication_count, "
+            "descriptor.artifact_count, "
             "committed.committed_at, committed.generation "
             "FROM catalog_channel_registry AS registry "
             "JOIN catalog_publication_commit_head_receipts AS head "
@@ -217,17 +224,23 @@ class VNextCatalogReaderRepository:
             (exact_channel,),
         )
         missing = 0 if requested is None else requested
-        if len(row) != 4:
+        if len(row) != 5:
             raise CatalogRevisionNotFoundError(missing)
         selected = require_positive_int63(row[0], field="catalog head revision")
         if requested is not None and requested != selected:
             raise CatalogRevisionNotFoundError(requested)
-        require_positive_int63(row[3], field="catalog revision generation")
-        return CatalogRevision(
-            selected,
-            _datetime_from_microseconds(row[2], field="catalog published_at"),
-            require_int63(row[1], field="catalog publication_count"),
-        )
+        require_positive_int63(row[4], field="catalog revision generation")
+        try:
+            return CatalogRevision(
+                selected,
+                _datetime_from_microseconds(row[3], field="catalog published_at"),
+                require_int63(row[1], field="catalog publication_count"),
+                require_int63(row[2], field="catalog artifact_count"),
+            )
+        except ValueError as error:
+            raise VNextCatalogReadError(
+                "catalog revision violates the all-or-none artifact-count contract"
+            ) from error
 
     def list_publications(
         self,
@@ -237,7 +250,6 @@ class VNextCatalogReaderRepository:
         revision: CatalogRevision | int | None = None,
         offset: int = 0,
         limit: int = 50,
-        require_artifact: bool = False,
     ) -> CatalogPage:
         if query is not None:
             if not isinstance(query, str):
@@ -251,49 +263,17 @@ class VNextCatalogReaderRepository:
         page_limit = require_positive_int63(limit, field="catalog page limit")
         if page_limit > 128:
             raise ValueError("catalog page limit must not exceed 128")
-        if not isinstance(require_artifact, bool):
-            raise TypeError("require_artifact must be bool")
         pinned = self._pin(connector, revision)
         total = pinned.publication_count
-        if require_artifact:
-            total_row = connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_publication_order AS o "
-                "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifacts AS artifact "
-                "WHERE artifact.revision = o.revision "
-                "AND artifact.publication_key = o.publication_key)",
-                (pinned.revision,),
-            )
-            if len(total_row) != 1:
-                raise VNextCatalogReadError(
-                    "artifact-filtered catalog count has an invalid shape"
-                )
-            total = require_int63(total_row[0], field="filtered publication_count")
-            if total > pinned.publication_count:
-                raise VNextCatalogReadError(
-                    "artifact-filtered count exceeds the revision publication_count"
-                )
         if page_offset > total:
             page_offset = total
-        if require_artifact:
-            rows = connector.fetch_all(
-                "SELECT o.position, o.publication_key "
-                "FROM catalog_publication_order AS o "
-                "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifacts AS artifact "
-                "WHERE artifact.revision = o.revision "
-                "AND artifact.publication_key = o.publication_key) "
-                "ORDER BY o.position LIMIT %s OFFSET %s",
-                (pinned.revision, page_limit, page_offset),
-            )
-        else:
-            rows = connector.fetch_all(
-                "SELECT o.position, o.publication_key "
-                "FROM catalog_publication_order AS o "
-                "WHERE o.revision = %s AND o.position >= %s "
-                "ORDER BY o.position LIMIT %s",
-                (pinned.revision, page_offset, page_limit),
-            )
+        rows = connector.fetch_all(
+            "SELECT o.position, o.publication_key "
+            "FROM catalog_publication_order AS o "
+            "WHERE o.revision = %s AND o.position >= %s "
+            "ORDER BY o.position LIMIT %s",
+            (pinned.revision, page_offset, page_limit),
+        )
         expected_count = min(page_limit, total - page_offset)
         if len(rows) != expected_count:
             raise VNextCatalogReadError(
@@ -305,13 +285,13 @@ class VNextCatalogReaderRepository:
             if len(row) != 2:
                 raise VNextCatalogReadError("catalog order row has an invalid shape")
             position = require_int63(row[0], field="catalog publication position")
-            if not require_artifact and position != page_offset + index:
+            if position != page_offset + index:
                 raise VNextCatalogReadError(
                     "catalog publication order is not zero-based and contiguous"
                 )
             if previous_position is not None and position <= previous_position:
                 raise VNextCatalogReadError(
-                    "artifact-filtered publication order is not strictly increasing"
+                    "catalog publication order is not strictly increasing"
                 )
             previous_position = position
             keys.append(require_digest32(row[1], field="publication_key"))
@@ -330,6 +310,125 @@ class VNextCatalogReaderRepository:
             offset=page_offset,
             limit=page_limit,
             total=total,
+        )
+
+    def list_artifact_publications(
+        self,
+        connector: SQLConnector,
+        *,
+        after: CatalogArtifactCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogArtifactPage:
+        """Seek through artifact-bearing publications without OFFSET scans."""
+
+        if after is not None and not isinstance(after, CatalogArtifactCursor):
+            raise TypeError("artifact cursor must be CatalogArtifactCursor or None")
+        page_limit = require_positive_int63(limit, field="artifact page limit")
+        if page_limit > 128:
+            raise ValueError("artifact page limit must not exceed 128")
+        requested_revision = revision
+        if after is not None and revision is None:
+            requested_revision = after.revision
+        pinned = self._pin(connector, requested_revision)
+        after_position = -1
+        if after is not None:
+            if after.revision != pinned.revision:
+                raise CatalogCursorError(
+                    "artifact cursor revision differs from the pinned revision"
+                )
+            if after.position >= pinned.artifact_count:
+                raise CatalogCursorError(
+                    "artifact cursor position lies outside the sealed artifact set"
+                )
+            try:
+                gid = identity.decode_publication_id(
+                    after.publication_id.encode("ascii", errors="strict")
+                )
+            except (UnicodeError, identity.VNextIdentityError) as error:
+                raise CatalogCursorError(
+                    "artifact cursor publication_id is not canonical"
+                ) from error
+            cursor_key = identity.publication_key(gid)
+            cursor_row = connector.fetch_one(
+                "SELECT ordering.publication_key "
+                "FROM catalog_publication_order AS ordering "
+                "JOIN catalog_artifacts AS artifact "
+                "ON artifact.revision = ordering.revision "
+                "AND artifact.publication_key = ordering.publication_key "
+                "WHERE ordering.revision = %s AND ordering.position = %s",
+                (pinned.revision, after.position),
+            )
+            if cursor_row != (cursor_key,):
+                raise CatalogCursorError(
+                    "artifact cursor does not match an exact artifact order row"
+                )
+            after_position = after.position
+
+        rows = connector.fetch_all(
+            "SELECT ordering.position, ordering.publication_key, identity.gid "
+            "FROM catalog_publication_order AS ordering "
+            "JOIN catalog_artifacts AS artifact "
+            "ON artifact.revision = ordering.revision "
+            "AND artifact.publication_key = ordering.publication_key "
+            "JOIN catalog_publication_identities AS identity "
+            "ON identity.publication_key = ordering.publication_key "
+            "WHERE ordering.revision = %s AND ordering.position > %s "
+            "ORDER BY ordering.position LIMIT %s",
+            (pinned.revision, after_position, page_limit + 1),
+        )
+        expected_row_count = min(
+            page_limit + 1,
+            max(0, pinned.artifact_count - (after_position + 1)),
+        )
+        if len(rows) != expected_row_count:
+            raise VNextCatalogReadError(
+                "catalog artifact_count disagrees with its immutable order rows"
+            )
+        parsed: list[tuple[int, bytes, int]] = []
+        previous = after_position
+        for row in rows:
+            if len(row) != 3:
+                raise VNextCatalogReadError("artifact order row has an invalid shape")
+            position = require_int63(row[0], field="artifact order position")
+            key = require_digest32(row[1], field="artifact publication_key")
+            gid = require_positive_int63(row[2], field="artifact publication GID")
+            if position != previous + 1 or identity.publication_key(gid) != key:
+                raise VNextCatalogReadError(
+                    "artifact order is not contiguous and congruent"
+                )
+            parsed.append((position, key, gid))
+            previous = position
+
+        visible = parsed[:page_limit]
+        keys = tuple(item[1] for item in visible)
+        loader = _CanonicalLoader(connector, backend=self._backend)
+        hydrated = self._hydrate_publications(
+            connector,
+            loader,
+            revision=pinned.revision,
+            publication_keys=keys,
+        )
+        publications = tuple(hydrated[key] for key in keys)
+        if any(len(publication.artifacts) != 1 for publication in publications):
+            raise VNextCatalogReadError(
+                "artifact-only page hydrated a publication without one artifact"
+            )
+        next_cursor = None
+        if len(parsed) > page_limit:
+            position, _key, gid = visible[-1]
+            next_cursor = CatalogArtifactCursor(
+                revision=pinned.revision,
+                position=position,
+                publication_id=identity.publication_id(gid).decode("ascii"),
+            )
+        self._assert_still_current(connector, pinned)
+        return CatalogArtifactPage(
+            revision=pinned,
+            publications=publications,
+            next_cursor=next_cursor,
+            limit=page_limit,
+            total=pinned.artifact_count,
         )
 
     def get_publication(
@@ -670,8 +769,7 @@ class VNextCatalogReaderRepository:
                         modified_at=modified_at,
                         artifact_sha256=artifact[0],
                         size_bytes=artifact[1],
-                        locator_sha256=artifact[2],
-                        artifact_semantics_sha256=artifact[3],
+                        artifact_semantics_sha256=artifact[2],
                     ),
                 )
             )
@@ -808,13 +906,12 @@ class VNextCatalogReaderRepository:
         *,
         revision: int,
         publication_keys: tuple[bytes, ...],
-    ) -> dict[bytes, tuple[bytes, int, bytes, bytes]]:
+    ) -> dict[bytes, tuple[bytes, int, bytes]]:
         selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
         rows = connector.fetch_all(
             f"WITH selected(publication_key) AS ({selected_cte}) "
             "SELECT artifact.publication_key, artifact.artifact_sha256, "
-            "artifact.artifact_semantics_sha256, artifact_blob_row.size_bytes, "
-            "artifact_blob_row.artifact_locator_sha256 "
+            "artifact.artifact_semantics_sha256, artifact_blob_row.size_bytes "
             "FROM catalog_artifacts AS artifact "
             "JOIN selected AS chosen "
             "ON chosen.publication_key = artifact.publication_key "
@@ -823,9 +920,9 @@ class VNextCatalogReaderRepository:
             "WHERE artifact.revision = %s ORDER BY artifact.publication_key",
             (*publication_keys, revision),
         )
-        result: dict[bytes, tuple[bytes, int, bytes, bytes]] = {}
+        result: dict[bytes, tuple[bytes, int, bytes]] = {}
         for row in rows:
-            if len(row) != 5 or any(value is None for value in row[1:]):
+            if len(row) != 4 or any(value is None for value in row[1:]):
                 raise VNextCatalogReadError(
                     "catalog artifact lacks total storage facts"
                 )
@@ -835,7 +932,6 @@ class VNextCatalogReaderRepository:
             result[key] = (
                 require_digest32(row[1], field="artifact_sha256"),
                 require_int63(row[3], field="artifact size_bytes"),
-                require_digest32(row[4], field="artifact_locator_sha256"),
                 require_digest32(row[2], field="artifact_semantics_sha256"),
             )
         return result
@@ -899,20 +995,18 @@ class VNextCatalogReaderRepository:
             ),
             artifact_sha256=facts[0],
             size_bytes=facts[1],
-            locator_sha256=facts[2],
-            artifact_semantics_sha256=facts[3],
+            artifact_semantics_sha256=facts[2],
         )
 
 
 def _catalog_artifact_from_facts(
-    loader: _CanonicalLoader,
+    _loader: _CanonicalLoader,
     *,
     publication_key: bytes,
     gid: int,
     modified_at: datetime,
     artifact_sha256: bytes,
     size_bytes: int,
-    locator_sha256: bytes,
     artifact_semantics_sha256: bytes,
 ) -> CatalogArtifact:
     exact_key = require_digest32(publication_key, field="publication_key")
@@ -928,29 +1022,10 @@ def _catalog_artifact_from_facts(
     )
     name_bytes = identity.artifact_name(exact_gid)
     name = name_bytes.decode("ascii")
-    locator_payload = loader.load(
-        require_digest32(locator_sha256, field="artifact_locator_sha256"),
-        domain=b"artifact_locator_bytes_v1",
-    )
-    if len(locator_payload) > 4096:
-        raise VNextCatalogReadError("artifact locator exceeds its v1 bound")
-    try:
-        components = identity.decode_artifact_locator(locator_payload)
-    except ValueError as error:
-        raise VNextCatalogReadError("artifact locator framing is invalid") from error
-    if not components or components != identity.artifact_locator_components(digest):
-        raise VNextCatalogReadError(
-            "artifact locator disagrees with its content-addressed identity"
-        )
-    relative = PurePosixPath(*components)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise VNextCatalogReadError("artifact locator is not a safe relative path")
     return CatalogArtifact(
         artifact_id=identity.artifact_id(exact_gid, digest).decode("ascii"),
         name=name,
-        location=Path(*components),
+        storage_key=artifact_storage_key(exact_gid),
         media_type=_CBZ_MEDIA_TYPE,
         size_bytes=require_int63(size_bytes, field="artifact size_bytes"),
         sha256=digest.hex(),

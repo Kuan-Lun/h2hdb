@@ -8,6 +8,7 @@ import pytest
 
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.domain import ArtifactStorageKey
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_artifact_family import (
@@ -99,6 +100,7 @@ def _seed_candidate(
 def _seed_family(
     connector: SQLiteConnector,
     *,
+    gid: int,
     candidate_id: bytes,
     publication_key: bytes,
     artifact_sha256: bytes,
@@ -106,14 +108,15 @@ def _seed_family(
     storage_generation: int = 7,
     size_bytes: int = 99,
 ) -> bytes:
-    components = identity.artifact_locator_components(artifact_sha256)
-    locator_sha256 = identity.artifact_locator_digest(components)
+    assert publication_key == identity.publication_key(gid)
+    components = identity.artifact_storage_key_components(gid)
+    storage_key_sha256 = identity.artifact_storage_key_digest(components)
     token = identity.encode_artifact_protection_token(
         1,
         candidate_id,
         publication_key,
         artifact_sha256,
-        locator_sha256,
+        storage_key_sha256,
         storage_generation,
         size_bytes,
     )
@@ -122,9 +125,13 @@ def _seed_family(
         [
             (
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                "VALUES (%s, %s, %s)",
-                (artifact_sha256, size_bytes, locator_sha256),
+                "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+                (artifact_sha256, size_bytes),
+            ),
+            (
+                "INSERT INTO catalog_publication_identities "
+                "(publication_key, gid) VALUES (%s, %s)",
+                (publication_key, gid),
             ),
             (
                 "INSERT INTO catalog_prepared_artifacts "
@@ -167,11 +174,12 @@ def test_token_lookup_revalidates_total_blob_authority(tmp_path: Path) -> None:
     connector = _database(tmp_path / "prepared-token-authority.sqlite3")
     try:
         candidate_id = b"a" * 16
-        publication_key = b"p" * 32
+        publication_key = identity.publication_key(1)
         artifact_sha256 = b"c" * 32
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
         token = _seed_family(
             connector,
+            gid=1,
             candidate_id=candidate_id,
             publication_key=publication_key,
             artifact_sha256=artifact_sha256,
@@ -191,7 +199,10 @@ def test_token_lookup_revalidates_total_blob_authority(tmp_path: Path) -> None:
             )
         finally:
             connector.execute("PRAGMA foreign_keys = ON")
-        with pytest.raises(ArtifactFamilyCollisionError, match="blob or locator"):
+        with pytest.raises(
+            ArtifactFamilyCollisionError,
+            match="blob or storage-key",
+        ):
             load_prepared_artifact_family_by_token(
                 connector,
                 protection_token=token,
@@ -200,7 +211,7 @@ def test_token_lookup_revalidates_total_blob_authority(tmp_path: Path) -> None:
         connector.close()
 
 
-def test_wide_artifact_relations_enforce_alternate_candidate_keys(
+def test_artifact_relations_enforce_declared_candidate_keys(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "artifact-wide-candidate-keys.sqlite3")
@@ -229,16 +240,14 @@ def test_wide_artifact_relations_enforce_alternate_candidate_keys(
                 )
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                "VALUES (%s, 1, %s)",
-                (b"a" * 32, b"l" * 32),
+                "(artifact_sha256, size_bytes) VALUES (%s, 1)",
+                (b"a" * 32,),
             )
             with pytest.raises(DatabaseDuplicateKeyError):
                 connector.execute(
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                    "VALUES (%s, 2, %s)",
-                    (b"b" * 32, b"l" * 32),
+                    "(artifact_sha256, size_bytes) VALUES (%s, 2)",
+                    (b"a" * 32,),
                 )
         finally:
             connector.execute("PRAGMA foreign_keys = ON")
@@ -277,13 +286,15 @@ class _MonotoneAdapter:
     ) -> None:
         self.connector = connector
         self.acknowledge = acknowledge
-        self.calls: list[tuple[tuple[str, ...], bytes]] = []
+        self.calls: list[tuple[ArtifactStorageKey, bytes, int, bytes]] = []
         self.tombstones: set[bytes] = set()
         self.protected: set[bytes] = set()
 
     def release(
         self,
-        locator_components: tuple[str, ...],
+        storage_key: ArtifactStorageKey,
+        expected_artifact_sha256: bytes,
+        expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactReleaseStorageEvidence:
         # A nested read succeeds only because the repository committed its
@@ -291,7 +302,14 @@ class _MonotoneAdapter:
         if self.connector is not None:
             with self.connector.read_transaction():
                 assert self.connector.fetch_one("SELECT 1") == (1,)
-        self.calls.append((locator_components, protection_token))
+        self.calls.append(
+            (
+                storage_key,
+                expected_artifact_sha256,
+                expected_size_bytes,
+                protection_token,
+            )
+        )
         if self.acknowledge:
             self.protected.discard(protection_token)
             self.tombstones.add(protection_token)
@@ -312,11 +330,12 @@ def test_response_loss_reuses_tokens_and_commit_replay_is_zero_write(
     connector = _database(tmp_path / "artifact-release.sqlite3")
     try:
         candidate_id = b"a" * 16
-        first_publication = b"a" * 32
-        second_publication = b"b" * 32
+        first_publication = identity.publication_key(1)
+        second_publication = identity.publication_key(2)
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
         first_token = _seed_family(
             connector,
+            gid=1,
             candidate_id=candidate_id,
             publication_key=first_publication,
             artifact_sha256=b"c" * 32,
@@ -324,6 +343,7 @@ def test_response_loss_reuses_tokens_and_commit_replay_is_zero_write(
         )
         second_token = _seed_family(
             connector,
+            gid=2,
             candidate_id=candidate_id,
             publication_key=second_publication,
             artifact_sha256=b"d" * 32,
@@ -347,7 +367,7 @@ def test_response_loss_reuses_tokens_and_commit_replay_is_zero_write(
             adapters={adapter.adapter_id: adapter},
             now=4,
         )
-        assert tuple(token for _locator, token in adapter.calls) == (
+        assert tuple(token for *_authority, token in adapter.calls) == (
             first_token,
             second_token,
         )
@@ -403,15 +423,17 @@ def test_active_or_published_candidate_blocks_every_external_call(
         )
         _seed_family(
             connector,
+            gid=1,
             candidate_id=active_candidate,
-            publication_key=b"a" * 32,
+            publication_key=identity.publication_key(1),
             artifact_sha256=b"c" * 32,
             state="PENDING",
         )
         _seed_family(
             connector,
+            gid=2,
             candidate_id=published_candidate,
-            publication_key=b"b" * 32,
+            publication_key=identity.publication_key(2),
             artifact_sha256=b"d" * 32,
             state="PREPARED",
         )
@@ -472,10 +494,11 @@ def test_candidate_race_after_external_release_blocks_state_until_retry(
     connector = _database(tmp_path / "artifact-release-race.sqlite3")
     try:
         candidate_id = b"a" * 16
-        publication_key = b"p" * 32
+        publication_key = identity.publication_key(1)
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
         token = _seed_family(
             connector,
+            gid=1,
             candidate_id=candidate_id,
             publication_key=publication_key,
             artifact_sha256=b"c" * 32,
@@ -520,7 +543,7 @@ def test_candidate_race_after_external_release_blocks_state_until_retry(
             now=7,
         )
         _commit(connector, retry_acknowledgement, now=8)
-        assert [call[1] for call in adapter.calls] == [token, token]
+        assert [call[3] for call in adapter.calls] == [token, token]
         assert adapter.tombstones == {token}
     finally:
         connector.close()
@@ -534,11 +557,12 @@ def test_every_release_state_statement_rolls_back_the_complete_page(
     connector = _database(tmp_path / f"artifact-release-fault-{fail_on_update}.sqlite3")
     try:
         candidate_id = b"a" * 16
-        first_publication = b"a" * 32
-        second_publication = b"b" * 32
+        first_publication = identity.publication_key(1)
+        second_publication = identity.publication_key(2)
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
         _seed_family(
             connector,
+            gid=1,
             candidate_id=candidate_id,
             publication_key=first_publication,
             artifact_sha256=b"c" * 32,
@@ -546,6 +570,7 @@ def test_every_release_state_statement_rolls_back_the_complete_page(
         )
         _seed_family(
             connector,
+            gid=2,
             candidate_id=candidate_id,
             publication_key=second_publication,
             artifact_sha256=b"d" * 32,
@@ -607,10 +632,11 @@ def test_forged_capabilities_and_corrupt_token_facts_fail_closed(
     connector = _database(tmp_path / "artifact-release-forgery.sqlite3")
     try:
         candidate_id = b"a" * 16
-        publication_key = b"p" * 32
+        publication_key = identity.publication_key(1)
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
         _seed_family(
             connector,
+            gid=1,
             candidate_id=candidate_id,
             publication_key=publication_key,
             artifact_sha256=b"c" * 32,

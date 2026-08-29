@@ -720,7 +720,7 @@ def test_sqlite_raw_u64_signed_i64_and_int63_boundaries_are_exact() -> None:
             connection.execute(
                 "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
                 "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
-                (2, 1, bytes(32), bytes(7)),
+                (3, 1, bytes(32), bytes(7)),
             )
     finally:
         connection.close()
@@ -2055,10 +2055,11 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_revision_descriptors VALUES (?, ?)", (0, 0)
+                "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)",
+                (0, 0, 0),
             )
         connection.execute(
-            "INSERT INTO catalog_revision_descriptors VALUES (?, ?)", (1, 0)
+            "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)", (1, 0, 0)
         )
 
         connection.execute(
@@ -2244,7 +2245,7 @@ def test_sqlite_recomposed_manifest_policy_enforces_both_candidate_keys() -> Non
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (2, 1, 1)
+                "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (3, 1, 1)
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -2326,7 +2327,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
     assert "octet_length(protection_token) = 184" in ddl
     assert "`summary_sha256` BINARY(32) NOT NULL" in ddl
     assert "`language_sha256` BINARY(32) NOT NULL" in ddl
-    assert "`artifact_locator_sha256` BINARY(32) NOT NULL" in ddl
+    assert "`artifact_storage_key_sha256` BINARY(32) NOT NULL" not in ddl
     assert "KEY `ix_gallery_file_hash`" in ddl
     assert "`priority_key`" not in ddl
     assert "old_excluded IN (0, 1)" in ddl

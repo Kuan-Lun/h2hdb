@@ -4434,7 +4434,7 @@ def _derive_pinned_baseline(
     publication has advanced the channel. Its authority is the publication
     receipt pinned by the source build, not whichever receipt is live now. A
     missing pin is valid only for a true pre-publication genesis snapshot or
-    after the build's own projection-finalized publication durably carries the
+    after the build's own published revision durably carries the
     baseline analysis through provenance.
     """
 
@@ -4687,7 +4687,7 @@ def _derive_compacted_published_baseline(
         field="compacted source publication provenance snapshot",
     )
     if (
-        row[3] != "PROJECTION_FINALIZED"
+        row[3] != "PUBLISHED"
         or channel != source_channel
         or provenance_build != build_id
         or row[9] != "COMPLETE"

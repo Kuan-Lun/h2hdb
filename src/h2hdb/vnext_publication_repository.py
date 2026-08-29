@@ -191,7 +191,7 @@ class PublicationCommitReceipt:
             ("duplicate_losers", self.duplicate_losers),
         ):
             require_int63(value, field=f"publication {field}")
-        if self.state not in {"DB_COMMITTED", "PROJECTION_FINALIZED"}:
+        if self.state not in {"DB_COMMITTED", "PUBLISHED"}:
             raise ValueError("publication receipt state is not registered")
         require_int63(self.committed_at, field="publication committed_at")
         if self.finalized_at is not None:
@@ -285,8 +285,171 @@ class _PublishedLineage:
     build_id: bytes
 
 
+_ACTIVATION_AUTHORITY_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizedCommitActivationAuthority:
+    published: _PublishedCommit
+    candidate: _Candidate
+    source_working: tuple[int, bytes, int] | None
+    catalog_working: tuple[int, bytes, int] | None
+    _capability: object
+
+
 class PublicationRepository:
     """Publish a sealed candidate and recover its immutable receipt."""
+
+    @staticmethod
+    def prepare_finalized_commit_activation(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        receipt_id: bytes,
+        now: int,
+    ) -> _FinalizedCommitActivationAuthority:
+        """Lock low-rank authority before terminal finalization.
+
+        The same transaction may then lock the finalization checkpoint and,
+        after inserting the terminal marker, acquire only the higher-rank
+        reader head lock.  This preserves the global lock order.
+        """
+
+        receipt = require_uuid16(receipt_id, field="activated publication receipt_id")
+        timestamp = require_int63(now, field="publication activated_at")
+        _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        _require_schema_authorities(work)
+
+        published = _load_published_commit_by_receipt(work.connector, receipt)
+        _validate_published_commit(work.connector, published)
+        candidate = _lock_candidate(work, published.candidate_id)
+        if (
+            candidate.reserved_revision != published.revision
+            or candidate.channel != published.channel
+            or candidate.artifact_policy_id != published.artifact_policy_id
+            or candidate.display_title_policy_id != published.display_title_policy_id
+        ):
+            raise PublicationCorruptionError(
+                "publication commit disagrees with its activation candidate"
+            )
+        source_working = _lock_source_working(work, candidate.build_id)
+        catalog_working = _lock_catalog_working(work, candidate.candidate_id)
+        return _FinalizedCommitActivationAuthority(
+            published,
+            candidate,
+            source_working,
+            catalog_working,
+            _ACTIVATION_AUTHORITY_TOKEN,
+        )
+
+    @staticmethod
+    def activate_finalized_commit(
+        work: VNextUnitOfWork,
+        *,
+        authority: _FinalizedCommitActivationAuthority,
+    ) -> bool:
+        """CAS one terminally finalized commit into the reader head."""
+
+        if (
+            not isinstance(authority, _FinalizedCommitActivationAuthority)
+            or authority._capability is not _ACTIVATION_AUTHORITY_TOKEN
+        ):
+            raise TypeError("publication activation authority is not repository-issued")
+        before = authority.published
+        candidate = authority.candidate
+        published = _load_published_commit_by_receipt(
+            work.connector,
+            before.receipt_id,
+        )
+        _validate_published_commit(work.connector, published)
+        if published.finalized_at is None:
+            raise PublicationNotReadyError(
+                "publication cannot become readable before finalization"
+            )
+        if (
+            published.receipt_id != before.receipt_id
+            or published.candidate_id != before.candidate_id
+            or published.revision != before.revision
+            or published.source_revision != before.source_revision
+            or published.generation != before.generation
+            or published.preparation_id != before.preparation_id
+            or published.operational_policy_id != before.operational_policy_id
+            or published.artifact_policy_id != before.artifact_policy_id
+            or published.display_title_policy_id != before.display_title_policy_id
+            or published.new_galleries != before.new_galleries
+            or published.changed_galleries != before.changed_galleries
+            or published.removed_galleries != before.removed_galleries
+            or published.duplicate_losers != before.duplicate_losers
+            or published.committed_at != before.committed_at
+            or published.channel != before.channel
+            or published.snapshot_manifest_sha256 != before.snapshot_manifest_sha256
+            or published.publication_count != before.publication_count
+        ):
+            raise PublicationCorruptionError(
+                "finalized publication differs from its prelocked authority"
+            )
+        source_working = authority.source_working
+        catalog_working = authority.catalog_working
+        head = _lock_publication_commit_head(work, candidate.channel)
+
+        if head is not None and head.receipt_id == published.receipt_id:
+            if source_working is not None or catalog_working is not None:
+                raise PublicationCorruptionError(
+                    "activated reader head retained a publication working root"
+                )
+            return False
+
+        _require_exact_commit_base(
+            _load_base_commit(work.connector, candidate.candidate_id),
+            head,
+        )
+        if _successor_generation(head) != published.generation:
+            raise PublicationHeadRaceError(
+                "finalized commit is not the reader head's exact successor"
+            )
+        if source_working is None or source_working[1] != candidate.build_id:
+            raise PublicationNotReadyError(
+                "finalized commit lost its source working root"
+            )
+        if catalog_working is None or catalog_working[1] != candidate.candidate_id:
+            raise PublicationNotReadyError(
+                "finalized commit lost its catalog working root"
+            )
+        _require_source_working_assignment(
+            work.connector,
+            build_id=candidate.build_id,
+            assigned_at=source_working[2],
+        )
+        _require_catalog_working_assignment(
+            candidate=candidate,
+            assigned_at=catalog_working[2],
+        )
+        _advance_publication_commit_head(
+            work,
+            channel=candidate.channel,
+            base=head,
+            receipt_id=published.receipt_id,
+        )
+        _delete_working_root(
+            work,
+            table=_SOURCE_WORKING_TABLE,
+            label="source working build",
+            slot=source_working[0],
+            identity_column="build_id",
+            identity=candidate.build_id,
+            assigned_at=source_working[2],
+        )
+        _delete_working_root(
+            work,
+            table=_CATALOG_WORKING_TABLE,
+            label="catalog working candidate",
+            slot=catalog_working[0],
+            identity_column="candidate_id",
+            identity=candidate.candidate_id,
+            assigned_at=catalog_working[2],
+        )
+        return True
 
     @staticmethod
     def release_replayed_source_working(
@@ -325,9 +488,7 @@ class PublicationRepository:
         published = _load_published_commit_by_receipt(work.connector, receipt)
         _validate_published_commit(work.connector, published)
         if published.finalized_at is None:
-            raise PublicationNotReadyError(
-                "replayed publication is not projection-finalized"
-            )
+            raise PublicationNotReadyError("replayed publication is not published")
         lineage = _require_replayed_publication_lineage(
             work.connector,
             published=published,
@@ -413,11 +574,12 @@ class PublicationRepository:
         candidate_id: bytes,
         now: int,
     ) -> PublicationCommitReceipt:
-        """Atomically advance source/catalog heads for one sealed candidate.
+        """Create one sealed but reader-invisible publication commit.
 
         The caller owns the surrounding transaction.  Any exception therefore
-        leaves allocator, revision, activation, receipt, candidate, working
-        roots, and both heads unchanged when that transaction is rolled back.
+        leaves allocator, revision, receipt, candidate, and working roots
+        unchanged when that transaction is rolled back.  The reader head is
+        advanced only by terminal finalization after library READY.
         """
 
         candidate_key = require_uuid16(candidate_id, field="publication candidate_id")
@@ -577,31 +739,6 @@ class PublicationRepository:
             generation=publication_generation,
             committed_at=timestamp,
         )
-        _advance_publication_commit_head(
-            work,
-            channel=candidate.channel,
-            base=head,
-            receipt_id=receipt_id,
-        )
-        _delete_working_root(
-            work,
-            table=_SOURCE_WORKING_TABLE,
-            label="source working build",
-            slot=source_working[0],
-            identity_column="build_id",
-            identity=candidate.build_id,
-            assigned_at=source_working[2],
-        )
-        _delete_working_root(
-            work,
-            table=_CATALOG_WORKING_TABLE,
-            label="catalog working candidate",
-            slot=catalog_working[0],
-            identity_column="candidate_id",
-            identity=candidate.candidate_id,
-            assigned_at=catalog_working[2],
-        )
-
         return PublicationCommitReceipt(
             candidate.candidate_id,
             receipt_id,
@@ -689,10 +826,6 @@ def _replayed_publication_requires_live_lineage(
     """Distinguish the active source from self-contained inactive history."""
 
     head = _lock_publication_commit_head(work, published.channel)
-    if head is None or head.generation < published.generation:
-        raise PublicationCorruptionError(
-            "replayed publication is inconsistent with the common head"
-        )
     successor = work.connector.fetch_one(
         f"SELECT edge.successor_generation, committed.receipt_id, "
         "descriptor.channel "
@@ -704,6 +837,22 @@ def _replayed_publication_requires_live_lineage(
         "WHERE edge.predecessor_generation = %s",
         (published.generation,),
     )
+    if published.finalized_at is None:
+        expected_head_generation = published.generation - 1
+        if successor or (
+            expected_head_generation == 0
+            and head is not None
+            or expected_head_generation > 0
+            and (head is None or head.generation != expected_head_generation)
+        ):
+            raise PublicationCorruptionError(
+                "reader-invisible replay is not the common head's exact successor"
+            )
+        return True
+    if head is None or head.generation < published.generation:
+        raise PublicationCorruptionError(
+            "replayed publication is inconsistent with the common head"
+        )
     if head.generation == published.generation:
         if (
             head.receipt_id,
@@ -1406,18 +1555,22 @@ def _validate_catalog_revision(
     projection: _ProjectionSeal,
 ) -> None:
     row = work.connector.fetch_one(
-        f"SELECT publication_count FROM {_CATALOG_DESCRIPTOR_TABLE} "
+        f"SELECT publication_count, artifact_count FROM {_CATALOG_DESCRIPTOR_TABLE} "
         "WHERE revision = %s",
         (candidate.reserved_revision,),
     )
-    if len(row) != 1:
+    if len(row) != 2:
         raise PublicationNotReadyError(
             "reserved catalog revision descriptor is absent or unsealed"
         )
     count = require_int63(row[0], field="catalog revision publication_count")
-    if count != projection.publication_count:
+    artifact_count = require_int63(row[1], field="catalog revision artifact_count")
+    expected_artifacts = (
+        projection.publication_count if candidate.artifacts_required else 0
+    )
+    if count != projection.publication_count or artifact_count != expected_artifacts:
         raise PublicationConflictError(
-            "catalog revision count disagrees with its projection seal"
+            "catalog revision counts disagree with its projection seal"
         )
 
 
@@ -1798,7 +1951,7 @@ def _commit_receipt(
         commit.changed_galleries,
         commit.removed_galleries,
         commit.duplicate_losers,
-        "PROJECTION_FINALIZED" if commit.finalized_at is not None else "DB_COMMITTED",
+        "PUBLISHED" if commit.finalized_at is not None else "DB_COMMITTED",
         commit.committed_at,
         commit.finalized_at,
         replayed,

@@ -1,6 +1,6 @@
 """Greenfield schema-epoch orchestration.
 
-This module is the bootstrap mechanism for the sole generated epoch-2 physical
+This module is the bootstrap mechanism for the sole generated epoch-3 physical
 schema. Merely importing it does not activate or alter a database.
 
 The runner owns only the epoch control relation and orchestration.  Physical
@@ -57,10 +57,10 @@ from typing import Any, NoReturn, Protocol
 
 from .sql_connector import SQLConnector
 
-V_NEXT_SCHEMA_EPOCH = 2
+V_NEXT_SCHEMA_EPOCH = 3
 V_NEXT_SCHEMA_VERSION = 1
 SCHEMA_EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
-MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:2"
+MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:3"
 
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 _SAFE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -947,7 +947,7 @@ class SchemaEpochRunner:
             if not has_control:
                 if existing_objects:
                     raise SchemaEpochAdmissionError(
-                        "Schema epoch 2 requires a truly empty database; found "
+                        "Schema epoch 3 requires a truly empty database; found "
                         f"{_format_objects(existing_objects)}"
                     )
                 self._catalog.create_control_table(connector)
@@ -1078,7 +1078,7 @@ class SchemaEpochRunner:
         existing_objects = self._catalog.list_objects(connector)
         if self._catalog.control_object not in existing_objects:
             raise SchemaEpochAdmissionError(
-                "Schema epoch 2 is not initialized: its control table is missing"
+                "Schema epoch 3 is not initialized: its control table is missing"
             )
         self._catalog.validate_control_table(connector)
         self._assert_admissible_objects(connector, allowed_objects)
@@ -1089,7 +1089,7 @@ class SchemaEpochRunner:
         )
         if state != "READY":
             raise SchemaEpochAdmissionError(
-                f"Schema epoch 2 is not READY (state={state!r})"
+                f"Schema epoch 3 is not READY (state={state!r})"
             )
         obligation_ids = self._validate_ready_schema(
             connector,

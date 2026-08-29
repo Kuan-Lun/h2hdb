@@ -15,7 +15,10 @@ from typing import BinaryIO, Protocol, runtime_checkable
 from .domain import (
     ArtifactReleaseStorageEvidence,
     ArtifactStorageEvidence,
+    ArtifactStorageKey,
     CatalogArtifact,
+    CatalogArtifactCursor,
+    CatalogArtifactPage,
     CatalogPage,
     CatalogPublication,
     CatalogRevision,
@@ -39,8 +42,15 @@ class CatalogReader(Protocol):
         offset: int = 0,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-        require_artifact: bool = False,
     ) -> CatalogPage: ...
+
+    def list_artifact_publications(
+        self,
+        *,
+        after: CatalogArtifactCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogArtifactPage: ...
 
     def get_publication(
         self,
@@ -130,7 +140,9 @@ class ArtifactStorageAdapter(Protocol):
     def protect(
         self,
         archive: BinaryIO,
-        locator_components: tuple[str, ...],
+        storage_key: ArtifactStorageKey,
+        expected_artifact_sha256: bytes,
+        expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactStorageEvidence: ...
 
@@ -143,6 +155,8 @@ class ArtifactReleaseAdapter(Protocol):
 
     def release(
         self,
-        locator_components: tuple[str, ...],
+        storage_key: ArtifactStorageKey,
+        expected_artifact_sha256: bytes,
+        expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactReleaseStorageEvidence: ...

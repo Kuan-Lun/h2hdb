@@ -11,6 +11,7 @@ from vnext_publication_fixtures import seed_publication_commit
 
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.domain import ArtifactStorageKey
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
@@ -152,27 +153,27 @@ def _seed_validation_receipt(
 def _seed_prepared_artifact(
     connector: SQLiteConnector,
     *,
+    gid: int,
     publication_key: bytes,
     artifact_sha256: bytes,
     storage_generation: int,
 ) -> bytes:
     size_bytes = 100 + storage_generation
-    locator_components = identity.artifact_locator_components(artifact_sha256)
-    locator_sha256 = identity.artifact_locator_digest(locator_components)
+    storage_key_components = identity.artifact_storage_key_components(gid)
+    storage_key_sha256 = identity.artifact_storage_key_digest(storage_key_components)
     protection_token = identity.encode_artifact_protection_token(
         1,
         _CANDIDATE,
         publication_key,
         artifact_sha256,
-        locator_sha256,
+        storage_key_sha256,
         storage_generation,
         size_bytes,
     )
     connector.execute(
         "INSERT INTO catalog_artifact_blobs "
-        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-        "VALUES (%s, %s, %s)",
-        (artifact_sha256, size_bytes, locator_sha256),
+        "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+        (artifact_sha256, size_bytes),
     )
     connector.execute(
         "INSERT INTO catalog_prepared_artifacts "
@@ -203,8 +204,8 @@ def _seed_publication(
     try:
         connector.execute(
             "INSERT INTO catalog_revision_descriptors "
-            "(revision, publication_count) VALUES (1, %s)",
-            (item_count,),
+            "(revision, publication_count, artifact_count) VALUES (1, %s, %s)",
+            (item_count, item_count),
         )
         connector.execute(
             "INSERT INTO catalog_source_revision_descriptors "
@@ -231,9 +232,15 @@ def _seed_publication(
             committed_at=20,
         )
         for index, publication_key in enumerate(publication_keys, start=1):
+            connector.execute(
+                "INSERT INTO catalog_publication_identities "
+                "(publication_key, gid) VALUES (%s, %s)",
+                (publication_key, index),
+            )
             tokens.append(
                 _seed_prepared_artifact(
                     connector,
+                    gid=index,
                     publication_key=publication_key,
                     artifact_sha256=sha256(f"artifact-{index}".encode()).digest(),
                     storage_generation=index,
@@ -581,18 +588,26 @@ class _MonotoneAdapter:
 
     def __init__(self, connector: SQLiteConnector | None = None) -> None:
         self.connector = connector
-        self.calls: list[tuple[tuple[str, ...], bytes]] = []
+        self.calls: list[tuple[ArtifactStorageKey, bytes]] = []
         self.tombstones: set[bytes] = set()
 
     def release(
         self,
-        locator_components: tuple[str, ...],
+        storage_key: ArtifactStorageKey,
+        expected_artifact_sha256: bytes,
+        expected_size_bytes: int,
         protection_token: bytes,
     ) -> PublicationFinalizationStorageEvidence:
         if self.connector is not None:
             with self.connector.read_transaction():
                 assert self.connector.fetch_one("SELECT 1") == (1,)
-        self.calls.append((locator_components, protection_token))
+        token = identity.decode_artifact_protection_token(protection_token)
+        assert token.artifact_sha256 == expected_artifact_sha256
+        assert token.size_bytes == expected_size_bytes
+        assert identity.artifact_storage_key_digest(storage_key.segments) == (
+            token.artifact_storage_key_sha256
+        )
+        self.calls.append((storage_key, protection_token))
         self.tombstones.add(protection_token)
         return PublicationFinalizationStorageEvidence(True)
 
@@ -767,7 +782,7 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
             "SELECT state, committed_at, finalized_at "
             "FROM catalog_publication_receipts WHERE receipt_id = %s",
             (_RECEIPT,),
-        ) == ("PROJECTION_FINALIZED", 20, now + 2)
+        ) == ("PUBLISHED", 20, now + 2)
         assert connector.fetch_one(
             "SELECT receipt_id FROM catalog_publication_commit_finalizations",
         ) == (_RECEIPT,)
@@ -783,7 +798,7 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (_RECEIPT,),
-        ) == ("PROJECTION_FINALIZED", now + 2)
+        ) == ("PUBLISHED", now + 2)
         with pytest.raises(PublicationFinalizationUnavailableError):
             _issue(connector, gate, batch_key=b"after-terminal", now=40)
     finally:
@@ -832,7 +847,7 @@ def test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline(
         assert connector.fetch_one(
             "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
             (_RECEIPT,),
-        ) == ("PROJECTION_FINALIZED",)
+        ) == ("PUBLISHED",)
         assert connector.fetch_one(
             "SELECT ancestor_analysis_id "
             "FROM catalog_analysis_state_ancestry "

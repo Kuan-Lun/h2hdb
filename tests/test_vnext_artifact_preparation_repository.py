@@ -36,6 +36,7 @@ from vnext_catalog_identity_fixtures import (
 
 import h2hdb.vnext_artifact_preparation_repository as artifact_module
 from h2hdb import vnext_identity as identity
+from h2hdb.domain import ArtifactStorageKey, artifact_storage_key
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_artifact_family import (
@@ -52,10 +53,6 @@ from h2hdb.vnext_artifact_preparation_repository import (
     ArtifactPreparationNotReadyError,
     ArtifactPreparationRepository,
     ArtifactStorageEvidence,
-)
-from h2hdb.vnext_canonical_value_repository import (
-    CanonicalValueRepository,
-    CanonicalValueUploadPlan,
 )
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import (
@@ -153,14 +150,19 @@ class _RecordingStorageAdapter:
     def protect(
         self,
         archive: BinaryIO,
-        locator_components: tuple[str, ...],
+        storage_key: ArtifactStorageKey,
+        expected_artifact_sha256: bytes,
+        expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactStorageEvidence:
-        assert locator_components[0] == "sha256"
+        assert storage_key.segments[0] == "hash-v1"
         assert len(protection_token) == 184
+        payload = archive.read()
+        assert sha256(payload).digest() == expected_artifact_sha256
+        assert len(payload) == expected_size_bytes
         self.called = True
         self.protection_tokens.append(protection_token)
-        self.archive = archive.read()
+        self.archive = payload
         return ArtifactStorageEvidence(True)
 
 
@@ -545,42 +547,6 @@ def _complete_catalog_projection(
     return timestamp
 
 
-def _upload_canonical_plan(
-    connector: SQLiteConnector,
-    gate: GateLease,
-    turn: IngestTurn,
-    plan: CanonicalValueUploadPlan,
-    *,
-    now: int,
-) -> None:
-    with connector.transaction():
-        CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            gate_lease=gate,
-            ingest_turn=turn,
-            plan=plan,
-            now=now,
-        )
-    for page in plan.iter_pages():
-        with connector.transaction():
-            CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=turn,
-                plan=plan,
-                prepared_page=page,
-                now=now,
-            )
-    with connector.transaction():
-        CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            gate_lease=gate,
-            ingest_turn=turn,
-            plan=plan,
-            now=now,
-        )
-
-
 def _operational_effect_seal(
     connector: SQLiteConnector,
     gate: GateLease,
@@ -937,9 +903,7 @@ def test_authority_audit_and_canonical_storage_receipt(
     ) as receipt:
         assert len(receipt.artifact_sha256) == 32
         assert receipt.size_bytes > 0
-        assert receipt.locator_components == identity.artifact_locator_components(
-            receipt.artifact_sha256
-        )
+        assert receipt.storage_key == artifact_storage_key(authority.gid)
         assert not adapter.called
     assert not adapter.called
     assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_blobs")
@@ -1141,12 +1105,16 @@ def test_storage_adapter_cannot_mutate_verified_archive(tmp_path: Path) -> None:
         def protect(
             self,
             archive: BinaryIO,
-            locator_components: tuple[str, ...],
+            storage_key: ArtifactStorageKey,
+            expected_artifact_sha256: bytes,
+            expected_size_bytes: int,
             protection_token: bytes,
         ) -> ArtifactStorageEvidence:
             evidence = super().protect(
                 archive,
-                locator_components,
+                storage_key,
+                expected_artifact_sha256,
+                expected_size_bytes,
                 protection_token,
             )
             archive.seek(0)
@@ -1160,7 +1128,6 @@ def test_storage_adapter_cannot_mutate_verified_archive(tmp_path: Path) -> None:
         audit=audit,
         adapter=adapter,
     ) as receipt:
-        _upload_canonical_plan(connector, gate, turn, receipt.locator_plan, now=now)
         with connector.transaction():
             intent = ArtifactPreparationRepository.persist_prepared_artifact(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1236,10 +1203,12 @@ def test_storage_failure_leaves_exact_pending_intent_for_retry(
         def protect(
             self,
             archive: BinaryIO,
-            locator_components: tuple[str, ...],
+            storage_key: ArtifactStorageKey,
+            expected_artifact_sha256: bytes,
+            expected_size_bytes: int,
             protection_token: bytes,
         ) -> ArtifactStorageEvidence:
-            del archive, locator_components
+            del archive, storage_key, expected_artifact_sha256, expected_size_bytes
             self.called = True
             self.protection_tokens.append(protection_token)
             if failure_kind == "raise":
@@ -1253,7 +1222,6 @@ def test_storage_failure_leaves_exact_pending_intent_for_retry(
         audit=audit,
         adapter=failing_adapter,
     ) as receipt:
-        _upload_canonical_plan(connector, gate, turn, receipt.locator_plan, now=now)
         with connector.transaction():
             intent = ArtifactPreparationRepository.persist_prepared_artifact(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1402,13 +1370,6 @@ def test_prepared_and_committed_intents_refuse_protection_and_replay_zero_dml(
         audit=audit,
         adapter=adapter,
     ) as receipt:
-        _upload_canonical_plan(
-            connector,
-            gate,
-            turn,
-            receipt.locator_plan,
-            now=now + 3,
-        )
         with connector.transaction():
             pending = ArtifactPreparationRepository.persist_prepared_artifact(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1710,13 +1671,6 @@ def test_artifact_projection_persistence_and_seal_end_to_end(tmp_path: Path) -> 
         audit=audit,
         adapter=adapter,
     ) as receipt:
-        _upload_canonical_plan(
-            connector,
-            gate,
-            turn,
-            receipt.locator_plan,
-            now=now,
-        )
         now += 1
         with connector.transaction():
             intent = ArtifactPreparationRepository.persist_prepared_artifact(
@@ -1974,20 +1928,13 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
         immutable_facts = (
             ("artifact_sha256", b"x" * 32),
             ("size_bytes", receipt.size_bytes + 1),
-            ("locator_components", ("forged",)),
-            ("artifact_locator_sha256", b"y" * 32),
+            ("storage_key", artifact_storage_key(authority.gid + 1)),
+            ("artifact_storage_key_sha256", b"y" * 32),
             ("storage_codec_version", receipt.storage_codec_version + 1),
         )
         for field, forged in immutable_facts:
             with pytest.raises(AttributeError):
                 setattr(receipt, field, forged)
-        _upload_canonical_plan(
-            connector,
-            gate,
-            turn,
-            receipt.locator_plan,
-            now=now,
-        )
         now += 1
         with pytest.raises(
             ArtifactPreparationConflictError,
@@ -1996,12 +1943,10 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
             with connector.transaction():
                 connector.execute(
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                    "VALUES (%s, %s, %s)",
+                    "(artifact_sha256, size_bytes) VALUES (%s, %s)",
                     (
                         receipt.artifact_sha256,
                         receipt.size_bytes + 1,
-                        receipt.artifact_locator_sha256,
                     ),
                 )
                 ArtifactPreparationRepository.persist_prepared_artifact(
@@ -2053,38 +1998,6 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
                 assert not connector.fetch_one(f"SELECT 1 FROM {table}")
         now += len(insert_faults)
 
-        original_execute_affected = connector.execute_affected
-
-        def fail_claim_handoff(
-            query: str,
-            data: tuple[object, ...] = (),
-        ) -> int:
-            if "DELETE FROM operational_canonical_value_uploads" in query:
-                raise RuntimeError("fault at locator claim handoff")
-            return original_execute_affected(query, data)
-
-        with pytest.raises(RuntimeError, match="locator claim handoff"):
-            with (
-                connector.transaction(),
-                patch.object(
-                    connector,
-                    "execute_affected",
-                    side_effect=fail_claim_handoff,
-                ),
-            ):
-                ArtifactPreparationRepository.persist_prepared_artifact(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    receipt=receipt,
-                    now=now,
-                )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_blobs")
-        assert connector.fetch_one(
-            "SELECT generation FROM operational_canonical_value_uploads "
-            "WHERE value_sha256 = %s",
-            (receipt.artifact_locator_sha256,),
-        ) == (turn.generation,)
         with connector.transaction():
             intent = ArtifactPreparationRepository.persist_prepared_artifact(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -2523,9 +2436,12 @@ def test_artifact_contract_loaders_fail_closed_for_missing_wide_row(
 
 def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() -> None:
     candidate = b"c" * 16
-    publication = b"p" * 32
+    gid = 1
+    publication = identity.publication_key(gid)
     artifact = b"a" * 32
-    locator = b"l" * 32
+    storage_key_sha256 = identity.artifact_storage_key_digest(
+        identity.artifact_storage_key_components(gid)
+    )
     generation = 7
     size_bytes = 99
     token = identity.encode_artifact_protection_token(
@@ -2533,7 +2449,7 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
         candidate,
         publication,
         artifact,
-        locator,
+        storage_key_sha256,
         generation,
         size_bytes,
     )
@@ -2555,7 +2471,7 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
         token,
         "PENDING",
         size_bytes,
-        locator,
+        gid,
     )
 
     class DuplicateRaceConnector:
@@ -3148,7 +3064,7 @@ def _mutate_exact_delta_case(
         connector.execute(
             "INSERT INTO catalog_publication_order "
             "(revision, position, publication_key) VALUES (%s, %s, %s)",
-            (2, 1, publication_key),
+            (3, 1, publication_key),
         )
         return 1
     if case == "artifact-only":

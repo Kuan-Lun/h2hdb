@@ -186,8 +186,8 @@ def runtime_obligation_records(
             catalog["artifact_name_contract"]["runtime_obligation"],
         ),
         (
-            "artifact_locator_contract.runtime_obligation",
-            catalog["artifact_locator_contract"]["runtime_obligation"],
+            "artifact_storage_key_contract.runtime_obligation",
+            catalog["artifact_storage_key_contract"]["runtime_obligation"],
         ),
         (
             "artifact_protection_token_contract.runtime_obligation",
@@ -440,9 +440,10 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "storage_codec_version": U32,
     "storage_generation": U64,
     "adapter_id": shape("BLOB", "VARBINARY(64)"),
-    "locator_codec_version": U32,
+    "storage_key_codec_version": U32,
     "protection_token_codec_version": U32,
     "artifact_input_count": U64,
+    "artifact_count": U64,
     "artifact_name": shape("BLOB", "VARBINARY(255)"),
     "artifact_policy_id": U64,
     "artifact_sha256": DIGEST_BYTES,
@@ -1081,14 +1082,17 @@ def relation_checks(
         )
         maria.append("octet_length(protection_token) = 184")
     elif name == "publication_receipt":
-        sqlite.append("state IN ('DB_COMMITTED', 'PROJECTION_FINALIZED')")
-        maria.append("state IN ('DB_COMMITTED', 'PROJECTION_FINALIZED')")
-        final_rule = "(state = 'DB_COMMITTED' AND finalized_at IS NULL OR state = 'PROJECTION_FINALIZED' AND finalized_at IS NOT NULL)"
+        sqlite.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
+        maria.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
+        final_rule = "(state = 'DB_COMMITTED' AND finalized_at IS NULL OR state = 'PUBLISHED' AND finalized_at IS NOT NULL)"
         sqlite.append(final_rule)
         maria.append(final_rule)
     if name == "artifact_operation":
         sqlite.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
         maria.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
+    if name == "catalog_revision_descriptor":
+        sqlite.append("(artifact_count = 0 OR artifact_count = publication_count)")
+        maria.append("(artifact_count = 0 OR artifact_count = publication_count)")
     if "next_state" in attributes:
         sqlite.append("next_state IN ('OPEN', 'COMPLETE')")
         maria.append("next_state IN ('OPEN', 'COMPLETE')")
@@ -1319,11 +1323,6 @@ def make_relation(
         if template is None:
             raise KeyError(f"No physical type for {name}.{attribute}")
         backend_shape = copy_shape(template, nullable_override(name, attribute))
-        if name == "publication_receipt" and attribute == "state":
-            # PROJECTION_FINALIZED is twenty ASCII bytes.  This derived view
-            # therefore needs the wider state representation even though the
-            # stored state families use the common sixteen-byte domain.
-            backend_shape["mariadb"]["type"] = "VARCHAR(32)"
         if (
             name
             in {

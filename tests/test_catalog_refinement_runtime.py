@@ -182,7 +182,7 @@ def test_closed_digest_registry_rejects_an_unregistered_row(tmp_path: Path) -> N
             "artifact_zip_writer_policy.*exact v1 singleton",
         ),
         (
-            "UPDATE catalog_artifact_storage_codecs SET locator_codec_version = 2",
+            "UPDATE catalog_artifact_storage_codecs SET storage_key_codec_version = 2",
             "artifact_storage_codec.*managed-filesystem v1 singleton",
         ),
     ),
@@ -244,7 +244,7 @@ def test_building_bootstrap_rejects_a_business_row(tmp_path: Path) -> None:
     try:
         connector.execute(
             "INSERT INTO catalog_revision_descriptors "
-            "(revision, publication_count) VALUES (1, 0)"
+            "(revision, publication_count, artifact_count) VALUES (1, 0, 0)"
         )
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
@@ -439,7 +439,11 @@ def _insert_snapshot_manifest_identity(
     )
 
 
-def _insert_active_source_head(connector: SQLiteConnector) -> bytes:
+def _insert_active_source_head(
+    connector: SQLiteConnector,
+    *,
+    published: bool = True,
+) -> bytes:
     source_root = b"r" * 32
     snapshot_manifest = b"s" * 32
     _insert_canonical_seal(
@@ -510,7 +514,7 @@ def _insert_active_source_head(connector: SQLiteConnector) -> bytes:
     )
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
-        "(revision, publication_count) VALUES (1, 0)"
+        "(revision, publication_count, artifact_count) VALUES (1, 0, 0)"
     )
     connector.execute(
         "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (1)"
@@ -537,6 +541,11 @@ def _insert_active_source_head(connector: SQLiteConnector) -> bytes:
         connector,
         receipt_id=receipt_id,
     )
+    if published:
+        _complete_publication_finalization(
+            connector,
+            receipt_id=receipt_id,
+        )
     connector.execute(
         "INSERT INTO catalog_publication_commit_head_receipts "
         "(channel, receipt_id) VALUES (%s, %s)",
@@ -1270,7 +1279,7 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
         assert connector.fetch_all(
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE revision = 1"
-        ) == [("DB_COMMITTED", None)]
+        ) == [("PUBLISHED", 2)]
         assert connector.fetch_all(
             "SELECT create_count, rebuild_count, delete_count, new_galleries, "
             "changed_galleries FROM catalog_publication_candidate_projections "
@@ -1625,12 +1634,12 @@ def test_active_publication_rejects_projection_seal_result_corruption(
         connector.close()
 
 
-def test_projection_finalized_requires_exact_empty_terminal_authority(
+def test_published_requires_exact_empty_terminal_authority(
     tmp_path: Path,
 ) -> None:
     connector = _generated_catalog_database(tmp_path / "projection-terminal.sqlite3")
     try:
-        analysis_id = _insert_active_source_head(connector)
+        analysis_id = _insert_active_source_head(connector, published=False)
         _candidate_id, receipt_id = _insert_active_publication(connector, analysis_id)
         connector.execute(
             "INSERT INTO catalog_publication_commit_finalizations (receipt_id) "
@@ -1646,19 +1655,19 @@ def test_projection_finalized_requires_exact_empty_terminal_authority(
         connector.close()
 
 
-def test_projection_finalized_accepts_keyed_empty_terminal_authority(
+def test_published_accepts_keyed_empty_terminal_authority(
     tmp_path: Path,
 ) -> None:
-    connector = _generated_catalog_database(tmp_path / "projection-finalized.sqlite3")
+    connector = _generated_catalog_database(tmp_path / "published.sqlite3")
     try:
-        analysis_id = _insert_active_source_head(connector)
+        analysis_id = _insert_active_source_head(connector, published=False)
         _candidate_id, receipt_id = _insert_active_publication(connector, analysis_id)
         _complete_publication_finalization(connector, receipt_id=receipt_id)
         assert connector.fetch_all(
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (receipt_id,),
-        ) == [("PROJECTION_FINALIZED", 2)]
+        ) == [("PUBLISHED", 2)]
         catalog_refinement.check_publication_atomicity_v1(connector)
     finally:
         connector.close()
@@ -1675,16 +1684,15 @@ def test_projection_finalized_accepts_keyed_empty_terminal_authority(
         "UPDATE catalog_publication_finalization_checkpoints SET updated_at = 3",
     ),
 )
-def test_projection_finalized_fails_closed_without_exact_permanent_terminal_dag(
+def test_published_fails_closed_without_exact_permanent_terminal_dag(
     tmp_path: Path,
     mutation_sql: str,
 ) -> None:
     connector = _generated_catalog_database(
-        tmp_path
-        / f"projection-finalized-{sha256(mutation_sql.encode()).hexdigest()}.sqlite3"
+        tmp_path / f"published-{sha256(mutation_sql.encode()).hexdigest()}.sqlite3"
     )
     try:
-        analysis_id = _insert_active_source_head(connector)
+        analysis_id = _insert_active_source_head(connector, published=False)
         _candidate_id, receipt_id = _insert_active_publication(connector, analysis_id)
         _complete_publication_finalization(connector, receipt_id=receipt_id)
         connector.execute(mutation_sql)

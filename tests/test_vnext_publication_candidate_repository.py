@@ -171,8 +171,8 @@ def _seed_base_publication_commit(
     )
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
-        "(revision, publication_count) VALUES (%s, %s)",
-        (1, 0),
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
+        (1, 0, 0),
     )
     connector.execute(
         "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",

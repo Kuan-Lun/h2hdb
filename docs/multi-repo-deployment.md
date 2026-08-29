@@ -2,13 +2,13 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-2 catalog facade; ingest uses the transaction-owning ingest
+consume the epoch-3 catalog facade; ingest uses the transaction-owning ingest
 facade and downloader uses the queue facade. No sibling may query `catalog_*`
 or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 151 catalog BCNF base relations and
+There is one epoch-3/version-1 database. Its 151 catalog BCNF base relations and
 46 logical catalog projections are generated for both SQLite and MariaDB from
 the same logical manifests; 33 projections are SQL views and 13 are inline.
 The operational manifest has 66 BCNF base relations, including the separately
@@ -55,7 +55,7 @@ a truly empty database, then run:
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=2`, `schema_version=1`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=1`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -83,7 +83,7 @@ epoch; it does not execute numbered historical migrations.
 
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
 no numbered-migration module or legacy hand-written schema repositories. Do not
-work around that boundary by pinning an epoch-2 deployment to a mixed set of
+work around that boundary by pinning an epoch-3 deployment to a mixed set of
 core versions.
 
 ## Consumer boundaries
@@ -117,25 +117,23 @@ The integration boundary has three explicit limits:
 ## Artifact storage and mounts
 
 An ingest integration that publishes artifacts must implement the registered
-typed storage adapter. That adapter owns the mapping from core's verified,
-content-addressed artifact identity to a concrete filesystem or object-store
-locator and must acknowledge exact byte protection without changing the
-verified archive.
+typed storage and library-activation adapters. Core derives one neutral stable
+storage key from each GID (`hash-v1/<12-bit shard>/h2h-<gid>.cbz`) and verifies
+the archive digest and size independently. The adapter joins those neutral
+segments beneath its configured library root and must acknowledge exact byte
+protection without changing the verified archive.
 
-If a filesystem-backed adapter is used, keep these conceptual roots separate:
+If a filesystem-backed adapter is used, the configured library root is the one
+public CBZ authority shared by Komga and OPDS/download serving. Private bounded
+staging, journals, and tombstones may exist while an activation is incomplete,
+but a second permanent content-addressed or friendly-name CBZ tree is neither
+required nor part of the contract. Ingest needs write access to the shared
+library; catalog-serving consumers and Komga need read access to that same
+tree. Mount paths, permissions, atomic replacement, reconciliation, and
+recovery remain concrete consumer-adapter responsibilities; core never joins
+segments into a filesystem path.
 
-- A replaceable current library with friendly filenames for Komga.
-- A content-addressed artifact store retaining the current and bounded pending
-  projection; released artifacts outside both are reclaimed after reconcile.
-
-Ingest needs write access to both. Catalog-serving consumers need read access
-only to the artifact store when their acquisition adapter serves those bytes.
-Komga scans only the replaceable current library. Mount paths, permissions,
-locator encoding, reconciliation, and recovery are part of the concrete
-consumer adapter; do not hard-code them in core or reconstruct a locator from a
-catalog display name.
-
-Back up the database and protected artifact store as one publication set. An
+Back up the database and shared protected library as one publication set. An
 adapter must not delete content still retained by a catalog revision or a
 durable protection claim.
 

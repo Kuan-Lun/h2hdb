@@ -481,7 +481,7 @@ def test_pending_redownload_cursor_is_exact_and_page_size_is_bounded(
             )
         assert first.next_cursor is not None
 
-        forged_revision = PendingRedownloadCursor(2, 1, 100, 90, 7)
+        forged_revision = PendingRedownloadCursor(3, 1, 100, 90, 7)
         with pytest.raises(
             PendingRedownloadCursorError,
             match="sealed publication commit",

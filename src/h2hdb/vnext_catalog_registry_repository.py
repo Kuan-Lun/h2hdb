@@ -157,7 +157,7 @@ class ArtifactZipWriterPolicyRecord:
 class ArtifactStorageCodecRecord:
     storage_codec_version: int
     adapter_id: bytes
-    locator_codec_version: int
+    storage_key_codec_version: int
     protection_token_codec_version: int
 
     def __post_init__(self) -> None:
@@ -172,8 +172,8 @@ class ArtifactStorageCodecRecord:
             maximum=64,
         )
         _positive_uint32(
-            self.locator_codec_version,
-            field="storage locator_codec_version",
+            self.storage_key_codec_version,
+            field="storage storage_key_codec_version",
         )
         _positive_uint32(
             self.protection_token_codec_version,
@@ -484,7 +484,7 @@ def load_artifact_storage_codec(
     row = _required_row(
         connector,
         query=(
-            "SELECT storage_codec_version, adapter_id, locator_codec_version, "
+            "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
             "protection_token_codec_version FROM catalog_artifact_storage_codecs "
             "WHERE storage_codec_version = %s"
         ),

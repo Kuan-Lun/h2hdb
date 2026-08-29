@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import Field
 
 from .sql_connector import (
+    DatabaseConfigurationError,
     DatabaseDuplicateKeyError,
     DatabaseReadOnlyError,
     SQLConnector,
@@ -68,6 +69,27 @@ class SQLiteConnector(SQLConnector):
             uri=uri,
         )
         self.connection.execute("PRAGMA foreign_keys = ON")
+        # Publication/head commits are only crash-safe when SQLite asks the
+        # backing filesystem to make rollback-journal/WAL state durable before
+        # reporting COMMIT success.  Pin and verify the connection-local safety
+        # level instead of inheriting an environment-specific default.
+        self.connection.execute("PRAGMA synchronous = FULL")
+        if self.connection.execute("PRAGMA synchronous").fetchone() != (2,):
+            self.connection.close()
+            raise DatabaseConfigurationError(
+                "SQLite must provide PRAGMA synchronous=FULL"
+            )
+        journal_row = self.connection.execute("PRAGMA journal_mode").fetchone()
+        journal_mode = (
+            str(journal_row[0]).lower()
+            if journal_row is not None and len(journal_row) == 1
+            else ""
+        )
+        if journal_mode in {"", "off", "memory"}:
+            self.connection.close()
+            raise DatabaseConfigurationError(
+                "SQLite must use a durable rollback-journal or WAL mode"
+            )
         if self.params.read_only:
             self.connection.execute("PRAGMA query_only = ON")
 

@@ -3801,7 +3801,7 @@ def _is_exact_retired_sealed_source_build(
 ) -> bool:
     """Prove one bounded, terminal source-build incarnation.
 
-    A projection-finalized historical publication is retired once a different
+    A published historical revision is retired once a different
     receipt is the locked channel head.  A SEALED build whose sole analysis was
     explicitly abandoned is also terminal.  Cleanup-compacted builds lacking
     either proof remain fail-closed until SOURCE_BUILD cleanup removes their
@@ -4541,9 +4541,9 @@ def _load_finalized_source_publication_by_receipt(
         row[2],
         field="finalized source publication generation",
     )
-    if row[3] != "PROJECTION_FINALIZED" or row[4] is None:
+    if row[3] != "PUBLISHED" or row[4] is None:
         raise SourceBuildConflictError(
-            "source working root publication is not projection-finalized"
+            "source working root publication is not published"
         )
     finalized_at = require_int63(
         row[4],

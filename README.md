@@ -13,7 +13,7 @@ sibling packages.
 
 ## Greenfield BCNF schema
 
-The current schema is a clean epoch-2 design:
+The current schema is a clean epoch-3 design:
 
 - 151 catalog data-plane base relations checked as BCNF, plus 46 logical
   read projections: 33 generated SQL views and 13 inline projections. Eight
@@ -60,7 +60,7 @@ SQL is not a second schema-authoring surface.
 
 This is a greenfield cutover. There is no v1-v7 upgrade or adoption path, no
 legacy-epoch compatibility layer, and no dual write. Read-only logical views
-and inline projections inside epoch 2 are deliberate read models. A previous or
+and inline projections inside epoch 3 are deliberate read models. A previous or
 foreign database must be replaced with an empty database and rebuilt from source
 data.
 
@@ -73,7 +73,7 @@ manifests in both source and built-wheel verification, so a second hand-written
 
 ## Schema epoch
 
-The active identity is `epoch=2`, `schema_version=1`. The singleton
+The active identity is `epoch=3`, `schema_version=1`. The singleton
 `h2hdb_schema_epoch` row binds the exact generated DDL, bootstrap-seed, and
 semantic-obligation manifests into one durable checksum.
 
@@ -174,7 +174,7 @@ Choose the operation from database state:
 
 | Database state or caller | Operation |
 | --- | --- |
-| Truly empty database | Run `migrate` to construct epoch 2/version 1 |
+| Truly empty database | Run `migrate` to construct epoch 3/version 1 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
 | Matching `READY` epoch | Run read-only `check` for the full audit |
 | Consumer startup | Run `check`; never initialize schema |
@@ -256,7 +256,7 @@ typed result is `DONE`,
 `PROGRESSED`, while blocked/contended attempts use the ordinary poll cadence.
 Every result retains no caller capability, and durable shard checkpoints make
 response-loss replay safe. Cleanup retains the prior payload until the new
-current receipt is fully `PROJECTION_FINALIZED` and no live
+current receipt is fully `PUBLISHED` and no live
 publication-candidate or source-build predecessor pins it.
 
 ### Deliberate current limits

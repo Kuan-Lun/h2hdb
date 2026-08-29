@@ -215,7 +215,7 @@ FinalizationVisible(c) ==
         ExactTerminalBatch(c, batch)
 ReceiptState(c) ==
     IF FinalizationVisible(c)
-    THEN "PROJECTION_FINALIZED"
+    THEN "PUBLISHED"
     ELSE IF c \in commitSeals /\ checkpointState[c] = "OPEN"
          THEN "DB_COMMITTED"
          ELSE "NONE"
@@ -830,7 +830,7 @@ SuccessorCASAndPredecessorDeleteAreAtomic ==
 FinalizationMarkerAndCurrentReceiptAgree ==
     /\ receiptFinalizations \subseteq commitSeals
     /\ \A c \in Candidates :
-        /\ (ReceiptState(c) = "PROJECTION_FINALIZED"
+        /\ (ReceiptState(c) = "PUBLISHED"
             <=> c \in receiptFinalizations)
         /\ (c \in receiptFinalizations <=>
             \E batch \in FinalizationBatchesFor(c) :

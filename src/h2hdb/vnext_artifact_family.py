@@ -309,10 +309,12 @@ def load_prepared_artifact_family(
         f"SELECT prepared.candidate_id, prepared.publication_key, "
         "prepared.artifact_sha256, prepared.storage_codec_version, "
         "prepared.storage_generation, prepared.protection_token, prepared.state, "
-        "artifact_blob.size_bytes, artifact_blob.artifact_locator_sha256 "
+        "artifact_blob.size_bytes, publication_identity.gid "
         f"FROM {_PREPARED_TABLE} AS prepared "
         "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
         "ON artifact_blob.artifact_sha256 = prepared.artifact_sha256 "
+        "LEFT JOIN catalog_publication_identities AS publication_identity "
+        "ON publication_identity.publication_key = prepared.publication_key "
         "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s"
         + _locking_suffix(backend=backend, locking=locking),
         (candidate, publication),
@@ -324,18 +326,21 @@ def load_prepared_artifact_family(
     try:
         family = PreparedArtifactFamily(*row[:7])
         size_bytes = require_int63(row[7], field="prepared artifact size_bytes")
-        locator = require_digest32(
-            row[8],
-            field="prepared artifact locator",
-        )
+        gid = require_positive_int63(row[8], field="prepared artifact GID")
         token = identity.decode_artifact_protection_token(family.protection_token)
     except (TypeError, ValueError) as error:
         raise ArtifactFamilyCollisionError(
             "prepared artifact family contains invalid facts"
         ) from error
-    if token.size_bytes != size_bytes or token.artifact_locator_sha256 != locator:
+    storage_key = identity.artifact_storage_key_components(gid)
+    if (
+        identity.publication_key(gid) != publication
+        or token.size_bytes != size_bytes
+        or token.artifact_storage_key_sha256
+        != identity.artifact_storage_key_digest(storage_key)
+    ):
         raise ArtifactFamilyCollisionError(
-            "prepared artifact token disagrees with blob or locator authority"
+            "prepared artifact token disagrees with blob or storage-key authority"
         )
     return family
 

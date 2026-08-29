@@ -1,7 +1,7 @@
 # Formal verification
 
 This directory specifies the only production schema shipped by this package:
-the greenfield epoch-2 database. It does not describe, adopt, or silently
+the greenfield epoch-3 database. It does not describe, adopt, or silently
 replace an earlier database. The numbered migration runner and hand-written
 legacy schema have been removed; the generated provider resolves every
 recurring semantic validator and production writer binding.
@@ -102,8 +102,9 @@ an owner-scoped canonical-value graph:
 
 Pages are at most 65,536 bytes. Writers use two-pass or externally spooled,
 ordered iterators so the declared length and digest are known without one
-unbounded bind. Publication summary, language, and artifact locator are
-canonical references rather than duplicated unbounded SQL values. Monolithic
+unbounded bind. Publication summary and language are canonical references;
+artifact storage keys are bounded neutral values derived solely from GID and
+are not stored as canonical payloads or concrete filesystem paths. Monolithic
 encode/decode helpers are reference or convenience oracles only when the
 contract supplies a streaming production path.
 
@@ -204,7 +205,7 @@ canonical pages are owner scoped.
 Catalog revision descriptors, common commits, and source lineage remain as
 O(revision) audit. User-facing catalog payload is current-only: readers fence
 and recheck the current finalized head, while fixed-shard cleanup removes fully
-finalized prior payload only after the new head is also projection-finalized
+finalized prior payload only after the new head is also published
 and no live candidate/build predecessor pins it.
 
 ## Honest production boundary

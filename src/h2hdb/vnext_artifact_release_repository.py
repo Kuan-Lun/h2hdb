@@ -37,7 +37,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from . import vnext_identity as identity
-from .domain import ArtifactReleaseStorageEvidence
+from .domain import (
+    ArtifactReleaseStorageEvidence,
+    ArtifactStorageKey,
+    artifact_storage_key,
+)
 from .ports import ArtifactReleaseAdapter
 from .sql_connector import SQLConnector
 from .vnext_domains import (
@@ -80,8 +84,8 @@ class ArtifactReleaseItem:
     candidate_id: bytes
     publication_key: bytes
     artifact_sha256: bytes
-    artifact_locator_sha256: bytes
-    locator_components: tuple[str, ...]
+    artifact_storage_key_sha256: bytes
+    storage_key: ArtifactStorageKey
     size_bytes: int
     storage_codec_version: int
     storage_generation: int
@@ -102,15 +106,19 @@ class ArtifactReleaseItem:
             self.artifact_sha256,
             field="artifact release artifact_sha256",
         )
-        locator = require_digest32(
-            self.artifact_locator_sha256,
-            field="artifact release artifact_locator_sha256",
+        storage_key_sha256 = require_digest32(
+            self.artifact_storage_key_sha256,
+            field="artifact release artifact_storage_key_sha256",
         )
-        expected_components = identity.artifact_locator_components(artifact)
-        if tuple(self.locator_components) != expected_components:
-            raise ValueError("artifact release locator is not content-addressed")
-        if identity.artifact_locator_digest(expected_components) != locator:
-            raise ValueError("artifact release locator digest disagrees")
+        if not isinstance(self.storage_key, ArtifactStorageKey):
+            raise TypeError("artifact release storage_key is not registered")
+        gid = identity.decode_artifact_name(self.storage_key.segments[-1].encode())
+        if (
+            identity.publication_key(gid) != publication
+            or identity.artifact_storage_key_digest(self.storage_key.segments)
+            != storage_key_sha256
+        ):
+            raise ValueError("artifact release storage-key digest disagrees")
         size = require_int63(self.size_bytes, field="artifact release size_bytes")
         codec = require_positive_int63(
             self.storage_codec_version,
@@ -144,7 +152,7 @@ class ArtifactReleaseItem:
             decoded.candidate_id != candidate
             or decoded.publication_key != publication
             or decoded.artifact_sha256 != artifact
-            or decoded.artifact_locator_sha256 != locator
+            or decoded.artifact_storage_key_sha256 != storage_key_sha256
             or decoded.storage_codec_version != codec
             or decoded.storage_generation != generation
             or decoded.size_bytes != size
@@ -161,8 +169,8 @@ class ArtifactReleaseItem:
             self.candidate_id,
             self.publication_key,
             self.artifact_sha256,
-            self.artifact_locator_sha256,
-            self.locator_components,
+            self.artifact_storage_key_sha256,
+            self.storage_key,
             self.size_bytes,
             self.storage_codec_version,
             self.storage_generation,
@@ -339,7 +347,9 @@ class ArtifactReleaseRepository:
         released: list[bytes] = []
         for item in requested.items:
             raw = resolved[item.adapter_id].release(
-                item.locator_components,
+                item.storage_key,
+                item.artifact_sha256,
+                item.size_bytes,
                 item.protection_token,
             )
             if type(raw) is not ArtifactReleaseStorageEvidence or not raw.released:
@@ -444,7 +454,7 @@ _RELEASE_SELECT = (
     "SELECT prepared.candidate_id, prepared.publication_key, "
     "prepared.artifact_sha256, prepared.storage_codec_version, "
     "prepared.storage_generation, prepared.protection_token, prepared.state, "
-    "blob_row.size_bytes, blob_row.artifact_locator_sha256, "
+    "blob_row.size_bytes, publication_identity.gid, "
     "codec.storage_codec_version, codec.adapter_id "
 )
 
@@ -454,6 +464,8 @@ _RELEASE_JOINS = (
     "ON candidate_row.candidate_id = prepared.candidate_id "
     "LEFT JOIN catalog_artifact_blobs AS blob_row "
     "ON blob_row.artifact_sha256 = prepared.artifact_sha256 "
+    "LEFT JOIN catalog_publication_identities AS publication_identity "
+    "ON publication_identity.publication_key = prepared.publication_key "
     "LEFT JOIN catalog_artifact_storage_codecs AS codec "
     "ON codec.storage_codec_version = prepared.storage_codec_version "
 )
@@ -475,7 +487,9 @@ def _item_from_row(row: tuple[object, ...]) -> ArtifactReleaseItem:
     if row[9] != codec:
         raise ValueError("artifact release storage codec family is partial")
     artifact = require_digest32(row[2], field="artifact release artifact_sha256")
-    components = identity.artifact_locator_components(artifact)
+    gid = require_positive_int63(row[8], field="artifact release GID")
+    storage_key = artifact_storage_key(gid)
+    storage_key_sha256 = identity.artifact_storage_key_digest(storage_key.segments)
     return ArtifactReleaseItem(
         candidate_id=require_uuid16(row[0], field="artifact release candidate_id"),
         publication_key=require_digest32(
@@ -483,11 +497,8 @@ def _item_from_row(row: tuple[object, ...]) -> ArtifactReleaseItem:
             field="artifact release publication_key",
         ),
         artifact_sha256=artifact,
-        artifact_locator_sha256=require_digest32(
-            row[8],
-            field="artifact release artifact_locator_sha256",
-        ),
-        locator_components=components,
+        artifact_storage_key_sha256=storage_key_sha256,
+        storage_key=storage_key,
         size_bytes=require_int63(row[7], field="artifact release size_bytes"),
         storage_codec_version=codec,
         storage_generation=require_int63(

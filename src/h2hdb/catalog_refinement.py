@@ -346,10 +346,10 @@ _EXPECTED_DATA_SEEDS = (
         "artifact_effective_content_v1",
     ),
     (
-        "catalog.digest-domain.artifact-locator.v1",
+        "catalog.digest-domain.artifact-storage-key.v1",
         "canonical_digest_policy",
         "digest_domain",
-        "artifact_locator_bytes_v1",
+        "artifact_storage_key_bytes_v1",
     ),
     (
         "catalog.digest-domain.artifact-member-plan.v1",
@@ -550,7 +550,7 @@ _WIDE_POLICY_BOOTSTRAP_VALUES: Mapping[
             (
                 ("storage_codec_version", "uint32", "integer", 1),
                 ("adapter_id", "ascii_enum", "utf8", "managed-filesystem"),
-                ("locator_codec_version", "uint32", "integer", 1),
+                ("storage_key_codec_version", "uint32", "integer", 1),
                 ("protection_token_codec_version", "uint32", "integer", 1),
             ),
         ),
@@ -1137,9 +1137,9 @@ def _validate_static_catalog_contract() -> None:
             ),
             "artifact_blob": (
                 "catalog_artifact_blobs",
-                ("artifact_sha256", "size_bytes", "artifact_locator_sha256"),
+                ("artifact_sha256", "size_bytes"),
                 ("artifact_sha256",),
-                (("artifact_locator_sha256",),),
+                (),
             ),
             "catalog_artifact": (
                 "catalog_artifacts",
@@ -1372,14 +1372,14 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
             "artifact_zip_writer_policy is not the exact v1 singleton"
         )
     storage_codecs = connector.fetch_all(
-        "SELECT storage_codec_version, adapter_id, locator_codec_version, "
+        "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
         "protection_token_codec_version FROM catalog_artifact_storage_codecs "
         "ORDER BY storage_codec_version LIMIT 2"
     )
     if len(storage_codecs) != 1 or (
         _as_int(storage_codecs[0][0], field="storage codec version"),
         _as_bytes(storage_codecs[0][1], field="storage adapter id"),
-        _as_int(storage_codecs[0][2], field="locator codec version"),
+        _as_int(storage_codecs[0][2], field="storage key codec version"),
         _as_int(storage_codecs[0][3], field="protection token codec version"),
     ) != (1, b"managed-filesystem", 1, 1):
         raise CatalogSemanticValidationError(
@@ -1620,7 +1620,7 @@ def _require_compacted_current_source_handoff(
         _as_int(row[1], field="compacted source revision", positive=True) != revision
         or _as_int(row[2], field="compacted source generation", positive=True)
         != generation
-        or row[3] != "PROJECTION_FINALIZED"
+        or row[3] != "PUBLISHED"
         or provenance_analysis != analysis_id
         or provenance_build != build_id
         or row[7] != "COMPLETE"
@@ -2888,9 +2888,9 @@ def _active_publication_contexts(
             )
         )
         receipt_state = receipt_row[10]
-        if receipt_state not in {"DB_COMMITTED", "PROJECTION_FINALIZED"}:
+        if receipt_state != "PUBLISHED":
             raise CatalogSemanticValidationError(
-                "active publication receipt is not committed"
+                "active publication receipt is not PUBLISHED"
             )
 
         commit_candidate_row = _one(
@@ -3075,9 +3075,7 @@ def _active_publication_contexts(
         finalized_count = _as_int(
             final_checkpoint[0], field="permanent finalization processed_count"
         )
-        expected_final_state = (
-            "COMPLETE" if receipt_state == "PROJECTION_FINALIZED" else "OPEN"
-        )
+        expected_final_state = "COMPLETE"
         if (
             final_checkpoint[1] != expected_final_state
             or finalized_count > prepared_count
@@ -3262,6 +3260,7 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
         raise CatalogSemanticValidationError(
             "retained publication commits and permanent finalization checkpoints differ"
         )
+    finalized_receipts: set[bytes] = set()
     for row in finalization_rows:
         receipt_id = _as_bytes(row[0], field="finalization receipt_id")
         commit_time = _as_int(row[1], field="publication commit time")
@@ -3346,6 +3345,8 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
             raise CatalogSemanticValidationError(
                 "COMPLETE finalization checkpoint lacks its exact terminal marker/receipt"
             )
+        else:
+            finalized_receipts.add(receipt_id)
 
     heads = connector.fetch_all(
         "SELECT registry.channel, head.receipt_id, commit_row.generation, "
@@ -3369,20 +3370,103 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
                 "genesis publication catalog unexpectedly has a common head"
             )
         return
+    tip_receipt = _as_bytes(commits[-1][0], field="tip receipt_id")
+    tip_is_published = tip_receipt in finalized_receipts
     if any(value is None for value in heads[0][1:]):
-        raise CatalogSemanticValidationError(
-            "common publication head family is incomplete"
+        if not all(value is None for value in heads[0][1:]):
+            raise CatalogSemanticValidationError(
+                "common publication head family is incomplete"
+            )
+        if len(commits) != 1 or generations != [1] or tip_is_published:
+            raise CatalogSemanticValidationError(
+                "only one reader-invisible DB_COMMITTED genesis may precede a head"
+            )
+        _validate_invisible_publication_working_roots(
+            connector,
+            candidate_id=_as_bytes(
+                commits[-1][1], field="invisible publication candidate_id"
+            ),
         )
+        return
     head_receipt = _as_bytes(heads[0][1], field="head receipt_id")
     head_generation = _as_int(heads[0][2], field="head generation", positive=True)
     head_source_channel = _as_bytes(heads[0][3], field="head source channel")
-    if (
-        head_receipt != _as_bytes(commits[-1][0], field="tip receipt_id")
-        or head_generation != generations[-1]
-        or head_source_channel != b"default"
+    head_index = next(
+        (
+            index
+            for index, commit in enumerate(commits)
+            if _as_bytes(commit[0], field="retained receipt_id") == head_receipt
+        ),
+        None,
+    )
+    if head_index is None or head_source_channel != b"default":
+        raise CatalogSemanticValidationError(
+            "common publication head does not name a retained PUBLISHED commit"
+        )
+    head_is_published = head_receipt in finalized_receipts
+    if not head_is_published or head_generation != generations[head_index]:
+        raise CatalogSemanticValidationError(
+            "common publication head is not an exact PUBLISHED generation"
+        )
+    if head_index == len(commits) - 1:
+        if not tip_is_published:
+            raise CatalogSemanticValidationError(
+                "common publication head points at an unfinished commit"
+            )
+    elif head_index == len(commits) - 2 and not tip_is_published:
+        _validate_invisible_publication_working_roots(
+            connector,
+            candidate_id=_as_bytes(
+                commits[-1][1], field="invisible publication candidate_id"
+            ),
+        )
+    else:
+        raise CatalogSemanticValidationError(
+            "publication history has more than one commit beyond its common head"
+        )
+    if any(
+        _as_bytes(commit[0], field="pre-tip publication receipt_id")
+        not in finalized_receipts
+        for commit in commits[:-1]
     ):
         raise CatalogSemanticValidationError(
-            "common publication head does not name the unique retained chain tip"
+            "a retained publication before the chain tip is not PUBLISHED"
+        )
+
+
+def _validate_invisible_publication_working_roots(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+) -> None:
+    """Require the exact roots that make one invisible successor recoverable."""
+
+    row = _one(
+        connector,
+        """
+        SELECT candidate.candidate_id, catalog_working.candidate_id,
+               run.build_id, source_working.build_id
+        FROM catalog_publication_candidates AS candidate
+        JOIN catalog_analysis_run_descriptor AS run
+          ON run.analysis_id = candidate.analysis_id
+        LEFT JOIN operational_catalog_working_candidates AS catalog_working
+          ON catalog_working.candidate_id = candidate.candidate_id
+        LEFT JOIN operational_source_working_builds AS source_working
+          ON source_working.build_id = run.build_id
+        WHERE candidate.candidate_id = %s
+        LIMIT 2
+        """,
+        (candidate_id,),
+        detail="reader-invisible publication working roots",
+    )
+    assert row is not None
+    values = tuple(
+        _as_bytes(value, field="reader-invisible publication working root")
+        for value in row
+    )
+    if values[0] != candidate_id or values[1] != candidate_id or values[2] != values[3]:
+        raise CatalogSemanticValidationError(
+            "reader-invisible DB_COMMITTED successor lacks both exact working roots"
         )
 
 
@@ -3450,15 +3534,16 @@ def _validate_artifact_codec_vectors() -> None:
         raise CatalogSemanticValidationError("artifact producer codec drifted")
     if identity.artifact_name(7) != b"h2h-7.cbz":
         raise CatalogSemanticValidationError("artifact name codec drifted")
-    locator_components = identity.artifact_locator_components(bytes((0xAA,)) * 32)
-    if locator_components != (
-        "sha256",
-        "aa",
-        "a" * 64 + ".cbz",
-    ) or identity.artifact_locator_digest(locator_components).hex() != (
-        "1400187c75cbf5721168d71ac3a15ad2d5decca92ce4dbf2c77c036b32f21f57"
+    storage_key_components = identity.artifact_storage_key_components(7)
+    if storage_key_components != (
+        "hash-v1",
+        "bd",
+        "2",
+        "h2h-7.cbz",
+    ) or identity.artifact_storage_key_digest(storage_key_components).hex() != (
+        "1b3415259ae661635a171998d34955b9ddc083c740287a5025387e3d9136a2b7"
     ):
-        raise CatalogSemanticValidationError("artifact locator codec drifted")
+        raise CatalogSemanticValidationError("artifact storage-key codec drifted")
     protection = identity.encode_artifact_protection_token(
         1,
         bytes((0x11,)) * 16,
@@ -3570,7 +3655,7 @@ def check_published_baseline_prune_v1(connector: SQLConnector) -> None:
     )
     if retained_depth_zero:
         raise CatalogSemanticValidationError(
-            "projection-finalized depth-zero analysis retained its working baseline"
+            "published depth-zero analysis retained its working baseline"
         )
 
     missing_published_parent = connector.fetch_all(
@@ -3671,7 +3756,7 @@ def check_physical_domains_v1(connector: SQLConnector) -> None:
         or identity.CANONICAL_VALUE_CHUNK_BYTES != 32768
         or identity.GALLERY_OBSERVATION_PAGE_MAXIMUM_BYTES != 65536
         or identity.FILESYSTEM_STAT_FINGERPRINT_BYTES != 40
-        or identity.ARTIFACT_LOCATOR_MAXIMUM_BYTES != 4096
+        or identity.ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES != 4096
     ):
         raise CatalogSemanticValidationError(
             "production physical-domain constants drifted"

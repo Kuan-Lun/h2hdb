@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "b876b17cc0ae28187a97cd6a231e632e0e28b5225d05635a21dc623e5c9c73de"
+def catalogManifestSha256 : String := "ebc533281193fd01b2713ec1867834a08b5088ac0d4296cb7aa77a23c4fb04e4"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -8248,11 +8248,11 @@ theorem artifact_producer_fingerprint_bcnf : BCNF artifact_producer_fingerprint_
 
 def artifact_storage_codec_contract : RelationContract where
   name := "artifact_storage_codec"
-  attributes := ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
+  attributes := ["storage_codec_version", "adapter_id", "storage_key_codec_version", "protection_token_codec_version"]
   declaredKeys := [["storage_codec_version"], ["adapter_id"]]
   declaredFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["adapter_id", "locator_codec_version", "protection_token_codec_version"] },
-    { determinant := ["adapter_id"], dependent := ["storage_codec_version", "locator_codec_version", "protection_token_codec_version"] }
+    { determinant := ["storage_codec_version"], dependent := ["adapter_id", "storage_key_codec_version", "protection_token_codec_version"] },
+    { determinant := ["adapter_id"], dependent := ["storage_codec_version", "storage_key_codec_version", "protection_token_codec_version"] }
   ]
 
 theorem artifact_storage_codec_schema_well_formed :
@@ -8606,11 +8606,10 @@ theorem artifact_operation_bcnf : BCNF artifact_operation_contract :=
 
 def artifact_blob_contract : RelationContract where
   name := "artifact_blob"
-  attributes := ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
-  declaredKeys := [["artifact_sha256"], ["artifact_locator_sha256"]]
+  attributes := ["artifact_sha256", "size_bytes"]
+  declaredKeys := [["artifact_sha256"]]
   declaredFDs := [
-    { determinant := ["artifact_sha256"], dependent := ["size_bytes", "artifact_locator_sha256"] },
-    { determinant := ["artifact_locator_sha256"], dependent := ["artifact_sha256", "size_bytes"] }
+    { determinant := ["artifact_sha256"], dependent := ["size_bytes"] }
   ]
 
 theorem artifact_blob_schema_well_formed :
@@ -8700,10 +8699,10 @@ theorem prepared_artifact_bcnf : BCNF prepared_artifact_contract :=
 
 def catalog_revision_descriptor_contract : RelationContract where
   name := "catalog_revision_descriptor"
-  attributes := ["revision", "publication_count"]
+  attributes := ["revision", "publication_count", "artifact_count"]
   declaredKeys := [["revision"]]
   declaredFDs := [
-    { determinant := ["revision"], dependent := ["publication_count"] }
+    { determinant := ["revision"], dependent := ["publication_count", "artifact_count"] }
   ]
 
 theorem catalog_revision_descriptor_schema_well_formed :
@@ -8746,10 +8745,10 @@ theorem catalog_revision_descriptor_bcnf : BCNF catalog_revision_descriptor_cont
 
 def catalog_revision_contract : RelationContract where
   name := "catalog_revision"
-  attributes := ["revision", "publication_count", "published_at"]
+  attributes := ["revision", "publication_count", "artifact_count", "published_at"]
   declaredKeys := [["revision"]]
   declaredFDs := [
-    { determinant := ["revision"], dependent := ["publication_count", "published_at"] }
+    { determinant := ["revision"], dependent := ["publication_count", "artifact_count", "published_at"] }
   ]
 
 theorem catalog_revision_schema_well_formed :
@@ -11786,12 +11785,11 @@ theorem tag_identity_and_gallery_observation_association_dependency_preserving :
 
 def artifact_payload_and_preparation_occurrence_contract : BinaryDecompositionContract where
   name := "artifact_payload_and_preparation_occurrence"
-  universalAttributes := ["candidate_id", "publication_key", "artifact_sha256", "size_bytes", "artifact_locator_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"]
-  leftAttributes := ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
+  universalAttributes := ["candidate_id", "publication_key", "artifact_sha256", "size_bytes", "storage_codec_version", "storage_generation", "protection_token", "state"]
+  leftAttributes := ["artifact_sha256", "size_bytes"]
   rightAttributes := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"]
   declaredFDs := [
-    { determinant := ["artifact_sha256"], dependent := ["size_bytes", "artifact_locator_sha256"] },
-    { determinant := ["artifact_locator_sha256"], dependent := ["artifact_sha256", "size_bytes"] },
+    { determinant := ["artifact_sha256"], dependent := ["size_bytes"] },
     { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
     { determinant := ["protection_token"], dependent := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] }
   ]
@@ -11881,12 +11879,11 @@ theorem artifact_policy_and_registered_producer_dependency_preserving :
 
 def artifact_payload_and_catalog_occurrence_contract : BinaryDecompositionContract where
   name := "artifact_payload_and_catalog_occurrence"
-  universalAttributes := ["revision", "publication_key", "artifact_sha256", "size_bytes", "artifact_locator_sha256", "artifact_semantics_sha256"]
-  leftAttributes := ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
+  universalAttributes := ["revision", "publication_key", "artifact_sha256", "size_bytes", "artifact_semantics_sha256"]
+  leftAttributes := ["artifact_sha256", "size_bytes"]
   rightAttributes := ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"]
   declaredFDs := [
-    { determinant := ["artifact_sha256"], dependent := ["size_bytes", "artifact_locator_sha256"] },
-    { determinant := ["artifact_locator_sha256"], dependent := ["artifact_sha256", "size_bytes"] },
+    { determinant := ["artifact_sha256"], dependent := ["size_bytes"] },
     { determinant := ["revision", "publication_key"], dependent := ["artifact_sha256", "artifact_semantics_sha256"] }
   ]
 
@@ -12064,12 +12061,12 @@ theorem publication_candidate_and_optional_common_base_dependency_preserving :
 
 def catalog_revision_and_generation_publication_seal_contract : BinaryDecompositionContract where
   name := "catalog_revision_and_generation_publication_seal"
-  universalAttributes := ["revision", "publication_count", "published_at", "generation"]
-  leftAttributes := ["revision", "publication_count", "published_at"]
+  universalAttributes := ["revision", "publication_count", "artifact_count", "published_at", "generation"]
+  leftAttributes := ["revision", "publication_count", "artifact_count", "published_at"]
   rightAttributes := ["revision", "generation"]
   declaredFDs := [
-    { determinant := ["revision"], dependent := ["publication_count", "published_at", "generation"] },
-    { determinant := ["generation"], dependent := ["revision", "publication_count", "published_at"] }
+    { determinant := ["revision"], dependent := ["publication_count", "artifact_count", "published_at", "generation"] },
+    { determinant := ["generation"], dependent := ["revision", "publication_count", "artifact_count", "published_at"] }
   ]
 
 theorem catalog_revision_and_generation_publication_seal_projection_check :

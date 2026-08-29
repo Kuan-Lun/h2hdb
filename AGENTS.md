@@ -260,7 +260,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 2/version 1只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/version 1只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為

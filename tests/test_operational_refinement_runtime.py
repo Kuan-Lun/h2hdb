@@ -251,7 +251,7 @@ def test_static_physical_check_does_not_claim_to_rescan_corpus(
         check_bootstrap_contract_v1(greenfield)
 
 
-def test_fencing_checks_only_exact_current_projection(
+def test_fencing_checks_only_exact_current_coordination_authority(
     greenfield: SQLiteConnector,
 ) -> None:
     greenfield.connection.executemany(

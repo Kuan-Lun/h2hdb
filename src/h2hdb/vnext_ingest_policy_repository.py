@@ -225,7 +225,7 @@ def _require_bootstrap_policies(
     expected_storage = ArtifactStorageCodecRecord(
         policy.storage.storage_codec_version,
         policy.storage.adapter_id,
-        policy.storage.locator_codec_version,
+        policy.storage.storage_key_codec_version,
         policy.storage.protection_token_codec_version,
     )
     if writer != expected_writer or storage != expected_storage:

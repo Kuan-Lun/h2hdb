@@ -6,7 +6,11 @@ from mysql.connector.errors import IntegrityError, ProgrammingError
 
 import h2hdb.mariadb_connector as mariadb_connector_module
 from h2hdb import CoreConfig
-from h2hdb.mariadb_connector import MariaDBConnector, MariaDBDuplicateKeyError
+from h2hdb.mariadb_connector import (
+    INNODB_DURABILITY_QUERY,
+    MariaDBConnector,
+    MariaDBDuplicateKeyError,
+)
 from h2hdb.sql_connector import DatabaseConfigurationError
 
 _MAX_ALLOWED_PACKET_QUERY = "SELECT @@SESSION.max_allowed_packet"
@@ -59,6 +63,8 @@ class _PacketRecordingCursor:
         self.connection.execute_calls.append((query, data))
         if query == _MAX_ALLOWED_PACKET_QUERY:
             self.result = (self.connection.max_allowed_packet,)
+        elif query == INNODB_DURABILITY_QUERY:
+            self.result = (self.connection.innodb_flush_log_at_trx_commit,)
 
     def executemany(
         self,
@@ -88,10 +94,12 @@ class _PacketRecordingConnection:
         max_allowed_packet: int = _PACKET_LIMIT,
         fail_execute_many_call: int | None = None,
         affected_rows: int = 1,
+        innodb_flush_log_at_trx_commit: int = 1,
     ) -> None:
         self.max_allowed_packet = max_allowed_packet
         self.fail_execute_many_call = fail_execute_many_call
         self.affected_rows = affected_rows
+        self.innodb_flush_log_at_trx_commit = innodb_flush_log_at_trx_commit
         self.in_transaction = False
         self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
         self.execute_many_calls: list[tuple[str, list[tuple[Any, ...]]]] = []
@@ -383,6 +391,30 @@ def test_connect_clears_cached_packet_limit(
     assert _packet_queries(first_connection) == [_MAX_ALLOWED_PACKET_QUERY]
     assert _packet_queries(second_connection) == [_MAX_ALLOWED_PACKET_QUERY]
     assert first_connection.closed
+
+
+def test_connect_rejects_nondurable_innodb_commit_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _PacketRecordingConnection(innodb_flush_log_at_trx_commit=2)
+
+    monkeypatch.setattr(
+        mariadb_connector_module,
+        "SQLConnect",
+        lambda **_kwargs: cast(MySQLConnectionAbstract, connection),
+    )
+    connector = MariaDBConnector(
+        host="database.example",
+        port=3306,
+        user="h2hdb",
+        password="secret",
+        database="h2hdb",
+    )
+
+    with pytest.raises(DatabaseConfigurationError, match="flush_log_at_trx_commit=1"):
+        connector.connect()
+
+    assert connection.closed
 
 
 def test_execute_many_splits_insert_below_real_mariadb_packet_limit(

@@ -23,6 +23,8 @@ from typing import TypeVar
 from .config_loader import CoreConfig
 from .domain import (
     CatalogArtifact,
+    CatalogArtifactCursor,
+    CatalogArtifactPage,
     CatalogPage,
     CatalogPublication,
     CatalogRevision,
@@ -105,7 +107,6 @@ class VNextCatalogFacade:
         offset: int = 0,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-        require_artifact: bool = False,
     ) -> CatalogPage:
         return self.__read(
             lambda connector: self.__reader.list_publications(
@@ -114,7 +115,22 @@ class VNextCatalogFacade:
                 revision=revision,
                 offset=offset,
                 limit=limit,
-                require_artifact=require_artifact,
+            )
+        )
+
+    def list_artifact_publications(
+        self,
+        *,
+        after: CatalogArtifactCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogArtifactPage:
+        return self.__read(
+            lambda connector: self.__reader.list_artifact_publications(
+                connector,
+                after=after,
+                limit=limit,
+                revision=revision,
             )
         )
 

@@ -571,7 +571,7 @@ version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
 value = [{ attribute = "phase", type = "ascii_enum", text = "PCOM_RELEASE_BUILD_BASE" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_COMMIT" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "Release only a source-build baseline whose exact consuming analyses have terminal, newer, projection-finalized publication handoffs."
+invariant = "Release only a source-build baseline whose exact consuming analyses have terminal, newer, published handoffs."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pcom-preparation-binding.v1"
@@ -2042,6 +2042,11 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 [[external_stub.column]]
 name = "publication_count"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "artifact_count"
 sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
 nullable = false

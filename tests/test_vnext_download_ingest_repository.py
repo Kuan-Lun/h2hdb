@@ -294,7 +294,7 @@ def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
                 "INSERT INTO operational_download_ingest_consumptions "
                 "(download_generation, ingest_generation, consumed_at) "
                 "VALUES (%s, %s, %s)",
-                (2, 1, 4),
+                (3, 1, 4),
             )
 
         connector.execute(

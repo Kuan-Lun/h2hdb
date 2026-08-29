@@ -11,12 +11,12 @@ from h2hdb.vnext_identity import (
     ANALYSIS_STATE_COMPONENTS,
     ARTIFACT_COMPONENT_CODEC_VERSION,
     ARTIFACT_COMPONENT_KINDS,
-    ARTIFACT_LOCATOR_CODEC_VERSION,
-    ARTIFACT_LOCATOR_MAXIMUM_BYTES,
     ARTIFACT_MEMBER_PLAN_VERSION,
     ARTIFACT_POLICY_CODEC_VERSION,
     ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION,
     ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION,
+    ARTIFACT_STORAGE_KEY_CODEC_VERSION,
+    ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES,
     CANONICAL_VALUE_CHUNK_BYTES,
     EFFECTIVE_CONTENT_ENCODING_VERSION,
     FILESYSTEM_STAT_FINGERPRINT_BYTES,
@@ -71,8 +71,6 @@ from h2hdb.vnext_identity import (
     artifact_effective_content_digest,
     artifact_effective_content_digest_ordered,
     artifact_id,
-    artifact_locator_components,
-    artifact_locator_digest,
     artifact_member_plan_digest,
     artifact_member_plan_digest_ordered,
     artifact_name,
@@ -82,6 +80,8 @@ from h2hdb.vnext_identity import (
     artifact_selected_digest,
     artifact_semantics_digest,
     artifact_source_manifest_digest,
+    artifact_storage_key_components,
+    artifact_storage_key_digest,
     artifact_storage_receipt_id,
     build_canonical_value_tree,
     build_gallery_observation_metadata_tree,
@@ -96,10 +96,10 @@ from h2hdb.vnext_identity import (
     catalog_summary_digest_parts,
     count_analysis_title_scalars,
     decode_artifact_id,
-    decode_artifact_locator,
     decode_artifact_member_plan,
     decode_artifact_name,
     decode_artifact_protection_token,
+    decode_artifact_storage_key,
     decode_canonical_value_page,
     decode_filesystem_stat_fingerprint,
     decode_gallery_observation_descriptor,
@@ -113,7 +113,6 @@ from h2hdb.vnext_identity import (
     effective_content_digest,
     effective_content_digest_ordered,
     encode_artifact_effective_content,
-    encode_artifact_locator,
     encode_artifact_member_plan,
     encode_artifact_owner,
     encode_artifact_policy,
@@ -122,6 +121,7 @@ from h2hdb.vnext_identity import (
     encode_artifact_selected,
     encode_artifact_semantics,
     encode_artifact_source_manifest,
+    encode_artifact_storage_key,
     encode_effective_content,
     encode_filesystem_stat_fingerprint,
     encode_gallery_observation_descriptor,
@@ -142,9 +142,9 @@ from h2hdb.vnext_identity import (
     gallery_observation_page_key_bounds,
     gallery_scan_audit_digest,
     iter_artifact_effective_content_payload_ordered,
-    iter_artifact_locator_payload,
     iter_artifact_member_plan_payload,
-    iter_decode_artifact_locator,
+    iter_artifact_storage_key_payload,
+    iter_decode_artifact_storage_key,
     iter_effective_content_payload_ordered,
     iter_gallery_observation_metadata_stream,
     iter_source_relative_locator_payload,
@@ -236,19 +236,20 @@ def test_filesystem_stat_fingerprint_is_exact_fixed_width_and_round_trips() -> N
         )
 
 
-def test_artifact_locator_and_publication_payload_domains_are_exact() -> None:
-    locator = ("sha256", "ab.cbz")
-    payload = encode_artifact_locator(locator)
-    assert ARTIFACT_LOCATOR_CODEC_VERSION == 1
+def test_artifact_storage_key_and_publication_payload_domains_are_exact() -> None:
+    components = ("sha256", "ab.cbz")
+    payload = encode_artifact_storage_key(components)
+    assert ARTIFACT_STORAGE_KEY_CODEC_VERSION == 1
     assert payload.hex() == ("0000000100000002000000067368613235360000000661622e63627a")
-    assert b"".join(iter_artifact_locator_payload(locator)) == payload
-    assert decode_artifact_locator(payload) == locator
+    assert b"".join(iter_artifact_storage_key_payload(components)) == payload
+    assert decode_artifact_storage_key(payload) == components
     for split in range(len(payload) + 1):
-        assert tuple(
-            iter_decode_artifact_locator((payload[:split], payload[split:]))
-        ) == (locator)
-    assert artifact_locator_digest(locator) == _manual_canonical_digest(
-        "artifact_locator_bytes_v1", payload
+        assert (
+            tuple(iter_decode_artifact_storage_key((payload[:split], payload[split:])))
+            == components
+        )
+    assert artifact_storage_key_digest(components) == _manual_canonical_digest(
+        "artifact_storage_key_bytes_v1", payload
     )
 
     summary = "摘要é".encode()
@@ -281,40 +282,40 @@ def test_artifact_locator_and_publication_payload_domains_are_exact() -> None:
     with pytest.raises(ByteDomainError, match="declared_byte_count"):
         catalog_summary_digest_parts(1, (b"ab",))
     with pytest.raises(ByteDomainError, match="separator|direct-child"):
-        encode_artifact_locator(("bad/segment",))
+        encode_artifact_storage_key(("bad/segment",))
     with pytest.raises(ByteDomainError, match="truncated"):
-        tuple(iter_decode_artifact_locator((payload[:-1],)))
+        tuple(iter_decode_artifact_storage_key((payload[:-1],)))
     with pytest.raises(ByteDomainError, match="trailing"):
-        tuple(iter_decode_artifact_locator((payload, b"x")))
-    bad = iter_decode_artifact_locator((payload, b"x"))
+        tuple(iter_decode_artifact_storage_key((payload, b"x")))
+    bad = iter_decode_artifact_storage_key((payload, b"x"))
     with pytest.raises(ByteDomainError, match="trailing"):
         next(bad)
     maximum = (*("x" * 255 for _ in range(15)), "x" * 199)
-    assert len(encode_artifact_locator(maximum)) == ARTIFACT_LOCATOR_MAXIMUM_BYTES
+    assert (
+        len(encode_artifact_storage_key(maximum)) == ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES
+    )
     with pytest.raises(ByteDomainError, match="exceeds 4096 bytes"):
-        encode_artifact_locator((*maximum, "x"))
+        encode_artifact_storage_key((*maximum, "x"))
     with pytest.raises(ByteDomainError, match="exceeds 4096 bytes"):
-        next(iter_decode_artifact_locator((bytes(4097),)))
+        next(iter_decode_artifact_storage_key((bytes(4097),)))
 
 
-def test_artifact_locator_is_derived_only_from_artifact_sha256() -> None:
-    artifact_sha256 = bytes.fromhex("aa" * 32)
-    locator = artifact_locator_components(artifact_sha256)
-    payload = encode_artifact_locator(locator)
+def test_artifact_storage_key_is_derived_only_from_positive_gid() -> None:
+    components = artifact_storage_key_components(7)
+    payload = encode_artifact_storage_key(components)
 
-    assert locator == ("sha256", "aa", "aa" * 32 + ".cbz")
+    assert components == ("hash-v1", "bd", "2", "h2h-7.cbz")
     assert payload.hex() == (
-        "00000001000000030000000673686132353600000002616100000044"
-        "6161616161616161616161616161616161616161616161616161616161616161"
-        "6161616161616161616161616161616161616161616161616161616161616161"
-        "2e63627a"
+        "000000010000000400000007686173682d76310000000262640000000132"
+        "000000096832682d372e63627a"
     )
-    assert artifact_locator_digest(locator).hex() == (
-        "1400187c75cbf5721168d71ac3a15ad2d5decca92ce4dbf2c77c036b32f21f57"
+    assert artifact_storage_key_digest(components).hex() == (
+        "1b3415259ae661635a171998d34955b9ddc083c740287a5025387e3d9136a2b7"
     )
 
-    with pytest.raises(DigestFormatError):
-        artifact_locator_components(bytes(31))
+    for invalid in (0, -1, 1 << 63, True, bytes(32)):
+        with pytest.raises(IntegerDomainError):
+            artifact_storage_key_components(invalid)  # type: ignore[arg-type]
 
 
 def _manual_locator(components: tuple[str, ...]) -> bytes:
@@ -629,7 +630,7 @@ def test_artifact_protection_token_matches_fixed_184_byte_golden() -> None:
         candidate_id=candidate_id,
         publication_key=publication_key_value,
         artifact_sha256=artifact_sha256,
-        artifact_locator_sha256=locator_sha256,
+        artifact_storage_key_sha256=locator_sha256,
         receipt_id=receipt_id,
         storage_generation=7,
         size_bytes=9,

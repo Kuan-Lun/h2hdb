@@ -359,7 +359,8 @@ def _seed_publication_commit_cleanup_history(
             (
                 (
                     "INSERT INTO catalog_revision_descriptors "
-                    "(revision, publication_count) VALUES (%s, 0)",
+                    "(revision, publication_count, artifact_count) "
+                    "VALUES (%s, 0, 0)",
                     (revision,),
                 ),
                 (
@@ -759,7 +760,8 @@ def _seed_catalog_publication_cleanup_fixture(
             (
                 (
                     "INSERT INTO catalog_revision_descriptors "
-                    "(revision, publication_count) VALUES (%s, 1)",
+                    "(revision, publication_count, artifact_count) "
+                    "VALUES (%s, 1, 1)",
                     (revision,),
                 ),
                 (
@@ -1503,7 +1505,7 @@ def test_analysis_cleanup_retains_only_latest_abandoned_recovery_proof(
 
 
 def test_cleanup_predicates_fail_closed_for_sibling_analysis_corruption() -> None:
-    """Retain defense for audit-bypassing corruption unreachable in epoch 2."""
+    """Retain defense for audit-bypassing corruption unreachable in epoch 3."""
 
     assert (
         cleanup_module._SOURCE_BUILD_REACHABILITY_ELIGIBILITY.count(
@@ -4263,7 +4265,8 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
             [
                 (
                     "INSERT INTO catalog_revision_descriptors "
-                    "(revision, publication_count) VALUES (%s, 0)",
+                    "(revision, publication_count, artifact_count) "
+                    "VALUES (%s, 0, 0)",
                     (revision,),
                 )
                 for revision in (10, 11)
@@ -4660,7 +4663,7 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (current_receipt,),
-        ) == ("PROJECTION_FINALIZED", 100)
+        ) == ("PUBLISHED", 100)
         released = _begin(
             connector,
             gate,
@@ -7949,9 +7952,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             [
                 (
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                    "VALUES (%s, 4, %s)",
-                    (artifact, b"l" * 32),
+                    "(artifact_sha256, size_bytes) VALUES (%s, 4)",
+                    (artifact,),
                 ),
             ],
         )
@@ -8040,9 +8042,8 @@ def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
             [
                 (
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
-                    "VALUES (%s, 4, %s)",
-                    (artifact_sha256, b"l" * 32),
+                    "(artifact_sha256, size_bytes) VALUES (%s, 4)",
+                    (artifact_sha256,),
                 ),
                 (blocker_sql, (*blocker_parameters, artifact_sha256)),
             ],
