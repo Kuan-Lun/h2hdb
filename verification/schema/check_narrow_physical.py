@@ -162,7 +162,6 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "row_count",
         "sealed_at",
     ),
-    "catalog_artifact_blobs": ("size_bytes",),
     "catalog_artifact_policy_semantics": (
         "max_image_short_side",
         "producer_fingerprint_sha256",
@@ -315,6 +314,10 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "modified_at",
         "source_title_sha256",
     ),
+    "catalog_revision_descriptors": (
+        "publication_count",
+        "artifact_count",
+    ),
     "catalog_source_build_descriptor": (
         "scope_key",
         "manifest_policy_id",
@@ -356,6 +359,10 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
 # approved-wide table is split, remove its exception and declare each narrow
 # result, including its true semantic key and its sole atomic value (if any).
 _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
+    "catalog_artifact_blobs": NarrowLayoutDeclaration(
+        semantic_key=("artifact_sha256",),
+        semantic_value=("size_bytes",),
+    ),
     "catalog_canonical_digest_policies": NarrowLayoutDeclaration(
         semantic_key=("digest_domain",),
         semantic_value=(),
@@ -702,10 +709,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_publication_commit_anchors": NarrowLayoutDeclaration(
         semantic_key=("receipt_id",),
         semantic_value=(),
-    ),
-    "catalog_revision_descriptors": NarrowLayoutDeclaration(
-        semantic_key=("revision",),
-        semantic_value=("publication_count",),
     ),
 }
 
