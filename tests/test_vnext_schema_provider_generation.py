@@ -526,6 +526,12 @@ def test_generated_batch_zero_views_are_exact_on_both_backends(
     assert sql.startswith(expected_prefix)
     for physical_dependency in physical_dependencies:
         assert physical_dependency in sql
+    if backend == "mariadb" and relation_name == "publication_receipt":
+        state_column = next(
+            column for column in relation["columns"] if column[0] == "state"
+        )
+        assert state_column[2] == "VARCHAR(16)"
+        assert "AS CHAR(16) CHARSET ascii) COLLATE ascii_bin" in sql
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -976,7 +982,7 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
 
 def test_generated_manifests_are_backend_specific_and_well_formed() -> None:
     assert ARTIFACT_DATA["artifact_version"] == 1
-    assert ARTIFACT_DATA["epoch"] == 2
+    assert ARTIFACT_DATA["epoch"] == 3
     assert ARTIFACT_DATA["schema_version"] == 1
     assert len(ARTIFACT_DATA["source_manifest_sha256"]) == 64
     sqlite_manifest = ARTIFACT_DATA["backends"]["sqlite"]["ddl_manifest_sha256"]

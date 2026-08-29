@@ -2358,6 +2358,14 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         "CAST(CASE WHEN stored.`row_count` = 0 THEN 'COMPLETE' ELSE 'OPEN' END "
         "AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
     ) in analysis_receipt_ddl
+    publication_receipt_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith(
+            "CREATE SQL SECURITY INVOKER VIEW `catalog_publication_receipts`"
+        )
+    )
+    assert "AS CHAR(16) CHARSET ascii) COLLATE ascii_bin" in (publication_receipt_ddl)
     analysis_receipt = physical_spec.relation("analysis_batch_receipt")
     assert analysis_receipt is not None
     terminal_column = next(
@@ -2373,6 +2381,14 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
     assert next_state_column.mariadb.collation == "ascii_bin"
     assert next_state_column.mariadb.nullable
     assert not next_state_column.sqlite.nullable
+    publication_receipt = physical_spec.relation("publication_receipt")
+    assert publication_receipt is not None
+    publication_state_column = next(
+        column for column in publication_receipt.columns if column.attribute == "state"
+    )
+    assert publication_state_column.mariadb.type_name == "VARCHAR(16)"
+    assert publication_state_column.mariadb.collation == "ascii_bin"
+    assert publication_state_column.mariadb.nullable
     impacted_gid = physical_spec.relation("analysis_impacted_gid")
     assert impacted_gid is not None
     witness_gallery_id = next(

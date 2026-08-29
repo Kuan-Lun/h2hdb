@@ -2861,7 +2861,7 @@ def _render_derived_view(
         )
         if backend == "mariadb":
             state_expression = (
-                f"CAST({state_expression} AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
+                f"CAST({state_expression} AS CHAR(16) CHARSET ascii) COLLATE ascii_bin"
             )
             finalized_at_expression = f"CAST({finalized_at_expression} AS UNSIGNED)"
         expressions.update(
