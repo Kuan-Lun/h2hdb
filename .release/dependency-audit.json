@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-26T08:43:56+00:00",
+  "checked_at": "2026-08-28T18:39:18+00:00",
   "manifest_sha256": "a7e8b5c134349c95aabb0597ac5e5241ec79218d91cf0b9f27e0835986ef155a",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.23.1",
+  "project_version": "0.24.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -32,7 +32,7 @@
     {
       "declared": "pydantic>=2.13.4,<3.0.0",
       "group": "runtime",
-      "latest": "2.13.4",
+      "latest": "2.13.5",
       "latest_satisfies": true,
       "name": "pydantic",
       "python_3_14": true,
@@ -41,7 +41,7 @@
     {
       "declared": "build>=1.5.0",
       "group": "optional:dev",
-      "latest": "1.5.0",
+      "latest": "1.6.0",
       "latest_satisfies": true,
       "name": "build",
       "python_3_14": true,
@@ -95,7 +95,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.4",
+      "latest": "0.16.5",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed the current registry results, upstream release notes, and Python 3.14 metadata for every direct build, runtime, optional/development, and Node dependency on 2026-08-26. All latest stable releases satisfy the declared ranges and showed no incompatible change for this project; build 1.5.1 is yanked, so 1.5.0 remains the latest stable release. No upper-bound exception or source change is required.",
+    "note": "Reviewed every direct build, runtime, development, and Node dependency against current registry metadata and upstream release notes on 2026-08-29. Pydantic 2.13.5 contains validator-plugin, GC-traversal, and smart-union fixes without changing APIs used here. Build 1.6.0 adds CLI/reporting and build-environment features, fixes output and constraint handling, removes BuildBackendException.exc_info, and deprecates project_wheel_metadata; h2hdb uses only the unaffected python -m build CLI. Ruff 0.16.5 changes preview rules and fixes ASYNC210, DTZ007, and SIM401, none of which are selected by this non-preview rule set. All latest releases satisfy the declared ranges; no bound change or exception is required, and the exact-tree release gate remains the compatibility authority.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
