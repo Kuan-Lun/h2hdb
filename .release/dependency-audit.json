@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-28T18:39:18+00:00",
+  "checked_at": "2026-08-29T06:34:34+00:00",
   "manifest_sha256": "a7e8b5c134349c95aabb0597ac5e5241ec79218d91cf0b9f27e0835986ef155a",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.24.0",
+  "project_version": "0.25.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
