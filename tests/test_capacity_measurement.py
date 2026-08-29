@@ -289,7 +289,11 @@ def test_registry_measurement_relation_dominates_closed_bounded_set(
 
 @pytest.mark.parametrize(
     ("relation_name", "widened_bytes"),
-    (("cleanup_job", 8_000), ("cleanup_cycle_root", 1_024)),
+    (
+        ("cleanup_job", 8_000),
+        ("cleanup_cycle_root", 1_024),
+        ("cleanup_checkpoint", 20_000),
+    ),
 )
 def test_bounded_cleanup_protocol_width_guard_rejects_each_widening(
     monkeypatch: pytest.MonkeyPatch,
@@ -300,6 +304,7 @@ def test_bounded_cleanup_protocol_width_guard_rejects_each_widening(
     assert {name for name, _score, _accounted in scores} == {
         "cleanup_job",
         "cleanup_cycle_root",
+        "cleanup_checkpoint",
     }
     assert all(score <= accounted for _name, score, accounted in scores)
 

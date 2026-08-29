@@ -288,6 +288,14 @@ def _bounded_protocol_width_guard(
                 "capacity_plan",
             ),
         ),
+        (
+            "cleanup_checkpoint",
+            _require_int(
+                plan,
+                "cleanup_checkpoint_accounted_bytes_per_row",
+                "capacity_plan",
+            ),
+        ),
     )
     scored = tuple(
         (
@@ -451,6 +459,9 @@ def _physical_shapes() -> dict[str, str]:
         ),
         "cleanup_job": _shape_sha256(_relation(operational, "cleanup_job")),
         "cleanup_root": _shape_sha256(_relation(operational, "cleanup_cycle_root")),
+        "cleanup_checkpoint": _shape_sha256(
+            _relation(operational, "cleanup_checkpoint")
+        ),
     }
 
 
@@ -713,6 +724,11 @@ def _measurement_peaks(
         "cleanup_cycle_root": _require_int(
             plan,
             "cleanup_cycle_root_conservative_peak_bytes",
+            "capacity_plan",
+        ),
+        "cleanup_checkpoint": _require_int(
+            plan,
+            "cleanup_checkpoint_conservative_peak_bytes",
             "capacity_plan",
         ),
     }
@@ -1122,6 +1138,28 @@ def render_receipt(measurement: Mapping[str, Any], *, input_sha256: str) -> str:
             "root_conservative_peak_bytes = "
             f"{_require_int(plan, 'cleanup_cycle_root_conservative_peak_bytes', 'capacity_plan')}"
         ),
+        'checkpoint_relation = "cleanup_checkpoint"',
+        f"checkpoint_physical_shape_sha256 = {_quoted(shapes['cleanup_checkpoint'])}",
+        (
+            "checkpoint_conservative_record_and_index_bytes = "
+            f"{protocol_width_by_name['cleanup_checkpoint'][0]}"
+        ),
+        (
+            "checkpoint_accounted_bytes_per_row = "
+            f"{protocol_width_by_name['cleanup_checkpoint'][1]}"
+        ),
+        (
+            "checkpoint_width_headroom_bytes = "
+            f"{protocol_width_by_name['cleanup_checkpoint'][1] - protocol_width_by_name['cleanup_checkpoint'][0]}"
+        ),
+        (
+            "checkpoint_row_count = "
+            f"{_require_int(plan, 'cleanup_checkpoint_peak_rows', 'capacity_plan')}"
+        ),
+        (
+            "checkpoint_conservative_peak_bytes = "
+            f"{_require_int(plan, 'cleanup_checkpoint_conservative_peak_bytes', 'capacity_plan')}"
+        ),
         (
             "obligation_id = "
             f"{_quoted(_require_str(plan, 'cleanup_frozen_root_obligation_id', 'capacity_plan'))}"
@@ -1497,6 +1535,17 @@ def validate_receipt(path: Path) -> None:
                 "cleanup_frozen_root_key_maximum_bytes",
                 "capacity_plan",
             ),
+            "checkpoint_physical_shape_sha256": shapes["cleanup_checkpoint"],
+            "checkpoint_conservative_record_and_index_bytes": (
+                protocol_width_by_name["cleanup_checkpoint"][0]
+            ),
+            "checkpoint_accounted_bytes_per_row": protocol_width_by_name[
+                "cleanup_checkpoint"
+            ][1],
+            "checkpoint_width_headroom_bytes": (
+                protocol_width_by_name["cleanup_checkpoint"][1]
+                - protocol_width_by_name["cleanup_checkpoint"][0]
+            ),
         },
         "capacity receipt.bounded_cleanup_protocol",
     )
@@ -1515,6 +1564,11 @@ def validate_receipt(path: Path) -> None:
             "cleanup_cycle_root": _require_int(
                 plan,
                 "cleanup_cycle_root_conservative_peak_bytes",
+                "capacity_plan",
+            ),
+            "cleanup_checkpoint": _require_int(
+                plan,
+                "cleanup_checkpoint_conservative_peak_bytes",
                 "capacity_plan",
             ),
         }

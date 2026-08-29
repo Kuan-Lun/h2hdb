@@ -795,9 +795,10 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         assert (
             connector.fetch_all(
                 "SELECT sweep.target_kind "
-                "FROM operational_cleanup_completions completion "
+                "FROM operational_cleanup_jobs completion "
                 "JOIN operational_cleanup_sweep_targets sweep "
                 "ON sweep.target_key = completion.target_key "
+                "WHERE completion.state = 'COMPLETE' "
                 "ORDER BY sweep.target_kind"
             )
             == []
@@ -824,9 +825,10 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (0,)
         assert connector.fetch_all(
             "SELECT sweep.target_kind "
-            "FROM operational_cleanup_completions completion "
+            "FROM operational_cleanup_jobs completion "
             "JOIN operational_cleanup_sweep_targets sweep "
-            "ON sweep.target_key = completion.target_key"
+            "ON sweep.target_key = completion.target_key "
+            "WHERE completion.state = 'COMPLETE'"
         ) == [(CleanupTargetKind.CONTENT_BLOB.value,)]
         assert connector.fetch_all("PRAGMA foreign_key_check") == []
 
@@ -1061,7 +1063,12 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
                 "ORDER BY build_id"
             ),
             connector.fetch_all(
-                "SELECT * FROM catalog_source_build_base_source ORDER BY build_id"
+                "SELECT base.build_id, committed.source_revision, "
+                "committed.generation "
+                "FROM catalog_source_build_base_publication_commits AS base "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.receipt_id = base.base_receipt_id "
+                "ORDER BY base.build_id"
             ),
         )
 
@@ -1109,7 +1116,12 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
                 "ORDER BY build_id"
             ),
             connector.fetch_all(
-                "SELECT * FROM catalog_source_build_base_source ORDER BY build_id"
+                "SELECT base.build_id, committed.source_revision, "
+                "committed.generation "
+                "FROM catalog_source_build_base_publication_commits AS base "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.receipt_id = base.base_receipt_id "
+                "ORDER BY base.build_id"
             ),
         ) == sealed_source_snapshot
 

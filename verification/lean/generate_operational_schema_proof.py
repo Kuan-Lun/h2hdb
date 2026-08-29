@@ -541,19 +541,29 @@ theorem rotated_cleanup_id_rejects_stale_checkpoint_mutation
   exact rotated authorized.2.2
 
 def CleanupCompletionReplayAuthorized
-    (jobComplete : Bool) (jobGeneration completionGeneration : Nat) : Prop :=
-  jobComplete = true ∧ jobGeneration = completionGeneration
+    (current presented : CleanupCycle Target Cleanup)
+    (jobComplete finalFactsPresent : Bool) : Prop :=
+  jobComplete = true ∧
+    finalFactsPresent = true ∧
+    current.target = presented.target ∧
+    current.cycleGeneration = presented.cycleGeneration ∧
+    current.cleanupId = presented.cleanupId
 
-theorem stale_cleanup_completion_generation_cannot_replay_complete
-    (stale : jobGeneration ≠ completionGeneration) :
-    ¬ CleanupCompletionReplayAuthorized true jobGeneration completionGeneration := by
+theorem stale_cleanup_job_generation_cannot_replay_complete
+    (different : current.cycleGeneration ≠ stale.cycleGeneration) :
+    ¬ CleanupCompletionReplayAuthorized current stale true true := by
   intro authorized
-  exact stale authorized.2
+  exact different authorized.2.2.2.1
 
 theorem open_cleanup_job_cannot_replay_complete :
-    ¬ CleanupCompletionReplayAuthorized false jobGeneration completionGeneration := by
+    ¬ CleanupCompletionReplayAuthorized current presented false true := by
   intro authorized
   exact Bool.false_ne_true authorized.1
+
+theorem cleanup_job_without_final_facts_cannot_replay_complete :
+    ¬ CleanupCompletionReplayAuthorized current presented true false := by
+  intro authorized
+  exact Bool.false_ne_true authorized.2.1
 
 structure PreparationIdentity (Build Policy : Type) where
   build : Build
@@ -827,7 +837,6 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
             "cleanup_checkpoint",
-            "cleanup_batch_receipt",
         ),
         "h2hdb.operational.queue-history.v1": (
             "deletion_request_generation",
@@ -859,7 +868,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
+            "publication_commit",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
@@ -888,7 +897,6 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",

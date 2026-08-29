@@ -425,7 +425,10 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
                     now=21,
                 )
                 raise RuntimeError("synthetic crash")
-        assert connector.fetch_all("SELECT 1 FROM catalog_canonical_value_pages") == []
+        assert (
+            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_page_payloads")
+            == []
+        )
 
         for prepared in plan.iter_pages():
             with connector.transaction():

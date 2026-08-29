@@ -98,6 +98,36 @@ assert not any(name == 'verification' or name.startswith('verification.') for na
 def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
     data = _load(DATA_PHYSICAL)
     operational = _load(OPERATIONAL_PHYSICAL)
+    expected_data_inline = {
+        "canonical_value_page",
+        "canonical_value_page_descriptor",
+        "source_build_base_source",
+        "gallery_observation_page_descriptor",
+        "gallery_observation_file",
+        "build_manifest",
+        "analysis_exclusion_delta",
+        "publication_candidate_base_source",
+        "artifact_delta_new",
+        "catalog_revision_generation",
+        "publication_head_revision",
+        "publication_head_advanced_at",
+        "publication_head",
+    }
+    assert set(data["inline_projections"]) == expected_data_inline
+    assert operational["inline_projections"] == ["operational_activation"]
+    assert len(data["relation"]) == 184
+    assert (
+        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 151
+    )
+    assert sum(value.get("kind", "table") == "view" for value in data["relation"]) == 33
+    assert len(operational["relation"]) == 66
+    assert all(
+        value.get("kind", "table") == "table" for value in operational["relation"]
+    )
+    assert expected_data_inline.isdisjoint(value["name"] for value in data["relation"])
+    assert "operational_activation" not in {
+        value["name"] for value in operational["relation"]
+    }
     expected_data = tuple(data["source_slice"])
     expected_operational = tuple(operational["source_slice"])
 
@@ -122,6 +152,14 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
             if value["name"] != "schema_epoch_control"
         }
         assert len(generated_tables) == len(backend_payload["relations"])
+        assert len(backend_payload["relations"]) == 249
+        assert (
+            sum(value["kind"] == "table" for value in backend_payload["relations"])
+            == 216
+        )
+        assert (
+            sum(value["kind"] == "view" for value in backend_payload["relations"]) == 33
+        )
         assert backend_payload["epoch_control"]["table"] == "h2hdb_schema_epoch"
         assert "h2hdb_schema_epoch" not in generated_tables
 
@@ -231,7 +269,7 @@ def test_generated_mariadb_impacted_gid_view_models_min_metadata_nullability() -
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
+def test_generated_batch7_artifact_delta_old_view_uses_occurrences(
     backend: str,
 ) -> None:
     payload = ARTIFACT_DATA["backends"][backend]
@@ -252,17 +290,10 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
     assert "artifact_semantics_sha256" in old_sql
     assert "artifact_sha256" in old_sql
 
-    new = relations["artifact_delta_new"]
-    assert new["kind"] == "view"
-    assert new["view_dependencies"] == ("artifact_input",)
-    new_sql = slices["relation:artifact_delta_new"][0][3]
-    assert "catalog_candidate_artifact_inputs" in new_sql
-    assert "artifact_semantics_sha256" in new_sql
-
     assert "artifact_identity" not in old_sql
-    assert "artifact_identity" not in new_sql
     assert "artifact_id" not in old_sql
-    assert "artifact_id" not in new_sql
+    assert "artifact_delta_new" not in relations
+    assert "relation:artifact_delta_new" not in slices
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -290,48 +321,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             ),
         ),
         (
-            "file_name_identity",
-            "catalog_file_name_identities",
-            (
-                "file_name_identity_anchor",
-                "file_name_identity_seal",
-                "file_name_identity_name_bytes",
-                "file_name_identity_file_role",
-            ),
-            (
-                "catalog_file_name_identity_anchors",
-                "catalog_file_name_identity_seals",
-                "catalog_file_name_identity_name_bytes",
-                "catalog_file_name_identity_file_roles",
-            ),
-        ),
-        (
-            "gallery_observation_file",
-            "catalog_gallery_observation_files",
-            (
-                "gallery_observation_file_anchor",
-                "gallery_observation_file_seal",
-                "gallery_observation_file_file_no",
-                "gallery_observation_file_file_sha256",
-            ),
-            (
-                "catalog_gallery_observation_file_anchors",
-                "catalog_gallery_observation_file_seals",
-                "catalog_gallery_observation_file_file_nos",
-                "catalog_gallery_observation_file_file_sha256s",
-            ),
-        ),
-        (
-            "tag_term",
-            "catalog_tag_terms",
-            ("tag_term_anchor", "tag_term_seal", "tag_term_identity"),
-            (
-                "catalog_tag_term_anchors",
-                "catalog_tag_term_seals",
-                "catalog_tag_term_identities",
-            ),
-        ),
-        (
             "source_build",
             "catalog_source_builds",
             (
@@ -342,20 +331,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             (
                 "catalog_source_build_descriptor",
                 "catalog_source_build_states",
-                "catalog_source_build_sealed_ats",
-            ),
-        ),
-        (
-            "build_manifest",
-            "catalog_build_manifests",
-            (
-                "build_manifest_core",
-                "source_build_discovery",
-                "source_build_sealed_at",
-            ),
-            (
-                "catalog_build_manifest_core",
-                "catalog_source_build_discoveries",
                 "catalog_source_build_sealed_ats",
             ),
         ),
@@ -378,22 +353,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             "catalog_analysis_state_anchors",
             ("analysis_state_ancestry",),
             ("catalog_analysis_state_ancestry",),
-        ),
-        (
-            "analysis_exclusion_delta",
-            "catalog_analysis_exclusion_deltas",
-            (
-                "analysis_exclusion_delta_anchor",
-                "analysis_exclusion_delta_seal",
-                "analysis_exclusion_delta_old_excluded",
-                "analysis_exclusion_delta_new_excluded",
-            ),
-            (
-                "catalog_analysis_exclusion_delta_anchors",
-                "catalog_analysis_exclusion_delta_seals",
-                "catalog_analysis_exclusion_delta_old_excluded_flags",
-                "catalog_analysis_exclusion_delta_new_excluded_flags",
-            ),
         ),
     ],
 )
@@ -444,12 +403,6 @@ def test_generated_source_build_optional_time_is_constrained_and_non_null(
         next(column for column in sealed_at["columns"] if column[0] == "sealed_at")[3]
         is False
     )
-    build_manifest_sql = dict(payload["slices"])["relation:build_manifest"][0][3]
-    assert (
-        'terminal."sealed_at" AS "computed_at"'
-        if backend == "sqlite"
-        else "terminal.`sealed_at` AS `computed_at`"
-    ) in build_manifest_sql
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -469,30 +422,6 @@ def test_generated_analysis_run_optional_completion_is_constrained(
     ("relation_name", "table", "dependencies", "physical_dependencies"),
     [
         (
-            "source_build_base_source",
-            "catalog_source_build_base_source",
-            (
-                "source_build_base_publication_commit",
-                "publication_commit",
-            ),
-            (
-                "catalog_source_build_base_publication_commits",
-                "catalog_publication_commits",
-            ),
-        ),
-        (
-            "publication_candidate_base_source",
-            "catalog_publication_candidate_base_sources",
-            (
-                "publication_candidate_base_publication_commit",
-                "publication_commit",
-            ),
-            (
-                "catalog_publication_candidate_base_publication_commits",
-                "catalog_publication_commits",
-            ),
-        ),
-        (
             "publication_candidate_base_catalog",
             "catalog_publication_candidate_base_catalog",
             (
@@ -507,12 +436,6 @@ def test_generated_analysis_run_optional_completion_is_constrained(
         (
             "source_head",
             "catalog_source_heads",
-            ("publication_commit_head",),
-            ("catalog_publication_commit_heads",),
-        ),
-        (
-            "publication_head",
-            "catalog_publication_heads",
             ("publication_commit_head",),
             ("catalog_publication_commit_heads",),
         ),
@@ -573,12 +496,6 @@ def test_generated_analysis_run_optional_completion_is_constrained(
                 "catalog_publication_finalization_checkpoint",
                 "catalog_publication_finalization_batch_receipt",
             ),
-        ),
-        (
-            "operational_activation",
-            "operational_operational_activations",
-            ("publication_commit",),
-            ("catalog_publication_commits",),
         ),
     ],
 )
@@ -1330,7 +1247,6 @@ def test_mariadb_view_body_normalization_accepts_projection_addition_storage() -
         "analysis_batch_receipt",
         "publication_batch_receipt",
         "publication_receipt",
-        "operational_activation",
     ),
 )
 def test_batch_zero_b_view_drift_remains_semantically_visible(
@@ -1353,18 +1269,6 @@ def test_batch_zero_b_view_drift_remains_semantically_visible(
                 "THEN 'PROJECTION_FINALIZED' ELSE 'DB_COMMITTED'",
                 1,
             )
-        elif relation_name == "operational_activation":
-            source_revision = (
-                'committed."source_revision"'
-                if backend == "sqlite"
-                else "committed.`source_revision`"
-            )
-            revision = (
-                'committed."revision"'
-                if backend == "sqlite"
-                else "committed.`revision`"
-            )
-            wrong = sql.replace(source_revision, revision, 1)
         else:
             wrong = sql.replace(" = sealed.", " <> sealed.", 1)
         assert wrong != sql

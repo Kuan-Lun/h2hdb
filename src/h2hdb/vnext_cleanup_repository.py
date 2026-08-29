@@ -70,8 +70,6 @@ _SWEEP_TABLE = "operational_cleanup_sweep_targets"
 _PHASE_TABLE = "operational_cleanup_phases"
 _JOB_TABLE = "operational_cleanup_jobs"
 _CHECKPOINT_TABLE = "operational_cleanup_checkpoints"
-_RECEIPT_TABLE = "operational_cleanup_batch_receipts"
-_COMPLETION_TABLE = "operational_cleanup_completions"
 _FROZEN_ROOT_TABLE = "operational_cleanup_cycle_roots"
 
 
@@ -246,15 +244,11 @@ class _Checkpoint:
     chain_sha256: bytes
     state: str
     receipt_batch_key: bytes | None
-    receipt_generation: int | None
     receipt_row_count: int | None
     receipt_start_cursor: bytes | None
-    receipt_next_cursor: bytes | None
     receipt_prior_chain_sha256: bytes | None
     receipt_prior_deleted_count: int | None
     receipt_input_sha256: bytes | None
-    receipt_output_sha256: bytes | None
-    receipt_committed_at: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,7 +590,6 @@ class VNextCleanupRepository:
         if (
             checkpoint.generation == attempt.expected_generation + 1
             and checkpoint.receipt_batch_key == attempt.batch_key
-            and checkpoint.receipt_generation == checkpoint.generation
         ):
             return _checkpoint_result(
                 requested,
@@ -646,39 +639,15 @@ class VNextCleanupRepository:
         )
         terminal = row_count == 0
 
-        work.connector.execute(
-            f"DELETE FROM {_RECEIPT_TABLE} WHERE cleanup_id = %s AND phase = %s",
-            (requested.cleanup_id, checkpoint.phase),
-        )
-        work.connector.execute(
-            f"""
-            INSERT INTO {_RECEIPT_TABLE}
-                (cleanup_id, phase, batch_key, start_cursor, next_cursor,
-                 prior_chain_sha256, prior_deleted_count,
-                 input_sha256, output_sha256, row_count,
-                 committed_generation, committed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                requested.cleanup_id,
-                checkpoint.phase,
-                attempt.batch_key,
-                checkpoint.cursor,
-                mutation.next_cursor,
-                checkpoint.chain_sha256,
-                checkpoint.deleted_count,
-                input_sha256,
-                next_chain,
-                row_count,
-                next_generation,
-                timestamp,
-            ),
-        )
         work.compare_and_swap(
             f"""
             UPDATE {_CHECKPOINT_TABLE}
             SET generation = %s, cursor_bytes = %s, deleted_count = %s,
-                chain_sha256 = %s, state = %s, updated_at = %s
+                chain_sha256 = %s, state = %s, updated_at = %s,
+                receipt_batch_key = %s, receipt_start_cursor = %s,
+                receipt_prior_chain_sha256 = %s,
+                receipt_prior_deleted_count = %s,
+                receipt_input_sha256 = %s, receipt_row_count = %s
             WHERE cleanup_id = %s AND phase = %s AND generation = %s
               AND cursor_bytes = %s AND deleted_count = %s
               AND chain_sha256 = %s AND state = 'OPEN'
@@ -690,6 +659,12 @@ class VNextCleanupRepository:
                 next_chain,
                 "COMPLETE" if terminal else "OPEN",
                 timestamp,
+                attempt.batch_key,
+                checkpoint.cursor,
+                checkpoint.chain_sha256,
+                checkpoint.deleted_count,
+                input_sha256,
+                row_count,
                 requested.cleanup_id,
                 checkpoint.phase,
                 checkpoint.generation,
@@ -805,10 +780,9 @@ def _begin_cycle_under_exclusive(
                j.hash_cache_max_age_microseconds,
                j.frozen_root_count, j.frozen_root_set_sha256,
                j.state, j.created_at, j.completed_at,
-               c.cycle_generation, c.final_chain_sha256, c.deleted_count
+               j.final_chain_sha256, j.final_deleted_count
         FROM {_SWEEP_TABLE} AS s
         LEFT JOIN {_JOB_TABLE} AS j ON j.target_key = s.target_key
-        LEFT JOIN {_COMPLETION_TABLE} AS c ON c.target_key = s.target_key
         WHERE s.target_kind = %s AND s.shard_no = %s
         """,
         (kind.value, shard),
@@ -832,17 +806,13 @@ def _begin_cycle_under_exclusive(
             return existing
         if state != "COMPLETE":
             raise CleanupCorruptionError("cleanup job has an invalid state")
-        _require_complete_job(row, existing)
+        _require_complete_job(row)
         _require_no_frozen_roots(work, existing.cleanup_id)
         if existing.cycle_generation == INT63_MAX:
             raise CleanupCycleExhaustedError(
                 "cleanup cycle generation reached portable int63 maximum"
             )
         generation = existing.cycle_generation + 1
-        work.connector.execute(
-            f"DELETE FROM {_COMPLETION_TABLE} WHERE target_key = %s",
-            (expected_target_key,),
-        )
         affected = work.connector.execute_affected(
             f"DELETE FROM {_JOB_TABLE} "
             "WHERE cleanup_id = %s AND target_key = %s "
@@ -874,8 +844,10 @@ def _begin_cycle_under_exclusive(
              algorithm_version, max_rows_per_transaction,
              hash_cache_max_age_microseconds,
              frozen_root_count, frozen_root_set_sha256,
-             state, created_at, completed_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, 'OPEN', %s, NULL)
+             state, created_at, completed_at,
+             final_chain_sha256, final_deleted_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, 'OPEN', %s, NULL,
+                NULL, NULL)
         """,
         (
             cycle.cleanup_id,
@@ -1009,13 +981,14 @@ def _require_cycle_policy(
         )
 
 
-def _require_complete_job(row: tuple[object, ...], cycle: CleanupCycle) -> None:
-    if row[11] is None or row[12] != cycle.cycle_generation:
+def _require_complete_job(row: tuple[object, ...]) -> None:
+    if row[11] is None or row[12] is None or row[13] is None:
         raise CleanupCorruptionError("COMPLETE cleanup job lacks exact completion")
     _require_frozen_root_count(row[7])
     require_digest32(row[8], field="cleanup frozen_root_set_sha256")
-    require_digest32(row[13], field="cleanup final_chain_sha256")
-    require_int63(row[14], field="cleanup completion deleted_count")
+    require_int63(row[11], field="cleanup completed_at")
+    require_digest32(row[12], field="cleanup final_chain_sha256")
+    require_int63(row[13], field="cleanup final_deleted_count")
 
 
 def _insert_checkpoint(
@@ -1085,15 +1058,13 @@ def _lock_cycle(
                j.frozen_root_count, j.frozen_root_set_sha256, j.state,
                p.phase, p.generation, p.cursor_bytes, p.deleted_count,
                p.chain_sha256, p.state,
-               r.batch_key, r.start_cursor, r.next_cursor,
-               r.prior_chain_sha256, r.prior_deleted_count,
-               r.input_sha256, r.output_sha256, r.row_count,
-               r.committed_generation, r.committed_at
+               p.receipt_batch_key, p.receipt_start_cursor,
+               p.receipt_prior_chain_sha256,
+               p.receipt_prior_deleted_count,
+               p.receipt_input_sha256, p.receipt_row_count
         FROM {_JOB_TABLE} AS j
         LEFT JOIN {_CHECKPOINT_TABLE} AS p ON p.cleanup_id = j.cleanup_id
         LEFT JOIN {_PHASE_TABLE} AS cp ON cp.phase = p.phase
-        LEFT JOIN {_RECEIPT_TABLE} AS r
-          ON r.cleanup_id = p.cleanup_id AND r.phase = p.phase
         WHERE j.target_key = %s
           AND (p.cleanup_id IS NULL OR p.state = 'OPEN'
                OR NOT EXISTS (
@@ -1150,15 +1121,10 @@ def _lock_cycle(
             if row[15] is None
             else require_digest32(row[15], field="cleanup receipt batch_key")
         ),
-        receipt_generation=(
-            None
-            if row[23] is None
-            else require_positive_int63(row[23], field="cleanup receipt generation")
-        ),
         receipt_row_count=(
             None
-            if row[22] is None
-            else require_int63(row[22], field="cleanup receipt row_count")
+            if row[20] is None
+            else require_int63(row[20], field="cleanup receipt row_count")
         ),
         receipt_start_cursor=(
             None
@@ -1167,37 +1133,20 @@ def _lock_cycle(
                 row[16], field="cleanup receipt start_cursor", maximum=2048
             )
         ),
-        receipt_next_cursor=(
-            None
-            if row[17] is None
-            else require_bounded_bytes(
-                row[17], field="cleanup receipt next_cursor", maximum=2048
-            )
-        ),
         receipt_input_sha256=(
             None
-            if row[20] is None
-            else require_digest32(row[20], field="cleanup receipt input_sha256")
-        ),
-        receipt_output_sha256=(
-            None
-            if row[21] is None
-            else require_digest32(row[21], field="cleanup receipt output_sha256")
+            if row[19] is None
+            else require_digest32(row[19], field="cleanup receipt input_sha256")
         ),
         receipt_prior_chain_sha256=(
             None
-            if row[18] is None
-            else require_digest32(row[18], field="cleanup receipt prior_chain_sha256")
+            if row[17] is None
+            else require_digest32(row[17], field="cleanup receipt prior_chain_sha256")
         ),
         receipt_prior_deleted_count=(
             None
-            if row[19] is None
-            else require_int63(row[19], field="cleanup receipt prior_deleted_count")
-        ),
-        receipt_committed_at=(
-            None
-            if row[24] is None
-            else require_int63(row[24], field="cleanup receipt committed_at")
+            if row[18] is None
+            else require_int63(row[18], field="cleanup receipt prior_deleted_count")
         ),
     )
     _validate_checkpoint_receipt(cycle, checkpoint)
@@ -1207,15 +1156,11 @@ def _lock_cycle(
 def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -> None:
     fields = (
         checkpoint.receipt_batch_key,
-        checkpoint.receipt_generation,
         checkpoint.receipt_row_count,
         checkpoint.receipt_start_cursor,
-        checkpoint.receipt_next_cursor,
         checkpoint.receipt_prior_chain_sha256,
         checkpoint.receipt_prior_deleted_count,
         checkpoint.receipt_input_sha256,
-        checkpoint.receipt_output_sha256,
-        checkpoint.receipt_committed_at,
     )
     if all(value is None for value in fields):
         if checkpoint.generation != 1:
@@ -1225,14 +1170,11 @@ def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -
         return
     if any(value is None for value in fields):
         raise CleanupCorruptionError("cleanup latest receipt is incomplete")
-    assert checkpoint.receipt_generation is not None
     assert checkpoint.receipt_row_count is not None
     assert checkpoint.receipt_start_cursor is not None
-    assert checkpoint.receipt_next_cursor is not None
     assert checkpoint.receipt_prior_chain_sha256 is not None
     assert checkpoint.receipt_prior_deleted_count is not None
     assert checkpoint.receipt_input_sha256 is not None
-    assert checkpoint.receipt_output_sha256 is not None
     expected_deleted_count = require_int63(
         checkpoint.receipt_prior_deleted_count + checkpoint.receipt_row_count,
         field="cleanup receipt next deleted_count",
@@ -1240,17 +1182,14 @@ def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -
     expected_output_sha256 = _next_chain(
         checkpoint.receipt_prior_chain_sha256,
         checkpoint.phase,
-        checkpoint.receipt_generation,
+        checkpoint.generation,
         checkpoint.receipt_start_cursor,
-        checkpoint.receipt_next_cursor,
+        checkpoint.cursor,
         checkpoint.receipt_input_sha256,
         checkpoint.receipt_row_count,
     )
     if (
-        checkpoint.receipt_generation != checkpoint.generation
-        or checkpoint.receipt_next_cursor != checkpoint.cursor
-        or expected_output_sha256 != checkpoint.receipt_output_sha256
-        or checkpoint.receipt_output_sha256 != checkpoint.chain_sha256
+        expected_output_sha256 != checkpoint.chain_sha256
         or checkpoint.receipt_row_count > cycle.max_rows_per_transaction
         or checkpoint.deleted_count != expected_deleted_count
     ):
@@ -1262,7 +1201,7 @@ def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -
         raise CleanupCorruptionError(
             "cleanup terminal receipt and checkpoint state disagree"
         )
-    if terminal != (checkpoint.receipt_start_cursor == checkpoint.receipt_next_cursor):
+    if terminal != (checkpoint.receipt_start_cursor == checkpoint.cursor):
         raise CleanupCorruptionError(
             "cleanup receipt cursor movement does not match terminal state"
         )
@@ -1285,20 +1224,19 @@ def _terminal_transition_replay(
         return None
     rows = work.connector.fetch_all(
         f"""
-        SELECT r.phase, r.batch_key, r.start_cursor, r.next_cursor,
-               r.prior_chain_sha256, r.prior_deleted_count,
-               r.input_sha256, r.output_sha256, r.row_count,
-               r.committed_generation, r.committed_at,
-               prior.generation, prior.cursor_bytes, prior.deleted_count,
-               prior.chain_sha256, prior.state,
+        SELECT prior.phase, prior.receipt_batch_key,
+               prior.receipt_start_cursor, prior.cursor_bytes,
+               prior.receipt_prior_chain_sha256,
+               prior.receipt_prior_deleted_count,
+               prior.receipt_input_sha256, prior.chain_sha256,
+               prior.receipt_row_count, prior.generation, prior.updated_at,
+               prior.deleted_count, prior.state,
                prior_seed.phase_order, current_seed.phase_order
-        FROM {_RECEIPT_TABLE} AS r
-        JOIN {_CHECKPOINT_TABLE} AS prior
-          ON prior.cleanup_id = r.cleanup_id AND prior.phase = r.phase
-        JOIN {_PHASE_TABLE} AS prior_seed ON prior_seed.phase = r.phase
+        FROM {_CHECKPOINT_TABLE} AS prior
+        JOIN {_PHASE_TABLE} AS prior_seed ON prior_seed.phase = prior.phase
         JOIN {_PHASE_TABLE} AS current_seed ON current_seed.phase = %s
-        WHERE r.cleanup_id = %s AND r.batch_key = %s
-          AND r.committed_generation = %s
+        WHERE prior.cleanup_id = %s AND prior.receipt_batch_key = %s
+          AND prior.generation = %s
           AND current_seed.phase_order = prior_seed.phase_order + 1
         ORDER BY prior_seed.phase_order
         LIMIT 2
@@ -1340,24 +1278,15 @@ def _terminal_transition_replay(
         row[9], field="cleanup terminal replay receipt generation"
     )
     require_int63(row[10], field="cleanup terminal replay committed_at")
-    prior_generation = require_positive_int63(
-        row[11], field="cleanup terminal checkpoint generation"
-    )
-    prior_cursor = require_bounded_bytes(
-        row[12], field="cleanup terminal checkpoint cursor", maximum=2048
-    )
     checkpoint_deleted = require_int63(
-        row[13], field="cleanup terminal checkpoint deleted_count"
+        row[11], field="cleanup terminal checkpoint deleted_count"
     )
-    checkpoint_chain = require_digest32(
-        row[14], field="cleanup terminal checkpoint chain"
-    )
-    prior_state = _as_text(row[15], field="cleanup terminal checkpoint state")
+    prior_state = _as_text(row[12], field="cleanup terminal checkpoint state")
     prior_order = require_positive_int63(
-        row[16], field="cleanup terminal prior phase_order"
+        row[13], field="cleanup terminal prior phase_order"
     )
     current_order = require_positive_int63(
-        row[17], field="cleanup terminal current phase_order"
+        row[14], field="cleanup terminal current phase_order"
     )
     expected_output = _next_chain(
         receipt_prior_chain,
@@ -1377,11 +1306,8 @@ def _terminal_transition_replay(
         or row_count != 0
         or start_cursor != next_cursor
         or receipt_generation != command.expected_generation + 1
-        or prior_generation != receipt_generation
-        or prior_cursor != next_cursor
         or checkpoint_deleted != expected_deleted
         or expected_output != output_sha256
-        or checkpoint_chain != output_sha256
         or prior_state != "COMPLETE"
         or current_order != prior_order + 1
     ):
@@ -1394,13 +1320,11 @@ def _terminal_transition_replay(
             "cleanup-terminal-replay", cycle.target_key, prior_order, batch_key
         ),
         f"""
-        SELECT r.phase, r.batch_key, r.committed_generation
-        FROM {_RECEIPT_TABLE} AS r
-        JOIN {_CHECKPOINT_TABLE} AS prior
-          ON prior.cleanup_id = r.cleanup_id AND prior.phase = r.phase
-        WHERE r.cleanup_id = %s AND r.phase = %s AND r.batch_key = %s
-          AND r.row_count = 0 AND prior.state = 'COMPLETE'
-          AND prior.generation = r.committed_generation
+        SELECT prior.phase, prior.receipt_batch_key, prior.generation
+        FROM {_CHECKPOINT_TABLE} AS prior
+        WHERE prior.cleanup_id = %s AND prior.phase = %s
+          AND prior.receipt_batch_key = %s
+          AND prior.receipt_row_count = 0 AND prior.state = 'COMPLETE'
         """,
         (cycle.cleanup_id, prior_phase, batch_key),
     )
@@ -1421,14 +1345,14 @@ def _terminal_transition_replay(
 
 def _require_completion_row(work: VNextUnitOfWork, cycle: CleanupCycle) -> int:
     row = work.connector.fetch_one(
-        f"SELECT cycle_generation, final_chain_sha256, deleted_count "
-        f"FROM {_COMPLETION_TABLE} WHERE target_key = %s",
-        (cycle.target_key,),
+        f"SELECT state, cycle_generation, final_chain_sha256, final_deleted_count "
+        f"FROM {_JOB_TABLE} WHERE target_key = %s AND cleanup_id = %s",
+        (cycle.target_key, cycle.cleanup_id),
     )
-    if not row or row[0] != cycle.cycle_generation:
+    if not row or row[0] != "COMPLETE" or row[1] != cycle.cycle_generation:
         raise CleanupCorruptionError("COMPLETE cleanup lacks replay authority")
-    require_digest32(row[1], field="cleanup completion chain")
-    return require_int63(row[2], field="cleanup completion deleted_count")
+    require_digest32(row[2], field="cleanup completion chain")
+    return require_int63(row[3], field="cleanup completion deleted_count")
 
 
 def _initial_chain(cleanup_id: bytes, phase: str) -> bytes:
@@ -1523,35 +1447,25 @@ def _complete_cycle(
     if removed_roots != len(frozen_roots):
         raise CleanupUnavailableError("cleanup frozen root set changed")
     work.connector.execute(
-        f"DELETE FROM {_RECEIPT_TABLE} WHERE cleanup_id = %s",
-        (cycle.cleanup_id,),
-    )
-    work.connector.execute(
         f"DELETE FROM {_CHECKPOINT_TABLE} WHERE cleanup_id = %s",
         (cycle.cleanup_id,),
     )
     work.compare_and_swap(
-        f"UPDATE {_JOB_TABLE} SET state = 'COMPLETE', completed_at = %s "
+        f"UPDATE {_JOB_TABLE} SET state = 'COMPLETE', completed_at = %s, "
+        "final_chain_sha256 = %s, final_deleted_count = %s "
         "WHERE cleanup_id = %s AND target_key = %s "
-        "AND cycle_generation = %s AND state = 'OPEN'",
+        "AND cycle_generation = %s AND state = 'OPEN' "
+        "AND completed_at IS NULL AND final_chain_sha256 IS NULL "
+        "AND final_deleted_count IS NULL",
         (
             now,
+            final_chain_sha256,
+            deleted_count,
             cycle.cleanup_id,
             cycle.target_key,
             cycle.cycle_generation,
         ),
         authority="cleanup job completion",
-    )
-    work.connector.execute(
-        f"INSERT INTO {_COMPLETION_TABLE} "
-        "(target_key, cycle_generation, final_chain_sha256, deleted_count) "
-        "VALUES (%s, %s, %s, %s)",
-        (
-            cycle.target_key,
-            cycle.cycle_generation,
-            final_chain_sha256,
-            deleted_count,
-        ),
     )
 
 
@@ -1682,7 +1596,7 @@ def _select_file_name_identities(
     rows = work.connector.fetch_all(
         """
         SELECT n.file_key
-        FROM catalog_file_name_identity_anchors AS n
+        FROM catalog_file_name_identities AS n
         WHERE n.file_key >= %s
           AND (%s = 0 OR n.file_key > %s)
           AND (%s = 1 OR n.file_key < %s)
@@ -1705,7 +1619,7 @@ def _select_file_name_identities(
             LockRank.CHILD,
             encode_lock_key("cleanup-file-name", key),
             """
-            SELECT n.file_key FROM catalog_file_name_identity_anchors AS n
+            SELECT n.file_key FROM catalog_file_name_identities AS n
             WHERE n.file_key = %s
               AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_anchors x WHERE x.file_key = n.file_key)
             """,
@@ -1715,22 +1629,14 @@ def _select_file_name_identities(
             raise CleanupRetentionBlockedError(
                 "file-name identity gained a retention root"
             )
-        for table in (
-            "catalog_file_name_identity_seals",
-            "catalog_file_name_identity_file_roles",
-            "catalog_file_name_identity_name_bytes",
-            "catalog_file_name_identity_anchors",
+        if (
+            work.connector.execute_affected(
+                "DELETE FROM catalog_file_name_identities WHERE file_key = %s",
+                (key,),
+            )
+            != 1
         ):
-            if (
-                work.connector.execute_affected(
-                    f"DELETE FROM {table} WHERE file_key = %s",
-                    (key,),
-                )
-                != 1
-            ):
-                raise CleanupUnavailableError(
-                    "file-name identity changed during compound cleanup"
-                )
+            raise CleanupUnavailableError("file-name identity changed during cleanup")
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
@@ -3514,7 +3420,8 @@ def _run_publication_commit_effect_root_phase(
                 "PCOM compound cursor does not cover the exact frozen root set"
             )
         receipt = work.connector.fetch_one(
-            f"SELECT start_cursor, next_cursor, row_count FROM {_RECEIPT_TABLE} "
+            f"SELECT receipt_start_cursor, cursor_bytes, receipt_row_count "
+            f"FROM {_CHECKPOINT_TABLE} "
             "WHERE cleanup_id = %s AND phase = 'PCOM_COMMIT_EFFECT_ROOT'",
             (cycle.cleanup_id,),
         )
@@ -3823,10 +3730,6 @@ AND NOT EXISTS (
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_build_generations m
     JOIN operational_ingest_generation_owners o ON o.generation = m.generation
-    WHERE m.build_id = r.build_id)
-AND NOT EXISTS (
-    SELECT 1 FROM operational_source_build_generations m
-    JOIN operational_ingest_generation_handoffs h ON h.generation = m.generation
     WHERE m.build_id = r.build_id)
 """
 
@@ -4606,39 +4509,15 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 
     return {
         "CP_STORAGE": (storage,),
-        "CP_CONTRIBUTOR_SEAL": (
+        "CP_CONTRIBUTOR": (
             direct(
-                "catalog_contributor_seals",
-                ("revision", "publication_key", "position"),
-            ),
-        ),
-        "CP_CONTRIBUTOR_IDENTITY": (
-            direct(
-                "catalog_contributor_identities",
+                "catalog_contributors",
                 (
                     "revision",
                     "publication_key",
                     "contributor_name_sha256",
                     "role",
                 ),
-            ),
-        ),
-        "CP_CONTRIBUTOR_NAME": (
-            direct(
-                "catalog_contributor_name_sha256s",
-                ("revision", "publication_key", "position"),
-            ),
-        ),
-        "CP_CONTRIBUTOR_ROLE": (
-            direct(
-                "catalog_contributor_roles",
-                ("revision", "publication_key", "position"),
-            ),
-        ),
-        "CP_CONTRIBUTOR_ANCHOR": (
-            direct(
-                "catalog_contributor_anchors",
-                ("revision", "publication_key", "position"),
             ),
         ),
         "CP_ORDER": (
@@ -4890,17 +4769,7 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "PC_PREPARED": (
             prepared,
             projection(
-                "catalog_contributor_seals",
-                ("revision", "publication_key", "position"),
-            ),
-        ),
-        "PC_INPUT": (
-            direct(
-                "catalog_candidate_artifact_inputs",
-                ("candidate_id", "publication_key"),
-            ),
-            projection(
-                "catalog_contributor_identities",
+                "catalog_contributors",
                 (
                     "revision",
                     "publication_key",
@@ -4909,24 +4778,14 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ),
             ),
         ),
-        "PC_CONTRIBUTOR_NAME": (
-            projection(
-                "catalog_contributor_name_sha256s",
-                ("revision", "publication_key", "position"),
-            ),
-        ),
-        "PC_CONTRIBUTOR_ROLE": (
-            projection(
-                "catalog_contributor_roles",
-                ("revision", "publication_key", "position"),
+        "PC_INPUT": (
+            direct(
+                "catalog_candidate_artifact_inputs",
+                ("candidate_id", "publication_key"),
             ),
         ),
         "PC_CHECKPOINT": (
             direct("catalog_publication_checkpoints", ("candidate_id", "stage")),
-            projection(
-                "catalog_contributor_anchors",
-                ("revision", "publication_key", "position"),
-            ),
         ),
         "PC_SELECTION_STORAGE": (
             selection_storage,
@@ -5712,9 +5571,6 @@ EXISTS (
 AND NOT EXISTS (
     SELECT 1 FROM operational_ingest_generation_owners owner
     WHERE owner.generation = r.generation AND owner.lease_expires_at > %s)
-AND NOT EXISTS (
-    SELECT 1 FROM operational_ingest_generation_handoffs handoff
-    WHERE handoff.generation = r.generation)
 AND EXISTS (
     SELECT 1 FROM catalog_canonical_value_allocation_seals allocation
     JOIN catalog_canonical_value_allocation_digest_domains domain
@@ -5799,15 +5655,15 @@ AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observations x
                 WHERE x.observation_identity_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_gallery_observation_tags x
-    JOIN catalog_tag_term_identities term ON term.tag_id = x.tag_id
+    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_gallery_observation_artists x
-    JOIN catalog_tag_term_identities term ON term.tag_id = x.artist_tag_id
+    JOIN catalog_tag_terms term ON term.tag_id = x.artist_tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_subjects x
-    JOIN catalog_tag_term_identities term ON term.tag_id = x.tag_id
+    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_head_revisions current_source
@@ -5871,7 +5727,7 @@ AND NOT EXISTS (SELECT 1 FROM catalog_artifacts x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_contributor_name_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_contributors x
                 WHERE x.contributor_name_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.summary_sha256 = r.value_sha256)
@@ -5936,18 +5792,11 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.value_sha256 = c.locator_sha256",
     )
     tag = _indirect_spec(
-        "catalog_tag_term_anchors",
+        "catalog_tag_terms",
         ("tag_id",),
-        "catalog_tag_term_anchors AS c "
-        "JOIN catalog_tag_term_identities AS identity "
-        "ON identity.tag_id = c.tag_id "
+        "catalog_tag_terms AS c "
         "JOIN catalog_canonical_value_allocation_anchors AS r "
-        "ON r.value_sha256 = identity.tag_value_sha256",
-        delete_sql=(
-            "DELETE FROM catalog_tag_term_seals WHERE tag_id = %s",
-            "DELETE FROM catalog_tag_term_identities WHERE tag_id = %s",
-            "DELETE FROM catalog_tag_term_anchors WHERE tag_id = %s",
-        ),
+        "ON r.value_sha256 = c.tag_value_sha256",
     )
     snapshot = _indirect_spec(
         "catalog_source_snapshot_manifest_identity",
@@ -6390,7 +6239,7 @@ def _next_publication_identity_candidate_shard(
 def _next_file_name_candidate_shard(work: VNextUnitOfWork) -> int | None:
     row = work.connector.fetch_one("""
         SELECT identity.file_key
-        FROM catalog_file_name_identity_anchors AS identity
+        FROM catalog_file_name_identities AS identity
         WHERE NOT EXISTS (
             SELECT 1 FROM catalog_gallery_observation_file_anchors retained
             WHERE retained.file_key = identity.file_key)

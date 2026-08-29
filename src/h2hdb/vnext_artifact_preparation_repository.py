@@ -145,12 +145,10 @@ _SOURCE_FILE_FAMILY_SQL = (
     "ON file_sha.gallery_id = file_seal.gallery_id "
     "AND file_sha.observation_id = file_seal.observation_id "
     "AND file_sha.file_key = file_seal.file_key) AS source "
-    "JOIN (SELECT name_seal.file_key, name_bytes.name_bytes, role.file_role "
-    "FROM catalog_file_name_identity_seals AS name_seal "
-    "JOIN catalog_file_name_identity_name_bytes AS name_bytes "
-    "ON name_bytes.file_key = name_seal.file_key "
-    "JOIN catalog_file_name_identity_file_roles AS role "
-    "ON role.file_key = name_seal.file_key) AS name "
+    "JOIN (SELECT file_key, name_bytes, "
+    "CASE WHEN name_bytes = X'67616C6C657279696E666F2E747874' "
+    "THEN X'4D45544144415441' ELSE X'434F4E54454E54' END AS file_role "
+    "FROM catalog_file_name_identities) AS name "
     "ON name.file_key = source.file_key "
 )
 
@@ -3819,7 +3817,7 @@ def _compare_delta_for_input(
     new = semantics[0]
     expected_operation = _classify_artifact_operation(old, new)
     materialized_new = work.connector.fetch_one(
-        "SELECT artifact_semantics_sha256 FROM catalog_artifact_delta_new "
+        "SELECT artifact_semantics_sha256 FROM catalog_candidate_artifact_inputs "
         "WHERE candidate_id = %s AND publication_key = %s",
         (mutation.candidate.candidate_id, publication),
     )

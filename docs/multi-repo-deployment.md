@@ -8,25 +8,26 @@ or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 160 catalog BCNF base relations,
-49 intentional catalog views, 70 operational BCNF base relations, and one
-operational activation view are generated for both SQLite and MariaDB from the
-same logical manifests. One of the 70 operational bases is the separately
-created epoch-control relation, so the database has 160 + 70 = 230 base tables
-and 50 logical views, or 280 schema objects. The catalog graph has 11 sealed
-vertical families, 28 checked decompositions, 122 narrow bases plus 38 reviewed
-wide BCNF relations, and an exact 151-relation physical authority closure (114
-mutation relations plus 37 read-only views). Each backend receives exactly
-5,838 typed bootstrap rows.
+There is one epoch-2/version-1 database. Its 151 catalog BCNF base relations and
+46 logical catalog projections are generated for both SQLite and MariaDB from
+the same logical manifests; 33 projections are SQL views and 13 are inline.
+The operational manifest has 66 BCNF base relations, including the separately
+created epoch-control relation, plus one inline activation projection and no
+operational SQL view. The database therefore has 217 base tables and 33 SQL
+views, or 250 SQL objects. The catalog graph has 8 sealed vertical families,
+28 checked decompositions, 112 narrow bases plus 39 reviewed-wide BCNF
+relations, and an exact 127-relation physical authority closure (105 mutation
+relations plus 22 read-only relations). Thirty selected capacity families
+replace 190 former physical relations with 35 bases. Each backend receives
+exactly 5,832 typed bootstrap rows.
 
 Operational events are publication-owned current/retry state, not OPDS history
 or a durable delivery queue. Bounded current-only cleanup retires each
 unreachable finalized non-head preparation/event/commit snapshot; there is no
 event-consumer registry or per-event acknowledgement retention contract.
-The operational count changes from 75 to 70 bases: two lease tables are folded
-into BCNF owner relations, one staging-request owner is replaced by the budget
-authority, four unreachable delivery scaffold relations are removed, and one
-frozen cleanup-root relation is added.
+The operational count changes from 75 to 66 bases: the capacity plan recomposes
+selected owner, staging-request, and bounded-cleanup families, while unreachable
+delivery scaffold relations remain absent.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount

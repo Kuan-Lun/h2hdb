@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "563302bc64443fe8165fb4ec9c17ea984237279d3c20a2fea0ecfce03bd6db70"
+def catalogManifestSha256 : String := "b876b17cc0ae28187a97cd6a231e632e0e28b5225d05635a21dc623e5c9c73de"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -3933,196 +3933,13 @@ theorem source_build_gallery_bcnf_check :
 theorem source_build_gallery_bcnf : BCNF source_build_gallery_contract :=
   bcnfCheck_sound source_build_gallery_contract source_build_gallery_bcnf_check
 
-def file_name_identity_anchor_contract : RelationContract where
-  name := "file_name_identity_anchor"
-  attributes := ["file_key"]
-  declaredKeys := [["file_key"]]
-  declaredFDs := [
-  ]
-
-theorem file_name_identity_anchor_schema_well_formed :
-    schemaWellFormedCheck file_name_identity_anchor_contract = true := by
-  native_decide
-
-theorem file_name_identity_anchor_candidate_keys_check :
-    keysDetermineAllCheck file_name_identity_anchor_contract = true := by
-  native_decide
-
-theorem file_name_identity_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes file_name_identity_anchor_contract :=
-  keysDetermineAllCheck_sound file_name_identity_anchor_contract
-    file_name_identity_anchor_candidate_keys_check
-
-theorem file_name_identity_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck file_name_identity_anchor_contract = true := by
-  native_decide
-
-theorem file_name_identity_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal file_name_identity_anchor_contract :=
-  declaredKeysMinimalCheck_sound file_name_identity_anchor_contract
-    file_name_identity_anchor_candidate_keys_minimal_check
-
-theorem file_name_identity_anchor_closure_fixed_check :
-    closureFixedPointCheck file_name_identity_anchor_contract = true := by
-  native_decide
-
-theorem file_name_identity_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint file_name_identity_anchor_contract :=
-  closureFixedPointCheck_sound file_name_identity_anchor_contract
-    file_name_identity_anchor_closure_fixed_check
-
-theorem file_name_identity_anchor_bcnf_check :
-    bcnfCheck file_name_identity_anchor_contract = true := by
-  native_decide
-
-theorem file_name_identity_anchor_bcnf : BCNF file_name_identity_anchor_contract :=
-  bcnfCheck_sound file_name_identity_anchor_contract file_name_identity_anchor_bcnf_check
-
-def file_name_identity_name_bytes_contract : RelationContract where
-  name := "file_name_identity_name_bytes"
+def file_name_identity_contract : RelationContract where
+  name := "file_name_identity"
   attributes := ["file_key", "name_bytes"]
   declaredKeys := [["file_key"], ["name_bytes"]]
   declaredFDs := [
     { determinant := ["file_key"], dependent := ["name_bytes"] },
     { determinant := ["name_bytes"], dependent := ["file_key"] }
-  ]
-
-theorem file_name_identity_name_bytes_schema_well_formed :
-    schemaWellFormedCheck file_name_identity_name_bytes_contract = true := by
-  native_decide
-
-theorem file_name_identity_name_bytes_candidate_keys_check :
-    keysDetermineAllCheck file_name_identity_name_bytes_contract = true := by
-  native_decide
-
-theorem file_name_identity_name_bytes_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes file_name_identity_name_bytes_contract :=
-  keysDetermineAllCheck_sound file_name_identity_name_bytes_contract
-    file_name_identity_name_bytes_candidate_keys_check
-
-theorem file_name_identity_name_bytes_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck file_name_identity_name_bytes_contract = true := by
-  native_decide
-
-theorem file_name_identity_name_bytes_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal file_name_identity_name_bytes_contract :=
-  declaredKeysMinimalCheck_sound file_name_identity_name_bytes_contract
-    file_name_identity_name_bytes_candidate_keys_minimal_check
-
-theorem file_name_identity_name_bytes_closure_fixed_check :
-    closureFixedPointCheck file_name_identity_name_bytes_contract = true := by
-  native_decide
-
-theorem file_name_identity_name_bytes_closure_reached_fixed_point :
-    ClosureReachedFixedPoint file_name_identity_name_bytes_contract :=
-  closureFixedPointCheck_sound file_name_identity_name_bytes_contract
-    file_name_identity_name_bytes_closure_fixed_check
-
-theorem file_name_identity_name_bytes_bcnf_check :
-    bcnfCheck file_name_identity_name_bytes_contract = true := by
-  native_decide
-
-theorem file_name_identity_name_bytes_bcnf : BCNF file_name_identity_name_bytes_contract :=
-  bcnfCheck_sound file_name_identity_name_bytes_contract file_name_identity_name_bytes_bcnf_check
-
-def file_name_identity_file_role_contract : RelationContract where
-  name := "file_name_identity_file_role"
-  attributes := ["file_key", "file_role"]
-  declaredKeys := [["file_key"]]
-  declaredFDs := [
-    { determinant := ["file_key"], dependent := ["file_role"] }
-  ]
-
-theorem file_name_identity_file_role_schema_well_formed :
-    schemaWellFormedCheck file_name_identity_file_role_contract = true := by
-  native_decide
-
-theorem file_name_identity_file_role_candidate_keys_check :
-    keysDetermineAllCheck file_name_identity_file_role_contract = true := by
-  native_decide
-
-theorem file_name_identity_file_role_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes file_name_identity_file_role_contract :=
-  keysDetermineAllCheck_sound file_name_identity_file_role_contract
-    file_name_identity_file_role_candidate_keys_check
-
-theorem file_name_identity_file_role_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck file_name_identity_file_role_contract = true := by
-  native_decide
-
-theorem file_name_identity_file_role_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal file_name_identity_file_role_contract :=
-  declaredKeysMinimalCheck_sound file_name_identity_file_role_contract
-    file_name_identity_file_role_candidate_keys_minimal_check
-
-theorem file_name_identity_file_role_closure_fixed_check :
-    closureFixedPointCheck file_name_identity_file_role_contract = true := by
-  native_decide
-
-theorem file_name_identity_file_role_closure_reached_fixed_point :
-    ClosureReachedFixedPoint file_name_identity_file_role_contract :=
-  closureFixedPointCheck_sound file_name_identity_file_role_contract
-    file_name_identity_file_role_closure_fixed_check
-
-theorem file_name_identity_file_role_bcnf_check :
-    bcnfCheck file_name_identity_file_role_contract = true := by
-  native_decide
-
-theorem file_name_identity_file_role_bcnf : BCNF file_name_identity_file_role_contract :=
-  bcnfCheck_sound file_name_identity_file_role_contract file_name_identity_file_role_bcnf_check
-
-def file_name_identity_seal_contract : RelationContract where
-  name := "file_name_identity_seal"
-  attributes := ["file_key"]
-  declaredKeys := [["file_key"]]
-  declaredFDs := [
-  ]
-
-theorem file_name_identity_seal_schema_well_formed :
-    schemaWellFormedCheck file_name_identity_seal_contract = true := by
-  native_decide
-
-theorem file_name_identity_seal_candidate_keys_check :
-    keysDetermineAllCheck file_name_identity_seal_contract = true := by
-  native_decide
-
-theorem file_name_identity_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes file_name_identity_seal_contract :=
-  keysDetermineAllCheck_sound file_name_identity_seal_contract
-    file_name_identity_seal_candidate_keys_check
-
-theorem file_name_identity_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck file_name_identity_seal_contract = true := by
-  native_decide
-
-theorem file_name_identity_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal file_name_identity_seal_contract :=
-  declaredKeysMinimalCheck_sound file_name_identity_seal_contract
-    file_name_identity_seal_candidate_keys_minimal_check
-
-theorem file_name_identity_seal_closure_fixed_check :
-    closureFixedPointCheck file_name_identity_seal_contract = true := by
-  native_decide
-
-theorem file_name_identity_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint file_name_identity_seal_contract :=
-  closureFixedPointCheck_sound file_name_identity_seal_contract
-    file_name_identity_seal_closure_fixed_check
-
-theorem file_name_identity_seal_bcnf_check :
-    bcnfCheck file_name_identity_seal_contract = true := by
-  native_decide
-
-theorem file_name_identity_seal_bcnf : BCNF file_name_identity_seal_contract :=
-  bcnfCheck_sound file_name_identity_seal_contract file_name_identity_seal_bcnf_check
-
-def file_name_identity_contract : RelationContract where
-  name := "file_name_identity"
-  attributes := ["file_key", "name_bytes", "file_role"]
-  declaredKeys := [["file_key"], ["name_bytes"]]
-  declaredFDs := [
-    { determinant := ["file_key"], dependent := ["name_bytes", "file_role"] },
-    { determinant := ["name_bytes"], dependent := ["file_key", "file_role"] }
   ]
 
 theorem file_name_identity_schema_well_formed :
@@ -4155,6 +3972,13 @@ theorem file_name_identity_closure_reached_fixed_point :
     ClosureReachedFixedPoint file_name_identity_contract :=
   closureFixedPointCheck_sound file_name_identity_contract
     file_name_identity_closure_fixed_check
+
+theorem file_name_identity_bcnf_check :
+    bcnfCheck file_name_identity_contract = true := by
+  native_decide
+
+theorem file_name_identity_bcnf : BCNF file_name_identity_contract :=
+  bcnfCheck_sound file_name_identity_contract file_name_identity_bcnf_check
 
 def content_blob_contract : RelationContract where
   name := "content_blob"
@@ -4738,143 +4562,6 @@ theorem gallery_observation_file_filesystem_closure_reached_fixed_point :
   closureFixedPointCheck_sound gallery_observation_file_filesystem_contract
     gallery_observation_file_filesystem_closure_fixed_check
 
-def tag_term_anchor_contract : RelationContract where
-  name := "tag_term_anchor"
-  attributes := ["tag_id"]
-  declaredKeys := [["tag_id"]]
-  declaredFDs := [
-  ]
-
-theorem tag_term_anchor_schema_well_formed :
-    schemaWellFormedCheck tag_term_anchor_contract = true := by
-  native_decide
-
-theorem tag_term_anchor_candidate_keys_check :
-    keysDetermineAllCheck tag_term_anchor_contract = true := by
-  native_decide
-
-theorem tag_term_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes tag_term_anchor_contract :=
-  keysDetermineAllCheck_sound tag_term_anchor_contract
-    tag_term_anchor_candidate_keys_check
-
-theorem tag_term_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck tag_term_anchor_contract = true := by
-  native_decide
-
-theorem tag_term_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal tag_term_anchor_contract :=
-  declaredKeysMinimalCheck_sound tag_term_anchor_contract
-    tag_term_anchor_candidate_keys_minimal_check
-
-theorem tag_term_anchor_closure_fixed_check :
-    closureFixedPointCheck tag_term_anchor_contract = true := by
-  native_decide
-
-theorem tag_term_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint tag_term_anchor_contract :=
-  closureFixedPointCheck_sound tag_term_anchor_contract
-    tag_term_anchor_closure_fixed_check
-
-theorem tag_term_anchor_bcnf_check :
-    bcnfCheck tag_term_anchor_contract = true := by
-  native_decide
-
-theorem tag_term_anchor_bcnf : BCNF tag_term_anchor_contract :=
-  bcnfCheck_sound tag_term_anchor_contract tag_term_anchor_bcnf_check
-
-def tag_term_identity_contract : RelationContract where
-  name := "tag_term_identity"
-  attributes := ["namespace", "tag_value_sha256", "tag_id"]
-  declaredKeys := [["namespace", "tag_value_sha256"], ["tag_id"]]
-  declaredFDs := [
-    { determinant := ["namespace", "tag_value_sha256"], dependent := ["tag_id"] },
-    { determinant := ["tag_id"], dependent := ["namespace", "tag_value_sha256"] }
-  ]
-
-theorem tag_term_identity_schema_well_formed :
-    schemaWellFormedCheck tag_term_identity_contract = true := by
-  native_decide
-
-theorem tag_term_identity_candidate_keys_check :
-    keysDetermineAllCheck tag_term_identity_contract = true := by
-  native_decide
-
-theorem tag_term_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes tag_term_identity_contract :=
-  keysDetermineAllCheck_sound tag_term_identity_contract
-    tag_term_identity_candidate_keys_check
-
-theorem tag_term_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck tag_term_identity_contract = true := by
-  native_decide
-
-theorem tag_term_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal tag_term_identity_contract :=
-  declaredKeysMinimalCheck_sound tag_term_identity_contract
-    tag_term_identity_candidate_keys_minimal_check
-
-theorem tag_term_identity_closure_fixed_check :
-    closureFixedPointCheck tag_term_identity_contract = true := by
-  native_decide
-
-theorem tag_term_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint tag_term_identity_contract :=
-  closureFixedPointCheck_sound tag_term_identity_contract
-    tag_term_identity_closure_fixed_check
-
-theorem tag_term_identity_bcnf_check :
-    bcnfCheck tag_term_identity_contract = true := by
-  native_decide
-
-theorem tag_term_identity_bcnf : BCNF tag_term_identity_contract :=
-  bcnfCheck_sound tag_term_identity_contract tag_term_identity_bcnf_check
-
-def tag_term_seal_contract : RelationContract where
-  name := "tag_term_seal"
-  attributes := ["tag_id"]
-  declaredKeys := [["tag_id"]]
-  declaredFDs := [
-  ]
-
-theorem tag_term_seal_schema_well_formed :
-    schemaWellFormedCheck tag_term_seal_contract = true := by
-  native_decide
-
-theorem tag_term_seal_candidate_keys_check :
-    keysDetermineAllCheck tag_term_seal_contract = true := by
-  native_decide
-
-theorem tag_term_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes tag_term_seal_contract :=
-  keysDetermineAllCheck_sound tag_term_seal_contract
-    tag_term_seal_candidate_keys_check
-
-theorem tag_term_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck tag_term_seal_contract = true := by
-  native_decide
-
-theorem tag_term_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal tag_term_seal_contract :=
-  declaredKeysMinimalCheck_sound tag_term_seal_contract
-    tag_term_seal_candidate_keys_minimal_check
-
-theorem tag_term_seal_closure_fixed_check :
-    closureFixedPointCheck tag_term_seal_contract = true := by
-  native_decide
-
-theorem tag_term_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint tag_term_seal_contract :=
-  closureFixedPointCheck_sound tag_term_seal_contract
-    tag_term_seal_closure_fixed_check
-
-theorem tag_term_seal_bcnf_check :
-    bcnfCheck tag_term_seal_contract = true := by
-  native_decide
-
-theorem tag_term_seal_bcnf : BCNF tag_term_seal_contract :=
-  bcnfCheck_sound tag_term_seal_contract tag_term_seal_bcnf_check
-
 def tag_term_contract : RelationContract where
   name := "tag_term"
   attributes := ["tag_id", "namespace", "tag_value_sha256"]
@@ -4914,6 +4601,13 @@ theorem tag_term_closure_reached_fixed_point :
     ClosureReachedFixedPoint tag_term_contract :=
   closureFixedPointCheck_sound tag_term_contract
     tag_term_closure_fixed_check
+
+theorem tag_term_bcnf_check :
+    bcnfCheck tag_term_contract = true := by
+  native_decide
+
+theorem tag_term_bcnf : BCNF tag_term_contract :=
+  bcnfCheck_sound tag_term_contract tag_term_bcnf_check
 
 def gallery_observation_tag_contract : RelationContract where
   name := "gallery_observation_tag"
@@ -9766,242 +9460,13 @@ theorem contributor_role_registry_bcnf_check :
 theorem contributor_role_registry_bcnf : BCNF contributor_role_registry_contract :=
   bcnfCheck_sound contributor_role_registry_contract contributor_role_registry_bcnf_check
 
-def catalog_contributor_anchor_contract : RelationContract where
-  name := "catalog_contributor_anchor"
-  attributes := ["revision", "publication_key", "position"]
-  declaredKeys := [["revision", "publication_key", "position"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_contributor_anchor_schema_well_formed :
-    schemaWellFormedCheck catalog_contributor_anchor_contract = true := by
-  native_decide
-
-theorem catalog_contributor_anchor_candidate_keys_check :
-    keysDetermineAllCheck catalog_contributor_anchor_contract = true := by
-  native_decide
-
-theorem catalog_contributor_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_contributor_anchor_contract :=
-  keysDetermineAllCheck_sound catalog_contributor_anchor_contract
-    catalog_contributor_anchor_candidate_keys_check
-
-theorem catalog_contributor_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_contributor_anchor_contract = true := by
-  native_decide
-
-theorem catalog_contributor_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_contributor_anchor_contract :=
-  declaredKeysMinimalCheck_sound catalog_contributor_anchor_contract
-    catalog_contributor_anchor_candidate_keys_minimal_check
-
-theorem catalog_contributor_anchor_closure_fixed_check :
-    closureFixedPointCheck catalog_contributor_anchor_contract = true := by
-  native_decide
-
-theorem catalog_contributor_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_contributor_anchor_contract :=
-  closureFixedPointCheck_sound catalog_contributor_anchor_contract
-    catalog_contributor_anchor_closure_fixed_check
-
-theorem catalog_contributor_anchor_bcnf_check :
-    bcnfCheck catalog_contributor_anchor_contract = true := by
-  native_decide
-
-theorem catalog_contributor_anchor_bcnf : BCNF catalog_contributor_anchor_contract :=
-  bcnfCheck_sound catalog_contributor_anchor_contract catalog_contributor_anchor_bcnf_check
-
-def catalog_contributor_name_sha256_contract : RelationContract where
-  name := "catalog_contributor_name_sha256"
-  attributes := ["revision", "publication_key", "position", "contributor_name_sha256"]
-  declaredKeys := [["revision", "publication_key", "position"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256"] }
-  ]
-
-theorem catalog_contributor_name_sha256_schema_well_formed :
-    schemaWellFormedCheck catalog_contributor_name_sha256_contract = true := by
-  native_decide
-
-theorem catalog_contributor_name_sha256_candidate_keys_check :
-    keysDetermineAllCheck catalog_contributor_name_sha256_contract = true := by
-  native_decide
-
-theorem catalog_contributor_name_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_contributor_name_sha256_contract :=
-  keysDetermineAllCheck_sound catalog_contributor_name_sha256_contract
-    catalog_contributor_name_sha256_candidate_keys_check
-
-theorem catalog_contributor_name_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_contributor_name_sha256_contract = true := by
-  native_decide
-
-theorem catalog_contributor_name_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_contributor_name_sha256_contract :=
-  declaredKeysMinimalCheck_sound catalog_contributor_name_sha256_contract
-    catalog_contributor_name_sha256_candidate_keys_minimal_check
-
-theorem catalog_contributor_name_sha256_closure_fixed_check :
-    closureFixedPointCheck catalog_contributor_name_sha256_contract = true := by
-  native_decide
-
-theorem catalog_contributor_name_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_contributor_name_sha256_contract :=
-  closureFixedPointCheck_sound catalog_contributor_name_sha256_contract
-    catalog_contributor_name_sha256_closure_fixed_check
-
-theorem catalog_contributor_name_sha256_bcnf_check :
-    bcnfCheck catalog_contributor_name_sha256_contract = true := by
-  native_decide
-
-theorem catalog_contributor_name_sha256_bcnf : BCNF catalog_contributor_name_sha256_contract :=
-  bcnfCheck_sound catalog_contributor_name_sha256_contract catalog_contributor_name_sha256_bcnf_check
-
-def catalog_contributor_role_contract : RelationContract where
-  name := "catalog_contributor_role"
-  attributes := ["revision", "publication_key", "position", "role"]
-  declaredKeys := [["revision", "publication_key", "position"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key", "position"], dependent := ["role"] }
-  ]
-
-theorem catalog_contributor_role_schema_well_formed :
-    schemaWellFormedCheck catalog_contributor_role_contract = true := by
-  native_decide
-
-theorem catalog_contributor_role_candidate_keys_check :
-    keysDetermineAllCheck catalog_contributor_role_contract = true := by
-  native_decide
-
-theorem catalog_contributor_role_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_contributor_role_contract :=
-  keysDetermineAllCheck_sound catalog_contributor_role_contract
-    catalog_contributor_role_candidate_keys_check
-
-theorem catalog_contributor_role_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_contributor_role_contract = true := by
-  native_decide
-
-theorem catalog_contributor_role_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_contributor_role_contract :=
-  declaredKeysMinimalCheck_sound catalog_contributor_role_contract
-    catalog_contributor_role_candidate_keys_minimal_check
-
-theorem catalog_contributor_role_closure_fixed_check :
-    closureFixedPointCheck catalog_contributor_role_contract = true := by
-  native_decide
-
-theorem catalog_contributor_role_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_contributor_role_contract :=
-  closureFixedPointCheck_sound catalog_contributor_role_contract
-    catalog_contributor_role_closure_fixed_check
-
-theorem catalog_contributor_role_bcnf_check :
-    bcnfCheck catalog_contributor_role_contract = true := by
-  native_decide
-
-theorem catalog_contributor_role_bcnf : BCNF catalog_contributor_role_contract :=
-  bcnfCheck_sound catalog_contributor_role_contract catalog_contributor_role_bcnf_check
-
-def catalog_contributor_identity_contract : RelationContract where
-  name := "catalog_contributor_identity"
+def catalog_contributor_contract : RelationContract where
+  name := "catalog_contributor"
   attributes := ["revision", "publication_key", "contributor_name_sha256", "role", "position"]
   declaredKeys := [["revision", "publication_key", "contributor_name_sha256", "role"], ["revision", "publication_key", "position"]]
   declaredFDs := [
     { determinant := ["revision", "publication_key", "contributor_name_sha256", "role"], dependent := ["position"] },
     { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256", "role"] }
-  ]
-
-theorem catalog_contributor_identity_schema_well_formed :
-    schemaWellFormedCheck catalog_contributor_identity_contract = true := by
-  native_decide
-
-theorem catalog_contributor_identity_candidate_keys_check :
-    keysDetermineAllCheck catalog_contributor_identity_contract = true := by
-  native_decide
-
-theorem catalog_contributor_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_contributor_identity_contract :=
-  keysDetermineAllCheck_sound catalog_contributor_identity_contract
-    catalog_contributor_identity_candidate_keys_check
-
-theorem catalog_contributor_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_contributor_identity_contract = true := by
-  native_decide
-
-theorem catalog_contributor_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_contributor_identity_contract :=
-  declaredKeysMinimalCheck_sound catalog_contributor_identity_contract
-    catalog_contributor_identity_candidate_keys_minimal_check
-
-theorem catalog_contributor_identity_closure_fixed_check :
-    closureFixedPointCheck catalog_contributor_identity_contract = true := by
-  native_decide
-
-theorem catalog_contributor_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_contributor_identity_contract :=
-  closureFixedPointCheck_sound catalog_contributor_identity_contract
-    catalog_contributor_identity_closure_fixed_check
-
-theorem catalog_contributor_identity_bcnf_check :
-    bcnfCheck catalog_contributor_identity_contract = true := by
-  native_decide
-
-theorem catalog_contributor_identity_bcnf : BCNF catalog_contributor_identity_contract :=
-  bcnfCheck_sound catalog_contributor_identity_contract catalog_contributor_identity_bcnf_check
-
-def catalog_contributor_seal_contract : RelationContract where
-  name := "catalog_contributor_seal"
-  attributes := ["revision", "publication_key", "position"]
-  declaredKeys := [["revision", "publication_key", "position"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_contributor_seal_schema_well_formed :
-    schemaWellFormedCheck catalog_contributor_seal_contract = true := by
-  native_decide
-
-theorem catalog_contributor_seal_candidate_keys_check :
-    keysDetermineAllCheck catalog_contributor_seal_contract = true := by
-  native_decide
-
-theorem catalog_contributor_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_contributor_seal_contract :=
-  keysDetermineAllCheck_sound catalog_contributor_seal_contract
-    catalog_contributor_seal_candidate_keys_check
-
-theorem catalog_contributor_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_contributor_seal_contract = true := by
-  native_decide
-
-theorem catalog_contributor_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_contributor_seal_contract :=
-  declaredKeysMinimalCheck_sound catalog_contributor_seal_contract
-    catalog_contributor_seal_candidate_keys_minimal_check
-
-theorem catalog_contributor_seal_closure_fixed_check :
-    closureFixedPointCheck catalog_contributor_seal_contract = true := by
-  native_decide
-
-theorem catalog_contributor_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_contributor_seal_contract :=
-  closureFixedPointCheck_sound catalog_contributor_seal_contract
-    catalog_contributor_seal_closure_fixed_check
-
-theorem catalog_contributor_seal_bcnf_check :
-    bcnfCheck catalog_contributor_seal_contract = true := by
-  native_decide
-
-theorem catalog_contributor_seal_bcnf : BCNF catalog_contributor_seal_contract :=
-  bcnfCheck_sound catalog_contributor_seal_contract catalog_contributor_seal_bcnf_check
-
-def catalog_contributor_contract : RelationContract where
-  name := "catalog_contributor"
-  attributes := ["revision", "publication_key", "position", "contributor_name_sha256", "role"]
-  declaredKeys := [["revision", "publication_key", "position"], ["revision", "publication_key", "contributor_name_sha256", "role"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256", "role"] },
-    { determinant := ["revision", "publication_key", "contributor_name_sha256", "role"], dependent := ["position"] }
   ]
 
 theorem catalog_contributor_schema_well_formed :
@@ -10034,6 +9499,13 @@ theorem catalog_contributor_closure_reached_fixed_point :
     ClosureReachedFixedPoint catalog_contributor_contract :=
   closureFixedPointCheck_sound catalog_contributor_contract
     catalog_contributor_closure_fixed_check
+
+theorem catalog_contributor_bcnf_check :
+    bcnfCheck catalog_contributor_contract = true := by
+  native_decide
+
+theorem catalog_contributor_bcnf : BCNF catalog_contributor_contract :=
+  bcnfCheck_sound catalog_contributor_contract catalog_contributor_bcnf_check
 
 def catalog_subject_contract : RelationContract where
   name := "catalog_subject"
@@ -10595,10 +10067,6 @@ def manifestContracts : List RelationContract := [
   gallery_observation_directory_contract,
   gallery_observation_stat_contract,
   source_build_gallery_contract,
-  file_name_identity_anchor_contract,
-  file_name_identity_name_bytes_contract,
-  file_name_identity_file_role_contract,
-  file_name_identity_seal_contract,
   file_name_identity_contract,
   content_blob_contract,
   gallery_observation_file_anchor_contract,
@@ -10613,9 +10081,6 @@ def manifestContracts : List RelationContract := [
   gallery_observation_file_filesystem_changed_ns_contract,
   gallery_observation_file_filesystem_seal_contract,
   gallery_observation_file_filesystem_contract,
-  tag_term_anchor_contract,
-  tag_term_identity_contract,
-  tag_term_seal_contract,
   tag_term_contract,
   gallery_observation_tag_contract,
   build_manifest_core_contract,
@@ -10726,11 +10191,6 @@ def manifestContracts : List RelationContract := [
   catalog_publication_title_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
-  catalog_contributor_anchor_contract,
-  catalog_contributor_name_sha256_contract,
-  catalog_contributor_role_contract,
-  catalog_contributor_identity_contract,
-  catalog_contributor_seal_contract,
   catalog_contributor_contract,
   catalog_subject_contract,
   catalog_artifact_contract,
@@ -10746,7 +10206,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 209 := by
+    manifestContracts.length = 197 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -10763,8 +10223,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   canonical_value_page_coordinate_contract,
   canonical_value_page_subtree_item_count_contract,
   canonical_value_page_seal_contract,
-  canonical_value_page_contract,
-  canonical_value_page_descriptor_contract,
   canonical_value_page_parent_contract,
   source_locator_identity_contract,
   source_build_descriptor_contract,
@@ -10773,22 +10231,13 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   source_build_contract,
   source_build_discovery_contract,
   build_manifest_core_contract,
-  build_manifest_contract,
   gallery_identity_contract,
-  file_name_identity_anchor_contract,
-  file_name_identity_name_bytes_contract,
-  file_name_identity_file_role_contract,
-  file_name_identity_seal_contract,
   file_name_identity_contract,
   gallery_observation_file_anchor_contract,
   gallery_observation_file_file_no_contract,
   gallery_observation_file_file_sha256_contract,
   gallery_observation_file_seal_contract,
-  gallery_observation_file_contract,
   gallery_manifest_contract,
-  tag_term_anchor_contract,
-  tag_term_identity_contract,
-  tag_term_seal_contract,
   tag_term_contract,
   source_snapshot_manifest_identity_contract,
   publication_identity_contract,
@@ -10804,7 +10253,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   gallery_observation_page_descriptor_level_contract,
   gallery_observation_page_descriptor_subtree_item_count_contract,
   gallery_observation_page_descriptor_seal_contract,
-  gallery_observation_page_descriptor_contract,
   gallery_observation_page_key_bounds_anchor_contract,
   gallery_observation_page_key_bounds_first_key_contract,
   gallery_observation_page_key_bounds_last_key_contract,
@@ -10823,7 +10271,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   analysis_exclusion_delta_new_excluded_contract,
   analysis_exclusion_delta_change_contract,
   analysis_exclusion_delta_seal_contract,
-  analysis_exclusion_delta_contract,
   analysis_file_hash_decision_shadow_anchor_contract,
   analysis_file_hash_decision_shadow_occurrence_count_contract,
   analysis_file_hash_decision_shadow_artist_count_contract,
@@ -10854,7 +10301,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   publication_candidate_projection_contract,
   publication_candidate_base_publication_commit_contract,
   publication_candidate_base_catalog_contract,
-  publication_candidate_base_source_contract,
   publication_selection_storage_contract,
   publication_selection_occurrence_identity_contract,
   publication_selection_contract,
@@ -10868,12 +10314,10 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   artifact_policy_contract,
   artifact_input_contract,
   artifact_delta_old_contract,
-  artifact_delta_new_contract,
   artifact_operation_contract,
   artifact_blob_contract,
   catalog_revision_descriptor_contract,
   catalog_revision_contract,
-  catalog_revision_generation_contract,
   publication_generation_node_contract,
   publication_generation_successor_contract,
   display_title_policy_contract,
@@ -10887,11 +10331,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   catalog_publication_title_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
-  catalog_contributor_anchor_contract,
-  catalog_contributor_name_sha256_contract,
-  catalog_contributor_role_contract,
-  catalog_contributor_identity_contract,
-  catalog_contributor_seal_contract,
   catalog_contributor_contract,
   catalog_subject_contract,
   publication_commit_anchor_contract,
@@ -10899,10 +10338,7 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   publication_commit_finalization_contract,
   publication_commit_head_receipt_contract,
   publication_commit_head_contract,
-  publication_receipt_contract,
-  publication_head_revision_contract,
-  publication_head_advanced_at_contract,
-  publication_head_contract
+  publication_receipt_contract
 ]
 
 def catalogPhysicalDomainMutationContracts : List RelationContract := [
@@ -10924,18 +10360,13 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   source_build_discovery_contract,
   build_manifest_core_contract,
   gallery_identity_contract,
-  file_name_identity_anchor_contract,
-  file_name_identity_name_bytes_contract,
-  file_name_identity_file_role_contract,
-  file_name_identity_seal_contract,
+  file_name_identity_contract,
   gallery_observation_file_anchor_contract,
   gallery_observation_file_file_no_contract,
   gallery_observation_file_file_sha256_contract,
   gallery_observation_file_seal_contract,
   gallery_manifest_contract,
-  tag_term_anchor_contract,
-  tag_term_identity_contract,
-  tag_term_seal_contract,
+  tag_term_contract,
   source_snapshot_manifest_identity_contract,
   publication_identity_contract,
   artifact_producer_fingerprint_contract,
@@ -11010,11 +10441,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   catalog_publication_order_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
-  catalog_contributor_anchor_contract,
-  catalog_contributor_name_sha256_contract,
-  catalog_contributor_role_contract,
-  catalog_contributor_identity_contract,
-  catalog_contributor_seal_contract,
+  catalog_contributor_contract,
   catalog_subject_contract,
   publication_commit_anchor_contract,
   publication_commit_contract,
@@ -11024,18 +10451,10 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
 
 def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   canonical_value_allocation_contract,
-  canonical_value_page_contract,
-  canonical_value_page_descriptor_contract,
   source_build_contract,
-  build_manifest_contract,
-  file_name_identity_contract,
-  gallery_observation_file_contract,
-  tag_term_contract,
-  gallery_observation_page_descriptor_contract,
   gallery_observation_page_key_bounds_contract,
   analysis_run_contract,
   analysis_state_anchor_contract,
-  analysis_exclusion_delta_contract,
   analysis_file_hash_decision_shadow_contract,
   analysis_impacted_gid_provenance_contract,
   analysis_impacted_gid_contract,
@@ -11045,33 +10464,26 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   publication_batch_receipt_contract,
   publication_candidate_projection_contract,
   publication_candidate_base_catalog_contract,
-  publication_candidate_base_source_contract,
   publication_selection_contract,
   publication_finalization_batch_receipt_contract,
   artifact_delta_old_contract,
-  artifact_delta_new_contract,
   catalog_revision_contract,
-  catalog_revision_generation_contract,
   catalog_publication_contract,
   catalog_publication_title_contract,
-  catalog_contributor_contract,
   publication_commit_head_contract,
-  publication_receipt_contract,
-  publication_head_revision_contract,
-  publication_head_advanced_at_contract,
-  publication_head_contract
+  publication_receipt_contract
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 151 := by
+    catalogPhysicalDomainContracts.length = 127 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 114 := by
+    catalogPhysicalDomainMutationContracts.length = 105 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
-    catalogPhysicalDomainReadOnlyViewContracts.length = 37 := by
+    catalogPhysicalDomainReadOnlyViewContracts.length = 22 := by
   native_decide
 
 theorem catalog_physical_domain_has_no_duplicates :
@@ -11607,68 +11019,6 @@ theorem gallery_observation_page_key_bounds_vertical_dependency_preserving :
   verticalFamilyDependencyPreservationCheck_sound gallery_observation_page_key_bounds_vertical_contract
     gallery_observation_page_key_bounds_vertical_dependency_preservation_check
 
-def file_name_identity_vertical_contract : VerticalFamilyContract where
-  name := "file_name_identity_vertical"
-  anchorRelation := "file_name_identity_anchor"
-  sealRelation := "file_name_identity_seal"
-  keyAttributes := ["file_key"]
-  anchorAttributes := ["file_key"]
-  sealAttributes := ["file_key"]
-  semanticAttributes := ["file_key", "name_bytes", "file_role"]
-  semanticFDs := [
-    { determinant := ["file_key"], dependent := ["name_bytes", "file_role"] },
-    { determinant := ["name_bytes"], dependent := ["file_key", "file_role"] }
-  ]
-  viewAttributes := ["file_key", "name_bytes", "file_role"]
-  viewFDs := [
-    { determinant := ["file_key"], dependent := ["name_bytes", "file_role"] },
-    { determinant := ["name_bytes"], dependent := ["file_key", "file_role"] }
-  ]
-  members := [
-    { relationName := "file_name_identity_name_bytes", keyAttributes := ["file_key"], valueAttribute := "name_bytes", projectionAttribute := "name_bytes", attributes := ["file_key", "name_bytes"], declaredKeys := [["file_key"], ["name_bytes"]], declaredFDs := [{ determinant := ["file_key"], dependent := ["name_bytes"] }, { determinant := ["name_bytes"], dependent := ["file_key"] }], sourceRelation := "file_name_identity_seal", sourceRelationAttributes := ["file_key"], sourceAttributes := ["file_key"], memberAttributes := ["file_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "file_name_identity_file_role", keyAttributes := ["file_key"], valueAttribute := "file_role", projectionAttribute := "file_role", attributes := ["file_key", "file_role"], declaredKeys := [["file_key"]], declaredFDs := [{ determinant := ["file_key"], dependent := ["file_role"] }], sourceRelation := "file_name_identity_seal", sourceRelationAttributes := ["file_key"], sourceAttributes := ["file_key"], memberAttributes := ["file_key"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem file_name_identity_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck file_name_identity_vertical_contract = true := by
-  native_decide
-
-theorem file_name_identity_vertical_view_projection :
-    VerticalFamilyViewProjection file_name_identity_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound file_name_identity_vertical_contract
-    file_name_identity_vertical_view_projection_check
-
-theorem file_name_identity_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck file_name_identity_vertical_contract = true := by
-  native_decide
-
-theorem file_name_identity_vertical_well_formed :
-    VerticalFamilyWellFormed file_name_identity_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound file_name_identity_vertical_contract
-    file_name_identity_vertical_well_formed_check
-
-theorem file_name_identity_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck file_name_identity_vertical_contract = true := by
-  native_decide
-
-theorem file_name_identity_vertical_lossless :
-    VerticalFamilyLossless file_name_identity_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound file_name_identity_vertical_contract
-    file_name_identity_vertical_lossless_join_check
-
-theorem file_name_identity_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck file_name_identity_vertical_contract = true := by
-  native_decide
-
-theorem file_name_identity_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving file_name_identity_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound file_name_identity_vertical_contract
-    file_name_identity_vertical_dependency_preservation_check
-
 def gallery_observation_file_vertical_contract : VerticalFamilyContract where
   name := "gallery_observation_file_vertical"
   anchorRelation := "gallery_observation_file_anchor"
@@ -11730,130 +11080,6 @@ theorem gallery_observation_file_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving gallery_observation_file_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound gallery_observation_file_vertical_contract
     gallery_observation_file_vertical_dependency_preservation_check
-
-def tag_term_vertical_contract : VerticalFamilyContract where
-  name := "tag_term_vertical"
-  anchorRelation := "tag_term_anchor"
-  sealRelation := "tag_term_seal"
-  keyAttributes := ["tag_id"]
-  anchorAttributes := ["tag_id"]
-  sealAttributes := ["tag_id"]
-  semanticAttributes := ["tag_id", "namespace", "tag_value_sha256"]
-  semanticFDs := [
-    { determinant := ["tag_id"], dependent := ["namespace", "tag_value_sha256"] },
-    { determinant := ["namespace", "tag_value_sha256"], dependent := ["tag_id"] }
-  ]
-  viewAttributes := ["tag_id", "namespace", "tag_value_sha256"]
-  viewFDs := [
-    { determinant := ["tag_id"], dependent := ["namespace", "tag_value_sha256"] },
-    { determinant := ["namespace", "tag_value_sha256"], dependent := ["tag_id"] }
-  ]
-  members := [
-    { relationName := "tag_term_identity", keyAttributes := ["namespace", "tag_value_sha256"], valueAttribute := "tag_id", projectionAttribute := "tag_id", attributes := ["namespace", "tag_value_sha256", "tag_id"], declaredKeys := [["namespace", "tag_value_sha256"], ["tag_id"]], declaredFDs := [{ determinant := ["namespace", "tag_value_sha256"], dependent := ["tag_id"] }, { determinant := ["tag_id"], dependent := ["namespace", "tag_value_sha256"] }], sourceRelation := "tag_term_seal", sourceRelationAttributes := ["tag_id"], sourceAttributes := ["tag_id"], memberAttributes := ["tag_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem tag_term_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck tag_term_vertical_contract = true := by
-  native_decide
-
-theorem tag_term_vertical_view_projection :
-    VerticalFamilyViewProjection tag_term_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound tag_term_vertical_contract
-    tag_term_vertical_view_projection_check
-
-theorem tag_term_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck tag_term_vertical_contract = true := by
-  native_decide
-
-theorem tag_term_vertical_well_formed :
-    VerticalFamilyWellFormed tag_term_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound tag_term_vertical_contract
-    tag_term_vertical_well_formed_check
-
-theorem tag_term_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck tag_term_vertical_contract = true := by
-  native_decide
-
-theorem tag_term_vertical_lossless :
-    VerticalFamilyLossless tag_term_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound tag_term_vertical_contract
-    tag_term_vertical_lossless_join_check
-
-theorem tag_term_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck tag_term_vertical_contract = true := by
-  native_decide
-
-theorem tag_term_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving tag_term_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound tag_term_vertical_contract
-    tag_term_vertical_dependency_preservation_check
-
-def catalog_contributor_vertical_contract : VerticalFamilyContract where
-  name := "catalog_contributor_vertical"
-  anchorRelation := "catalog_contributor_anchor"
-  sealRelation := "catalog_contributor_seal"
-  keyAttributes := ["revision", "publication_key", "position"]
-  anchorAttributes := ["revision", "publication_key", "position"]
-  sealAttributes := ["revision", "publication_key", "position"]
-  semanticAttributes := ["revision", "publication_key", "position", "contributor_name_sha256", "role"]
-  semanticFDs := [
-    { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256", "role"] },
-    { determinant := ["revision", "publication_key", "contributor_name_sha256", "role"], dependent := ["position"] }
-  ]
-  viewAttributes := ["revision", "publication_key", "position", "contributor_name_sha256", "role"]
-  viewFDs := [
-    { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256", "role"] },
-    { determinant := ["revision", "publication_key", "contributor_name_sha256", "role"], dependent := ["position"] }
-  ]
-  members := [
-    { relationName := "catalog_contributor_name_sha256", keyAttributes := ["revision", "publication_key", "position"], valueAttribute := "contributor_name_sha256", projectionAttribute := "contributor_name_sha256", attributes := ["revision", "publication_key", "position", "contributor_name_sha256"], declaredKeys := [["revision", "publication_key", "position"]], declaredFDs := [{ determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256"] }], sourceRelation := "catalog_contributor_seal", sourceRelationAttributes := ["revision", "publication_key", "position"], sourceAttributes := ["revision", "publication_key", "position"], memberAttributes := ["revision", "publication_key", "position"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_contributor_role", keyAttributes := ["revision", "publication_key", "position"], valueAttribute := "role", projectionAttribute := "role", attributes := ["revision", "publication_key", "position", "role"], declaredKeys := [["revision", "publication_key", "position"]], declaredFDs := [{ determinant := ["revision", "publication_key", "position"], dependent := ["role"] }], sourceRelation := "catalog_contributor_seal", sourceRelationAttributes := ["revision", "publication_key", "position"], sourceAttributes := ["revision", "publication_key", "position"], memberAttributes := ["revision", "publication_key", "position"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_contributor_identity", keyAttributes := ["revision", "publication_key", "contributor_name_sha256", "role"], valueAttribute := "position", projectionAttribute := "position", attributes := ["revision", "publication_key", "contributor_name_sha256", "role", "position"], declaredKeys := [["revision", "publication_key", "contributor_name_sha256", "role"], ["revision", "publication_key", "position"]], declaredFDs := [{ determinant := ["revision", "publication_key", "contributor_name_sha256", "role"], dependent := ["position"] }, { determinant := ["revision", "publication_key", "position"], dependent := ["contributor_name_sha256", "role"] }], sourceRelation := "catalog_contributor_seal", sourceRelationAttributes := ["revision", "publication_key", "position"], sourceAttributes := ["revision", "publication_key", "position"], memberAttributes := ["revision", "publication_key", "position"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem catalog_contributor_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck catalog_contributor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_contributor_vertical_view_projection :
-    VerticalFamilyViewProjection catalog_contributor_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound catalog_contributor_vertical_contract
-    catalog_contributor_vertical_view_projection_check
-
-theorem catalog_contributor_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck catalog_contributor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_contributor_vertical_well_formed :
-    VerticalFamilyWellFormed catalog_contributor_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound catalog_contributor_vertical_contract
-    catalog_contributor_vertical_well_formed_check
-
-theorem catalog_contributor_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck catalog_contributor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_contributor_vertical_lossless :
-    VerticalFamilyLossless catalog_contributor_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound catalog_contributor_vertical_contract
-    catalog_contributor_vertical_lossless_join_check
-
-theorem catalog_contributor_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck catalog_contributor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_contributor_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving catalog_contributor_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound catalog_contributor_vertical_contract
-    catalog_contributor_vertical_dependency_preservation_check
 
 def analysis_file_hash_decision_shadow_vertical_contract : VerticalFamilyContract where
   name := "analysis_file_hash_decision_shadow_vertical"
@@ -12374,12 +11600,12 @@ theorem gallery_observation_metadata_and_raw_content_digests_dependency_preservi
 
 def file_identity_and_gallery_observation_file_contract : BinaryDecompositionContract where
   name := "file_identity_and_gallery_observation_file"
-  universalAttributes := ["file_key", "name_bytes", "file_role", "gallery_id", "observation_id", "file_no", "file_sha256"]
-  leftAttributes := ["file_key", "name_bytes", "file_role"]
+  universalAttributes := ["file_key", "name_bytes", "gallery_id", "observation_id", "file_no", "file_sha256"]
+  leftAttributes := ["file_key", "name_bytes"]
   rightAttributes := ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"]
   declaredFDs := [
-    { determinant := ["file_key"], dependent := ["name_bytes", "file_role"] },
-    { determinant := ["name_bytes"], dependent := ["file_key", "file_role"] },
+    { determinant := ["file_key"], dependent := ["name_bytes"] },
+    { determinant := ["name_bytes"], dependent := ["file_key"] },
     { determinant := ["gallery_id", "observation_id", "file_no"], dependent := ["file_key", "file_sha256"] },
     { determinant := ["gallery_id", "observation_id", "file_key"], dependent := ["file_no", "file_sha256"] }
   ]
@@ -13370,10 +12596,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_observation_directory_contract ∧
     BCNF gallery_observation_stat_contract ∧
     BCNF source_build_gallery_contract ∧
-    BCNF file_name_identity_anchor_contract ∧
-    BCNF file_name_identity_name_bytes_contract ∧
-    BCNF file_name_identity_file_role_contract ∧
-    BCNF file_name_identity_seal_contract ∧
+    BCNF file_name_identity_contract ∧
     BCNF content_blob_contract ∧
     BCNF gallery_observation_file_anchor_contract ∧
     BCNF gallery_observation_file_file_no_contract ∧
@@ -13385,9 +12608,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_observation_file_filesystem_modified_ns_contract ∧
     BCNF gallery_observation_file_filesystem_changed_ns_contract ∧
     BCNF gallery_observation_file_filesystem_seal_contract ∧
-    BCNF tag_term_anchor_contract ∧
-    BCNF tag_term_identity_contract ∧
-    BCNF tag_term_seal_contract ∧
+    BCNF tag_term_contract ∧
     BCNF gallery_observation_tag_contract ∧
     BCNF build_manifest_core_contract ∧
     BCNF gallery_manifest_contract ∧
@@ -13466,11 +12687,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF catalog_publication_order_contract ∧
     BCNF catalog_publication_content_contract ∧
     BCNF contributor_role_registry_contract ∧
-    BCNF catalog_contributor_anchor_contract ∧
-    BCNF catalog_contributor_name_sha256_contract ∧
-    BCNF catalog_contributor_role_contract ∧
-    BCNF catalog_contributor_identity_contract ∧
-    BCNF catalog_contributor_seal_contract ∧
+    BCNF catalog_contributor_contract ∧
     BCNF catalog_subject_contract ∧
     BCNF catalog_artifact_contract ∧
     BCNF publication_commit_anchor_contract ∧
@@ -13530,10 +12747,7 @@ theorem all_manifest_base_relations_bcnf :
     gallery_observation_directory_bcnf,
     gallery_observation_stat_bcnf,
     source_build_gallery_bcnf,
-    file_name_identity_anchor_bcnf,
-    file_name_identity_name_bytes_bcnf,
-    file_name_identity_file_role_bcnf,
-    file_name_identity_seal_bcnf,
+    file_name_identity_bcnf,
     content_blob_bcnf,
     gallery_observation_file_anchor_bcnf,
     gallery_observation_file_file_no_bcnf,
@@ -13545,9 +12759,7 @@ theorem all_manifest_base_relations_bcnf :
     gallery_observation_file_filesystem_modified_ns_bcnf,
     gallery_observation_file_filesystem_changed_ns_bcnf,
     gallery_observation_file_filesystem_seal_bcnf,
-    tag_term_anchor_bcnf,
-    tag_term_identity_bcnf,
-    tag_term_seal_bcnf,
+    tag_term_bcnf,
     gallery_observation_tag_bcnf,
     build_manifest_core_bcnf,
     gallery_manifest_bcnf,
@@ -13626,11 +12838,7 @@ theorem all_manifest_base_relations_bcnf :
     catalog_publication_order_bcnf,
     catalog_publication_content_bcnf,
     contributor_role_registry_bcnf,
-    catalog_contributor_anchor_bcnf,
-    catalog_contributor_name_sha256_bcnf,
-    catalog_contributor_role_bcnf,
-    catalog_contributor_identity_bcnf,
-    catalog_contributor_seal_bcnf,
+    catalog_contributor_bcnf,
     catalog_subject_bcnf,
     catalog_artifact_bcnf,
     publication_commit_anchor_bcnf,
@@ -13701,10 +12909,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_directory_contract ∧
     KeysDetermineAllAttributes gallery_observation_stat_contract ∧
     KeysDetermineAllAttributes source_build_gallery_contract ∧
-    KeysDetermineAllAttributes file_name_identity_anchor_contract ∧
-    KeysDetermineAllAttributes file_name_identity_name_bytes_contract ∧
-    KeysDetermineAllAttributes file_name_identity_file_role_contract ∧
-    KeysDetermineAllAttributes file_name_identity_seal_contract ∧
     KeysDetermineAllAttributes file_name_identity_contract ∧
     KeysDetermineAllAttributes content_blob_contract ∧
     KeysDetermineAllAttributes gallery_observation_file_anchor_contract ∧
@@ -13719,9 +12923,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_file_filesystem_changed_ns_contract ∧
     KeysDetermineAllAttributes gallery_observation_file_filesystem_seal_contract ∧
     KeysDetermineAllAttributes gallery_observation_file_filesystem_contract ∧
-    KeysDetermineAllAttributes tag_term_anchor_contract ∧
-    KeysDetermineAllAttributes tag_term_identity_contract ∧
-    KeysDetermineAllAttributes tag_term_seal_contract ∧
     KeysDetermineAllAttributes tag_term_contract ∧
     KeysDetermineAllAttributes gallery_observation_tag_contract ∧
     KeysDetermineAllAttributes build_manifest_core_contract ∧
@@ -13832,11 +13033,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes catalog_publication_title_contract ∧
     KeysDetermineAllAttributes catalog_publication_content_contract ∧
     KeysDetermineAllAttributes contributor_role_registry_contract ∧
-    KeysDetermineAllAttributes catalog_contributor_anchor_contract ∧
-    KeysDetermineAllAttributes catalog_contributor_name_sha256_contract ∧
-    KeysDetermineAllAttributes catalog_contributor_role_contract ∧
-    KeysDetermineAllAttributes catalog_contributor_identity_contract ∧
-    KeysDetermineAllAttributes catalog_contributor_seal_contract ∧
     KeysDetermineAllAttributes catalog_contributor_contract ∧
     KeysDetermineAllAttributes catalog_subject_contract ∧
     KeysDetermineAllAttributes catalog_artifact_contract ∧
@@ -13910,10 +13106,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_directory_candidate_keys_determine_all_attributes,
     gallery_observation_stat_candidate_keys_determine_all_attributes,
     source_build_gallery_candidate_keys_determine_all_attributes,
-    file_name_identity_anchor_candidate_keys_determine_all_attributes,
-    file_name_identity_name_bytes_candidate_keys_determine_all_attributes,
-    file_name_identity_file_role_candidate_keys_determine_all_attributes,
-    file_name_identity_seal_candidate_keys_determine_all_attributes,
     file_name_identity_candidate_keys_determine_all_attributes,
     content_blob_candidate_keys_determine_all_attributes,
     gallery_observation_file_anchor_candidate_keys_determine_all_attributes,
@@ -13928,9 +13120,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_file_filesystem_changed_ns_candidate_keys_determine_all_attributes,
     gallery_observation_file_filesystem_seal_candidate_keys_determine_all_attributes,
     gallery_observation_file_filesystem_candidate_keys_determine_all_attributes,
-    tag_term_anchor_candidate_keys_determine_all_attributes,
-    tag_term_identity_candidate_keys_determine_all_attributes,
-    tag_term_seal_candidate_keys_determine_all_attributes,
     tag_term_candidate_keys_determine_all_attributes,
     gallery_observation_tag_candidate_keys_determine_all_attributes,
     build_manifest_core_candidate_keys_determine_all_attributes,
@@ -14041,11 +13230,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     catalog_publication_title_candidate_keys_determine_all_attributes,
     catalog_publication_content_candidate_keys_determine_all_attributes,
     contributor_role_registry_candidate_keys_determine_all_attributes,
-    catalog_contributor_anchor_candidate_keys_determine_all_attributes,
-    catalog_contributor_name_sha256_candidate_keys_determine_all_attributes,
-    catalog_contributor_role_candidate_keys_determine_all_attributes,
-    catalog_contributor_identity_candidate_keys_determine_all_attributes,
-    catalog_contributor_seal_candidate_keys_determine_all_attributes,
     catalog_contributor_candidate_keys_determine_all_attributes,
     catalog_subject_candidate_keys_determine_all_attributes,
     catalog_artifact_candidate_keys_determine_all_attributes,

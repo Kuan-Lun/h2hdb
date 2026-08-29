@@ -3572,7 +3572,7 @@ def _iter_effective_content_digests(
             parameters: tuple[Any, ...] = (
                 gallery_id,
                 observation_id,
-                b"CONTENT",
+                b"galleryinfo.txt",
                 _MAX_BATCH_ROWS,
             )
         else:
@@ -3583,7 +3583,7 @@ def _iter_effective_content_digests(
             parameters = (
                 gallery_id,
                 observation_id,
-                b"CONTENT",
+                b"galleryinfo.txt",
                 previous_digest,
                 previous_digest,
                 previous_file_no,
@@ -3600,12 +3600,10 @@ def _iter_effective_content_digests(
             "ON source_sha.gallery_id = source_seal.gallery_id "
             "AND source_sha.observation_id = source_seal.observation_id "
             "AND source_sha.file_key = source_seal.file_key "
-            "JOIN catalog_file_name_identity_seals AS name_seal "
-            "ON name_seal.file_key = source_seal.file_key "
-            "JOIN catalog_file_name_identity_file_roles AS name "
-            "ON name.file_key = name_seal.file_key "
+            "JOIN catalog_file_name_identities AS name "
+            "ON name.file_key = source_seal.file_key "
             "WHERE source_seal.gallery_id = %s "
-            "AND source_seal.observation_id = %s AND name.file_role = %s"
+            "AND source_seal.observation_id = %s AND name.name_bytes <> %s"
             + predicate
             + " ORDER BY source_sha.file_sha256, source_no.file_no LIMIT %s",
             parameters,
@@ -3812,10 +3810,7 @@ def _gallery_has_already_uploaded_marker(
     rows = work.connector.fetch_all(
         "SELECT term.tag_value_sha256 "
         "FROM catalog_gallery_observation_tags AS observed "
-        "JOIN catalog_tag_term_seals AS term_seal "
-        "ON term_seal.tag_id = observed.tag_id "
-        "JOIN catalog_tag_term_identities AS term "
-        "ON term.tag_id = term_seal.tag_id "
+        "JOIN catalog_tag_terms AS term ON term.tag_id = observed.tag_id "
         "WHERE observed.gallery_id = %s AND observed.observation_id = %s "
         "ORDER BY observed.position",
         (gallery_id, observation_id),

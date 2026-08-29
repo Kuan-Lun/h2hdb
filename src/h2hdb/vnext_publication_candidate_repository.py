@@ -2011,10 +2011,7 @@ def _prepare_projection_publication(
             "SELECT observed.position, observed.tag_id, term.namespace, "
             "term.tag_value_sha256 "
             "FROM catalog_gallery_observation_tags AS observed "
-            "JOIN catalog_tag_term_seals AS term_seal "
-            "ON term_seal.tag_id = observed.tag_id "
-            "JOIN catalog_tag_term_identities AS term "
-            "ON term.tag_id = term_seal.tag_id "
+            "JOIN catalog_tag_terms AS term ON term.tag_id = observed.tag_id "
             "WHERE observed.gallery_id = %s AND observed.observation_id = %s "
             "AND observed.position > %s ORDER BY observed.position LIMIT 128",
             (gallery_id, observation_id, tag_after),

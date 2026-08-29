@@ -10,28 +10,35 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 160 data-plane base relations checked as BCNF, plus 49 executable logical
-  views and 11 reusable sealed vertical families;
+- 151 data-plane base relations checked as BCNF, plus 46 executable logical
+  projections (33 SQL views and 13 inline projections) and 8 reusable sealed
+  vertical families;
 - 28 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 151-relation catalog physical-domain closure, split into 114
-  mutation relations and 37 read-only views;
-- 70 operational BCNF base relations plus one derived activation view for
-  fencing, downloader-to-ingest handoff, staging, allocation, receipts,
-  maintenance, queues, caches, and bounded cleanup;
+- an exact 127-relation catalog physical-domain closure, split into 105
+  mutation relations and 22 read-only relations;
+- 66 operational BCNF base relations, including epoch control, plus one inline
+  activation projection and no operational SQL view for fencing,
+  downloader-to-ingest handoff, staging, allocation, receipts, maintenance,
+  queues, caches, and bounded cleanup;
+- 217 tables and 33 SQL views, for exactly 250 SQL objects across the complete
+  epoch;
 - 30 versioned semantic obligations: 13 data-plane and 17 operational; and
-- 5,838 typed bootstrap rows per backend, including the real deletion-request
+- 5,832 typed bootstrap rows per backend, including the real deletion-request
   generation-zero history/head and 22 cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
 ordinary physical `catalog_*` base table to be its semantic primary key plus at
-most one atomic non-key column. It reports 122 narrow bases and 38 exact
-reviewed-wide BCNF relations. Twenty-seven selected families replace 178 former
-physical relations with 32 bases under the explicit capacity contract. Every
-nontrivial determinant is a candidate key. Views are excluded and may
-deliberately expose denormalized read shapes. The counts above are checked from
-the manifests rather than copied into the runtime provider by hand.
+most one atomic non-key column. It reports 112 narrow bases and 39 exact
+reviewed-wide BCNF relations. Thirty selected families replace 190 former
+physical relations with 35 bases under the explicit capacity contract. Three
+authorities (`file_name_identity`, `tag_term`, and `catalog_contributor`) retain
+the exact complete shape of a former widest member and are therefore
+capacity-neutral while their redundant companion tables disappear. Every
+nontrivial determinant is a candidate key. Logical projections are excluded and
+may deliberately expose denormalized read shapes. The counts above are checked
+from the manifests rather than copied into the runtime provider by hand.
 
 Full `SchemaAdmin.check()` deliberately scans the single sealed publication
 generation chain to prove exact node/edge/commit-set equality, successor
@@ -42,7 +49,7 @@ while fresh publication and replay validate only the locked chain tip locally.
 
 The generated provider is intentionally fail-closed: it cannot return a
 `SchemaEpochDefinition` if a recurring obligation lacks a trusted wheel-owned
-validator or exact production writer binding. The wheel now binds all 25
+validator or exact production writer binding. The wheel now binds all 28
 recurring obligations to closed families of real public repository methods.
 The two physical-domain bindings additionally install closed domain-guard tuples
 and distinguish caller-owned transactions from the schema-epoch runner. The
@@ -208,21 +215,21 @@ SQLite workflows, focused rollback and corruption tests, two live MariaDB
 workflows, and MariaDB SQL-shape recorders. Each recorder is explicitly only
 supporting evidence; it is never described as live MariaDB execution.
 
-The 25 installed writer bindings close runtime ownership for every declared
+The 28 installed writer bindings close runtime ownership for every declared
 repository family. Nine physical-boundary tests verify the exact production
 families and reject representative forged values before SQL or event derivation.
 They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 5,838 bootstrap rows per backend. This closes the catalog and operational
+all 5,832 bootstrap rows per backend. This closes the catalog and operational
 bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.
 
 In particular, schema/Lean/TLC success does not by itself authorize `READY`.
 The generated provider authorizes it only after its exact wheel-owned validators
-and all 25 production method families resolve and pass bounded checks. The
+and all 28 production method families resolve and pass bounded checks. The
 strict evidence gate separately remains nonzero until its reported fault and
 integration blockers are discharged.
 
@@ -306,9 +313,9 @@ The bounded cleanup protocol has a separate generated-physical width guard.
 It charges maximum column encodings (including text charset width and variable
 length prefixes), NULL bitmaps, a conservative clustered-record envelope, and
 every deduplicated secondary index with its primary-key suffix. The receipt
-records the resulting score, per-row account, and headroom for `cleanup_job`
-and `cleanup_cycle_root`; widening either shape beyond its account invalidates
-the receipt. This is soft-cap sizing evidence, not a claim that an InnoDB
+records the resulting score, per-row account, and headroom for `cleanup_job`,
+`cleanup_cycle_root`, and `cleanup_checkpoint`; widening any shape beyond its
+account invalidates the receipt. This is soft-cap sizing evidence, not a claim that an InnoDB
 tablespace, MVCC history, or filesystem high-water mark has an unbounded hard
 maximum.
 

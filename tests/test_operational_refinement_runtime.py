@@ -269,7 +269,7 @@ def test_fencing_checks_only_exact_current_projection(
              phase, last_transition_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (1, 1, 0, "DOWNLOADING", 1),
+        (1, 1, 0, "INGESTING", 1),
     )
     with pytest.raises(OperationalSemanticValidationError, match="exact owner"):
         check_fencing_contract_v1(greenfield)
@@ -449,6 +449,7 @@ def _insert_open_cleanup_job(connector: SQLiteConnector) -> tuple[bytes, str]:
 def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
     greenfield: SQLiteConnector,
 ) -> None:
+    _disable_integrity(greenfield)
     cleanup_id, phase = _insert_open_cleanup_job(greenfield)
     prior_chain = b"p" * 32
     input_sha256 = b"i" * 32
@@ -465,32 +466,26 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         """
         INSERT INTO operational_cleanup_checkpoints
             (cleanup_id, phase, generation, cursor_bytes, deleted_count,
-             chain_sha256, state, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (cleanup_id, phase, 2, b"next", 0, terminal_output, "OPEN", 0),
-    )
-    greenfield.connection.execute(
-        """
-            INSERT INTO operational_cleanup_batch_receipts
-                (cleanup_id, phase, batch_key, start_cursor, next_cursor,
-                 prior_chain_sha256, prior_deleted_count,
-                 input_sha256, output_sha256, row_count,
-                 committed_generation, committed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             chain_sha256, state, updated_at, receipt_batch_key,
+             receipt_start_cursor, receipt_prior_chain_sha256,
+             receipt_prior_deleted_count, receipt_input_sha256,
+             receipt_row_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             cleanup_id,
             phase,
-            b"k" * 32,
+            2,
             b"next",
+            0,
+            terminal_output,
+            "OPEN",
+            0,
+            b"k" * 32,
             b"next",
             prior_chain,
             0,
             input_sha256,
-            terminal_output,
-            0,
-            2,
             0,
         ),
     )
@@ -507,13 +502,9 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         1,
     )
     greenfield.connection.execute(
-        "UPDATE operational_cleanup_batch_receipts "
-        "SET row_count = 1, start_cursor = x'', output_sha256 = ?",
-        (nonterminal_output,),
-    )
-    greenfield.connection.execute(
         "UPDATE operational_cleanup_checkpoints "
-        "SET deleted_count = 1, chain_sha256 = ?",
+        "SET receipt_row_count = 1, receipt_start_cursor = x'', "
+        "deleted_count = 1, chain_sha256 = ?",
         (nonterminal_output,),
     )
     check_bounded_work_contract_v1(greenfield)
@@ -533,14 +524,10 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         0,
     )
     greenfield.connection.execute(
-        "UPDATE operational_cleanup_batch_receipts SET row_count = 0, "
-        "start_cursor = next_cursor, prior_chain_sha256 = ?, "
-        "prior_deleted_count = 1, output_sha256 = ?",
+        "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 0, "
+        "receipt_start_cursor = cursor_bytes, receipt_prior_chain_sha256 = ?, "
+        "receipt_prior_deleted_count = 1, chain_sha256 = ?",
         (nonterminal_output, next_terminal_output),
-    )
-    greenfield.connection.execute(
-        "UPDATE operational_cleanup_checkpoints SET chain_sha256 = ?",
-        (next_terminal_output,),
     )
     check_bounded_work_contract_v1(greenfield)
 
@@ -703,7 +690,6 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         "ingest_coordination_head",
         "ingest_generation",
         "ingest_generation_owner",
-        "ingest_generation_handoff",
         "download_coordination_head",
         "download_generation",
         "download_generation_owner",
@@ -719,9 +705,7 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         "cleanup_phase",
         "cleanup_job",
         "cleanup_cycle_root",
-        "cleanup_completion",
         "cleanup_checkpoint",
-        "cleanup_batch_receipt",
         "revision_allocator",
         "identity_allocator",
         "gallery_observation_staging_request_budget",
@@ -744,9 +728,7 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
             "cleanup_phase",
             "cleanup_job",
             "cleanup_cycle_root",
-            "cleanup_completion",
             "cleanup_checkpoint",
-            "cleanup_batch_receipt",
             "revision_allocator",
             "identity_allocator",
             "gallery_observation_staging_request_budget",

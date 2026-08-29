@@ -1,11 +1,11 @@
 """Exact storage protocol for the small catalog identity families.
 
-Gallery identity is one BCNF base relation.  The other historical wide
-relations exposed by this module are read-only views over sealed vertical
-families.  Production writers use base relations directly, insert completion
-seals last where applicable, and treat an existing incomplete vertical family
-as corruption rather than repairing it in place.  Batch loaders use one set
-query per family so a page never turns into one query per atomic fact.
+Gallery, file-name, and tag identities are complete BCNF base relations.
+Observation-file occurrences remain sealed vertical families. Production
+writers use base relations directly, insert completion seals last where
+applicable, and treat an existing incomplete vertical family as corruption
+rather than repairing it in place. Batch loaders use one set query per family
+so a page never turns into one query per atomic fact.
 """
 
 from __future__ import annotations
@@ -52,19 +52,14 @@ _BATCH_LIMIT = 256
 
 _GALLERY_IDENTITY = "catalog_gallery_identities"
 
-_FILE_NAME_ANCHOR = "catalog_file_name_identity_anchors"
-_FILE_NAME_BYTES = "catalog_file_name_identity_name_bytes"
-_FILE_NAME_ROLE = "catalog_file_name_identity_file_roles"
-_FILE_NAME_SEAL = "catalog_file_name_identity_seals"
+_FILE_NAME_IDENTITY = "catalog_file_name_identities"
 
 _OBSERVATION_FILE_ANCHOR = "catalog_gallery_observation_file_anchors"
 _OBSERVATION_FILE_NO = "catalog_gallery_observation_file_file_nos"
 _OBSERVATION_FILE_SHA256 = "catalog_gallery_observation_file_file_sha256s"
 _OBSERVATION_FILE_SEAL = "catalog_gallery_observation_file_seals"
 
-_TAG_ANCHOR = "catalog_tag_term_anchors"
-_TAG_IDENTITY = "catalog_tag_term_identities"
-_TAG_SEAL = "catalog_tag_term_seals"
+_TAG_TERM = "catalog_tag_terms"
 
 
 class CatalogIdentityCollisionError(RuntimeError):
@@ -321,48 +316,35 @@ def load_file_name_identities(
     )
     if not keys and not names:
         return {}
-    branches: list[str] = []
+    clauses: list[str] = []
     parameters: tuple[Any, ...] = ()
     if keys:
-        clause = f"file_key IN ({_placeholders(len(keys))})"
-        for table in (
-            _FILE_NAME_ANCHOR,
-            _FILE_NAME_BYTES,
-            _FILE_NAME_ROLE,
-            _FILE_NAME_SEAL,
-        ):
-            branches.append(f"SELECT file_key FROM {table} WHERE {clause}")
-            parameters += keys
+        clauses.append(f"file_key IN ({_placeholders(len(keys))})")
+        parameters += keys
     if names:
-        branches.append(
-            f"SELECT file_key FROM {_FILE_NAME_BYTES} "
-            f"WHERE name_bytes IN ({_placeholders(len(names))})"
-        )
+        clauses.append(f"name_bytes IN ({_placeholders(len(names))})")
         parameters += names
     rows = connector.fetch_all(
-        "WITH candidate_keys(file_key) AS (" + " UNION ".join(branches) + ") "
-        "SELECT k.file_key, a.file_key, n.file_key, n.name_bytes, "
-        "r.file_key, r.file_role, s.file_key FROM candidate_keys AS k "
-        f"LEFT JOIN {_FILE_NAME_ANCHOR} AS a ON a.file_key = k.file_key "
-        f"LEFT JOIN {_FILE_NAME_BYTES} AS n ON n.file_key = k.file_key "
-        f"LEFT JOIN {_FILE_NAME_ROLE} AS r ON r.file_key = k.file_key "
-        f"LEFT JOIN {_FILE_NAME_SEAL} AS s ON s.file_key = k.file_key "
-        "ORDER BY k.file_key",
+        f"SELECT file_key, name_bytes FROM {_FILE_NAME_IDENTITY} WHERE "
+        + " OR ".join(f"({clause})" for clause in clauses)
+        + " ORDER BY file_key",
         parameters,
     )
     result: dict[bytes, FileNameIdentity] = {}
     for row in rows:
-        if len(row) != 7:
-            raise CatalogIdentityPartialFamilyError(
-                "file-name identity family has an invalid physical shape"
+        if len(row) != 2:
+            raise CatalogIdentityCollisionError(
+                "file-name identity has an invalid physical shape"
             )
         key = require_digest32(row[0], field="file_key")
-        if any(row[index] != key for index in (1, 2, 4, 6)):
-            raise CatalogIdentityPartialFamilyError(
-                "file-name identity has an existing incomplete sealed family"
-            )
         try:
-            identity = FileNameIdentity(key, row[3], row[5])
+            name = require_bounded_bytes(
+                row[1],
+                field="name_bytes",
+                minimum=1,
+                maximum=255,
+            )
+            identity = FileNameIdentity(key, name, file_role(name))
         except (TypeError, ValueError) as error:
             raise CatalogIdentityCollisionError(
                 "file-name identity contains invalid derived facts"
@@ -406,20 +388,8 @@ def ensure_file_name_identities(
                 )
             continue
         connector.execute(
-            f"INSERT INTO {_FILE_NAME_ANCHOR} (file_key) VALUES (%s)",
-            (identity.file_key,),
-        )
-        connector.execute(
-            f"INSERT INTO {_FILE_NAME_BYTES} (file_key, name_bytes) VALUES (%s, %s)",
+            f"INSERT INTO {_FILE_NAME_IDENTITY} (file_key, name_bytes) VALUES (%s, %s)",
             (identity.file_key, identity.name_bytes),
-        )
-        connector.execute(
-            f"INSERT INTO {_FILE_NAME_ROLE} (file_key, file_role) VALUES (%s, %s)",
-            (identity.file_key, identity.file_role),
-        )
-        connector.execute(
-            f"INSERT INTO {_FILE_NAME_SEAL} (file_key) VALUES (%s)",
-            (identity.file_key,),
         )
         existing[identity.file_key] = identity
         existing_by_name[identity.name_bytes] = identity
@@ -616,37 +586,30 @@ def load_tag_terms(
     parameters: tuple[Any, ...] = ()
     if ids:
         clause = f"tag_id IN ({_placeholders(len(ids))})"
-        for table in (_TAG_ANCHOR, _TAG_IDENTITY, _TAG_SEAL):
-            branches.append(f"SELECT tag_id FROM {table} WHERE {clause}")
-            parameters += ids
+        branches.append(f"SELECT tag_id FROM {_TAG_TERM} WHERE {clause}")
+        parameters += ids
     for namespace, value in normalized_naturals:
         branches.append(
-            f"SELECT tag_id FROM {_TAG_IDENTITY} "
+            f"SELECT tag_id FROM {_TAG_TERM} "
             "WHERE namespace = %s AND tag_value_sha256 = %s"
         )
         parameters += (namespace, value)
     rows = connector.fetch_all(
         "WITH candidate_ids(tag_id) AS (" + " UNION ".join(branches) + ") "
-        "SELECT k.tag_id, a.tag_id, i.namespace, i.tag_value_sha256, "
-        "i.tag_id, s.tag_id FROM candidate_ids AS k "
-        f"LEFT JOIN {_TAG_ANCHOR} AS a ON a.tag_id = k.tag_id "
-        f"LEFT JOIN {_TAG_IDENTITY} AS i ON i.tag_id = k.tag_id "
-        f"LEFT JOIN {_TAG_SEAL} AS s ON s.tag_id = k.tag_id ORDER BY k.tag_id",
+        "SELECT k.tag_id, t.namespace, t.tag_value_sha256 "
+        "FROM candidate_ids AS k "
+        f"JOIN {_TAG_TERM} AS t ON t.tag_id = k.tag_id ORDER BY k.tag_id",
         parameters,
     )
     result: dict[int, TagTerm] = {}
     for row in rows:
-        if len(row) != 6:
-            raise CatalogIdentityPartialFamilyError(
-                "tag term family has an invalid physical shape"
+        if len(row) != 3:
+            raise CatalogIdentityCollisionError(
+                "tag term has an invalid physical shape"
             )
         tag_id = require_positive_int63(row[0], field="tag_id")
-        if any(row[index] != tag_id for index in (1, 4, 5)):
-            raise CatalogIdentityPartialFamilyError(
-                "tag term has an existing incomplete sealed family"
-            )
         try:
-            term = TagTerm(tag_id, row[2], row[3])
+            term = TagTerm(tag_id, row[1], row[2])
         except (TypeError, ValueError) as error:
             raise CatalogIdentityCollisionError(
                 "tag term contains invalid immutable facts"
@@ -671,16 +634,8 @@ def ensure_tag_term(connector: Any, *, term: TagTerm) -> bool:
             )
         return False
     connector.execute(
-        f"INSERT INTO {_TAG_ANCHOR} (tag_id) VALUES (%s)",
-        (term.tag_id,),
-    )
-    connector.execute(
-        f"INSERT INTO {_TAG_IDENTITY} "
-        "(namespace, tag_value_sha256, tag_id) VALUES (%s, %s, %s)",
-        (term.namespace, term.tag_value_sha256, term.tag_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_TAG_SEAL} (tag_id) VALUES (%s)",
-        (term.tag_id,),
+        f"INSERT INTO {_TAG_TERM} "
+        "(tag_id, namespace, tag_value_sha256) VALUES (%s, %s, %s)",
+        (term.tag_id, term.namespace, term.tag_value_sha256),
     )
     return True

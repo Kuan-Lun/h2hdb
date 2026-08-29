@@ -45,6 +45,9 @@ DIGEST32 = {
     "next_manifest_chain_sha256",
     "output_sha256",
     "prior_chain_sha256",
+    "receipt_batch_key",
+    "receipt_input_sha256",
+    "receipt_prior_chain_sha256",
     "page_sha256",
     "last_page_sha256",
     "root_page_sha256",
@@ -90,6 +93,7 @@ COUNTERS = {
     "completed_generation",
     "current_generation",
     "deleted_count",
+    "final_deleted_count",
     "frozen_root_count",
     "deletion_request_generation",
     "download_generation",
@@ -108,6 +112,8 @@ COUNTERS = {
     "operational_schema_version",
     "processed_count",
     "prior_deleted_count",
+    "receipt_prior_deleted_count",
+    "receipt_row_count",
     "start_processed_count",
     "next_processed_count",
     "processed_gallery_count",
@@ -166,6 +172,7 @@ SMALL_COUNTERS = {"singleton_id", "slot", "terminal"}
 BINARY_CURSOR = {
     "cursor_bytes",
     "start_cursor",
+    "receipt_start_cursor",
     "next_cursor",
     "file_cursor_bytes",
     "start_file_cursor_bytes",
@@ -300,7 +307,6 @@ GENERATION_OBLIGATION_BINDINGS = {
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
             "cleanup_checkpoint",
-            "cleanup_batch_receipt",
         ),
         "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan.",
     ),
@@ -334,7 +340,7 @@ GENERATION_OBLIGATION_BINDINGS = {
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
+            "publication_commit",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
@@ -366,7 +372,6 @@ GENERATION_OBLIGATION_BINDINGS = {
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
@@ -429,6 +434,18 @@ def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
         and relation == "gallery_observation_staging"
         or attribute == "terminal_byte_count"
         and relation == "gallery_observation_staging"
+        or relation == "cleanup_job"
+        and attribute in {"final_chain_sha256", "final_deleted_count"}
+        or relation == "cleanup_checkpoint"
+        and attribute
+        in {
+            "receipt_batch_key",
+            "receipt_start_cursor",
+            "receipt_prior_chain_sha256",
+            "receipt_prior_deleted_count",
+            "receipt_input_sha256",
+            "receipt_row_count",
+        }
         or (
             relation == "gallery_observation_staging_metadata_parser"
             and attribute
@@ -554,9 +571,14 @@ def _external_stub_shapes(
     physical_by_name = {
         str(relation["name"]): relation for relation in physical["relation"]
     }
+    inline_projections = {
+        str(value) for value in physical.get("inline_projections", [])
+    }
     result = []
     for external in logical.get("external_relation", []):
         relation_name = str(external["name"])
+        if relation_name in inline_projections:
+            continue
         physical_relation = physical_by_name.get(relation_name)
         if physical_relation is None:
             raise ValueError(
@@ -1007,9 +1029,33 @@ def render() -> str:
     with LOGICAL.open("rb") as stream:
         logical: dict[str, Any] = tomllib.load(stream)
     _validate_external_candidate_key_shapes(logical)
-    relations: list[dict[str, Any]] = logical["relation"]
+    logical_relations: list[dict[str, Any]] = logical["relation"]
+    relations = [
+        relation
+        for relation in logical_relations
+        if not (
+            isinstance(relation.get("materialization"), dict)
+            and relation["materialization"].get("storage") == "inline_projection"
+        )
+    ]
+    inline_projections = [
+        str(relation["name"])
+        for relation in logical_relations
+        if isinstance(relation.get("materialization"), dict)
+        and relation["materialization"].get("storage") == "inline_projection"
+    ]
+    with CATALOG_PHYSICAL.open("rb") as stream:
+        catalog_physical: dict[str, Any] = tomllib.load(stream)
+    catalog_inline_projections = {
+        str(value) for value in catalog_physical.get("inline_projections", [])
+    }
+    external_inline_projections = [
+        str(relation["name"])
+        for relation in logical.get("external_relation", [])
+        if str(relation["name"]) in catalog_inline_projections
+    ]
     complete_relations = _topological_relation_order(relations)
-    relation_names = {str(value) for value in complete_relations}
+    relation_names = {str(value["name"]) for value in logical_relations}
     semantic_obligations = _semantic_obligations(logical, relation_names)
     bootstrap_seeds = _bootstrap_seeds(logical, relations)
     provider_relations = [
@@ -1022,6 +1068,8 @@ def render() -> str:
         'description = "Complete verification-only SQLite/MariaDB realization of the operational control plane; production migrations are intentionally unchanged."',
         "complete_relations = " + _array(complete_relations),
         "source_slice = " + _array(provider_relations),
+        "inline_projections = " + _array(inline_projections),
+        "external_inline_projections = " + _array(external_inline_projections),
         'epoch_owned_relations = ["schema_epoch_control"]',
         "",
         "[epoch_control]",
@@ -1649,8 +1697,8 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
         checks.append(
             (
                 "ck_ingest_phase",
-                "phase IN ('READY', 'DOWNLOADING', 'INGEST_REQUESTED', 'INGESTING')",
-                "phase IN ('READY', 'DOWNLOADING', 'INGEST_REQUESTED', 'INGESTING')",
+                "phase IN ('READY', 'INGESTING')",
+                "phase IN ('READY', 'INGESTING')",
             )
         )
     if name == "download_generation":
@@ -1795,14 +1843,47 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 ),
                 (
                     "ck_cleanup_job_state_completed_at",
-                    "state = 'OPEN' AND completed_at IS NULL OR "
-                    "state = 'COMPLETE' AND completed_at IS NOT NULL AND "
-                    "completed_at >= created_at",
-                    "state = 'OPEN' AND completed_at IS NULL OR "
-                    "state = 'COMPLETE' AND completed_at IS NOT NULL AND "
-                    "completed_at >= created_at",
+                    "state = 'OPEN' AND completed_at IS NULL "
+                    "AND final_chain_sha256 IS NULL AND final_deleted_count IS NULL OR "
+                    "state = 'COMPLETE' AND completed_at IS NOT NULL "
+                    "AND completed_at >= created_at "
+                    "AND final_chain_sha256 IS NOT NULL "
+                    "AND final_deleted_count IS NOT NULL",
+                    "state = 'OPEN' AND completed_at IS NULL "
+                    "AND final_chain_sha256 IS NULL AND final_deleted_count IS NULL OR "
+                    "state = 'COMPLETE' AND completed_at IS NOT NULL "
+                    "AND completed_at >= created_at "
+                    "AND final_chain_sha256 IS NOT NULL "
+                    "AND final_deleted_count IS NOT NULL",
                 ),
             ]
+        )
+    if name == "cleanup_checkpoint":
+        receipt_transition = (
+            "generation = 1 AND receipt_batch_key IS NULL "
+            "AND receipt_start_cursor IS NULL "
+            "AND receipt_prior_chain_sha256 IS NULL "
+            "AND receipt_prior_deleted_count IS NULL "
+            "AND receipt_input_sha256 IS NULL AND receipt_row_count IS NULL OR "
+            "generation > 1 AND receipt_batch_key IS NOT NULL "
+            "AND receipt_start_cursor IS NOT NULL "
+            "AND receipt_prior_chain_sha256 IS NOT NULL "
+            "AND receipt_prior_deleted_count IS NOT NULL "
+            "AND receipt_input_sha256 IS NOT NULL "
+            "AND receipt_row_count IS NOT NULL "
+            "AND receipt_row_count <= 256 "
+            "AND deleted_count = receipt_prior_deleted_count + receipt_row_count "
+            "AND (state = 'OPEN' AND receipt_row_count > 0 "
+            "AND receipt_start_cursor <> cursor_bytes OR "
+            "state = 'COMPLETE' AND receipt_row_count = 0 "
+            "AND receipt_start_cursor = cursor_bytes)"
+        )
+        checks.append(
+            (
+                "ck_cleanup_checkpoint_receipt_transition",
+                receipt_transition,
+                receipt_transition,
+            )
         )
     if name == "cleanup_cycle_root":
         checks.append(

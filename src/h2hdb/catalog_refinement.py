@@ -1803,7 +1803,16 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
             )
         _one(
             connector,
-            "SELECT build_id FROM catalog_build_manifests WHERE build_id = %s LIMIT 2",
+            """
+            SELECT core.build_id
+            FROM catalog_build_manifest_core AS core
+            JOIN catalog_source_build_discoveries AS discovery
+              ON discovery.build_id = core.build_id
+            JOIN catalog_source_build_sealed_ats AS sealed
+              ON sealed.build_id = core.build_id
+            WHERE core.build_id = %s
+            LIMIT 2
+            """,
             (build_id,),
             detail="active sealed build manifest",
         )
@@ -2770,15 +2779,11 @@ def _active_publication_contexts(
     connector: SQLConnector,
 ) -> tuple[_PublicationContext, ...]:
     rows = connector.fetch_all("""
-        SELECT registry.channel, head.revision, mapping.generation,
-               advanced.advanced_at
+        SELECT registry.channel, head.revision, head.generation,
+               head.committed_at
         FROM catalog_channel_registry AS registry
-        LEFT JOIN catalog_publication_head_revisions AS head
+        LEFT JOIN catalog_publication_commit_heads AS head
           ON head.channel = registry.channel
-        LEFT JOIN catalog_revision_generations AS mapping
-          ON mapping.revision = head.revision
-        LEFT JOIN catalog_publication_head_advanced_ats AS advanced
-          ON advanced.channel = registry.channel
         ORDER BY registry.channel
         LIMIT 2
         """)

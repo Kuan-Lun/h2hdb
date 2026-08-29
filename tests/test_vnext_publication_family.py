@@ -9,11 +9,14 @@ from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_publication_family import (
+    CatalogContributorFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
     PublicationFamilyCollisionError,
+    ensure_catalog_contributor_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    load_catalog_contributor_family,
     load_catalog_publication_family,
     load_catalog_publication_title_family,
 )
@@ -30,6 +33,73 @@ def _generated_database(path: Path) -> SQLiteConnector:
     for seed in payload["bootstrap_seeds"]:
         connector.execute(seed["sql"], seed["parameters"])
     return connector
+
+
+class _ContributorRecorder:
+    def __init__(self, family: CatalogContributorFamily | None = None) -> None:
+        self.row: tuple[Any, ...] = tuple()
+        if family is not None:
+            self.row = (
+                family.revision,
+                family.publication_key,
+                family.position,
+                family.contributor_name_sha256,
+                family.role,
+            )
+        self.fetches: list[tuple[str, tuple[Any, ...]]] = []
+        self.inserts: list[tuple[str, tuple[Any, ...]]] = []
+
+    def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
+        self.fetches.append((query, data))
+        return self.row
+
+    def execute(self, query: str, data: tuple[Any, ...] = ()) -> int:
+        self.inserts.append((query, data))
+        self.row = (data[0], data[1], data[4], data[2], data[3])
+        return 1
+
+
+def test_catalog_contributor_uses_one_atomic_bcnf_relation() -> None:
+    family = CatalogContributorFamily(
+        revision=3,
+        publication_key=b"p" * 32,
+        position=7,
+        contributor_name_sha256=b"n" * 32,
+        role=b"artist",
+    )
+    connector = _ContributorRecorder(family)
+
+    assert (
+        load_catalog_contributor_family(
+            connector,
+            revision=family.revision,
+            publication_key=family.publication_key,
+            position=family.position,
+            backend="mariadb",
+            locking=True,
+        )
+        == family
+    )
+    query, parameters = connector.fetches[-1]
+    assert "FROM catalog_contributors" in query
+    assert query.endswith(" FOR UPDATE")
+    assert parameters == (family.revision, family.publication_key, family.position)
+    assert "anchor" not in query and "seal" not in query
+
+    empty_connector = _ContributorRecorder()
+    assert ensure_catalog_contributor_family(empty_connector, family) == (family, True)
+    assert len(empty_connector.inserts) == 1
+    insert, parameters = empty_connector.inserts[0]
+    assert "INSERT INTO catalog_contributors" in insert
+    assert parameters == (
+        family.revision,
+        family.publication_key,
+        family.contributor_name_sha256,
+        family.role,
+        family.position,
+    )
+    assert ensure_catalog_contributor_family(empty_connector, family) == (family, False)
+    assert len(empty_connector.inserts) == 1
 
 
 def test_catalog_publication_and_title_are_atomic_exact_replay_rows(

@@ -67,19 +67,12 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "canonical_value_page_parent",
         "source_locator_identity",
         "gallery_identity",
-        "file_name_identity_anchor",
-        "file_name_identity_name_bytes",
-        "file_name_identity_file_role",
-        "file_name_identity_seal",
         "file_name_identity",
         "gallery_observation_file_anchor",
         "gallery_observation_file_file_no",
         "gallery_observation_file_file_sha256",
         "gallery_observation_file_seal",
         "gallery_observation_file",
-        "tag_term_anchor",
-        "tag_term_identity",
-        "tag_term_seal",
         "tag_term",
         "source_build_anchor",
         "source_build_scope_key",
@@ -290,11 +283,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "catalog_publication_title",
         "catalog_publication_content",
         "contributor_role_registry",
-        "catalog_contributor_anchor",
-        "catalog_contributor_name_sha256",
-        "catalog_contributor_role",
-        "catalog_contributor_identity",
-        "catalog_contributor_seal",
         "catalog_contributor",
         "catalog_subject",
         "publication_commit_anchor",
@@ -331,9 +319,7 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "canonical_value_allocation",
         "canonical_value_page",
         "canonical_value_page_descriptor",
-        "file_name_identity",
         "gallery_observation_file",
-        "tag_term",
         "source_build",
         "build_manifest",
         "source_snapshot_manifest_identity",
@@ -373,7 +359,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "catalog_revision_generation",
         "display_title_policy",
         "title_sort_policy",
-        "catalog_contributor",
         "catalog_publication",
         "catalog_publication_title",
         "publication_commit",
@@ -431,9 +416,9 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         "publication_commit_candidate_id",
         "source_build_scope_key",
     }.isdisjoint(CATALOG_PHYSICAL_DOMAIN_RELATIONS)
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 151
-    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 37
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 114
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 127
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 105
+    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 22
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )

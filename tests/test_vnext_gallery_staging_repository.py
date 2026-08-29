@@ -610,7 +610,9 @@ def _request_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
             "SELECT COUNT(*) FROM operational_gallery_observation_staging_request_chunks"
         ),
         connector.fetch_one("SELECT COUNT(*) FROM catalog_gallery_observation_pages"),
-        connector.fetch_one("SELECT COUNT(*) FROM catalog_gallery_observation_files"),
+        connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_gallery_observation_file_seals"
+        ),
         connector.fetch_all(
             "SELECT component, level, cursor, regular_count, "
             "processed_byte_count, state "
@@ -1235,20 +1237,17 @@ def test_tag_allocator_lock_rereads_natural_identity_before_insert(
             (handle.gallery_id, handle.observation_id),
         ) == (7,)
         assert connector.fetch_all(
-            "SELECT tag_id FROM catalog_tag_term_anchors ORDER BY tag_id"
+            "SELECT tag_id FROM catalog_tag_terms ORDER BY tag_id"
         ) == [(7,)]
     finally:
         connector.close()
 
 
-def test_file_and_tag_identity_families_are_fault_atomic_seal_last_and_replay_exact(
+def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
     tmp_path: Path,
 ) -> None:
     file_tables = (
-        "catalog_file_name_identity_anchors",
-        "catalog_file_name_identity_name_bytes",
-        "catalog_file_name_identity_file_roles",
-        "catalog_file_name_identity_seals",
+        "catalog_file_name_identities",
         "catalog_gallery_observation_file_anchors",
         "catalog_gallery_observation_file_file_nos",
         "catalog_gallery_observation_file_file_sha256s",
@@ -1316,9 +1315,7 @@ def test_file_and_tag_identity_families_are_fault_atomic_seal_last_and_replay_ex
         connector.close()
 
     tag_tables = (
-        "catalog_tag_term_anchors",
-        "catalog_tag_term_identities",
-        "catalog_tag_term_seals",
+        "catalog_tag_terms",
         "catalog_gallery_observation_tags",
         "catalog_gallery_observation_artists",
     )
@@ -3511,9 +3508,13 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
         assert final_receipt.cursor == len(encoded)
         assert final_receipt.root_page_sha256 is not None
         assert connector.fetch_one(
-            "SELECT level, subtree_item_count "
-            "FROM catalog_gallery_observation_page_descriptors "
-            "WHERE page_sha256 = %s",
+            "SELECT descriptor_level.level, descriptor_count.subtree_item_count "
+            "FROM catalog_gallery_observation_page_descriptor_seals AS sealed "
+            "JOIN catalog_gallery_observation_page_descriptor_levels "
+            "AS descriptor_level ON descriptor_level.page_sha256 = sealed.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_subtree_item_counts "
+            "AS descriptor_count ON descriptor_count.page_sha256 = sealed.page_sha256 "
+            "WHERE sealed.page_sha256 = %s",
             (final_receipt.root_page_sha256,),
         ) == (1, len(encoded))
         assert connector.fetch_one(

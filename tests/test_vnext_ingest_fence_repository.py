@@ -113,24 +113,8 @@ def test_expired_takeover_fences_old_turn_and_completion_cleans_authority(
     connector = _generated_database(tmp_path / "takeover.sqlite3")
     try:
         stale = _claim(connector, b"a" * 16, now=10, duration=10)
-        connector.execute(
-            "INSERT INTO operational_ingest_generation_handoffs "
-            "(generation, requested_at) VALUES (%s, %s)",
-            (stale.generation, 11),
-        )
         current = _claim(connector, b"b" * 16, now=20, duration=30)
         assert (stale.generation, current.generation) == (1, 2)
-        assert (
-            connector.fetch_all(
-                "SELECT generation FROM operational_ingest_generation_handoffs"
-            )
-            == []
-        )
-        connector.execute(
-            "INSERT INTO operational_ingest_generation_handoffs "
-            "(generation, requested_at) VALUES (%s, %s)",
-            (current.generation, 21),
-        )
 
         before = _authority_snapshot(connector)
         with pytest.raises(IngestFenceUnavailableError, match="stale"):
@@ -155,12 +139,6 @@ def test_expired_takeover_fences_old_turn_and_completion_cleans_authority(
         assert (
             connector.fetch_all(
                 "SELECT generation FROM operational_ingest_generation_owners"
-            )
-            == []
-        )
-        assert (
-            connector.fetch_all(
-                "SELECT generation FROM operational_ingest_generation_handoffs"
             )
             == []
         )

@@ -246,13 +246,31 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "canonical_value_page_vertical",
         "gallery_observation_page_descriptor_vertical",
         "gallery_observation_page_key_bounds_vertical",
-        "file_name_identity_vertical",
         "gallery_observation_file_vertical",
-        "tag_term_vertical",
-        "catalog_contributor_vertical",
         "analysis_file_hash_decision_shadow_vertical",
     )
-    assert len(contract.vertical_families) == 11
+    assert len(contract.vertical_families) == 8
+    inline_projection_names = {
+        "canonical_value_page",
+        "canonical_value_page_descriptor",
+        "source_build_base_source",
+        "gallery_observation_page_descriptor",
+        "gallery_observation_file",
+        "build_manifest",
+        "analysis_exclusion_delta",
+        "publication_candidate_base_source",
+        "artifact_delta_new",
+        "catalog_revision_generation",
+        "publication_head_revision",
+        "publication_head_advanced_at",
+        "publication_head",
+    }
+    assert {
+        relation.name
+        for relation in contract.relations
+        if relation.materialization is not None
+        and relation.materialization.get("storage") == "inline_projection"
+    } == inline_projection_names
     assert report.generation_streams == ()
     assert contract.publication_commit_contract is not None
     assert len(contract.batch_receipt_projections) == 3
@@ -267,7 +285,12 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
             assert non_key == {member.value_attribute}
         view = relation_by_name[family.view_relation]
         assert view.materialization is not None
-        assert view.materialization["storage"] == "logical_view"
+        expected_storage = (
+            "inline_projection"
+            if family.view_relation in inline_projection_names
+            else "logical_view"
+        )
+        assert view.materialization["storage"] == expected_storage
     metadata_local = relation_by_name["gallery_observation_metadata_local"]
     assert metadata_local.attributes == (
         "gallery_id",
@@ -407,7 +430,8 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         not checker.bcnf_violations(relation)
         for relation in contract.relations
         if relation.materialization is None
-        or relation.materialization.get("storage") != "logical_view"
+        or relation.materialization.get("storage")
+        not in {"logical_view", "inline_projection"}
     )
     assert checker.bcnf_violations(metadata_view)
 
@@ -469,7 +493,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.selected_catalog_family_count,
         plan.selected_catalog_physical_relations_before,
         plan.selected_catalog_physical_relations_after,
-    ) == (27, 178, 32)
+    ) == (30, 190, 35)
     assert (
         plan.catalog_physical_table_count_before,
         plan.catalog_physical_table_count_after,
@@ -477,7 +501,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 160, 75, 70, 381, 230)
+    ) == (306, 151, 75, 66, 381, 217)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -492,6 +516,14 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.bounded_registry_maximum_rows == RECOMPOSED_REGISTRY_MAXIMUM_ROWS == 50_000
     )
     assert len(plan.affected_catalog_relations) == 27
+    assert plan.capacity_neutral_catalog_authority_substitutions == (
+        "file_name_identity",
+        "tag_term",
+        "catalog_contributor",
+    )
+    assert plan.selected_catalog_family_count == len(
+        plan.affected_catalog_relations
+    ) + len(plan.capacity_neutral_catalog_authority_substitutions)
     assert plan.affected_operational_relations == (
         "download_generation_owner",
         "ingest_generation_owner",
@@ -500,6 +532,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         "gallery_observation_staging_request_budget",
         "cleanup_job",
         "cleanup_cycle_root",
+        "cleanup_checkpoint",
     )
     categories = (
         set(plan.fixed_bootstrap_relations),
@@ -510,7 +543,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         set(plan.bounded_protocol_relations),
         set(plan.staging_capacity_relations),
     )
-    assert sum(map(len, categories)) == len(set().union(*categories)) == 34
+    assert sum(map(len, categories)) == len(set().union(*categories)) == 35
     assert set().union(*categories) == set(plan.affected_catalog_relations) | set(
         plan.affected_operational_relations
     )
@@ -612,6 +645,14 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         == 327_680
     )
     assert (
+        plan.cleanup_checkpoint_conservative_peak_bytes
+        == (
+            plan.cleanup_checkpoint_peak_rows
+            * plan.cleanup_checkpoint_accounted_bytes_per_row
+        )
+        == 262_144
+    )
+    assert (
         plan.bounded_nonmeasured_conservative_peak_bytes
         == (
             plan.bounded_nonmeasured_peak_rows
@@ -643,13 +684,18 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         ),
         (
             "catalog_physical_table_count_after",
-            161,
-            "catalog_physical_table_count_after must be 160",
+            152,
+            "catalog_physical_table_count_after must be 151",
         ),
         (
             "affected_operational_relations",
             ("download_generation_owner",),
             "affected_operational_relations must be",
+        ),
+        (
+            "capacity_neutral_catalog_authority_substitutions",
+            ("tag_term",),
+            "capacity_neutral_catalog_authority_substitutions must be",
         ),
         (
             "conditional_one_gigabyte_limit_required",
@@ -692,6 +738,25 @@ def test_vertical_family_rejects_an_unsealed_member_graph() -> None:
     with pytest.raises(
         checker.ContractValidationError,
         match="lacks its total-participation FK",
+    ):
+        checker.validate_contract(invalid)
+
+
+def test_vertical_family_rejects_a_redundant_one_member_anchor_wrapper() -> None:
+    contract = checker.load_contract(CATALOG)
+    family = contract.vertical_families[0]
+    invalid_family = replace(family, members=(family.members[0],))
+    invalid = replace(
+        contract,
+        vertical_families=tuple(
+            invalid_family if candidate is family else candidate
+            for candidate in contract.vertical_families
+        ),
+    )
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="one-member anchor/seal wrapper must be one atomic BCNF relation",
     ):
         checker.validate_contract(invalid)
 
@@ -810,29 +875,19 @@ def test_build_manifest_projection_rejects_authority_source_drift() -> None:
         checker.validate_contract(invalid)
 
 
-def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -> None:
+def test_catalog_identities_are_bcnf_bases_and_observation_file_family_remains() -> (
+    None
+):
     contract = checker.load_contract(CATALOG)
     relation_by_name = {relation.name: relation for relation in contract.relations}
     family_by_name = {family.name: family for family in contract.vertical_families}
 
     assert {
-        "file_name_identity_vertical": (
-            "file_name_identity_anchor",
-            "file_name_identity_seal",
-            "file_name_identity",
-            ("file_key",),
-        ),
         "gallery_observation_file_vertical": (
             "gallery_observation_file_anchor",
             "gallery_observation_file_seal",
             "gallery_observation_file",
             ("gallery_id", "observation_id", "file_key"),
-        ),
-        "tag_term_vertical": (
-            "tag_term_anchor",
-            "tag_term_seal",
-            "tag_term",
-            ("tag_id",),
         ),
     } == {
         name: (
@@ -841,11 +896,7 @@ def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -
             family_by_name[name].view_relation,
             family_by_name[name].key_attributes,
         )
-        for name in (
-            "file_name_identity_vertical",
-            "gallery_observation_file_vertical",
-            "tag_term_vertical",
-        )
+        for name in ("gallery_observation_file_vertical",)
     }
     gallery_identity = relation_by_name["gallery_identity"]
     assert gallery_identity.kind == "source_of_truth"
@@ -861,10 +912,40 @@ def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -
         frozenset({"gallery_key"}),
         frozenset({"scope_key", "locator_sha256"}),
     }
+    tag_term = relation_by_name["tag_term"]
+    assert tag_term.kind == "source_of_truth"
+    assert tag_term.materialization is None
+    assert tag_term.attributes == ("tag_id", "namespace", "tag_value_sha256")
+    assert set(tag_term.declared_keys) == {
+        frozenset({"tag_id"}),
+        frozenset({"namespace", "tag_value_sha256"}),
+    }
     assert all(
         dependency.determinant in set(gallery_identity.declared_keys)
         for dependency in gallery_identity.functional_dependencies
     )
+    file_identity = relation_by_name["file_name_identity"]
+    assert file_identity.kind == "source_of_truth"
+    assert file_identity.materialization is None
+    assert file_identity.attributes == ("file_key", "name_bytes")
+    assert set(file_identity.declared_keys) == {
+        frozenset({"file_key"}),
+        frozenset({"name_bytes"}),
+    }
+    contributor = relation_by_name["catalog_contributor"]
+    assert contributor.kind == "source_of_truth"
+    assert contributor.materialization is None
+    assert contributor.attributes == (
+        "revision",
+        "publication_key",
+        "contributor_name_sha256",
+        "role",
+        "position",
+    )
+    assert set(contributor.declared_keys) == {
+        frozenset({"revision", "publication_key", "contributor_name_sha256", "role"}),
+        frozenset({"revision", "publication_key", "position"}),
+    }
     assert relation_by_name["gallery_observation_file"].attributes == (
         "gallery_id",
         "observation_id",
@@ -880,11 +961,7 @@ def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -
         "0..n-1" in family_by_name["gallery_observation_file_vertical"].write_obligation
     )
 
-    old_views = {
-        "file_name_identity",
-        "gallery_observation_file",
-        "tag_term",
-    }
+    old_views = {"gallery_observation_file"}
     assert all(
         foreign_key.relation not in old_views
         for relation in contract.relations
@@ -897,21 +974,14 @@ def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -
     )
     assert {
         "gallery_identity",
-        "file_name_identity_anchor",
-        "file_name_identity_name_bytes",
-        "file_name_identity_file_role",
-        "file_name_identity_seal",
         "file_name_identity",
         "gallery_observation_file_anchor",
         "gallery_observation_file_file_no",
         "gallery_observation_file_file_sha256",
         "gallery_observation_file_seal",
-        "gallery_observation_file",
-        "tag_term_anchor",
-        "tag_term_identity",
-        "tag_term_seal",
         "tag_term",
     } <= set(physical_domains.relations)
+    assert "gallery_observation_file" not in physical_domains.relations
 
 
 def test_recomposed_lifecycle_and_build_manifest_preserve_public_read_shapes() -> None:
@@ -1029,9 +1099,9 @@ def test_recomposed_lifecycle_and_build_manifest_preserve_public_read_shapes() -
         "source_build_sealed_at",
         "source_build",
         "build_manifest_core",
-        "build_manifest",
         "source_snapshot_manifest_identity",
     } <= set(physical_domains.relations)
+    assert "build_manifest" not in physical_domains.relations
 
 
 def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
@@ -1044,8 +1114,20 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
         for obligation in contract.semantic_obligations
         if obligation.id == "catalog.physical-domains.v1"
     )
-    assert publication_graph <= set(physical_domains.relations)
-    assert len(physical_domains.relations) == 151
+    inline_publication_graph = {
+        "publication_candidate_base_source",
+        "artifact_delta_new",
+        "catalog_revision_generation",
+        "publication_head_revision",
+        "publication_head_advanced_at",
+        "publication_head",
+    }
+    assert publication_graph - inline_publication_graph <= set(
+        physical_domains.relations
+    )
+    assert publication_graph & inline_publication_graph == inline_publication_graph
+    assert inline_publication_graph.isdisjoint(physical_domains.relations)
+    assert len(physical_domains.relations) == 127
 
     invalid_domains = replace(
         physical_domains,
@@ -1073,9 +1155,9 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 151" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 114" in catalog_lean
-    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 37" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 127" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 105" in catalog_lean
+    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
     assert "catalog_physical_domain_partition_is_exact" in catalog_lean
@@ -1710,7 +1792,7 @@ def test_analysis_candidate_contract_is_one_closed_executable_v1_codec() -> None
         "file_name_identity",
         "analysis_file_hash_decision_resolved",
         "gallery_observation_tag",
-        "tag_term_identity",
+        "tag_term",
         "canonical_value_identity",
         "canonical_value_allocation",
         "canonical_value_page",
@@ -1899,7 +1981,7 @@ def test_impacted_key_contract_rejects_unbounded_or_inexact_provenance() -> None
     for authority_text, invalid_text in (
         ("analysis_baseline.base_analysis_id", "current analysis_id"),
         ("current analysis_run_descriptor", "caller build_id"),
-        ("file_name_identity.file_role", "untyped file name"),
+        ("file_name_identity.name_bytes classifier", "untyped file name"),
         ("sealed analysis_policy", "unsealed policy"),
     ):
         invalid_metadata = dict(provenance.materialization or {})
@@ -2271,7 +2353,7 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
         ),
         (
             "runtime_obligation",
-            "operational_activation is a derived read-only view",
+            "operational_activation is a derived read-only inline projection",
             "hot-path obligation",
         ),
         ("runtime_obligation", "append-only", "hot-path obligation"),
@@ -3001,13 +3083,11 @@ def test_candidate_retention_requires_exact_uncommitted_projection_fold() -> Non
     assert tuple(gate.id for gate in target.machine_gates) == (
         "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)",
     )
-    assert tuple(phase[-1] for phase in target.child_phases[:11]) == (
+    assert tuple(phase[-1] for phase in target.child_phases[:9]) == (
         "catalog_publication_storage",
-        "catalog_contributor_seal",
-        "catalog_contributor_identity",
-        "catalog_contributor_name_sha256",
-        "catalog_contributor_role",
-        "catalog_contributor_anchor",
+        "catalog_contributor",
+        "artifact_input",
+        "publication_checkpoint",
         "catalog_publication_order",
         "catalog_publication_content",
         "catalog_subject",
@@ -3938,8 +4018,8 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "160 BCNF base relations" in valid.stdout
-    assert "49 intentional logical views" in valid.stdout
+    assert "151 BCNF base relations" in valid.stdout
+    assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (
         f"{len(contract.decompositions)} dependency-preserving decompositions"

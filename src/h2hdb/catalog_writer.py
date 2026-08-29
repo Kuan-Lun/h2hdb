@@ -454,6 +454,16 @@ def _known_relation_names() -> frozenset[str]:
     if not isinstance(backends, Mapping):
         raise WriterHookUnavailableError("generated backend registry is malformed")
     names = {"schema_epoch_control"}
+    for key in (
+        "data_inline_projections",
+        "operational_inline_projections",
+    ):
+        inline = ARTIFACT.get(key)
+        if not isinstance(inline, tuple) or not all(
+            isinstance(value, str) and value for value in inline
+        ):
+            raise WriterHookUnavailableError(f"generated {key} registry is malformed")
+        names.update(inline)
     for payload in backends.values():
         if not isinstance(payload, Mapping):
             raise WriterHookUnavailableError(

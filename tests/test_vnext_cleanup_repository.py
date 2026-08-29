@@ -690,11 +690,7 @@ _ALL_ANALYSIS_OVERLAY_TABLES = tuple(
 
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
     "catalog_publication_storage",
-    "catalog_contributor_seals",
-    "catalog_contributor_identities",
-    "catalog_contributor_name_sha256s",
-    "catalog_contributor_roles",
-    "catalog_contributor_anchors",
+    "catalog_contributors",
     "catalog_publication_order",
     "catalog_publication_contents",
     "catalog_subjects",
@@ -821,32 +817,10 @@ def _seed_catalog_publication_cleanup_fixture(
                     (revision, publication_key, b"c" * 32),
                 ),
                 (
-                    "INSERT INTO catalog_contributor_anchors "
-                    "(revision, publication_key, position) VALUES (%s, %s, 0)",
-                    (revision, publication_key),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_name_sha256s "
-                    "(revision, publication_key, position, contributor_name_sha256) "
-                    "VALUES (%s, %s, 0, %s)",
-                    (revision, publication_key, b"a" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_roles "
-                    "(revision, publication_key, position, role) "
-                    "VALUES (%s, %s, 0, %s)",
-                    (revision, publication_key, b"artist"),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_identities "
+                    "INSERT INTO catalog_contributors "
                     "(revision, publication_key, contributor_name_sha256, role, position) "
                     "VALUES (%s, %s, %s, %s, 0)",
                     (revision, publication_key, b"a" * 32, b"artist"),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_seals "
-                    "(revision, publication_key, position) VALUES (%s, %s, 0)",
-                    (revision, publication_key),
                 ),
                 (
                     "INSERT INTO catalog_subjects "
@@ -1221,8 +1195,10 @@ def _cleanup_protocol_snapshot(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
     return (
+        connector.fetch_all(
+            "SELECT * FROM operational_cleanup_jobs ORDER BY cleanup_id"
+        ),
         connector.fetch_all("SELECT * FROM operational_cleanup_checkpoints"),
-        connector.fetch_all("SELECT * FROM operational_cleanup_batch_receipts"),
     )
 
 
@@ -1236,6 +1212,28 @@ def _artifact_policy_semantics_family_rows(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return (connector.fetch_all("SELECT * FROM catalog_artifact_policy_semantics"),)
+
+
+_CANONICAL_PAGE_COMPONENT_TABLES = (
+    "catalog_canonical_value_page_seals",
+    "catalog_canonical_value_page_subtree_item_counts",
+    "catalog_canonical_value_page_coordinates",
+    "catalog_canonical_value_page_payloads",
+    "catalog_canonical_value_page_anchors",
+)
+
+
+def _canonical_page_component_rows(
+    connector: SQLiteConnector,
+    page_sha256: bytes,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(
+            f"SELECT * FROM {table} WHERE page_sha256 = %s",
+            (page_sha256,),
+        )
+        for table in _CANONICAL_PAGE_COMPONENT_TABLES
+    )
 
 
 def _seed_cleanup_candidate(
@@ -1983,8 +1981,9 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
         assert next_cycle.cleanup_id != cycle.cleanup_id
         assert (
             connector.fetch_one(
-                "SELECT 1 FROM operational_cleanup_completions WHERE target_key = %s",
-                (cycle.target_key,),
+                "SELECT 1 FROM operational_cleanup_jobs "
+                "WHERE cleanup_id = %s AND state = 'COMPLETE'",
+                (cycle.cleanup_id,),
             )
             == ()
         )
@@ -2250,11 +2249,7 @@ def test_all_twenty_two_strategies_match_the_closed_phase_registry(
         ),
         CleanupTargetKind.CATALOG_PUBLICATION: (
             "CP_STORAGE",
-            "CP_CONTRIBUTOR_SEAL",
-            "CP_CONTRIBUTOR_IDENTITY",
-            "CP_CONTRIBUTOR_NAME",
-            "CP_CONTRIBUTOR_ROLE",
-            "CP_CONTRIBUTOR_ANCHOR",
+            "CP_CONTRIBUTOR",
             "CP_ORDER",
             "CP_CONTENT",
             "CP_SUBJECT",
@@ -2281,8 +2276,6 @@ def test_all_twenty_two_strategies_match_the_closed_phase_registry(
             "PC_SEALS",
             "PC_PREPARED",
             "PC_INPUT",
-            "PC_CONTRIBUTOR_NAME",
-            "PC_CONTRIBUTOR_ROLE",
             "PC_CHECKPOINT",
             "PC_SELECTION_STORAGE",
             "PC_CONTENT",
@@ -2606,14 +2599,11 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
         ) == (1,)
-        assert (
-            connector.fetch_one(
-                "SELECT target_key FROM operational_cleanup_completions "
-                "WHERE target_key = %s",
-                (cycle.target_key,),
-            )
-            == ()
-        )
+        assert connector.fetch_one(
+            "SELECT final_chain_sha256, final_deleted_count "
+            "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (None, None)
 
         committed = _advance(connector, gate, cycle, 2, b"4" * 32, now=7)
         assert committed.cycle_complete and not committed.replayed
@@ -3210,35 +3200,36 @@ def test_publication_commit_event_receipt_corruption_fails_full_check(
         _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
         event_batch = _advance(connector, gate, cycle, 1, b"s" * 32, now=80)
         assert event_batch.row_count == 1 and event_batch.generation == 2
+        connector.execute("PRAGMA ignore_check_constraints = ON")
         if corruption == "output":
             statement = (
-                "UPDATE operational_cleanup_batch_receipts SET output_sha256 = %s "
+                "UPDATE operational_cleanup_checkpoints SET chain_sha256 = %s "
                 "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
             )
             parameters: tuple[object, ...] = (b"x" * 32, cycle.cleanup_id)
         elif corruption == "over_budget":
             statement = (
-                "UPDATE operational_cleanup_batch_receipts SET row_count = 9 "
+                "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 9 "
                 "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
             )
             parameters = (cycle.cleanup_id,)
         elif corruption == "deleted_underflow":
             statement = (
-                "UPDATE operational_cleanup_batch_receipts SET row_count = 2 "
+                "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 2 "
                 "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
             )
             parameters = (cycle.cleanup_id,)
         elif corruption == "stationary_nonterminal":
             statement = (
-                "UPDATE operational_cleanup_batch_receipts "
-                "SET start_cursor = next_cursor "
+                "UPDATE operational_cleanup_checkpoints "
+                "SET receipt_start_cursor = cursor_bytes "
                 "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
             )
             parameters = (cycle.cleanup_id,)
         else:
             statement = (
-                "UPDATE operational_cleanup_batch_receipts "
-                "SET start_cursor = %s, input_sha256 = %s "
+                "UPDATE operational_cleanup_checkpoints "
+                "SET receipt_start_cursor = %s, receipt_input_sha256 = %s "
                 "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
             )
             parameters = (b"forged-but-moving", b"q" * 32, cycle.cleanup_id)
@@ -4813,7 +4804,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_title_sorts",
         "catalog_source_scopes",
         "catalog_source_locator_identity",
-        "catalog_tag_term_anchors",
+        "catalog_tag_terms",
         "catalog_source_snapshot_manifest_identity",
         "catalog_artifact_policies",
         "catalog_artifact_semantic_inputs",
@@ -4825,11 +4816,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "DELETE FROM catalog_source_scopes WHERE scope_key = %s",
     )
     tag_term = canonical["CV_DICTIONARY"][4]
-    assert tag_term.delete_sql == (
-        "DELETE FROM catalog_tag_term_seals WHERE tag_id = %s",
-        "DELETE FROM catalog_tag_term_identities WHERE tag_id = %s",
-        "DELETE FROM catalog_tag_term_anchors WHERE tag_id = %s",
-    )
+    assert tag_term.delete_sql == ("DELETE FROM catalog_tag_terms WHERE tag_id = %s",)
     assert tuple(spec.table for spec in canonical["CV_SEMANTIC_LINK"]) == (
         "catalog_artifact_policy_semantics",
     )
@@ -5287,32 +5274,10 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                     (revision, publication_key, b"c" * 32),
                 ),
                 (
-                    "INSERT INTO catalog_contributor_anchors "
-                    "(revision, publication_key, position) VALUES (%s, %s, 0)",
-                    (revision, publication_key),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_name_sha256s "
-                    "(revision, publication_key, position, contributor_name_sha256) "
-                    "VALUES (%s, %s, 0, %s)",
-                    (revision, publication_key, b"n" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_roles "
-                    "(revision, publication_key, position, role) "
-                    "VALUES (%s, %s, 0, %s)",
-                    (revision, publication_key, b"artist"),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_identities "
+                    "INSERT INTO catalog_contributors "
                     "(revision, publication_key, contributor_name_sha256, "
                     "role, position) VALUES (%s, %s, %s, %s, 0)",
                     (revision, publication_key, b"n" * 32, b"artist"),
-                ),
-                (
-                    "INSERT INTO catalog_contributor_seals "
-                    "(revision, publication_key, position) VALUES (%s, %s, 0)",
-                    (revision, publication_key),
                 ),
                 (
                     "INSERT INTO catalog_subjects "
@@ -6588,10 +6553,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
                 "WHERE value_sha256 = %s",
                 (source_root,),
             ),
-            connector.fetch_all(
-                "SELECT * FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
-                (source_root,),
-            ),
+            _canonical_page_component_rows(connector, b"R" * 32),
             connector.fetch_all(
                 "SELECT * FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
@@ -6626,10 +6588,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
                 "WHERE value_sha256 = %s",
                 (source_root,),
             ),
-            connector.fetch_all(
-                "SELECT * FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
-                (source_root,),
-            ),
+            _canonical_page_component_rows(connector, b"R" * 32),
             connector.fetch_all(
                 "SELECT * FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
@@ -6682,12 +6641,8 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             )
             == ()
         )
-        assert (
-            connector.fetch_one(
-                "SELECT 1 FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
-                (source_root,),
-            )
-            == ()
+        assert all(
+            not rows for rows in _canonical_page_component_rows(connector, b"R" * 32)
         )
         assert (
             connector.fetch_one(
@@ -7860,13 +7815,10 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             )
             == ()
         )
-        assert (
-            connector.fetch_all(
-                "SELECT page_sha256 FROM catalog_canonical_value_pages "
-                "WHERE value_sha256 = %s",
-                (value,),
-            )
-            == []
+        assert all(
+            not rows
+            for page_sha256 in (child_page, parent_page)
+            for rows in _canonical_page_component_rows(connector, page_sha256)
         )
 
         page = bytes((32,)) + b"g" * 31
@@ -8419,8 +8371,8 @@ def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
         )
 
         connector.execute(
-            "UPDATE operational_cleanup_batch_receipts "
-            "SET output_sha256 = %s WHERE cleanup_id = %s AND phase = 'CB_ROOT'",
+            "UPDATE operational_cleanup_checkpoints "
+            "SET chain_sha256 = %s WHERE cleanup_id = %s AND phase = 'CB_ROOT'",
             (b"x" * 32, cycle.cleanup_id),
         )
         with pytest.raises(CleanupCorruptionError, match="receipt"):
@@ -8452,9 +8404,9 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
                 "WHERE cleanup_id = %s ORDER BY phase",
                 (cycle.cleanup_id,),
             ),
-            connector.fetch_all(
-                "SELECT * FROM operational_cleanup_batch_receipts "
-                "WHERE cleanup_id = %s ORDER BY phase",
+            connector.fetch_one(
+                "SELECT state, completed_at, final_chain_sha256, final_deleted_count "
+                "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
                 (cycle.cleanup_id,),
             ),
         )
@@ -8476,9 +8428,9 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
                 "WHERE cleanup_id = %s ORDER BY phase",
                 (cycle.cleanup_id,),
             ),
-            connector.fetch_all(
-                "SELECT * FROM operational_cleanup_batch_receipts "
-                "WHERE cleanup_id = %s ORDER BY phase",
+            connector.fetch_one(
+                "SELECT state, completed_at, final_chain_sha256, final_deleted_count "
+                "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
                 (cycle.cleanup_id,),
             ),
         )

@@ -2145,9 +2145,15 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
         }
         assert resolved == oracle == {first: (3, 3, 2), second: (1, 2, 2)}
         assert connector.fetch_one(
-            "SELECT old_excluded, new_excluded "
-            "FROM catalog_analysis_exclusion_deltas "
-            "WHERE analysis_id = %s AND file_sha256 = %s",
+            "SELECT old_value.old_excluded, new_value.new_excluded "
+            "FROM catalog_analysis_exclusion_delta_seals AS sealed "
+            "JOIN catalog_analysis_exclusion_delta_old_excluded_flags AS old_value "
+            "ON old_value.analysis_id = sealed.analysis_id "
+            "AND old_value.file_sha256 = sealed.file_sha256 "
+            "JOIN catalog_analysis_exclusion_delta_new_excluded_flags AS new_value "
+            "ON new_value.analysis_id = sealed.analysis_id "
+            "AND new_value.file_sha256 = sealed.file_sha256 "
+            "WHERE sealed.analysis_id = %s AND sealed.file_sha256 = %s",
             (run.analysis_id, first),
         ) == (0, 1)
 

@@ -914,6 +914,7 @@ class CapacityPlan:
     conditional_one_gigabyte_limit_required: bool
     mariadb_measurement_version: str
     affected_catalog_relations: tuple[str, ...]
+    capacity_neutral_catalog_authority_substitutions: tuple[str, ...]
     affected_operational_relations: tuple[str, ...]
     fixed_bootstrap_relations: tuple[str, ...]
     bounded_registry_relations: tuple[str, ...]
@@ -954,6 +955,9 @@ class CapacityPlan:
     cleanup_frozen_root_key_maximum_bytes: int
     cleanup_cycle_root_accounted_bytes_per_row: int
     cleanup_cycle_root_conservative_peak_bytes: int
+    cleanup_checkpoint_peak_rows: int
+    cleanup_checkpoint_accounted_bytes_per_row: int
+    cleanup_checkpoint_conservative_peak_bytes: int
     cleanup_frozen_root_obligation_id: str
     planning_source_scope_peak_rows: int
     source_scope_measurement_relation: str
@@ -1740,11 +1744,22 @@ def load_contract(path: str | Path) -> Contract:
     )
 
 
+_DERIVED_PROJECTION_STORAGES = frozenset({"logical_view", "inline_projection"})
+
+
+def _is_derived_projection(relation: Relation) -> bool:
+    return (
+        relation.kind == "controlled_materialization"
+        and isinstance(relation.materialization, Mapping)
+        and relation.materialization.get("storage") in _DERIVED_PROJECTION_STORAGES
+    )
+
+
 def _physical_base_relation_count(relations: Iterable[Relation]) -> int:
     return sum(
         not (
             isinstance(relation.materialization, Mapping)
-            and relation.materialization.get("storage") == "logical_view"
+            and relation.materialization.get("storage") in _DERIVED_PROJECTION_STORAGES
         )
         for relation in relations
     )
@@ -1789,7 +1804,7 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
     )
     singleton_owners = ("download_generation_owner", "ingest_generation_owner")
     gallery_derived = ("source_scope",)
-    bounded_protocol = ("cleanup_job", "cleanup_cycle_root")
+    bounded_protocol = ("cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint")
     staging_capacity = (
         "gallery_observation_staging",
         "gallery_observation_staging_request",
@@ -1814,17 +1829,22 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "planning_gallery_count": 300_000,
         "planning_average_files_per_gallery": 50,
         "stress_gallery_count": 1_000_000,
-        "selected_catalog_family_count": 27,
-        "selected_catalog_physical_relations_before": 178,
-        "selected_catalog_physical_relations_after": 32,
+        "selected_catalog_family_count": 30,
+        "selected_catalog_physical_relations_before": 190,
+        "selected_catalog_physical_relations_after": 35,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 160,
+        "catalog_physical_table_count_after": 151,
         "operational_physical_table_count_before": 75,
-        "operational_physical_table_count_after": 70,
+        "operational_physical_table_count_after": 66,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 230,
+        "total_physical_table_count_after": 217,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
+        "capacity_neutral_catalog_authority_substitutions": (
+            "file_name_identity",
+            "tag_term",
+            "catalog_contributor",
+        ),
         "affected_operational_relations": affected_operational,
         "fixed_bootstrap_relations": fixed_bootstrap,
         "bounded_registry_relations": bounded_registry,
@@ -1865,6 +1885,9 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "cleanup_frozen_root_key_maximum_bytes": 260,
         "cleanup_cycle_root_accounted_bytes_per_row": 1_280,
         "cleanup_cycle_root_conservative_peak_bytes": 327_680,
+        "cleanup_checkpoint_peak_rows": 16,
+        "cleanup_checkpoint_accounted_bytes_per_row": 16_384,
+        "cleanup_checkpoint_conservative_peak_bytes": 262_144,
         "cleanup_frozen_root_obligation_id": (
             "h2hdb.operational.cleanup-frozen-root-set.v1"
         ),
@@ -2080,6 +2103,10 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             plan.cleanup_cycle_root_peak_rows
             * plan.cleanup_cycle_root_accounted_bytes_per_row
         ),
+        "cleanup_checkpoint_conservative_peak_bytes": (
+            plan.cleanup_checkpoint_peak_rows
+            * plan.cleanup_checkpoint_accounted_bytes_per_row
+        ),
     }
     for name, wanted in formulas.items():
         actual = getattr(plan, name)
@@ -2099,6 +2126,7 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         )
     if (
         plan.cleanup_cycle_root_conservative_peak_bytes >= 1_000_000
+        or plan.cleanup_checkpoint_conservative_peak_bytes >= 1_000_000
         or plan.cleanup_job_conservative_peak_bytes >= active_limit
         or plan.bounded_nonmeasured_conservative_peak_bytes >= active_limit
     ):
@@ -2134,6 +2162,20 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             "catalog and operational closed set"
         )
 
+    neutral_substitutions = set(plan.capacity_neutral_catalog_authority_substitutions)
+    if neutral_substitutions & affected_union:
+        errors.append(
+            "capacity-neutral catalog authority substitutions must be disjoint "
+            "from newly recomposed or widened relations"
+        )
+    if plan.selected_catalog_family_count != (
+        len(plan.affected_catalog_relations) + len(neutral_substitutions)
+    ):
+        errors.append(
+            "selected catalog family count must equal affected catalog relations "
+            "plus capacity-neutral authority substitutions"
+        )
+
     relation_by_name = {relation.name: relation for relation in contract.relations}
     for relation_name in plan.affected_catalog_relations:
         relation = relation_by_name.get(relation_name)
@@ -2147,6 +2189,18 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             errors.append(
                 f"capacity plan affected catalog relation {relation_name!r} "
                 "must be a base"
+            )
+    for relation_name in plan.capacity_neutral_catalog_authority_substitutions:
+        relation = relation_by_name.get(relation_name)
+        if relation is None:
+            errors.append(
+                "capacity-neutral catalog authority substitution "
+                f"{relation_name!r} is missing"
+            )
+        elif _is_derived_projection(relation):
+            errors.append(
+                "capacity-neutral catalog authority substitution "
+                f"{relation_name!r} must be an authoritative base"
             )
 
     seed_counts = {
@@ -2281,6 +2335,7 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         )
     for term in (
         "exact closed set of newly recomposed or widened tables",
+        "file_name_identity, tag_term, and catalog_contributor as capacity-neutral authority substitutions",
         "exact physical relation shapes without a manifest-hash cycle",
         "staging emergency budget independently of files-per-gallery assumptions",
         "in-band under the live shared ingest fence before admitting the next gallery",
@@ -2990,6 +3045,30 @@ def validate_cross_manifest_contracts(
                 "capacity plan cleanup job peak must equal the exact target-kind "
                 "count times fixed shard count"
             )
+        cleanup_phase_counts: dict[str, int] = {}
+        for seed in operational.bootstrap_seeds:
+            if seed.relation != "cleanup_phase":
+                continue
+            try:
+                target_index = seed.columns.index("target_kind")
+            except ValueError:
+                errors.append(
+                    "capacity plan cleanup phase seed lacks target_kind authority"
+                )
+                break
+            target_kind = seed.values[target_index]
+            cleanup_phase_counts[target_kind] = (
+                cleanup_phase_counts.get(target_kind, 0) + 1
+            )
+        if (
+            not cleanup_phase_counts
+            or capacity_plan.cleanup_checkpoint_peak_rows
+            != max(cleanup_phase_counts.values())
+        ):
+            errors.append(
+                "capacity plan cleanup checkpoint peak must equal the maximum "
+                "seeded phase count for one globally serialized OPEN job"
+            )
         cleanup_obligation = next(
             (
                 obligation
@@ -3035,8 +3114,9 @@ def validate_cross_manifest_contracts(
             term in cleanup_contract.compaction_rule
             for term in (
                 "deletes cleanup_cycle_root membership",
-                "updates cleanup_job COMPLETE",
-                "deletes live receipts then checkpoints",
+                "sets cleanup_job COMPLETE",
+                "deletes cleanup_cycle_root membership and checkpoints",
+                "same job the response-loss replay authority",
             )
         ):
             errors.append(
@@ -3158,13 +3238,14 @@ def validate_cross_manifest_contracts(
         activation is None
         or activation.kind != "controlled_materialization"
         or not isinstance(activation.materialization, Mapping)
+        or activation.materialization.get("storage") != "inline_projection"
         or activation.materialization.get("view_pattern")
         != "publication_commit_activation"
         or set(activation.materialization.get("derived_from", ()))
         != {"publication_commit"}
     ):
         errors.append(
-            "operational activation must be the exact derived common-commit view"
+            "operational activation must be the exact inlined common-commit projection"
         )
     for relation_name in ("gallery_redownload_state",):
         relation = operational_relations.get(relation_name)
@@ -3418,7 +3499,7 @@ _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "ARTIFACT_BLOB": ("artifact_blob", ("artifact_sha256",)),
     "CANONICAL_VALUE": ("canonical_value_allocation_anchor", ("value_sha256",)),
     "CONTENT_BLOB": ("content_blob", ("file_sha256",)),
-    "FILE_NAME_IDENTITY": ("file_name_identity_anchor", ("file_key",)),
+    "FILE_NAME_IDENTITY": ("file_name_identity", ("file_key",)),
     "PUBLICATION_IDENTITY": ("publication_identity", ("publication_key",)),
     "GALLERY_IDENTITY": ("gallery_identity", ("gallery_id",)),
     "SOURCE_GALLERY_NAME_GID": (
@@ -3745,9 +3826,9 @@ def _validate_retention_target(
             errors.append(f"{prefix} references unknown derived view {relation_name!r}")
         elif not (
             relation.materialization is not None
-            and relation.materialization.get("storage") == "logical_view"
+            and relation.materialization.get("storage") in _DERIVED_PROJECTION_STORAGES
         ):
-            errors.append(f"{prefix} {relation_name!r} is not a logical view")
+            errors.append(f"{prefix} {relation_name!r} is not a derived projection")
         if relation_name in phases:
             errors.append(f"{prefix} cannot delete logical view {relation_name!r}")
 
@@ -3853,11 +3934,9 @@ def _validate_retention_target(
                 "artifact_operation",
                 "catalog_publication_storage",
             ),
-            ("prepared_artifact", "catalog_contributor_seal"),
-            ("artifact_input", "catalog_contributor_identity"),
-            ("catalog_contributor_name_sha256",),
-            ("catalog_contributor_role",),
-            ("publication_checkpoint", "catalog_contributor_anchor"),
+            ("prepared_artifact", "catalog_contributor"),
+            ("artifact_input",),
+            ("publication_checkpoint",),
             ("publication_selection_storage", "catalog_publication_order"),
             ("catalog_publication_content",),
             ("catalog_subject",),
@@ -3871,7 +3950,7 @@ def _validate_retention_target(
         if target.child_phases != expected_candidate_phases:
             errors.append(
                 f"{prefix} must fold the exact uncommitted reserved projection "
-                "child-first into the twelve registered candidate phases"
+                "child-first into the ten registered candidate phases"
             )
 
     visited_edges: set[RetentionForeignKeyBoundary] = set()
@@ -4117,7 +4196,15 @@ def _validate_data_semantic_obligations(
     relation_order = tuple(relation_by_name)
     if physical_domains is not None and "publication_candidate" in relation_by_name:
         publication_start = relation_order.index("publication_candidate")
-        publication_graph = frozenset(relation_order[publication_start:])
+        publication_graph = frozenset(
+            name
+            for name in relation_order[publication_start:]
+            if not (
+                isinstance(relation_by_name[name].materialization, Mapping)
+                and relation_by_name[name].materialization.get("storage")
+                == "inline_projection"
+            )
+        )
         missing_publication_relations = publication_graph - set(
             physical_domains.relations
         )
@@ -5643,7 +5730,6 @@ def _validate_file_identity_contract(
     if set(relation.attributes) != {
         contract.key_attribute,
         contract.name_attribute,
-        contract.role_attribute,
     } or set(relation.declared_keys) != {
         frozenset({contract.key_attribute}),
         frozenset({contract.name_attribute}),
@@ -6433,7 +6519,7 @@ def _validate_operational_integrity_contracts(
             ("operational_policy_id",),
         )
         or not isinstance(activation.materialization, Mapping)
-        or activation.materialization.get("storage") != "logical_view"
+        or activation.materialization.get("storage") != "inline_projection"
         or activation.materialization.get("view_pattern")
         != "publication_commit_activation"
         or set(activation.materialization.get("derived_from", ()))
@@ -8275,7 +8361,7 @@ def _validate_recomposed_projection_contracts(
         or view.declared_keys != (frozenset({"build_id"}),)
         or not isinstance(metadata, Mapping)
         or metadata.get("authoritative") is not False
-        or metadata.get("storage") != "logical_view"
+        or metadata.get("storage") not in _DERIVED_PROJECTION_STORAGES
         or metadata.get("view_pattern") != "build_manifest_projection"
         or metadata.get("core_relation") != "build_manifest_core"
         or metadata.get("discovery_relation") != "source_build_discovery"
@@ -8333,6 +8419,8 @@ def _validate_byte_domains(
     # stored relation column.  They remain closed byte domains with executable
     # round-trip obligations.
     used_attributes.update({"publication_id", "artifact_name"})
+    if contract.file_identity_contract is not None:
+        used_attributes.add(contract.file_identity_contract.role_attribute)
     domains: dict[str, ByteDomain] = {}
     for domain in contract.byte_domains:
         prefix = f"byte domain {domain.attribute!r}"
@@ -8687,7 +8775,7 @@ _ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1 = {
                 "file_name_identity",
                 "analysis_file_hash_decision_resolved",
                 "gallery_observation_tag",
-                "tag_term_identity",
+                "tag_term",
                 "canonical_value_identity",
                 "canonical_value_allocation",
                 "canonical_value_page",
@@ -9186,7 +9274,7 @@ def _validate_analysis_impacted_key_contract(
                 "baseline candidate overlay",
                 "genesis absence",
                 "current analysis_run_descriptor",
-                "file_name_identity.file_role",
+                "file_name_identity.name_bytes classifier",
                 "only CONTENT files",
                 "current analysis_run_descriptor",
                 "sealed analysis_policy",
@@ -9437,12 +9525,7 @@ def _validate_long_value_storage_contract(
         for relation in relation_by_name.values():
             if attribute not in relation.attributes:
                 continue
-            logical_view = (
-                relation.kind == "controlled_materialization"
-                and isinstance(relation.materialization, Mapping)
-                and relation.materialization.get("storage") == "logical_view"
-            )
-            if logical_view:
+            if _is_derived_projection(relation):
                 # The physical FK belongs to the narrow stored member.  The
                 # sealed view is already proven to project that member exactly;
                 # requiring a second view-level FK would either point at a view
@@ -9493,6 +9576,8 @@ def _validate_attribute_semantics(
         used_attributes.update(
             {"artifact_input_count", "prepared_artifact_count", "unchanged_count"}
         )
+        if contract.file_identity_contract is not None:
+            used_attributes.add(contract.file_identity_contract.role_attribute)
     required = {
         attribute
         for attribute in used_attributes
@@ -9523,11 +9608,7 @@ def _validate_attribute_semantics(
     singleton_keys = {
         next(iter(key))
         for relation in relation_by_name.values()
-        if not (
-            relation.kind == "controlled_materialization"
-            and isinstance(relation.materialization, Mapping)
-            and relation.materialization.get("storage") == "logical_view"
-        )
+        if not _is_derived_projection(relation)
         for key in enumerate_candidate_keys(
             relation.attributes, relation.functional_dependencies
         )
@@ -9670,11 +9751,7 @@ def _validate_relation(relation: Relation) -> tuple[list[str], RelationReport]:
                 "strictly contain a true candidate key"
             )
 
-    logical_view = (
-        relation.kind == "controlled_materialization"
-        and isinstance(relation.materialization, Mapping)
-        and relation.materialization.get("storage") == "logical_view"
-    )
+    logical_view = _is_derived_projection(relation)
     violations = bcnf_violations(relation)
     if violations and not logical_view:
         determinant, dependent = min(
@@ -9803,11 +9880,7 @@ def _validate_gallery_identity_chain_bcnf(
                 "gallery/name/GID/publication identity chain"
             )
 
-        logical_view = (
-            relation.kind == "controlled_materialization"
-            and isinstance(relation.materialization, Mapping)
-            and relation.materialization.get("storage") == "logical_view"
-        )
+        logical_view = _is_derived_projection(relation)
         if logical_view:
             continue
         for dependency in inferred:
@@ -10466,7 +10539,8 @@ def _validate_publication_commit_contract(
         "candidate_id recovery is permanent",
         "common head stores only one receipt",
         "CASes in the same transaction",
-        "operational_activation is a derived read-only view",
+        "operational_activation is a derived read-only inline projection",
+        "not a SQL schema object",
         "never inserted or updated",
         "append-only marker",
         "retained current terminal FINALIZE_ARTIFACTS receipt",
@@ -10753,8 +10827,11 @@ def _validate_vertical_families(
             set(family.key_attributes)
         ):
             family_errors.append(f"{prefix} key_attributes must be nonempty and unique")
-        if not family.members:
-            family_errors.append(f"{prefix} must declare at least one member")
+        if len(family.members) < 2:
+            family_errors.append(
+                f"{prefix} must declare at least two independently stored members; "
+                "a one-member anchor/seal wrapper must be one atomic BCNF relation"
+            )
 
         role_relations = (
             family.anchor_relation,
@@ -10929,7 +11006,8 @@ def _validate_vertical_families(
             if (
                 member_relation.kind == "controlled_materialization"
                 and isinstance(member_relation.materialization, Mapping)
-                and member_relation.materialization.get("storage") == "logical_view"
+                and member_relation.materialization.get("storage")
+                in _DERIVED_PROJECTION_STORAGES
             ):
                 family_errors.append(
                     f"{prefix} member {member.relation!r} must be a base table"
@@ -11219,7 +11297,7 @@ def _validate_vertical_families(
             )
             if (
                 materialization.get("authoritative") is not False
-                or materialization.get("storage") != "logical_view"
+                or materialization.get("storage") not in _DERIVED_PROJECTION_STORAGES
                 or source_set != expected_sources
                 or len(source_set) != len(raw_sources or ())
             ):
@@ -11415,7 +11493,8 @@ def _validate_vertical_families(
             )
             if (
                 projection_metadata.get("authoritative") is not False
-                or projection_metadata.get("storage") != "logical_view"
+                or projection_metadata.get("storage")
+                not in _DERIVED_PROJECTION_STORAGES
                 or source_set != expected_projection_sources
                 or len(source_set) != len(raw_sources or ())
             ):
@@ -11975,6 +12054,11 @@ def _parse_capacity_plan(value: Mapping[str, Any]) -> CapacityPlan:
         affected_catalog_relations=_string_tuple(
             value, "affected_catalog_relations", context
         ),
+        capacity_neutral_catalog_authority_substitutions=_string_tuple(
+            value,
+            "capacity_neutral_catalog_authority_substitutions",
+            context,
+        ),
         affected_operational_relations=_string_tuple(
             value, "affected_operational_relations", context
         ),
@@ -12084,6 +12168,15 @@ def _parse_capacity_plan(value: Mapping[str, Any]) -> CapacityPlan:
         ),
         cleanup_cycle_root_conservative_peak_bytes=_integer(
             value, "cleanup_cycle_root_conservative_peak_bytes", context
+        ),
+        cleanup_checkpoint_peak_rows=_integer(
+            value, "cleanup_checkpoint_peak_rows", context
+        ),
+        cleanup_checkpoint_accounted_bytes_per_row=_integer(
+            value, "cleanup_checkpoint_accounted_bytes_per_row", context
+        ),
+        cleanup_checkpoint_conservative_peak_bytes=_integer(
+            value, "cleanup_checkpoint_conservative_peak_bytes", context
         ),
         cleanup_frozen_root_obligation_id=_string(
             value, "cleanup_frozen_root_obligation_id", context
@@ -13419,7 +13512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logical_view_count = len(report.relations) - bcnf_base_count
     print(
         f"validated {bcnf_base_count} BCNF base relations and "
-        f"{logical_view_count} intentional logical views and "
+        f"{logical_view_count} intentional logical projections and "
         f"{len(report.lossless_decompositions)} lossless decompositions "
         f"and {len(report.dependency_preserving_decompositions)} "
         "dependency-preserving decompositions "

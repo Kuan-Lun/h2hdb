@@ -27,6 +27,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 PHYSICAL_PATH = ROOT / "verification" / "schema" / "physical.toml"
+LOGICAL_PATH = ROOT / "verification" / "schema" / "catalog.toml"
 MAXIMUM_NON_KEY_COLUMNS = 1
 
 
@@ -342,6 +343,10 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "file_count",
         "byte_count",
     ),
+    "catalog_tag_terms": (
+        "namespace",
+        "tag_value_sha256",
+    ),
     "catalog_title_sort_policy": (
         "title_sort_algorithm_version",
         "unicode_data_version",
@@ -455,6 +460,10 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_content_blobs": NarrowLayoutDeclaration(
         semantic_key=("file_sha256",),
         semantic_value=("size_bytes",),
+    ),
+    "catalog_file_name_identities": NarrowLayoutDeclaration(
+        semantic_key=("file_key",),
+        semantic_value=("name_bytes",),
     ),
     "catalog_gallery_observation_file_filesystem_anchors": (
         NarrowLayoutDeclaration(
@@ -646,6 +655,15 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("revision", "publication_key"),
         semantic_value=("content_sha256",),
     ),
+    "catalog_contributors": NarrowLayoutDeclaration(
+        semantic_key=(
+            "revision",
+            "publication_key",
+            "contributor_name_sha256",
+            "role",
+        ),
+        semantic_value=("position",),
+    ),
     "catalog_subjects": NarrowLayoutDeclaration(
         semantic_key=("revision", "publication_key", "position"),
         semantic_value=("tag_id",),
@@ -787,6 +805,7 @@ def load_catalog_base_relations(
 
 def vertical_family_layout_declarations(
     document: Mapping[str, Any],
+    logical_document: Mapping[str, Any],
 ) -> Mapping[str, NarrowLayoutDeclaration]:
     """Derive narrow semantic roles from generic sealed-family metadata.
 
@@ -880,12 +899,77 @@ def vertical_family_layout_declarations(
                 key,
                 (value,),
             )
+
+    inline_projection_names = {
+        _required_string(value, context="inline_projections")
+        for value in document.get("inline_projections", [])
+    }
+    for family in logical_document.get("vertical_family", []):
+        if not isinstance(family, dict):
+            raise NarrowPhysicalError("logical vertical_family must contain tables")
+        view_relation = _required_string(
+            family.get("view_relation"), context="vertical_family.view_relation"
+        )
+        if view_relation not in inline_projection_names:
+            continue
+        family_key = _string_sequence(
+            family.get("key_attributes"),
+            context=f"vertical family {view_relation!r}.key_attributes",
+        )
+        register(
+            _required_string(
+                family.get("anchor_relation"),
+                context=f"vertical family {view_relation!r}.anchor_relation",
+            ),
+            family_key,
+            (),
+        )
+        register(
+            _required_string(
+                family.get("seal_relation"),
+                context=f"vertical family {view_relation!r}.seal_relation",
+            ),
+            family_key,
+            (),
+        )
+        members = family.get("members")
+        if not isinstance(members, list) or not members:
+            raise NarrowPhysicalError(
+                f"vertical family {view_relation!r}.members must be nonempty"
+            )
+        for member in members:
+            if not isinstance(member, dict):
+                raise NarrowPhysicalError("vertical family member must be a table")
+            key = _string_sequence(
+                member.get("key_attributes"),
+                context=f"vertical family {view_relation!r} member key_attributes",
+            )
+            value = _required_string(
+                member.get("value_attribute"),
+                context=f"vertical family {view_relation!r} member value_attribute",
+            )
+            if value in key:
+                raise NarrowPhysicalError(
+                    "vertical family member value must not be hidden in its key"
+                )
+            register(
+                _required_string(
+                    member.get("relation"),
+                    context=f"vertical family {view_relation!r} member relation",
+                ),
+                key,
+                (value,),
+            )
     return result
 
 
-with PHYSICAL_PATH.open("rb") as _physical_stream:
+with (
+    PHYSICAL_PATH.open("rb") as _physical_stream,
+    LOGICAL_PATH.open("rb") as _logical_stream,
+):
     _VERTICAL_NARROW_LAYOUT_DECLARATIONS = vertical_family_layout_declarations(
-        tomllib.load(_physical_stream)
+        tomllib.load(_physical_stream),
+        tomllib.load(_logical_stream),
     )
 
 _overlapping_narrow_declarations = set(_EXPLICIT_NARROW_LAYOUT_DECLARATIONS) & set(

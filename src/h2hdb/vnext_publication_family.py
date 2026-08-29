@@ -1,10 +1,9 @@
 """Exact physical protocols for publication-owned immutable facts.
 
-Publication candidates are stored as one atomic BCNF row.  Contributor
-relations retain their sealed-family protocol.  Each catalog occurrence is
-split losslessly into a collision-checked revision/publication identity and
-one complete gallery/scalar/title payload.  The historical publication and
-title row shapes are read-only projections.
+Publication candidates and contributor occurrences are stored as atomic BCNF
+rows. Each catalog occurrence is split losslessly into a collision-checked
+revision/publication identity and one complete gallery/scalar/title payload.
+The historical publication and title row shapes are read-only projections.
 """
 
 from __future__ import annotations
@@ -57,11 +56,7 @@ _PUBLICATION_STORAGE = "catalog_publication_storage"
 _PUBLICATION = "catalog_publications"
 _TITLE = "catalog_publication_titles"
 
-_CONTRIBUTOR_ANCHOR = "catalog_contributor_anchors"
-_CONTRIBUTOR_NAME = "catalog_contributor_name_sha256s"
-_CONTRIBUTOR_ROLE = "catalog_contributor_roles"
-_CONTRIBUTOR_IDENTITY = "catalog_contributor_identities"
-_CONTRIBUTOR_SEAL = "catalog_contributor_seals"
+_CONTRIBUTOR = "catalog_contributors"
 
 
 class PublicationFamilyCollisionError(RuntimeError):
@@ -823,40 +818,12 @@ def _contributor_family_row(
     backend: str,
     locking: bool,
 ) -> tuple[Any, ...]:
-    members = (
-        _CONTRIBUTOR_ANCHOR,
-        _CONTRIBUTOR_NAME,
-        _CONTRIBUTOR_ROLE,
-        _CONTRIBUTOR_IDENTITY,
-        _CONTRIBUTOR_SEAL,
-    )
-    key_union = " UNION ".join(
-        f"SELECT revision, publication_key, position FROM {table} "
-        "WHERE revision = %s AND publication_key = %s AND position = %s"
-        for table in members
-    )
     row = connector.fetch_one(
-        "WITH family_keys(revision, publication_key, position) AS ("
-        + key_union
-        + ") SELECT anchor.revision, anchor.publication_key, anchor.position, "
-        "name.revision, name.publication_key, name.position, "
-        "name.contributor_name_sha256, role.revision, role.publication_key, "
-        "role.position, role.role, identity_row.revision, "
-        "identity_row.publication_key, identity_row.position, "
-        "identity_row.contributor_name_sha256, identity_row.role, seal.revision, "
-        "seal.publication_key, seal.position FROM family_keys AS family_key "
-        f"LEFT JOIN {_CONTRIBUTOR_ANCHOR} AS anchor "
-        "USING (revision, publication_key, position) "
-        f"LEFT JOIN {_CONTRIBUTOR_NAME} AS name "
-        "USING (revision, publication_key, position) "
-        f"LEFT JOIN {_CONTRIBUTOR_ROLE} AS role "
-        "USING (revision, publication_key, position) "
-        f"LEFT JOIN {_CONTRIBUTOR_IDENTITY} AS identity_row "
-        "USING (revision, publication_key, position) "
-        f"LEFT JOIN {_CONTRIBUTOR_SEAL} AS seal "
-        "USING (revision, publication_key, position)"
+        "SELECT revision, publication_key, position, "
+        f"contributor_name_sha256, role FROM {_CONTRIBUTOR} "
+        "WHERE revision = %s AND publication_key = %s AND position = %s"
         + _locking_suffix(backend=backend, locking=locking),
-        (revision, publication_key, position) * len(members),
+        (revision, publication_key, position),
     )
     return tuple(row)
 
@@ -883,29 +850,18 @@ def load_catalog_contributor_family(
     )
     if not row:
         return None
-    keys = (
-        (0, 1, 2),
-        (3, 4, 5),
-        (7, 8, 9),
-        (11, 12, 13),
-        (16, 17, 18),
-    )
     expected = (catalog_revision, publication, occurrence)
-    if len(row) != 19 or any(
-        tuple(row[index] for index in key) != expected for key in keys
-    ):
-        raise PublicationFamilyPartialError("catalog contributor family is partial")
-    if (row[6], row[10]) != (row[14], row[15]):
+    if len(row) != 5 or tuple(row[:3]) != expected:
         raise PublicationFamilyCollisionError(
-            "catalog contributor identity is not congruent"
+            "catalog contributor has an invalid physical shape"
         )
     try:
         return CatalogContributorFamily(
             catalog_revision,
             publication,
             occurrence,
-            row[6],
-            row[10],
+            row[3],
+            row[4],
         )
     except (TypeError, ValueError) as error:
         raise PublicationFamilyCollisionError(
@@ -935,27 +891,9 @@ def ensure_catalog_contributor_family(
                 "catalog contributor replay changed exact facts"
             )
         return existing, False
-    key = (family.revision, family.publication_key, family.position)
     try:
         connector.execute(
-            f"INSERT INTO {_CONTRIBUTOR_ANCHOR} "
-            "(revision, publication_key, position) VALUES (%s, %s, %s)",
-            key,
-        )
-        connector.execute(
-            f"INSERT INTO {_CONTRIBUTOR_NAME} "
-            "(revision, publication_key, position, contributor_name_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, family.contributor_name_sha256),
-        )
-        connector.execute(
-            f"INSERT INTO {_CONTRIBUTOR_ROLE} "
-            "(revision, publication_key, position, role) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, family.role),
-        )
-        connector.execute(
-            f"INSERT INTO {_CONTRIBUTOR_IDENTITY} "
+            f"INSERT INTO {_CONTRIBUTOR} "
             "(revision, publication_key, contributor_name_sha256, role, position) "
             "VALUES (%s, %s, %s, %s, %s)",
             (
@@ -965,11 +903,6 @@ def ensure_catalog_contributor_family(
                 family.role,
                 family.position,
             ),
-        )
-        connector.execute(
-            f"INSERT INTO {_CONTRIBUTOR_SEAL} "
-            "(revision, publication_key, position) VALUES (%s, %s, %s)",
-            key,
         )
     except DatabaseDuplicateKeyError as error:
         try:
@@ -983,7 +916,7 @@ def ensure_catalog_contributor_family(
             )
         except PublicationFamilyCollisionError:
             raise PublicationFamilyCollisionError(
-                "catalog contributor concurrent replay left partial facts"
+                "catalog contributor concurrent replay left invalid facts"
             ) from error
         if raced != family:
             raise PublicationFamilyCollisionError(

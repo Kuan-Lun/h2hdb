@@ -717,74 +717,38 @@ class VNextCatalogReaderRepository:
     ) -> dict[bytes, tuple[CatalogContributor, ...]]:
         selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
         rows = connector.fetch_all(
-            f"WITH selected(publication_key) AS ({selected_cte}), "
-            "family_keys(revision, publication_key, position) AS ("
-            "SELECT a.revision, a.publication_key, a.position "
-            "FROM catalog_contributor_anchors AS a JOIN selected AS chosen "
-            "ON chosen.publication_key = a.publication_key WHERE a.revision = %s "
-            "UNION SELECT n.revision, n.publication_key, n.position "
-            "FROM catalog_contributor_name_sha256s AS n JOIN selected AS chosen "
-            "ON chosen.publication_key = n.publication_key WHERE n.revision = %s "
-            "UNION SELECT r.revision, r.publication_key, r.position "
-            "FROM catalog_contributor_roles AS r JOIN selected AS chosen "
-            "ON chosen.publication_key = r.publication_key WHERE r.revision = %s "
-            "UNION SELECT i.revision, i.publication_key, i.position "
-            "FROM catalog_contributor_identities AS i JOIN selected AS chosen "
-            "ON chosen.publication_key = i.publication_key WHERE i.revision = %s "
-            "UNION SELECT s.revision, s.publication_key, s.position "
-            "FROM catalog_contributor_seals AS s JOIN selected AS chosen "
-            "ON chosen.publication_key = s.publication_key WHERE s.revision = %s) "
-            "SELECT family.publication_key, family.position, a.position, "
-            "n.contributor_name_sha256, r.role, i.position, s.position, roles.role "
-            "FROM family_keys AS family "
-            "LEFT JOIN catalog_contributor_anchors AS a "
-            "ON a.revision = family.revision AND a.publication_key = family.publication_key "
-            "AND a.position = family.position "
-            "LEFT JOIN catalog_contributor_name_sha256s AS n "
-            "ON n.revision = family.revision AND n.publication_key = family.publication_key "
-            "AND n.position = family.position "
-            "LEFT JOIN catalog_contributor_roles AS r "
-            "ON r.revision = family.revision AND r.publication_key = family.publication_key "
-            "AND r.position = family.position "
-            "LEFT JOIN catalog_contributor_identities AS i "
-            "ON i.revision = family.revision AND i.publication_key = family.publication_key "
-            "AND i.position = family.position "
-            "AND i.contributor_name_sha256 = n.contributor_name_sha256 "
-            "AND i.role = r.role "
-            "LEFT JOIN catalog_contributor_seals AS s "
-            "ON s.revision = family.revision AND s.publication_key = family.publication_key "
-            "AND s.position = family.position "
-            "LEFT JOIN catalog_contributor_role_registry AS roles ON roles.role = r.role "
-            "ORDER BY family.publication_key, family.position",
-            (*publication_keys, revision, revision, revision, revision, revision),
+            f"WITH selected(publication_key) AS ({selected_cte}) "
+            "SELECT contributor.publication_key, contributor.position, "
+            "contributor.contributor_name_sha256, contributor.role, roles.role "
+            "FROM catalog_contributors AS contributor JOIN selected AS chosen "
+            "ON chosen.publication_key = contributor.publication_key "
+            "LEFT JOIN catalog_contributor_role_registry AS roles "
+            "ON roles.role = contributor.role WHERE contributor.revision = %s "
+            "ORDER BY contributor.publication_key, contributor.position",
+            (*publication_keys, revision),
         )
         grouped: dict[bytes, list[CatalogContributor]] = {}
         for row in rows:
-            if len(row) != 8 or any(value is None for value in row[2:]):
+            if len(row) != 5 or any(value is None for value in row[2:]):
                 raise VNextCatalogReadError(
-                    "contributor family is partial or noncongruent"
+                    "contributor occurrence has invalid or unregistered facts"
                 )
             key = require_digest32(row[0], field="publication_key")
             position = require_int63(row[1], field="contributor position")
-            if any(
-                require_int63(value, field="contributor family position") != position
-                for value in (row[2], row[5], row[6])
-            ):
-                raise VNextCatalogReadError("contributor family keys disagree")
             current = grouped.setdefault(key, [])
             if position != len(current):
                 raise VNextCatalogReadError("contributor positions are not contiguous")
             name = loader.text(
-                row[3],
+                row[2],
                 domain=b"contributor_name_utf8_v1",
                 field="contributor name",
             )
             role_bytes = require_ascii_bytes(
-                row[4], field="contributor role", minimum=1, maximum=64
+                row[3], field="contributor role", minimum=1, maximum=64
             )
             if (
                 require_ascii_bytes(
-                    row[7], field="registered contributor role", minimum=1, maximum=64
+                    row[4], field="registered contributor role", minimum=1, maximum=64
                 )
                 != role_bytes
             ):
@@ -805,11 +769,9 @@ class VNextCatalogReaderRepository:
         placeholders = _sql_placeholders(len(publication_keys))
         rows = connector.fetch_all(
             "SELECT s.publication_key, s.position, s.tag_id, "
-            "tag_seal.tag_id, t.namespace, t.tag_value_sha256 "
+            "t.tag_id, t.namespace, t.tag_value_sha256 "
             "FROM catalog_subjects AS s "
-            "LEFT JOIN catalog_tag_term_seals AS tag_seal ON tag_seal.tag_id = s.tag_id "
-            "LEFT JOIN catalog_tag_term_identities AS t "
-            "ON t.tag_id = tag_seal.tag_id "
+            "LEFT JOIN catalog_tag_terms AS t ON t.tag_id = s.tag_id "
             f"WHERE s.revision = %s AND s.publication_key IN ({placeholders}) "
             "ORDER BY s.publication_key, s.position",
             (revision, *publication_keys),
@@ -817,12 +779,12 @@ class VNextCatalogReaderRepository:
         grouped: dict[bytes, list[CatalogSubject]] = {}
         for row in rows:
             if len(row) != 6 or any(value is None for value in row[2:]):
-                raise VNextCatalogReadError("subject row lacks its sealed tag identity")
+                raise VNextCatalogReadError("subject row lacks its tag identity")
             key = require_digest32(row[0], field="publication_key")
             position = require_int63(row[1], field="subject position")
             if require_positive_int63(
                 row[2], field="subject tag_id"
-            ) != require_positive_int63(row[3], field="sealed subject tag_id"):
+            ) != require_positive_int63(row[3], field="stored subject tag_id"):
                 raise VNextCatalogReadError("subject tag identity disagrees")
             current = grouped.setdefault(key, [])
             if position != len(current):

@@ -38,10 +38,10 @@ def unique(values: list[str]) -> list[str]:
 
 def is_logical_view(relation: dict[str, object]) -> bool:
     materialization = relation.get("materialization")
-    return (
-        isinstance(materialization, dict)
-        and materialization.get("storage") == "logical_view"
-    )
+    return isinstance(materialization, dict) and materialization.get("storage") in {
+        "logical_view",
+        "inline_projection",
+    }
 
 
 def render(manifest_bytes: bytes) -> str:

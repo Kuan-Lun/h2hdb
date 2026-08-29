@@ -655,15 +655,12 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
         "SELECT COUNT(*) FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
         (cycle.cleanup_id,),
     ) == (1,)
-    assert (
-        _read_one(
-            connector,
-            "SELECT target_key FROM operational_cleanup_completions "
-            "WHERE target_key = %s",
-            (cycle.target_key,),
-        )
-        == ()
-    )
+    assert _read_one(
+        connector,
+        "SELECT final_chain_sha256, final_deleted_count "
+        "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    ) == (None, None)
 
     committed = advance(b"4" * 32, 2, 26)
     assert committed.cycle_complete and not committed.replayed
@@ -1257,7 +1254,7 @@ def test_live_mariadb_operational_writer_workflows(
     activation = _read_one(
         connector,
         "SELECT source_revision, preparation_id, operational_policy_id, "
-        "activated_at FROM operational_operational_activations "
+        "committed_at FROM catalog_publication_commits "
         "WHERE source_revision = %s",
         (source_revision,),
     )

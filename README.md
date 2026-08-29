@@ -15,37 +15,39 @@ sibling packages.
 
 The current schema is a clean epoch-2 design:
 
-- 160 catalog data-plane base relations checked as BCNF, plus 49 generated
-  logical views for read-oriented projections. Eleven remaining sealed vertical
-  families are reserved for relations whose partial construction is itself
-  observable workflow state.
+- 151 catalog data-plane base relations checked as BCNF, plus 46 logical
+  read projections: 33 generated SQL views and 13 inline projections. Eight
+  remaining sealed vertical families are reserved for relations whose partial
+  construction is itself observable workflow state.
 - 28 declared decompositions, each checked as lossless and
   dependency-preserving.
-- 70 operational control-plane base relations checked as BCNF, one of which is
-  the separately created epoch-control relation, plus one derived activation
-  view. The complete epoch therefore contains 160 + 70 = 230 base tables and
-  50 logical views, or 280 schema objects in those two manifests.
+- 66 operational control-plane base relations checked as BCNF, including the
+  separately created epoch-control relation, plus one inline activation
+  projection and no operational SQL view. The complete epoch therefore contains
+  151 + 66 = 217 base tables and 33 SQL views, or 250 SQL objects.
 - Operational events are current/retry publication control rather than an OPDS
   delivery log. Unreachable finalized non-head snapshots are retired by bounded
   compound cleanup; no event-consumer registry, per-event acknowledgement, or
   cross-revision event history is retained.
-- Relative to the former 75-base operational schema, two lease tables are
-  folded into their BCNF owner relations, the staging-request owner is replaced
-  by one bounded budget authority, four unreachable event-delivery scaffold
-  relations are removed, and one frozen cleanup-root relation is added. The net
-  operational reduction is five base tables.
+- Relative to the former 75-base operational schema, the capacity plan
+  recomposes selected owner, staging-request, and bounded-cleanup families while
+  retaining no unreachable event-delivery scaffold. The physical manifest now
+  contains 66 operational bases, a net reduction of nine tables.
 - One generated physical schema for SQLite and MariaDB, with backend-specific
   SQL rendered from the same closed-world manifests.
 - A separate physical-width gate requires each ordinary `catalog_*` base table
   to have its semantic primary key plus at most one atomic non-key value. It
-  reports 122 narrow bases and 38 exact reviewed-wide BCNF relations. Twenty-seven
-  selected families replace 178 former physical relations with 32 base relations;
-  each new wide table is covered by the capacity contract. Logical views are
-  excluded from the width policy.
-- The closed catalog physical-domain authority contains exactly 151 relations:
-  114 mutation relations and 37 read-only views. The complete publication graph
+  reports 112 narrow bases and 39 exact reviewed-wide BCNF relations. Thirty
+  selected families replace 190 former physical relations with 35 base relations;
+  each new wide table is covered by the capacity contract. Of those families,
+  `file_name_identity`, `tag_term`, and `catalog_contributor` are
+  capacity-neutral authority substitutions: each keeps the exact complete shape
+  of an existing widest member and deletes only redundant companion tables.
+  Logical projections are excluded from the width policy.
+- The closed catalog physical-domain authority contains exactly 127 relations:
+  105 mutation relations and 22 read-only relations. The complete publication graph
   is inside that closure, including current-only finalization replay state.
-- The generated provider installs exactly 5,838 typed bootstrap rows per
+- The generated provider installs exactly 5,832 typed bootstrap rows per
   backend, including all 22 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are
@@ -58,8 +60,9 @@ SQL is not a second schema-authoring surface.
 
 This is a greenfield cutover. There is no v1-v7 upgrade or adoption path, no
 legacy-epoch compatibility layer, and no dual write. Read-only logical views
-inside epoch 2 are deliberate read models. A previous or foreign database must
-be replaced with an empty database and rebuilt from source data.
+and inline projections inside epoch 2 are deliberate read models. A previous or
+foreign database must be replaced with an empty database and rebuilt from source
+data.
 
 The numbered migration runner, monolithic `H2HDB` facade, and their hand-written
 legacy repositories are not shipped. In particular, the old

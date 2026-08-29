@@ -214,12 +214,12 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert contract.scope == "operational_control_plane"
     assert contract.excluded_data_plane_components
     assert not contract.excluded_operational_components
-    assert len(contract.relations) == 71
-    assert len(report.relations) == 71
+    assert len(contract.relations) == 67
+    assert len(report.relations) == 67
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 52
+    assert len(contract.external_relations) == 45
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -230,17 +230,12 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
         "gallery_observation_page_descriptor",
         "gallery_observation_file_filesystem",
         "gallery_identity",
-        "file_name_identity_anchor",
-        "file_name_identity_name_bytes",
-        "file_name_identity_file_role",
-        "file_name_identity_seal",
+        "file_name_identity",
         "gallery_observation_file_anchor",
         "gallery_observation_file_file_no",
         "gallery_observation_file_file_sha256",
         "gallery_observation_file_seal",
-        "tag_term_anchor",
-        "tag_term_identity",
-        "tag_term_seal",
+        "tag_term",
         "gallery_observation_metadata",
         "gallery_observation_scan",
         "source_build_gallery",
@@ -724,7 +719,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         connection.close()
 
 
-def test_operational_sqlite_event_types_subtypes_and_activation() -> None:
+def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None:
     _logical, _local_names, physical, stubs = _schemas()
     connection = sqlite3.connect(":memory:")
     try:
@@ -750,16 +745,13 @@ def test_operational_sqlite_event_types_subtypes_and_activation() -> None:
             "(preparation_id, created_at) VALUES (?, 1)",
             (preparation,),
         )
-        with pytest.raises(sqlite3.OperationalError, match="view"):
+        assert (
             connection.execute(
-                """
-                INSERT INTO operational_operational_activations
-                    (source_revision, preparation_id, operational_policy_id,
-                     activated_at)
-                VALUES (1, ?, 1, 1)
-                """,
-                (preparation,),
-            )
+                "SELECT 1 FROM sqlite_master "
+                "WHERE name = 'operational_operational_activations'"
+            ).fetchone()
+            is None
+        )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
@@ -823,8 +815,8 @@ def test_operational_sqlite_event_types_subtypes_and_activation() -> None:
         assert connection.execute("""
             SELECT COUNT(*)
             FROM operational_operational_events AS event
-            JOIN operational_operational_activations AS activation
-              ON activation.preparation_id = event.preparation_id
+            JOIN catalog_publication_commits AS committed
+              ON committed.preparation_id = event.preparation_id
             """).fetchone() == (0,)
         connection.execute(
             """
@@ -847,8 +839,8 @@ def test_operational_sqlite_event_types_subtypes_and_activation() -> None:
         assert connection.execute("""
             SELECT COUNT(*)
             FROM operational_operational_events AS event
-            JOIN operational_operational_activations AS activation
-              ON activation.preparation_id = event.preparation_id
+            JOIN catalog_publication_commits AS committed
+              ON committed.preparation_id = event.preparation_id
             """).fetchone() == (2,)
         empty_preparation = bytes([6]) * 16
         empty_chain = bytes.fromhex(
@@ -1163,7 +1155,7 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     assert completed.returncode == 0, completed.stderr
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
-    assert len(provider_relations) == 70
+    assert len(provider_relations) == 65
     _logical, _local_names, physical, _stubs = _schemas()
     assert provider_relations == tuple(
         name for name in physical.source_slice if name != "schema_epoch_control"
@@ -1244,7 +1236,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "cleanup_sweep_target",
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
-    assert len(machine.absent_relations) == 62
+    assert len(machine.absent_relations) == 57
     with PHYSICAL_PATH.open("rb") as stream:
         physical_document = tomllib.load(stream)
     assert len(machine.seeds) == len(physical_document.get("bootstrap_seed", ()))
@@ -1472,19 +1464,19 @@ def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:
     )
     generation_facts = operational_refinement.SourceBuildGenerationCleanupFacts
     assert operational_refinement.source_build_generation_cleanup_eligible(
-        generation_facts(True, False, False, False, False, False)
+        generation_facts(True, False, False, False, False)
     )
     assert operational_refinement.source_build_generation_cleanup_eligible(
-        generation_facts(False, True, False, False, False, False)
+        generation_facts(False, True, False, False, False)
     )
     assert not operational_refinement.source_build_generation_cleanup_eligible(
-        generation_facts(False, False, True, True, True, True)
+        generation_facts(False, False, True, True, True)
     )
     assert not operational_refinement.source_build_generation_cleanup_eligible(
-        generation_facts(True, False, True, False, False, False)
+        generation_facts(True, False, True, False, False)
     )
     assert not operational_refinement.source_build_generation_cleanup_eligible(
-        generation_facts(False, True, False, False, True, False)
+        generation_facts(False, True, False, False, True)
     )
     authorize_canonical = operational_refinement.canonical_value_mutation_authorized
     assert authorize_canonical(
@@ -1595,7 +1587,7 @@ def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:
         strictly_older_than_current=True,
         current_or_completed_head_reference=False,
         build_upload_or_staging_reference=False,
-        owner_lease_or_handoff_resume_authority=False,
+        owner_resume_authority=False,
         exclusive_maintenance_gate_held=True,
         rows_selected=256,
         maximum_rows=256,
@@ -1604,7 +1596,7 @@ def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:
         strictly_older_than_current=True,
         current_or_completed_head_reference=False,
         build_upload_or_staging_reference=True,
-        owner_lease_or_handoff_resume_authority=False,
+        owner_resume_authority=False,
         exclusive_maintenance_gate_held=True,
         rows_selected=1,
         maximum_rows=256,
@@ -3347,10 +3339,12 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert len(report.checked_relations) == 71
+    assert len(report.checked_relations) == 66
     assert report.pending_relations == ()
     assert database.table("h2hdb_schema_epoch") is not None
-    assert database.table("operational_cleanup_batch_receipts") is not None
+    assert database.table("operational_cleanup_batch_receipts") is None
+    assert database.table("operational_operational_activations") is None
+    assert database.table("operational_cleanup_checkpoints") is not None
     sqlite_index_names = {
         index.name for table in database.tables for index in table.indexes
     }
@@ -3432,7 +3426,7 @@ def test_operational_sqlite_typed_genesis_has_no_invented_control_facts() -> Non
         connection.close()
 
 
-def test_canonical_external_stub_uses_streamed_page_tree_authority() -> None:
+def test_canonical_external_stub_uses_only_physical_page_tree_authority() -> None:
     _logical, _local_names, physical, stubs = _schemas()
     canonical = next(
         stub for stub in stubs if stub.relation == "canonical_value_identity"
@@ -3442,18 +3436,14 @@ def test_canonical_external_stub_uses_streamed_page_tree_authority() -> None:
         ("root_page_sha256", "BLOB", "BINARY(32)"),
     )
     assert canonical.unique_keys == (("root_page_sha256",),)
-    page = next(stub for stub in stubs if stub.relation == "canonical_value_page")
-    assert page.columns == (
-        ("page_sha256", "BLOB", "BINARY(32)"),
-        ("value_sha256", "BLOB", "BINARY(32)"),
-        ("page_bytes", "BLOB", "MEDIUMBLOB"),
-    )
-    assert page.unique_keys == (("page_bytes",),)
+    assert all(stub.relation != "canonical_value_page" for stub in stubs)
+    with PHYSICAL_PATH.open("rb") as stream:
+        physical_document = tomllib.load(stream)
+    assert "canonical_value_page" in physical_document["external_inline_projections"]
     sqlite_ddl = operational_refinement.render_sqlite_external_stubs(stubs)
     mariadb_ddl = "\n".join(operational_refinement.render_mariadb_external_stubs(stubs))
-    assert 'UNIQUE ("page_bytes")' not in sqlite_ddl
-    assert "UNIQUE (`page_bytes`)" not in mariadb_ddl
-    assert "`page_bytes` MEDIUMBLOB NOT NULL" in mariadb_ddl
+    assert "catalog_canonical_value_pages" not in sqlite_ddl
+    assert "catalog_canonical_value_pages" not in mariadb_ddl
 
     connection = sqlite3.connect(":memory:")
     try:
@@ -3642,13 +3632,6 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
             "CREATE TABLE `operational_operational_preparation_effect_seals`"
         )
     )
-    activation_ddl = next(
-        statement
-        for statement in statements
-        if statement.startswith(
-            "CREATE SQL SECURITY INVOKER VIEW `operational_operational_activations`"
-        )
-    )
     event_ddl = next(
         statement
         for statement in statements
@@ -3742,13 +3725,9 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     assert "`event_count` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
     assert "`final_chain_sha256` BINARY(32) NOT NULL" in effect_seal_ddl
     assert "`sealed_at` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
-    assert "FROM `catalog_publication_commits` AS committed" in activation_ddl
-    assert "committed.`source_revision` AS `source_revision`" in activation_ddl
-    assert "committed.`preparation_id` AS `preparation_id`" in activation_ddl
-    assert (
-        "committed.`operational_policy_id` AS `operational_policy_id`" in activation_ddl
+    assert not any(
+        "operational_operational_activations" in statement for statement in statements
     )
-    assert "committed.`committed_at` AS `activated_at`" in activation_ddl
     assert "UNIQUE (`preparation_id`, `sequence_no`)" in event_ddl
     assert "`source_revision`" not in event_ddl
     assert (
@@ -3771,49 +3750,32 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     assert "CREATE INDEX `ix_file_hash_cache_hash`" in ddl
 
 
-def test_operational_activation_accepts_only_mariadb_inner_join_reformatting() -> None:
+def test_operational_activation_is_an_inline_projection_without_sql_object() -> None:
+    with LOGICAL_PATH.open("rb") as stream:
+        logical = tomllib.load(stream)
+    activation = next(
+        relation
+        for relation in logical["relation"]
+        if relation["name"] == "operational_activation"
+    )
+    assert activation["materialization"] == {
+        "authoritative": False,
+        "storage": "inline_projection",
+        "view_pattern": "publication_commit_activation",
+        "rationale": (
+            "Project activation only from one complete immutable publication "
+            "commit without publishing a separate SQL object."
+        ),
+        "derived_from": ["publication_commit"],
+        "refresh_strategy": (
+            "readers inline the exact source_revision/preparation_id/"
+            "operational_policy_id/committed_at projection from publication_commit"
+        ),
+    }
     _logical, _local_names, physical, stubs = _schemas()
-    relation_by_name = {relation.relation: relation for relation in physical.relations}
-    relation_by_name.update(
-        (stub.relation, operational_refinement._external_physical_relation(stub))
-        for stub in stubs
-    )
-    expected = next(
-        statement
+    assert not any(
+        "operational_operational_activations" in statement
         for statement in operational_refinement.render_mariadb_ddl(physical, stubs)
-        if "operational_operational_activations" in statement
-    )
-    actual = """SELECT
-      committed.source_revision AS source_revision,
-      committed.preparation_id AS preparation_id,
-      committed.operational_policy_id AS operational_policy_id,
-      committed.committed_at AS activated_at
-    FROM test_database.catalog_publication_commits committed"""
-    table_names = tuple(
-        relation.table
-        for relation in relation_by_name.values()
-        if relation.table is not None
-    )
-
-    expected_normalized = refinement._normalize_view_definition(
-        expected,
-        table_names=table_names,
-        collapse_inner_join_tree=True,
-    )
-    actual_normalized = refinement._normalize_view_definition(
-        actual,
-        table_names=table_names,
-        collapse_inner_join_tree=True,
-    )
-
-    assert actual_normalized == expected_normalized
-    assert (
-        refinement._normalize_view_definition(
-            actual.replace("committed.committed_at", "committed.operational_policy_id"),
-            table_names=table_names,
-            collapse_inner_join_tree=True,
-        )
-        != expected_normalized
     )
 
 

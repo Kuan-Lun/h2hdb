@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from h2hdb.vnext_identity import file_role as derive_file_role
+
 
 def seed_gallery_identity(
     connector: Any,
@@ -26,23 +28,12 @@ def seed_file_name_identity(
     name_bytes: bytes,
     file_role: bytes,
 ) -> None:
+    if file_role != derive_file_role(name_bytes):
+        raise ValueError("file_role must match the exact name classifier")
     connector.execute(
-        "INSERT INTO catalog_file_name_identity_anchors (file_key) VALUES (%s)",
-        (file_key,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_file_name_identity_name_bytes "
+        "INSERT INTO catalog_file_name_identities "
         "(file_key, name_bytes) VALUES (%s, %s)",
         (file_key, name_bytes),
-    )
-    connector.execute(
-        "INSERT INTO catalog_file_name_identity_file_roles "
-        "(file_key, file_role) VALUES (%s, %s)",
-        (file_key, file_role),
-    )
-    connector.execute(
-        "INSERT INTO catalog_file_name_identity_seals (file_key) VALUES (%s)",
-        (file_key,),
     )
 
 
@@ -88,15 +79,7 @@ def seed_tag_term(
     tag_value_sha256: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_tag_term_anchors (tag_id) VALUES (%s)",
-        (tag_id,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_tag_term_identities "
-        "(namespace, tag_value_sha256, tag_id) VALUES (%s, %s, %s)",
-        (namespace, tag_value_sha256, tag_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_tag_term_seals (tag_id) VALUES (%s)",
-        (tag_id,),
+        "INSERT INTO catalog_tag_terms "
+        "(tag_id, namespace, tag_value_sha256) VALUES (%s, %s, %s)",
+        (tag_id, namespace, tag_value_sha256),
     )

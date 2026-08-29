@@ -406,8 +406,23 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 209
-    assert len(physical_spec.implemented_relations) == 209
+    assert len(logical.relations) == 197
+    assert len(physical_spec.implemented_relations) == 184
+    assert set(physical_spec.inline_projections) == {
+        "canonical_value_page",
+        "canonical_value_page_descriptor",
+        "source_build_base_source",
+        "gallery_observation_page_descriptor",
+        "gallery_observation_file",
+        "build_manifest",
+        "analysis_exclusion_delta",
+        "publication_candidate_base_source",
+        "artifact_delta_new",
+        "catalog_revision_generation",
+        "publication_head_revision",
+        "publication_head_advanced_at",
+        "publication_head",
+    }
     assert len(physical_spec.pending_relations) == 0
     assert set(physical_spec.source_slice) == {
         relation.relation for relation in physical_spec.implemented_relations
@@ -513,10 +528,11 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
         "value_sha256",
         "root_page_sha256",
     )
-    canonical_page = physical_spec.relation("canonical_value_page")
-    assert canonical_page is not None
-    assert canonical_page.runtime_unique_keys == (("page_bytes",),)
-    assert canonical_page.columns[2].mariadb.type_name == "MEDIUMBLOB"
+    assert physical_spec.relation("canonical_value_page") is None
+    canonical_page_payload = physical_spec.relation("canonical_value_page_payload")
+    assert canonical_page_payload is not None
+    assert canonical_page_payload.runtime_unique_keys == (("page_bytes",),)
+    assert canonical_page_payload.columns[1].mariadb.type_name == "MEDIUMBLOB"
     content_candidate = physical_spec.relation(
         "analysis_content_owner_candidate_shadow"
     )
@@ -952,40 +968,16 @@ def test_physical_lifecycle_projection_sources_are_closed_and_directional() -> N
         )
 
 
-def test_physical_build_manifest_projection_sources_cannot_drift() -> None:
+def test_build_manifest_is_an_inline_projection_over_physical_authorities() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    build_manifest = physical_spec.relation("build_manifest")
-    assert build_manifest is not None
-    assert build_manifest.vertical_view is None
-    assert build_manifest.derived_view == refinement.DerivedViewSpec(
-        pattern="build_manifest_projection",
-        source_relations=(
-            "build_manifest_core",
-            "source_build_discovery",
-            "source_build_sealed_at",
-        ),
-    )
-    broken_manifest = replace(
-        build_manifest,
-        derived_view=replace(
-            build_manifest.derived_view,
-            source_relations=(
-                "build_manifest_core",
-                "source_build_discovery",
-            ),
-        ),
-    )
-    relation_by_name = {
-        relation.relation: broken_manifest if relation is build_manifest else relation
-        for relation in physical_spec.relations
-    }
-    with pytest.raises(ValueError, match="build_manifest_projection source set drift"):
-        refinement._render_view(
-            broken_manifest,
-            relation_by_name,
-            "sqlite",
-        )
+    assert physical_spec.relation("build_manifest") is None
+    assert "build_manifest" in physical_spec.inline_projections
+    assert {
+        "build_manifest_core",
+        "source_build_discovery",
+        "source_build_sealed_at",
+    } <= {relation.relation for relation in physical_spec.relations}
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -1004,20 +996,12 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
             backend,
             idempotent=True,
         )
-        for relation_name in (
-            "source_build",
-            "build_manifest",
-            "gallery_observation_metadata",
-        )
+        for relation_name in ("source_build", "gallery_observation_metadata")
     }
     artifact = cast(dict[str, Any], ARTIFACT)
     provider_slices = dict(artifact["backends"][backend]["slices"])
 
-    for relation_name in (
-        "source_build",
-        "build_manifest",
-        "gallery_observation_metadata",
-    ):
+    for relation_name in ("source_build", "gallery_observation_metadata"):
         provider_statements = provider_slices[f"relation:{relation_name}"]
         assert len(provider_statements) == 1
         assert provider_statements[0][3] == refinement_by_relation[relation_name]
@@ -1028,9 +1012,8 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
     assert "'SEALED'" in source_build_sql
     assert "'OPEN', 'ABANDONED'" in source_build_sql
     assert "sealed_at" in source_build_sql
-    assert (
-        'AS "computed_at"' if backend == "sqlite" else "AS `computed_at`"
-    ) in refinement_by_relation["build_manifest"]
+    assert physical_spec.relation("build_manifest") is None
+    assert "relation:build_manifest" not in provider_slices
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -1070,7 +1053,6 @@ def test_batch4_refinement_and_provider_views_are_exactly_equal(
     for relation_name in (
         "analysis_run",
         "analysis_state_anchor",
-        "analysis_exclusion_delta",
     ):
         expected = refinement._render_view(
             relation_by_name[relation_name],
@@ -1226,7 +1208,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 209
+    assert len(report.checked_relations) == 184
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -1342,42 +1324,6 @@ def test_metadata_projection_requires_one_complete_local_row() -> None:
             "catalog_gallery_observation_file_filesystem",
             (1, 2, b"k" * 32, b"d" * 8, b"i" * 8, b"m" * 8, b"c" * 8),
         ),
-        (
-            "catalog_file_name_identity_anchors",
-            (b"k" * 32,),
-            (
-                ("catalog_file_name_identity_name_bytes", (b"k" * 32, b"a.jpg")),
-                ("catalog_file_name_identity_file_roles", (b"k" * 32, b"CONTENT")),
-            ),
-            "catalog_file_name_identity_seals",
-            "catalog_file_name_identities",
-            (b"k" * 32, b"a.jpg", b"CONTENT"),
-        ),
-        (
-            "catalog_gallery_observation_file_anchors",
-            (1, 2, b"k" * 32),
-            (
-                (
-                    "catalog_gallery_observation_file_file_nos",
-                    (1, 2, b"k" * 32, 0),
-                ),
-                (
-                    "catalog_gallery_observation_file_file_sha256s",
-                    (1, 2, b"k" * 32, b"h" * 32),
-                ),
-            ),
-            "catalog_gallery_observation_file_seals",
-            "catalog_gallery_observation_files",
-            (1, 2, 0, b"k" * 32, b"h" * 32),
-        ),
-        (
-            "catalog_tag_term_anchors",
-            (7,),
-            (("catalog_tag_term_identities", (b"artist", b"t" * 32, 7)),),
-            "catalog_tag_term_seals",
-            "catalog_tag_terms",
-            (7, b"artist", b"t" * 32),
-        ),
     ],
 )
 def test_new_vertical_views_require_every_member_and_are_read_only(
@@ -1486,7 +1432,9 @@ def test_recomposed_gallery_observation_facts_are_atomic_tables(
         connection.close()
 
 
-def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> None:
+def test_batch2_page_families_are_total_and_inline_projections_are_not_objects() -> (
+    None
+):
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     value_sha256 = b"v" * 32
@@ -1544,12 +1492,10 @@ def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> No
             (value_sha256, canonical_page_sha256),
         )
         assert (
-            connection.execute("SELECT * FROM catalog_canonical_value_pages").fetchall()
-            == []
-        )
-        assert (
             connection.execute(
-                "SELECT * FROM catalog_canonical_value_page_descriptors"
+                "SELECT name FROM sqlite_master WHERE name IN "
+                "('catalog_canonical_value_pages', "
+                "'catalog_canonical_value_page_descriptors')"
             ).fetchall()
             == []
         )
@@ -1568,11 +1514,23 @@ def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> No
             (canonical_page_sha256,),
         )
         assert connection.execute(
-            "SELECT * FROM catalog_canonical_value_pages"
-        ).fetchone() == (canonical_page_sha256, value_sha256, b"canonical-page")
-        assert connection.execute(
-            "SELECT * FROM catalog_canonical_value_page_descriptors"
-        ).fetchone() == (canonical_page_sha256, value_sha256, 0, 0, 3)
+            "SELECT seal.page_sha256, coordinate.value_sha256, payload.page_bytes, "
+            "coordinate.level, coordinate.page_position, counts.subtree_item_count "
+            "FROM catalog_canonical_value_page_seals AS seal "
+            "JOIN catalog_canonical_value_page_payloads AS payload "
+            "ON payload.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_canonical_value_page_coordinates AS coordinate "
+            "ON coordinate.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_canonical_value_page_subtree_item_counts AS counts "
+            "ON counts.page_sha256 = seal.page_sha256"
+        ).fetchone() == (
+            canonical_page_sha256,
+            value_sha256,
+            b"canonical-page",
+            0,
+            0,
+            3,
+        )
 
         connection.execute(
             "INSERT INTO catalog_gallery_observation_page_descriptor_anchors "
@@ -1610,7 +1568,15 @@ def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> No
             (gallery_page_sha256,),
         )
         assert connection.execute(
-            "SELECT * FROM catalog_gallery_observation_page_descriptors"
+            "SELECT seal.page_sha256, component.component, level.level, "
+            "counts.subtree_item_count "
+            "FROM catalog_gallery_observation_page_descriptor_seals AS seal "
+            "JOIN catalog_gallery_observation_page_descriptor_components AS component "
+            "ON component.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_levels AS level "
+            "ON level.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_subtree_item_counts "
+            "AS counts ON counts.page_sha256 = seal.page_sha256"
         ).fetchone() == (gallery_page_sha256, b"FILE", 0, 0)
 
         connection.execute(
@@ -1648,18 +1614,6 @@ def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> No
                 (value_sha256, b"source_root_v1", 3, 1),
             ),
             (
-                "catalog_canonical_value_pages",
-                (canonical_page_sha256, value_sha256, b"canonical-page"),
-            ),
-            (
-                "catalog_canonical_value_page_descriptors",
-                (canonical_page_sha256, value_sha256, 0, 0, 3),
-            ),
-            (
-                "catalog_gallery_observation_page_descriptors",
-                (gallery_page_sha256, b"FILE", 0, 0),
-            ),
-            (
                 "catalog_gallery_observation_page_key_bounds",
                 (gallery_page_sha256, b"a", b"z"),
             ),
@@ -1676,30 +1630,16 @@ def test_batch2_page_families_are_total_share_one_seal_and_are_read_only() -> No
 def test_secondary_sealed_projection_metadata_drift_is_rejected() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    page = physical_spec.relation("canonical_value_page")
-    assert page is not None
-    assert page.vertical_view is not None
-    broken_page = replace(
-        page,
-        vertical_view=replace(
-            page.vertical_view,
-            projection_attributes=(
-                "page_sha256",
-                "value_sha256",
-                "page_bytes",
-                "level",
-            ),
-        ),
-    )
     broken = replace(
         physical_spec,
-        relations=tuple(
-            broken_page if relation is page else relation
-            for relation in physical_spec.relations
+        inline_projections=tuple(
+            name
+            for name in physical_spec.inline_projections
+            if name != "canonical_value_page"
         ),
     )
 
-    with pytest.raises(ValueError, match="share one sealed family"):
+    with pytest.raises(ValueError, match="canonical page read shapes"):
         refinement._validate_physical_schema(broken, logical)
 
 
@@ -1737,7 +1677,9 @@ def test_recomposed_artifact_producer_table_is_atomic_and_uniquely_keyed() -> No
         connection.close()
 
 
-def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> None:
+def test_generation_projections_derive_one_commit_mapping_without_extra_objects() -> (
+    None
+):
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     build_id = b"b" * 16
@@ -1788,7 +1730,10 @@ def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> 
         )
 
         assert connection.execute(
-            "SELECT * FROM catalog_source_build_base_source"
+            "SELECT base.build_id, committed.source_revision, committed.generation "
+            "FROM catalog_source_build_base_publication_commits AS base "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = base.base_receipt_id"
         ).fetchone() == (build_id, 7, 4)
         assert connection.execute("SELECT * FROM catalog_source_heads").fetchone() == (
             channel,
@@ -1800,8 +1745,19 @@ def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> 
             "SELECT * FROM catalog_publication_candidate_base_catalog"
         ).fetchone() == (candidate_id, 9, 4)
         assert connection.execute(
-            "SELECT * FROM catalog_publication_heads"
+            "SELECT head.channel, committed.revision, committed.generation, "
+            "committed.committed_at "
+            "FROM catalog_publication_commit_heads AS head "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = head.receipt_id"
         ).fetchone() == (channel, 9, 4, 12)
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name IN "
+                "('catalog_source_build_base_source', 'catalog_publication_heads')"
+            ).fetchall()
+            == []
+        )
         with pytest.raises(sqlite3.OperationalError, match="view"):
             connection.execute(
                 "INSERT INTO catalog_source_heads VALUES (?, ?, ?, ?)",
@@ -1827,18 +1783,6 @@ def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> 
             "catalog_gallery_observation_file_filesystem_inodes",
         ),
         (
-            "source_build_base_source",
-            "catalog_source_build_base_source",
-            "catalog_source_build_base_publication_commits",
-            "catalog_publication_candidate_base_publication_commits",
-        ),
-        (
-            "publication_candidate_base_source",
-            "catalog_publication_candidate_base_sources",
-            "catalog_publication_candidate_base_publication_commits",
-            "catalog_source_build_base_publication_commits",
-        ),
-        (
             "publication_candidate_base_catalog",
             "catalog_publication_candidate_base_catalog",
             "catalog_publication_candidate_base_publication_commits",
@@ -1847,12 +1791,6 @@ def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> 
         (
             "source_head",
             "catalog_source_heads",
-            "catalog_publication_commit_heads",
-            "catalog_publication_commits",
-        ),
-        (
-            "publication_head",
-            "catalog_publication_heads",
             "catalog_publication_commit_heads",
             "catalog_publication_commits",
         ),
@@ -2364,7 +2302,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         sum(
             value.startswith("CREATE SQL SECURITY INVOKER VIEW") for value in statements
         )
-        == 49
+        == 33
     )
     assert "`analysis_id` BINARY(16) NOT NULL" in ddl
     assert "`locator_sha256` BINARY(32) NOT NULL" in ddl
@@ -2630,7 +2568,7 @@ def test_current_fresh_sqlite_schema_refines_source_slice(
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert database.table("catalog_gallery_observation_files") is not None
+    assert database.table("catalog_gallery_observation_files") is None
     refinement.assert_physical_refines(report)
 
 

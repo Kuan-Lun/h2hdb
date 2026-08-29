@@ -18,7 +18,7 @@ build_authorization_relation = "source_build_generation"
 authorization_rule = "current_generation_and_exact_owner_and_unexpired_lease"
 takeover_rule = "strictly_greater_generation"
 stale_rule = "no_mutation"
-history_cleanup_rule = "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, handoff, and every live owner row carrying lease resume authority are absent; delete handoff, owner, then generation child-first with row-lock recheck, while current and completed head references always block"
+history_cleanup_rule = "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, and every live owner row carrying resume authority are absent; delete owner then generation child-first with row-lock recheck, while current and completed head references always block"
 
 [download_ingest_handoff_contract]
 version = 1
@@ -66,7 +66,7 @@ preparation_event_relation = "operational_event"
 preparation_effect_rule = "each bounded page locks the OPEN preparation and exact checkpoint generation, writes a contiguous coordinate range of base events and exactly one matching typed subtype per event, recomputes every event digest and the running chain, and commits those rows with the request receipt and checkpoint CAS; an empty terminal page proves no remaining work, after which one transaction inserts the exact effect seal last and marks the preparation COMPLETE without scanning prior event rows"
 cleanup_policy_relation = "cleanup_job"
 cleanup_checkpoint_relation = "cleanup_checkpoint"
-cleanup_receipt_relation = "cleanup_batch_receipt"
+cleanup_receipt_relation = "cleanup_checkpoint"
 
 [queue_history_contract]
 deletion_generation_relation = "deletion_request_generation"
@@ -122,7 +122,7 @@ cleanup_rule = "generic OPERATIONAL_PREPARATION cleanup retains every COMPLETE p
 [source_build_generation_contract]
 reservation_relation = "source_build_generation"
 rule = "first begin or resume locks and verifies the exact current ingest head, matching owner row, and its unexpired lease_expires_at, then transactionally reserves at most one build for that immutable ingest generation; a strictly greater live takeover generation may reserve the same build, a no-build generation has no row, and the mapping may outlive deletion of its completed owner because authorization is a writer check rather than an FK"
-cleanup_rule = "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner row carrying lease authority or handoff resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress"
+cleanup_rule = "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner row carrying resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress"
 
 [source_build_assembly_contract]
 version = 1
@@ -149,7 +149,7 @@ abandon_rule = "only the exact live ingest owner under the current fence may loc
 [cleanup_attempt_contract]
 job_relation = "cleanup_job"
 attempt_attribute = "cycle_generation"
-allocation_rule = "advance positive portable int63 cycle_generation monotonically on the one reusable job row per fixed shard under lock or exact CAS; fail closed before 2^63 and derive cleanup_id exactly as SHA256(h2hdb-cleanup-cycle-v1 NUL target_kind)[0:7] || u8(shard_no) || u64be(cycle_generation), atomically remove the prior completion when opening, require exact recomputed cleanup_id plus checkpoint generation on every mutation, require completion cycle_generation equals job cycle_generation and job state COMPLETE on replay, and reject every stale generation"
+allocation_rule = "advance positive portable int63 cycle_generation monotonically on the one reusable job row per fixed shard under lock or exact CAS; fail closed before 2^63 and derive cleanup_id exactly as SHA256(h2hdb-cleanup-cycle-v1 NUL target_kind)[0:7] || u8(shard_no) || u64be(cycle_generation), atomically replace the prior completed job when opening, require exact recomputed cleanup_id plus checkpoint generation on every mutation, require the job-owned final replay facts to be present only at the exact COMPLETE cycle_generation, and reject every stale generation"
 
 [cleanup_reachability_contract]
 version = 1
@@ -164,9 +164,9 @@ frozen_root_key_max_bytes = 260
 frozen_root_count_maximum = 256
 registry_rule = "target kinds and phases are exact provider-seeded rows; runtime dispatch is a closed-world map from registered IDs to versioned writer functions and never interpolates a relation, predicate, blocker, or phase from database text"
 eligibility_rule = "under the exact EXCLUSIVE maintenance gate and one transaction, permit globally at most one OPEN cleanup_job, evaluate the registered initial eligibility predicate and every registered blocker, freeze at most max_rows_per_transaction and no more than 256 typed roots into cleanup_cycle_root, encode each root with the canonical version-one typed scalar frame bounded to the registered-shape maximum 260 bytes, and seal the sorted complete membership with immutable frozen_root_count plus domain-separated frozen_root_set_sha256 on cleanup_job; frozen_root_key is a cleanup-protocol identity decoded back into the registered typed root columns, never business payload, EAV, or a relation-count packing device"
-phase_rule = "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; every static phase reloads and validates the exact sealed cleanup_cycle_root set, joins only those typed roots, rejects any current-spec coordinate at or before its durable cursor that reappears, and each batch deletes only the registered relation set child-first while committing rows, receipt, and checkpoint CAS atomically. Before accepting a zero-row terminal transition, runtime probes every raw registered responsibility through the current phase under frozen root, shard, and spec extra predicates but without the mutable plan eligibility predicate; any remaining row blocks rather than falsely completing, and roots made newly eligible by an earlier deletion wait for a later cycle"
+phase_rule = "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; every static phase reloads and validates the exact sealed cleanup_cycle_root set, joins only those typed roots, rejects any current-spec coordinate at or before its durable cursor that reappears, and each batch deletes only the registered relation set child-first while atomically committing the checkpoint poststate and its latest receipt prestate fields in one CAS. Before accepting a zero-row terminal transition, runtime probes every raw registered responsibility through the current phase under frozen root, shard, and spec extra predicates but without the mutable plan eligibility predicate; any remaining row blocks rather than falsely completing, and roots made newly eligible by an earlier deletion wait for a later cycle"
 completion_rule = "a cleanup job becomes COMPLETE only after every registered phase has a durable empty terminal receipt, the target root phase completed, and a final blocker recheck still finds no reachable retention root"
-compaction_rule = "each page commit atomically advances checkpoint generation and replaces the prior ambiguity receipt so at most one receipt per live checkpoint is retained; that receipt stores the exact prior chain and prior deleted count beside its bounded row-key input digest, and runtime plus full CHECK recompute the canonical output chain and exact post-deleted count without claiming to retain or rescan full history. Terminal transaction exact-validates then deletes cleanup_cycle_root membership, updates cleanup_job COMPLETE and completed_at, upserts the shard latest cleanup_completion generation/final chain/deleted count, deletes live receipts then checkpoints, and makes completion the response-loss replay authority; stale generations cannot resume"
+compaction_rule = "each page commit atomically advances checkpoint generation and replaces the nullable latest-receipt fields on that same checkpoint; those fields store the exact batch key, start cursor, prior chain, prior deleted count, bounded row-key input digest, and row count, while the checkpoint poststate supplies next cursor, output chain, committed generation, and committed time. Runtime plus full CHECK recompute the canonical output chain and exact post-deleted count without claiming to retain or rescan full history. The terminal transaction exact-validates then deletes cleanup_cycle_root membership and checkpoints, sets cleanup_job COMPLETE with completed_at plus final_chain_sha256 and final_deleted_count in one CAS, and makes that same job the response-loss replay authority; stale generations cannot resume"
 
 [cleanup_sweep_protocol]
 version = 1
@@ -211,7 +211,7 @@ phases = [
   { phase = "SB_STATE", order = 6, relations = ["source_build_state"] },
   { phase = "SB_ROOT", order = 7, relations = ["source_build_descriptor"] },
 ]
-conditional_child_rules = [{ relation = "source_build_generation", upload_relation = "canonical_value_upload", generation_attribute = "generation", coordination_head_relation = "ingest_coordination_head", generation_relation = "ingest_generation", owner_relation = "ingest_generation_owner", handoff_relation = "ingest_generation_handoff", rule = "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; a current owner row carrying lease authority or handoff resume authority always rejects" }]
+conditional_child_rules = [{ relation = "source_build_generation", upload_relation = "canonical_value_upload", generation_attribute = "generation", coordination_head_relation = "ingest_coordination_head", generation_relation = "ingest_generation", owner_relation = "ingest_generation_owner", rule = "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; a current owner row carrying resume authority always rejects" }]
 terminal_staging_rule = "every remaining staging FK blocks SOURCE_BUILD job creation. OPEN is a live blocker; SEALED, REUSED, RETIRING_SEALED, and RETIRING_REUSED are pending work for in-band retirement or the independent GALLERY_OBSERVATION_STAGING compactor, which preserves final membership and data facts. Therefore SB_GALLERY starts only after terminal control rows are compacted, eliminating the staging-to-membership cleanup cycle"
 state_root_handoff_rule = "SB_STATE deletes the terminal scalar only after every prior child phase is COMPLETE; SB_ROOT requires the cleanup_id-bound SB_STATE checkpoint to be COMPLETE, requires source_build_state to remain absent, and rechecks every remaining source-build reachability blocker under the same exclusive gate before deleting source_build_descriptor"
 
@@ -265,16 +265,12 @@ retention_roots = ["the publication occurrence for the current publication_commi
 retained_fk_edges = []
 phases = [
   { phase = "CP_STORAGE", order = 1, relations = ["catalog_publication_storage"] },
-  { phase = "CP_CONTRIBUTOR_SEAL", order = 2, relations = ["catalog_contributor_seal"] },
-  { phase = "CP_CONTRIBUTOR_IDENTITY", order = 3, relations = ["catalog_contributor_identity"] },
-  { phase = "CP_CONTRIBUTOR_NAME", order = 4, relations = ["catalog_contributor_name_sha256"] },
-  { phase = "CP_CONTRIBUTOR_ROLE", order = 5, relations = ["catalog_contributor_role"] },
-  { phase = "CP_CONTRIBUTOR_ANCHOR", order = 6, relations = ["catalog_contributor_anchor"] },
-  { phase = "CP_ORDER", order = 7, relations = ["catalog_publication_order"] },
-  { phase = "CP_CONTENT", order = 8, relations = ["catalog_publication_content"] },
-  { phase = "CP_SUBJECT", order = 9, relations = ["catalog_subject"] },
-  { phase = "CP_ARTIFACT", order = 10, relations = ["catalog_artifact"] },
-  { phase = "CP_ROOT", order = 11, relations = ["catalog_publication_occurrence_identity"] },
+  { phase = "CP_CONTRIBUTOR", order = 2, relations = ["catalog_contributor"] },
+  { phase = "CP_ORDER", order = 3, relations = ["catalog_publication_order"] },
+  { phase = "CP_CONTENT", order = 4, relations = ["catalog_publication_content"] },
+  { phase = "CP_SUBJECT", order = 5, relations = ["catalog_subject"] },
+  { phase = "CP_ARTIFACT", order = 6, relations = ["catalog_artifact"] },
+  { phase = "CP_ROOT", order = 7, relations = ["catalog_publication_occurrence_identity"] },
 ]
 
 [[cleanup_target]]
@@ -295,8 +291,8 @@ retained_fk_edges = [
   { relation = "publication_candidate_base_publication_commit", attributes = ["base_receipt_id"] },
 ]
 operational_blockers = [
-  { relation = "operational_activation", attributes = ["source_revision"] },
-  { relation = "operational_activation", attributes = ["preparation_id"] },
+  { relation = "publication_commit", attributes = ["source_revision"] },
+  { relation = "publication_commit", attributes = ["preparation_id"] },
   { relation = "gallery_redownload_state", attributes = ["through_source_revision"] },
 ]
 machine_gates = [{ id = "operational.no_pending_publication_effect_or_protection(receipt_id)", semantic_obligation_id = "catalog.retention.v2" }]
@@ -395,17 +391,15 @@ conditional_blockers = [
 machine_gates = [{ id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" }]
 phases = [
   { phase = "PC_SEALS", order = 1, relations = ["publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage"] },
-  { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "catalog_contributor_seal"] },
-  { phase = "PC_INPUT", order = 3, relations = ["artifact_input", "catalog_contributor_identity"] },
-  { phase = "PC_CONTRIBUTOR_NAME", order = 4, relations = ["catalog_contributor_name_sha256"] },
-  { phase = "PC_CONTRIBUTOR_ROLE", order = 5, relations = ["catalog_contributor_role"] },
-  { phase = "PC_CHECKPOINT", order = 6, relations = ["publication_checkpoint", "catalog_contributor_anchor"] },
-  { phase = "PC_SELECTION_STORAGE", order = 7, relations = ["publication_selection_storage", "catalog_publication_order"] },
-  { phase = "PC_CONTENT", order = 8, relations = ["catalog_publication_content"] },
-  { phase = "PC_SUBJECT", order = 9, relations = ["catalog_subject"] },
-  { phase = "PC_BASES", order = 10, relations = ["publication_candidate_base_publication_commit", "catalog_artifact"] },
-  { phase = "PC_SELECTION_IDENTITY", order = 11, relations = ["publication_selection_occurrence_identity", "catalog_publication_occurrence_identity"] },
-  { phase = "PC_ROOT", order = 12, relations = ["publication_candidate"] },
+  { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "catalog_contributor"] },
+  { phase = "PC_INPUT", order = 3, relations = ["artifact_input"] },
+  { phase = "PC_CHECKPOINT", order = 4, relations = ["publication_checkpoint"] },
+  { phase = "PC_SELECTION_STORAGE", order = 5, relations = ["publication_selection_storage", "catalog_publication_order"] },
+  { phase = "PC_CONTENT", order = 6, relations = ["catalog_publication_content"] },
+  { phase = "PC_SUBJECT", order = 7, relations = ["catalog_subject"] },
+  { phase = "PC_BASES", order = 8, relations = ["publication_candidate_base_publication_commit", "catalog_artifact"] },
+  { phase = "PC_SELECTION_IDENTITY", order = 9, relations = ["publication_selection_occurrence_identity", "catalog_publication_occurrence_identity"] },
+  { phase = "PC_ROOT", order = 10, relations = ["publication_candidate"] },
 ]
 
 [[cleanup_target]]
@@ -549,12 +543,12 @@ retained_fk_edges = [
   { relation = "catalog_artifact", attributes = ["artifact_semantics_sha256"] },
   { relation = "catalog_publication_content", attributes = ["content_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["source_title_sha256"] },
-  { relation = "catalog_contributor_name_sha256", attributes = ["contributor_name_sha256"] },
+  { relation = "catalog_contributor", attributes = ["contributor_name_sha256"] },
   { relation = "artifact_blob", attributes = ["artifact_locator_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["summary_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["language_sha256"] },
 ]
-owned_prunable_intermediates = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term_seal", "tag_term_identity", "tag_term_anchor", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input", "artifact_policy_semantics", "canonical_value_identity", "canonical_value_page_parent", "canonical_value_page_seal", "canonical_value_page_coordinate", "canonical_value_page_payload", "canonical_value_page_subtree_item_count", "canonical_value_page_anchor", "canonical_value_allocation_seal", "canonical_value_allocation_allocated_at", "canonical_value_allocation_byte_count", "canonical_value_allocation_digest_domain"]
+owned_prunable_intermediates = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input", "artifact_policy_semantics", "canonical_value_identity", "canonical_value_page_parent", "canonical_value_page_seal", "canonical_value_page_coordinate", "canonical_value_page_payload", "canonical_value_page_subtree_item_count", "canonical_value_page_anchor", "canonical_value_allocation_seal", "canonical_value_allocation_allocated_at", "canonical_value_allocation_byte_count", "canonical_value_allocation_digest_domain"]
 operational_blockers = [{ relation = "hash_cache_observation", attributes = ["source_identity_sha256"] }, { relation = "hash_cache_observation", attributes = ["fingerprint_sha256"] }, { relation = "canonical_value_upload", attributes = ["value_sha256"] }]
 machine_gates = [{ id = "catalog.current_source_snapshot_manifest(source_revision,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.live_source_working_analysis_snapshot_manifest(analysis_id,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "catalog.live_publication_candidate_snapshot_manifest(candidate_id,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.canonical_value_upload(generation,value_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.canonical_value_maintenance_fence", semantic_obligation_id = "catalog.retention.v2" }]
 phase_selectors = [
@@ -567,7 +561,7 @@ phase_selectors = [
 ]
 required_via_paths = []
 phases = [
-  { phase = "CV_DICTIONARY", order = 1, relations = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term_seal", "tag_term_identity", "tag_term_anchor", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"] },
+  { phase = "CV_DICTIONARY", order = 1, relations = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"] },
   { phase = "CV_SEMANTIC_LINK", order = 2, relations = ["artifact_policy_semantics"] },
   { phase = "CV_IDENTITY", order = 3, relations = ["canonical_value_identity"] },
   { phase = "CV_PARENT_DESCRIPTOR", order = 4, relations = ["canonical_value_page_parent", "canonical_value_page_seal"] },
@@ -619,7 +613,7 @@ target_kind = "FILE_NAME_IDENTITY"
 mode = "SWEEP"
 sweep_shard_count = 256
 selection_order_id = "digest_first_byte_then_digest_v1"
-root_relation = "file_name_identity_anchor"
+root_relation = "file_name_identity"
 root_key = ["file_key"]
 key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "file_name_identity_unreferenced_v1"
@@ -627,7 +621,7 @@ blocker_query_id = "file_name_identity_retention_roots_v1"
 writer_hook = "h2hdb.cleanup.file_name_identity.v1"
 retention_roots = ["gallery_observation_file_anchor.file_key"]
 retained_fk_edges = [{ relation = "gallery_observation_file_anchor", attributes = ["file_key"] }]
-phases = [{ phase = "FN_ROOT", order = 1, relations = ["file_name_identity_seal", "file_name_identity_file_role", "file_name_identity_name_bytes", "file_name_identity_anchor"] }]
+phases = [{ phase = "FN_ROOT", order = 1, relations = ["file_name_identity"] }]
 
 [[cleanup_target]]
 target_kind = "PUBLICATION_IDENTITY"
@@ -788,7 +782,7 @@ predecessor_rule = "a predecessor edge is inserted only after locking both owner
 abandoned_retry_rule = "the build_id gallery_id alternate key and gallery observation allocation remain unique; retry resumes the same allocated staging identity, or bounded child-first cleanup removes the abandoned staging children and allocation before a new staging attempt is allocated"
 page_rule = "FILE and TAG leaves carry exactly 256 records when nonterminal, DIRECTORY carries exactly 192, and METADATA carries exactly one contiguous chunk of 32768 bytes when nonterminal; a terminal leaf may be full, partial terminal is nonempty except the unique zero-length whole-tree leaf, exact multiples create no extra empty leaf, branch fanout is 256, every decoded exact page frame is at most 65536 bytes, and checked cursor advance is record count for FILE TAG DIRECTORY or byte count for METADATA"
 ordering_rule = "FILE and TAG page records, DIRECTORY canonical ordinals, and DIRECTORY exact name-byte order are globally zero-based contiguous or strictly canonical as their codec requires; METADATA offsets start at zero and each next offset equals prior offset plus exact chunk length. Every bounded commit joins the prior exact request page and descriptor or proves it is first, so adjacent checks inductively establish global order with no seal-time leaf scan and no page-derived facts repeated in checkpoint relations"
-normalized_fact_rule = "each level-zero FILE TAG or DIRECTORY commit decodes the exact page and inserts or verifies byte-equal normalized file-name, content size, observation file, tag, and directory facts before checkpoint advance in the same transaction. FILE records use the exact zero-based contiguous ordinal sequence 0..n-1: insert or exact-compare file-name anchor, name-bytes fact, role fact, and seal; then observation-file anchor, ordinal fact, digest fact, and seal; then filesystem anchor, device, inode, modified-ns, changed-ns, and seal, always writing each seal last and reading only sealed views. TAG records insert or verify tag anchor, natural identity, and seal before association. Every FILE record obtains database-verified FileContentReceipt size_bytes and checked-adds it to processed_byte_count; every other component keeps both receipt byte-count fields and checkpoint processed_byte_count exactly zero. DIRECTORY terminal inserts its anchor and both aggregate members before its PK-only seal. Each METADATA chunk runs the concrete bounded incremental framing and strict-UTF-8 parser from durable prior state; terminal requires DONE, empty carry/tail, positive gid and scan version, no truncation or trailing bytes, and exact equality to bounded metadata and page-count rows"
+normalized_fact_rule = "each level-zero FILE TAG or DIRECTORY commit decodes the exact page and inserts or verifies byte-equal normalized file-name, content size, observation file, tag, and directory facts before checkpoint advance in the same transaction. FILE records use the exact zero-based contiguous ordinal sequence 0..n-1: insert or exact-compare one authoritative file_name_identity row containing file_key and name_bytes, derive file_role exactly from name_bytes, then write the observation-file anchor, ordinal fact, digest fact, and seal, followed by the filesystem anchor, device, inode, modified-ns, changed-ns, and seal; each remaining vertical-family seal is written last and only its sealed projection is read. TAG records insert or exact-compare one authoritative tag_term row containing tag_id, namespace, and tag_value_sha256 before association. Every FILE record obtains database-verified FileContentReceipt size_bytes and checked-adds it to processed_byte_count; every other component keeps both receipt byte-count fields and checkpoint processed_byte_count exactly zero. DIRECTORY terminal inserts its anchor and both aggregate members before its PK-only seal. Each METADATA chunk runs the concrete bounded incremental framing and strict-UTF-8 parser from durable prior state; terminal requires DONE, empty carry/tail, positive gid and scan version, no truncation or trailing bytes, and exact equality to bounded metadata and page-count rows"
 file_directory_rule = "after FILE and DIRECTORY complete, one durable checkpoint traverses FILE canonically in batches of at most 256; for every unique FILE file_key it resolves exact name bytes and performs a bounded DIRECTORY-tree exact-key lookup of depth at most eight, requiring one REGULAR record with byte-equal size and raw device inode modified and changed values. COMPLETE requires matched_count equals FILE count equals DIRECTORY regular_count; this handles FILE name order such as z then a without an invalid linear merge"
 frontier_rule = "server-owned base-256 carry lazily creates internal checkpoints at levels one through eight and retains at most 255 pending request positions at each level for each of four components, at most 8160 rows per staging; branch commits recompute ordered child descriptors and checked subtree sums, atomically write page edges, allocation_page association, frontier mutation and receipt, and exact replay is zero-write. Finalization never writes a unary root wrapper: one sole child is reused directly as root; a final one-through-256-child branch is written only as a nonroot FLUSH_CARRY when an earlier same-level page exists, while a new root branch requires two-through-256 children. Completion writes at most eight final pages per component, after which bounded checkpoint and latest-request joins identify one durable minimal-height root"
 directory_rule = "DIRECTORY leaf entries are sorted by exact opaque POSIX dirent name bytes with duplicate names rejected; names have length one through 255, contain no NUL or slash, and are not dot or dot-dot; encode u64be zero-based canonical ordinal, u32be name-byte length plus exact name bytes, u64be size, device, inode, modified-ns, changed-ns, and u32be file type; an audit directory digest cannot authorize observation reuse and nonregular children are absent from FILE"
@@ -941,7 +935,7 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_bounded_work_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "cleanup_checkpoint", "cleanup_batch_receipt"]
+relations = ["operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "cleanup_checkpoint"]
 description = "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan."
 
 [[semantic_obligation]]
@@ -983,7 +977,7 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_event_integrity_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+relations = ["operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "publication_commit", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 description = "Bind generated event key shapes; full CHECK rejects effect seals without preparation or commit authority and streams without preparation or seal authority, and admits missing transient coordinates only for an exact frozen OPEN PUBLICATION_COMMIT covered prefix or compound receipt. Contiguous digest-chain, exact subtype, and writer-produced seal completeness remain obligations of bounded event writers and cleanup fault/integration evidence rather than an unbounded READY scan."
 
 [[semantic_obligation]]
@@ -1025,7 +1019,7 @@ class = "retention_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_cleanup_reachability_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "source_build_descriptor", "source_build_base_publication_commit", "publication_candidate", "publication_commit", "analysis_snapshot_manifest", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event"]
+relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "source_build_descriptor", "source_build_base_publication_commit", "publication_candidate", "publication_commit", "analysis_snapshot_manifest", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event"]
 description = "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, frozen-root membership, static writer hooks, retention-root closure, blocker identities, and candidate-to-preparation binding. Generic preparation cleanup retains COMPLETE retry and commit-to-build lineage; only the same unreachable publication-commit lifecycle may release its safe build base, exact-delete its binding and preparation control family, compact transient typed/events with exact cursor/receipt rechecks, and atomically delete commit, effect seal, and stream, while ABANDONED invisible streams leave no orphan."
 
 [[semantic_obligation]]
@@ -1114,7 +1108,6 @@ absent_relations = [
   "ingest_generation",
   "ingest_coordination_head",
   "ingest_generation_owner",
-  "ingest_generation_handoff",
   "source_build_generation",
   "source_build_discovery_checkpoint",
   "source_build_discovery_batch_receipt",
@@ -1124,7 +1117,6 @@ absent_relations = [
   "maintenance_gate_head",
   "maintenance_gate_owner",
   "maintenance_gate_holder",
-  "maintenance_work_state",
   "source_working_build",
   "catalog_working_candidate",
   "gallery_observation_allocator",
@@ -1156,7 +1148,6 @@ absent_relations = [
   "operational_preparation_batch_receipt",
   "operational_preparation_effect_seal",
   "publication_candidate_preparation",
-  "operational_activation",
   "operational_event",
   "operational_removed_gid_event",
   "operational_deletion_consumption_event",
@@ -1165,10 +1156,8 @@ absent_relations = [
   "cleanup_job",
   "cleanup_cycle_root",
   "cleanup_checkpoint",
-  "cleanup_batch_receipt",
-  "cleanup_completion",
 ]
-absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, activation, event, download or ingest generation/head/owner/handoff/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; other protocols create their required generation and head before acquiring an owner or holder."
+absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; other protocols create their required generation and head before acquiring an owner or holder."
 epoch_rule = "schema_epoch_control is created and managed exclusively by SchemaEpochCatalog and is not a provider bootstrap seed."
 
 [[bootstrap_seed]]
@@ -1663,103 +1652,63 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "CP_STORAGE" }, { at
 invariant = "Delete unified publication storage before its occurrence identity."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor-seal.v1"
+id = "h2hdb.operational.cleanup-phase.cp-contributor.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR_SEAL", "CATALOG_PUBLICATION", "2"]
+values = ["CP_CONTRIBUTOR", "CATALOG_PUBLICATION", "2"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
-invariant = "Delete contributor seals before every contributor vertical member."
-
-[[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor-identity.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR_IDENTITY", "CATALOG_PUBLICATION", "3"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR_IDENTITY" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "Delete contributor identity members after seals and before the shared contributor anchor."
-
-[[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor-name.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR_NAME", "CATALOG_PUBLICATION", "4"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR_NAME" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
-invariant = "Delete contributor name-digest members before the shared contributor anchor."
-
-[[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor-role.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR_ROLE", "CATALOG_PUBLICATION", "5"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR_ROLE" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
-invariant = "Delete contributor role members before the shared contributor anchor."
-
-[[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor-anchor.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR_ANCHOR", "CATALOG_PUBLICATION", "6"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
-invariant = "Delete contributor anchors only after every vertical contributor member."
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Delete complete contributor occurrences before their parent publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-order.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ORDER", "CATALOG_PUBLICATION", "7"]
+values = ["CP_ORDER", "CATALOG_PUBLICATION", "3"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ORDER" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ORDER" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
 invariant = "Delete publication order rows before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-content.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTENT", "CATALOG_PUBLICATION", "8"]
+values = ["CP_CONTENT", "CATALOG_PUBLICATION", "4"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
 invariant = "Delete publication content rows before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-subject.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_SUBJECT", "CATALOG_PUBLICATION", "9"]
+values = ["CP_SUBJECT", "CATALOG_PUBLICATION", "5"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
 invariant = "Delete subject occurrences before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-artifact.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ARTIFACT", "CATALOG_PUBLICATION", "10"]
+values = ["CP_ARTIFACT", "CATALOG_PUBLICATION", "6"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ARTIFACT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ARTIFACT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
 invariant = "Delete catalog artifact occurrences before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ROOT", "CATALOG_PUBLICATION", "11"]
+values = ["CP_ROOT", "CATALOG_PUBLICATION", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
 invariant = "Delete the finalized non-head catalog publication occurrence only after every revision-scoped payload child."
 
 [[bootstrap_seed]]
@@ -2010,7 +1959,7 @@ version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
 value = [{ attribute = "phase", type = "ascii_enum", text = "PC_PREPARED" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
-invariant = "Seed PC_PREPARED as exact contiguous child-first phase 2 for PUBLICATION_CANDIDATE cleanup."
+invariant = "Delete prepared artifacts and complete contributor occurrences in exact child-first phase 2 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-input.v1"
@@ -2023,94 +1972,74 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "PC_INPUT" }, { attr
 invariant = "Seed PC_INPUT as exact contiguous child-first phase 3 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-contributor-name.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_CONTRIBUTOR_NAME", "PUBLICATION_CANDIDATE", "4"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CONTRIBUTOR_NAME" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
-invariant = "Seed PC_CONTRIBUTOR_NAME as exact contiguous child-first phase 4 for PUBLICATION_CANDIDATE cleanup."
-
-[[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-contributor-role.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_CONTRIBUTOR_ROLE", "PUBLICATION_CANDIDATE", "5"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CONTRIBUTOR_ROLE" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
-invariant = "Seed PC_CONTRIBUTOR_ROLE as exact contiguous child-first phase 5 for PUBLICATION_CANDIDATE cleanup."
-
-[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-checkpoint.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_CHECKPOINT", "PUBLICATION_CANDIDATE", "6"]
+values = ["PC_CHECKPOINT", "PUBLICATION_CANDIDATE", "4"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
-invariant = "Seed PC_CHECKPOINT as exact contiguous child-first phase 6 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "Seed PC_CHECKPOINT as exact contiguous child-first phase 4 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-selection-storage.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_SELECTION_STORAGE", "PUBLICATION_CANDIDATE", "7"]
+values = ["PC_SELECTION_STORAGE", "PUBLICATION_CANDIDATE", "5"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SELECTION_STORAGE" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
-invariant = "Seed PC_SELECTION_STORAGE as exact contiguous child-first phase 7 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SELECTION_STORAGE" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "Seed PC_SELECTION_STORAGE as exact contiguous child-first phase 5 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-content.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_CONTENT", "PUBLICATION_CANDIDATE", "8"]
+values = ["PC_CONTENT", "PUBLICATION_CANDIDATE", "6"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
-invariant = "Seed PC_CONTENT as exact contiguous child-first phase 8 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+invariant = "Seed PC_CONTENT as exact contiguous child-first phase 6 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-subject.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_SUBJECT", "PUBLICATION_CANDIDATE", "9"]
+values = ["PC_SUBJECT", "PUBLICATION_CANDIDATE", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
-invariant = "Seed PC_SUBJECT as exact contiguous child-first phase 9 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
+invariant = "Seed PC_SUBJECT as exact contiguous child-first phase 7 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-bases.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_BASES", "PUBLICATION_CANDIDATE", "10"]
+values = ["PC_BASES", "PUBLICATION_CANDIDATE", "8"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BASES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
-invariant = "Seed PC_BASES as exact contiguous child-first phase 10 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BASES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "Seed PC_BASES as exact contiguous child-first phase 8 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-selection-identity.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_SELECTION_IDENTITY", "PUBLICATION_CANDIDATE", "11"]
+values = ["PC_SELECTION_IDENTITY", "PUBLICATION_CANDIDATE", "9"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SELECTION_IDENTITY" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
-invariant = "Seed PC_SELECTION_IDENTITY as exact contiguous child-first phase 11 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SELECTION_IDENTITY" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+invariant = "Seed PC_SELECTION_IDENTITY as exact contiguous child-first phase 9 for PUBLICATION_CANDIDATE cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_ROOT", "PUBLICATION_CANDIDATE", "12"]
+values = ["PC_ROOT", "PUBLICATION_CANDIDATE", "10"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 12 }]
-invariant = "Seed PC_ROOT as exact contiguous child-first phase 12 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
+invariant = "Seed PC_ROOT as exact contiguous child-first phase 10 for PUBLICATION_CANDIDATE cleanup."
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.op-batch.v1"
 columns = ["phase", "target_kind", "phase_order"]
@@ -3020,28 +2949,8 @@ attributes = ["gallery_id", "observation_id", "page_sha256"]
 declared_keys = [["gallery_id", "observation_id", "page_sha256"]]
 
 [[external_relation]]
-name = "file_name_identity_anchor"
-attributes = ["file_key"]
-declared_keys = [["file_key"]]
-
-[[external_relation]]
-name = "file_name_identity_name_bytes"
-attributes = ["file_key", "name_bytes"]
-declared_keys = [["file_key"], ["name_bytes"]]
-
-[[external_relation]]
-name = "file_name_identity_file_role"
-attributes = ["file_key", "file_role"]
-declared_keys = [["file_key"]]
-
-[[external_relation]]
-name = "file_name_identity_seal"
-attributes = ["file_key"]
-declared_keys = [["file_key"]]
-
-[[external_relation]]
 name = "file_name_identity"
-attributes = ["file_key", "name_bytes", "file_role"]
+attributes = ["file_key", "name_bytes"]
 declared_keys = [["file_key"], ["name_bytes"]]
 
 [[external_relation]]
@@ -3073,21 +2982,6 @@ declared_keys = [["gallery_id", "observation_id", "file_no"], ["gallery_id", "ob
 name = "gallery_observation_file_filesystem"
 attributes = ["gallery_id", "observation_id", "file_key", "device", "inode", "modified_ns", "changed_ns"]
 declared_keys = [["gallery_id", "observation_id", "file_key"]]
-
-[[external_relation]]
-name = "tag_term_anchor"
-attributes = ["tag_id"]
-declared_keys = [["tag_id"]]
-
-[[external_relation]]
-name = "tag_term_identity"
-attributes = ["namespace", "tag_value_sha256", "tag_id"]
-declared_keys = [["namespace", "tag_value_sha256"], ["tag_id"]]
-
-[[external_relation]]
-name = "tag_term_seal"
-attributes = ["tag_id"]
-declared_keys = [["tag_id"]]
 
 [[external_relation]]
 name = "tag_term"
@@ -3320,14 +3214,34 @@ classification = "audit_digest"
 rationale = "Exact page-input checksum; it detects retry drift but is not a row identity."
 
 [[attribute_semantic]]
-name = "prior_chain_sha256"
+name = "receipt_input_sha256"
 classification = "audit_digest"
-rationale = "Exact pre-transaction cleanup checkpoint chain retained only in the latest bounded receipt so runtime and full CHECK can recompute that transition's output chain; it is not append-only history or identity authority."
+rationale = "Exact latest cleanup page-input checksum stored atomically with the checkpoint poststate; it detects retry drift but is not row identity."
 
 [[attribute_semantic]]
-name = "prior_deleted_count"
+name = "receipt_batch_key"
+classification = "idempotency_key"
+rationale = "Caller attempt key retained only for exact replay of the latest cleanup checkpoint transition."
+
+[[attribute_semantic]]
+name = "receipt_start_cursor"
+classification = "ordering_key"
+rationale = "Server-owned pre-transition cursor for the latest cleanup checkpoint receipt; cursor_bytes is its exact post-transition cursor."
+
+[[attribute_semantic]]
+name = "receipt_prior_chain_sha256"
+classification = "audit_digest"
+rationale = "Exact pre-transition cleanup chain stored on the same checkpoint so runtime can recompute its current chain_sha256."
+
+[[attribute_semantic]]
+name = "receipt_prior_deleted_count"
 classification = "aggregate_count"
-rationale = "Exact pre-transaction cleanup deleted count retained only in the latest bounded receipt; the post-checkpoint count must equal this value plus row_count."
+rationale = "Exact pre-transition cleanup deletion count; deleted_count must equal it plus receipt_row_count."
+
+[[attribute_semantic]]
+name = "receipt_row_count"
+classification = "aggregate_count"
+rationale = "Exact bounded row count for the latest transition stored on its checkpoint; zero denotes the terminal empty page."
 
 [[attribute_semantic]]
 name = "manifest_sha256"
@@ -3358,6 +3272,11 @@ rationale = "Opaque identity of one immutable operational preparation attempt."
 name = "row_count"
 classification = "aggregate_count"
 rationale = "Exact number of rows committed by one bounded batch receipt."
+
+[[attribute_semantic]]
+name = "final_deleted_count"
+classification = "aggregate_count"
+rationale = "Exact total deletion count retained only on a COMPLETE cleanup job as its latest-cycle replay result."
 
 [[attribute_semantic]]
 name = "chain_sha256"
@@ -3595,18 +3514,6 @@ foreign_keys = [
 rationale = "One BCNF row carries the complete mutable ingest authority. Both generation and the unique opaque owner_token are candidate keys, and each determines claimed_at plus lease_expires_at; claim, renew, completion, and takeover cannot expose owner-without-lease or lease-without-owner states."
 
 [[relation]]
-name = "ingest_generation_handoff"
-kind = "source_of_truth"
-attributes = ["generation", "requested_at"]
-declared_keys = [["generation"]]
-fds = [
-  { determinant = ["generation"], dependent = ["requested_at"] },
-]
-foreign_keys = [
-  { attributes = ["generation"], relation = "ingest_generation_owner", referenced_attributes = ["generation"] },
-]
-
-[[relation]]
 name = "source_build_generation"
 kind = "source_of_truth"
 attributes = ["build_id", "generation"]
@@ -3725,16 +3632,6 @@ foreign_keys = [
   { attributes = ["owner_token"], relation = "maintenance_gate_owner", referenced_attributes = ["owner_token"] },
 ]
 rationale = "A live slot has at most one owner, but an EXCLUSIVE owner holds all 64 slots, so owner_token does not determine slot and is not a key. The owner row supplies the normalized generation and lease: authorization joins holder to owner and the singleton head, then requires the exact owner generation to equal the current generation and the lease to be unexpired. Keeping gate_generation out of this relation avoids repeating owner_token -> gate_generation under a non-superkey; stale or expired claims are replaced only by exact-owner transactional CAS."
-
-[[relation]]
-name = "maintenance_work_state"
-kind = "source_of_truth"
-attributes = ["singleton_id", "accumulated_work", "last_evaluated_at", "last_optimized_at"]
-declared_keys = [["singleton_id"]]
-fds = [
-  { determinant = ["singleton_id"], dependent = ["accumulated_work", "last_evaluated_at", "last_optimized_at"] },
-]
-rationale = "This is authoritative scheduler control state, not a catalog fact or a cached count used to answer data-plane queries."
 
 [[relation]]
 name = "source_working_build"
@@ -4216,7 +4113,7 @@ foreign_keys = [
   { attributes = ["operational_policy_id"], relation = "operational_policy", referenced_attributes = ["operational_policy_id"] },
 ]
 rationale = "Derived activation is visible only through the one complete immutable publication_commit row. Its source revision, unique preparation, operational policy, and activation time are direct projections of that wide authority; no mutable activation row is inserted or updated."
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_activation", rationale = "Project activation only from one complete immutable publication commit.", derived_from = ["publication_commit"], refresh_strategy = "read-only non-materialized projection of one publication_commit row" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_activation", rationale = "Project activation only from one complete immutable publication commit without publishing a separate SQL object.", derived_from = ["publication_commit"], refresh_strategy = "readers inline the exact source_revision/preparation_id/operational_policy_id/committed_at projection from publication_commit" }
 
 [[relation]]
 name = "operational_event"
@@ -4328,16 +4225,16 @@ rationale = "Each globally stable phase ID belongs to exactly one target kind an
 [[relation]]
 name = "cleanup_job"
 kind = "source_of_truth"
-attributes = ["cleanup_id", "target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"]
+attributes = ["cleanup_id", "target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"]
 declared_keys = [["cleanup_id"], ["target_key"]]
 fds = [
-  { determinant = ["cleanup_id"], dependent = ["target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"] },
-  { determinant = ["target_key"], dependent = ["cleanup_id", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"] },
+  { determinant = ["cleanup_id"], dependent = ["target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"] },
+  { determinant = ["target_key"], dependent = ["cleanup_id", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"] },
 ]
 foreign_keys = [
   { attributes = ["target_key"], relation = "cleanup_sweep_target", referenced_attributes = ["target_key"] },
 ]
-rationale = "target_key directly references the fixed sweep target alternate key; kind is joined from cleanup_sweep_target and never duplicated. One reusable job exists per shard; cycle_generation advances by exact CAS. The immutable count and digest seal the complete bounded frozen root membership selected in the begin transaction; the digest never replaces typed root validation. Only the latest completion plus a constant-size ambiguity receipt are retained."
+rationale = "target_key directly references the fixed sweep target alternate key; kind is joined from cleanup_sweep_target and never duplicated. One reusable job exists per shard; cycle_generation advances by exact CAS. The immutable count and digest seal the complete bounded frozen root membership selected in the begin transaction; the digest never replaces typed root validation. Nullable final_chain_sha256 and final_deleted_count are present exactly for COMPLETE and make that same row the latest-cycle replay authority."
 
 [[relation]]
 name = "cleanup_cycle_root"
@@ -4353,38 +4250,13 @@ rationale = "Exact per-cycle frozen cleanup membership. frozen_root_key is a bou
 [[relation]]
 name = "cleanup_checkpoint"
 kind = "source_of_truth"
-attributes = ["cleanup_id", "phase", "generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at"]
+attributes = ["cleanup_id", "phase", "generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at", "receipt_batch_key", "receipt_start_cursor", "receipt_prior_chain_sha256", "receipt_prior_deleted_count", "receipt_input_sha256", "receipt_row_count"]
 declared_keys = [["cleanup_id", "phase"]]
 fds = [
-  { determinant = ["cleanup_id", "phase"], dependent = ["generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at"] },
+  { determinant = ["cleanup_id", "phase"], dependent = ["generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at", "receipt_batch_key", "receipt_start_cursor", "receipt_prior_chain_sha256", "receipt_prior_deleted_count", "receipt_input_sha256", "receipt_row_count"] },
 ]
 foreign_keys = [
   { attributes = ["cleanup_id"], relation = "cleanup_job", referenced_attributes = ["cleanup_id"] },
   { attributes = ["phase"], relation = "cleanup_phase", referenced_attributes = ["phase"] },
 ]
-
-[[relation]]
-name = "cleanup_batch_receipt"
-kind = "source_of_truth"
-attributes = ["cleanup_id", "phase", "batch_key", "start_cursor", "next_cursor", "prior_chain_sha256", "prior_deleted_count", "input_sha256", "output_sha256", "row_count", "committed_generation", "committed_at"]
-declared_keys = [["cleanup_id", "phase"]]
-fds = [
-  { determinant = ["cleanup_id", "phase"], dependent = ["batch_key", "start_cursor", "next_cursor", "prior_chain_sha256", "prior_deleted_count", "input_sha256", "output_sha256", "row_count", "committed_generation", "committed_at"] },
-]
-foreign_keys = [
-  { attributes = ["cleanup_id", "phase"], relation = "cleanup_checkpoint", referenced_attributes = ["cleanup_id", "phase"] },
-]
-rationale = "One deliberately wide but globally bounded latest-transition protocol row per live cleanup phase. The serialized single-OPEN job has a fixed generated phase registry, so this relation never scales with galleries or files; prior_chain_sha256 and prior_deleted_count are atomic prestate needed to recompute one canonical receipt transition and are not packed payload or retained history."
-
-[[relation]]
-name = "cleanup_completion"
-kind = "source_of_truth"
-attributes = ["target_key", "cycle_generation", "final_chain_sha256", "deleted_count"]
-declared_keys = [["target_key"]]
-fds = [
-  { determinant = ["target_key"], dependent = ["cycle_generation", "final_chain_sha256", "deleted_count"] },
-]
-foreign_keys = [
-  { attributes = ["target_key"], relation = "cleanup_job", referenced_attributes = ["target_key"] },
-]
-rationale = "Compact latest-cycle replay authority. Terminal compaction marks the reusable job complete, replaces this shard completion, and removes checkpoints and batch receipts atomically; retry reads this row and must never resume an old generation. completed_at remains owned only by cleanup_job."
+rationale = "One globally bounded checkpoint row per started phase stores both current poststate and the immediately preceding transition prestate. Receipt fields are either all NULL at generation one or all present after a page commit; generation, cursor_bytes, chain_sha256, and updated_at are the corresponding committed generation, next cursor, output chain, and commit time. This atomic BCNF row preserves exact latest retry and phase-transition replay without a separately orphanable receipt."

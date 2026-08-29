@@ -2,7 +2,7 @@ receipt_version = 2
 generator = "verification/schema/generate_capacity_measurement_receipt.py"
 benchmark = "verification/schema/measure_capacity_mariadb.py"
 raw_measurement = "verification/schema/capacity_measurement.json"
-generator_script_sha256 = "ff65b3d374c01afc85d208a3c78ebc8a4e70b92de0fade71528c30f76ef1f02d"
+generator_script_sha256 = "8e99d4337f81667c37e1b481d2407fd3654b020041af50ebff51bd89a95dc788"
 benchmark_script_sha256 = "c18333344bb0338555d8ce1ba4101f9f6392c2ed7bc157a53b3695324bbe67d8"
 measurement_input_sha256 = "eed4ce77b762bd9ecd05b46736a1ec6e7a887ce0bd0abd4e304aa2dd1137cd0e"
 execution_mode = "testcontainers"
@@ -14,9 +14,9 @@ benchmark_insert_batch_size = 5000
 benchmark_insertion_order = "full_churn_fill_delete_different_domain_refill_five_then_sixth_append_v2"
 measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
 soft_limit_bytes = 400000000
-capacity_plan_sha256 = "e6095b6c4a286a1aeceb08b741800d63fb903b20f84a0c1bc4288a4741cbb6af"
-catalog_physical_manifest_sha256 = "9da1c227ecd80ec71acf55388a3613cb4f18e5ad8c447c84e71a81928d23130b"
-operational_physical_manifest_sha256 = "832c6d147464a3a2235ebfde2be4632cba46e3364cb1d405085ab7d1a59bf0ba"
+capacity_plan_sha256 = "d887286f1fda07ea83c0b919cd03b2cc2367b5dadded5aefc335879d68de2f18"
+catalog_physical_manifest_sha256 = "877f12e05928daaafbc296fbfc8c2f941f704620ae0c4e38ed0cb01d3e622cb0"
+operational_physical_manifest_sha256 = "d104a1dd15dab6f508d0e110fb1b55b72e7b5c5cc6373f30ef8ec8e346410c8f"
 
 [registry_measurement]
 relation = "artifact_producer_fingerprint"
@@ -158,10 +158,10 @@ conservative_peak_bytes = 285000000
 
 [bounded_cleanup_protocol]
 job_relation = "cleanup_job"
-job_physical_shape_sha256 = "f65a6e9e891bbaecd80534b5675021160fdf875def4235e5fe40f09a1ed080a6"
-job_conservative_record_and_index_bytes = 626
+job_physical_shape_sha256 = "33c701c218ea87bf9deedb0ce00fcc3ac4bab6b4feffcf82f6dcf08c9eff89ae"
+job_conservative_record_and_index_bytes = 666
 job_accounted_bytes_per_row = 8192
-job_width_headroom_bytes = 7566
+job_width_headroom_bytes = 7526
 job_row_count = 5632
 job_conservative_peak_bytes = 46137344
 root_relation = "cleanup_cycle_root"
@@ -172,6 +172,13 @@ root_width_headroom_bytes = 746
 root_row_count = 256
 root_key_maximum_bytes = 260
 root_conservative_peak_bytes = 327680
+checkpoint_relation = "cleanup_checkpoint"
+checkpoint_physical_shape_sha256 = "894a6fb9e7ad43177fba6bd0b93c98f4fd6dc8217f5b683912026f27662605ca"
+checkpoint_conservative_record_and_index_bytes = 5082
+checkpoint_accounted_bytes_per_row = 16384
+checkpoint_width_headroom_bytes = 11302
+checkpoint_row_count = 16
+checkpoint_conservative_peak_bytes = 262144
 obligation_id = "h2hdb.operational.cleanup-frozen-root-set.v1"
 
 [scenario_context]

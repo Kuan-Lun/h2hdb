@@ -67,20 +67,13 @@ def test_identity_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
 
     name = b"001.jpg"
     name_key = file_key(name)
-    file_name = _Recorder(
-        [(name_key, name_key, name_key, name, name_key, b"CONTENT", name_key)]
-    )
+    file_name = _Recorder([(name_key, name)])
     assert load_file_name_identities(file_name, file_keys=(name_key,)) == {
         name_key: FileNameIdentity(name_key, name, b"CONTENT")
     }
     _assert_one_set_read(
         file_name,
-        (
-            "catalog_file_name_identity_anchors",
-            "catalog_file_name_identity_name_bytes",
-            "catalog_file_name_identity_file_roles",
-            "catalog_file_name_identity_seals",
-        ),
+        ("catalog_file_name_identities",),
     )
 
     file_sha256 = b"f" * 32
@@ -125,24 +118,20 @@ def test_identity_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
     )
 
     value = b"v" * 32
-    tag = _Recorder([(3, 3, b"artist", value, 3, 3)])
+    tag = _Recorder([(3, b"artist", value)])
     assert load_tag_terms(tag, tag_ids=(3,)) == {3: TagTerm(3, b"artist", value)}
     _assert_one_set_read(
         tag,
-        (
-            "catalog_tag_term_anchors",
-            "catalog_tag_term_identities",
-            "catalog_tag_term_seals",
-        ),
+        ("catalog_tag_terms",),
     )
 
 
-def test_vertical_identity_loaders_fail_closed_on_any_partial_family() -> None:
+def test_identity_loaders_fail_closed_on_invalid_or_partial_facts() -> None:
     name = b"001.jpg"
     key = file_key(name)
-    with pytest.raises(CatalogIdentityPartialFamilyError):
+    with pytest.raises(CatalogIdentityCollisionError, match="physical shape"):
         load_file_name_identities(
-            _Recorder([(key, key, key, name, key, b"CONTENT", None)]),
+            _Recorder([(key, name, b"unexpected")]),
             file_keys=(key,),
         )
 
@@ -177,12 +166,6 @@ def test_vertical_identity_loaders_fail_closed_on_any_partial_family() -> None:
             file_nos=(0,),
         )
 
-    with pytest.raises(CatalogIdentityPartialFamilyError):
-        load_tag_terms(
-            _Recorder([(3, 3, b"artist", b"v" * 32, 3, None)]),
-            tag_ids=(3,),
-        )
-
 
 def test_gallery_loader_recomputes_stable_key_and_rejects_valid_width_corruption() -> (
     None
@@ -213,7 +196,7 @@ def test_identity_writers_reject_candidate_collisions_without_writes() -> None:
 
     name = b"001.jpg"
     key = file_key(name)
-    file_name = _Recorder([(key, key, key, name, key, b"METADATA", key)])
+    file_name = _Recorder([(key, b"002.jpg")])
     with pytest.raises(CatalogIdentityCollisionError, match="derived facts"):
         ensure_file_name_identities(
             file_name,
@@ -251,7 +234,7 @@ def test_identity_writers_reject_candidate_collisions_without_writes() -> None:
         )
     assert observation_file.executions == []
 
-    tag = _Recorder([(3, 3, b"language", b"w" * 32, 3, 3)])
+    tag = _Recorder([(3, b"language", b"w" * 32)])
     with pytest.raises(CatalogIdentityCollisionError, match="candidate key collides"):
         ensure_tag_term(tag, term=TagTerm(3, b"artist", b"v" * 32))
     assert tag.executions == []
@@ -279,9 +262,10 @@ def test_identity_writers_use_one_candidate_read_and_complete_insert() -> None:
             FileNameIdentity(file_key(second_name), second_name, b"CONTENT"),
         ),
     )
-    _assert_one_set_read(names, ("catalog_file_name_identity_seals",))
+    _assert_one_set_read(names, ("catalog_file_name_identities",))
     assert len(names.fetches) == 1
-    assert "catalog_file_name_identity_seals" in names.executions[-1][0]
+    assert len(names.executions) == 2
+    assert all("catalog_file_name_identities" in query for query, _ in names.executions)
 
     files = _Recorder([])
     ensure_gallery_observation_files(
@@ -300,5 +284,6 @@ def test_identity_writers_use_one_candidate_read_and_complete_insert() -> None:
         tag,
         term=TagTerm(3, b"artist", b"v" * 32),
     )
-    _assert_one_set_read(tag, ("catalog_tag_term_seals",))
-    assert "catalog_tag_term_seals" in tag.executions[-1][0]
+    _assert_one_set_read(tag, ("catalog_tag_terms",))
+    assert len(tag.executions) == 1
+    assert "catalog_tag_terms" in tag.executions[0][0]

@@ -199,6 +199,7 @@ def _validate_external_contracts(
     *,
     catalog_logical: Mapping[str, Any],
     operational_logical: Mapping[str, Any],
+    data_physical: Mapping[str, Any],
     data_relations: Mapping[str, dict[str, Any]],
     operational_physical: Mapping[str, Any],
 ) -> None:
@@ -219,19 +220,37 @@ def _validate_external_contracts(
         _required_string(value, "relation", "operational external stub"): value
         for value in raw_stubs
     }
+    inline = set(
+        _strings(
+            operational_physical.get("external_inline_projections", []),
+            "operational physical.external_inline_projections",
+        )
+    )
     if len(external) != len(raw_external) or len(stubs) != len(raw_stubs):
         raise ValueError("operational external declarations contain duplicate names")
-    if set(external) != set(stubs):
-        raise ValueError("operational external relation and stub sets differ")
+    expected_inline = set(external) & set(
+        _strings(
+            data_physical.get("inline_projections", []),
+            "data physical.inline_projections",
+        )
+    )
+    if inline != expected_inline:
+        raise ValueError(
+            "operational external inline projections drift from data physical"
+        )
+    if set(stubs) & inline or set(external) != set(stubs) | inline:
+        raise ValueError(
+            "operational external relations must have exactly one stub or inline "
+            "projection classification"
+        )
 
     for name in sorted(external):
         source = external[name]
-        stub = stubs[name]
         logical_target = catalog_relations.get(name)
         physical_target = data_relations.get(name)
-        if logical_target is None or physical_target is None:
+        if logical_target is None:
             raise ValueError(
-                f"operational external relation {name!r} has no data target"
+                f"operational external relation {name!r} has no logical data target"
             )
         attributes = _strings(source.get("attributes"), f"external {name}.attributes")
         target_attributes = _strings(
@@ -249,6 +268,18 @@ def _validate_external_contracts(
             frozenset(key) for key in visible_target_keys
         }:
             raise ValueError(f"external relation {name!r} candidate keys drift")
+
+        if name in inline:
+            if physical_target is not None:
+                raise ValueError(
+                    f"inline external relation {name!r} unexpectedly has a SQL object"
+                )
+            continue
+        if physical_target is None:
+            raise ValueError(
+                f"operational external relation {name!r} has no physical data target"
+            )
+        stub = stubs[name]
 
         target_table = _required_string(
             physical_target, "table", f"physical relation {name!r}"
@@ -3022,6 +3053,7 @@ def _provider_payload() -> dict[str, Any]:
     _validate_external_contracts(
         catalog_logical=catalog_logical,
         operational_logical=operational_logical,
+        data_physical=data_physical,
         data_relations=data_relations,
         operational_physical=operational_physical,
     )
@@ -3035,6 +3067,17 @@ def _provider_payload() -> dict[str, Any]:
     operational_order = _strings(
         operational_physical.get("source_slice"), "operational source_slice"
     )
+    data_inline_projections = _strings(
+        data_physical.get("inline_projections", []), "data inline_projections"
+    )
+    operational_inline_projections = _strings(
+        operational_physical.get("inline_projections", []),
+        "operational inline_projections",
+    )
+    if set(data_inline_projections) & set(data_order):
+        raise ValueError("data inline projections overlap physical source_slice")
+    if set(operational_inline_projections) & set(operational_order):
+        raise ValueError("operational inline projections overlap physical source_slice")
     complete_operational = _strings(
         operational_physical.get("complete_relations"),
         "operational complete_relations",
@@ -3220,7 +3263,9 @@ def _provider_payload() -> dict[str, Any]:
         "unresolved_obligation_sources": unresolved_sources,
         "relation_order": order,
         "data_relations": data_order,
+        "data_inline_projections": data_inline_projections,
         "operational_relations": operational_order,
+        "operational_inline_projections": operational_inline_projections,
         "backends": backends,
     }
 

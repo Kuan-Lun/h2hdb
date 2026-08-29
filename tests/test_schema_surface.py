@@ -332,9 +332,7 @@ def test_catalog_hot_paths_do_not_read_b2_wide_views() -> None:
 
 def test_catalog_hot_paths_do_not_read_remaining_b3a_wide_views() -> None:
     wide_views = {
-        "catalog_file_name_identities",
         "catalog_gallery_observation_files",
-        "catalog_tag_terms",
     }
     hot_modules = (
         "vnext_catalog_identity_family.py",

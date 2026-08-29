@@ -2809,33 +2809,11 @@ def _seed_exact_delta_contributor(
     contributor_name_sha256: bytes,
     role: bytes,
 ) -> None:
-    key = (revision, publication_key, position)
     connector.execute(
-        "INSERT INTO catalog_contributor_anchors "
-        "(revision, publication_key, position) VALUES (%s, %s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_contributor_name_sha256s "
-        "(revision, publication_key, position, contributor_name_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (*key, contributor_name_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_contributor_roles "
-        "(revision, publication_key, position, role) VALUES (%s, %s, %s, %s)",
-        (*key, role),
-    )
-    connector.execute(
-        "INSERT INTO catalog_contributor_identities "
+        "INSERT INTO catalog_contributors "
         "(revision, publication_key, contributor_name_sha256, role, position) "
         "VALUES (%s, %s, %s, %s, %s)",
         (revision, publication_key, contributor_name_sha256, role, position),
-    )
-    connector.execute(
-        "INSERT INTO catalog_contributor_seals "
-        "(revision, publication_key, position) VALUES (%s, %s, %s)",
-        key,
     )
 
 
@@ -2871,43 +2849,12 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
         "CREATE TABLE catalog_publication_contents ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
         "content_sha256 BLOB NOT NULL, PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_contributor_anchors ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "position INTEGER NOT NULL, "
-        "PRIMARY KEY (revision, publication_key, position))",
-        "CREATE TABLE catalog_contributor_name_sha256s ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "position INTEGER NOT NULL, contributor_name_sha256 BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key, position))",
-        "CREATE TABLE catalog_contributor_roles ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "position INTEGER NOT NULL, role BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key, position))",
-        "CREATE TABLE catalog_contributor_identities ("
+        "CREATE TABLE catalog_contributors ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
         "contributor_name_sha256 BLOB NOT NULL, role BLOB NOT NULL, "
         "position INTEGER NOT NULL, PRIMARY KEY (revision, publication_key, "
         "contributor_name_sha256, role), "
         "UNIQUE (revision, publication_key, position))",
-        "CREATE TABLE catalog_contributor_seals ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "position INTEGER NOT NULL, "
-        "PRIMARY KEY (revision, publication_key, position))",
-        "CREATE VIEW catalog_contributors AS SELECT seal.revision, "
-        "seal.publication_key, seal.position, name.contributor_name_sha256, role.role "
-        "FROM catalog_contributor_seals AS seal "
-        "JOIN catalog_contributor_anchors AS anchor "
-        "USING (revision, publication_key, position) "
-        "JOIN catalog_contributor_name_sha256s AS name "
-        "USING (revision, publication_key, position) "
-        "JOIN catalog_contributor_roles AS role "
-        "USING (revision, publication_key, position) "
-        "JOIN catalog_contributor_identities AS identity_row "
-        "ON identity_row.revision = seal.revision "
-        "AND identity_row.publication_key = seal.publication_key "
-        "AND identity_row.position = seal.position "
-        "AND identity_row.contributor_name_sha256 = name.contributor_name_sha256 "
-        "AND identity_row.role = role.role",
         "CREATE TABLE catalog_subjects ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
         "position INTEGER NOT NULL, tag_id INTEGER NOT NULL, "
@@ -3121,24 +3068,17 @@ def _mutate_exact_delta_case(
     if case in {"contributor-current-missing", "contributor-old-missing"}:
         revision = 2 if case == "contributor-current-missing" else 1
         connector.execute(
-            "DELETE FROM catalog_contributor_seals "
+            "DELETE FROM catalog_contributors "
             "WHERE revision = %s AND publication_key = %s",
             (revision, publication_key),
         )
         return 1
     if case == "contributor-position":
-        for table in (
-            "catalog_contributor_seals",
-            "catalog_contributor_identities",
-            "catalog_contributor_name_sha256s",
-            "catalog_contributor_roles",
-            "catalog_contributor_anchors",
-        ):
-            connector.execute(
-                f"DELETE FROM {table} WHERE revision = %s "
-                "AND publication_key = %s AND position = %s",
-                (2, publication_key, 0),
-            )
+        connector.execute(
+            "DELETE FROM catalog_contributors WHERE revision = %s "
+            "AND publication_key = %s AND position = %s",
+            (2, publication_key, 0),
+        )
         _seed_exact_delta_contributor(
             connector,
             revision=2,
@@ -3156,18 +3096,7 @@ def _mutate_exact_delta_case(
         else:
             role = b"author"
         connector.execute(
-            "UPDATE catalog_contributor_name_sha256s "
-            "SET contributor_name_sha256 = %s WHERE revision = %s "
-            "AND publication_key = %s AND position = %s",
-            (name, 2, publication_key, 0),
-        )
-        connector.execute(
-            "UPDATE catalog_contributor_roles SET role = %s WHERE revision = %s "
-            "AND publication_key = %s AND position = %s",
-            (role, 2, publication_key, 0),
-        )
-        connector.execute(
-            "UPDATE catalog_contributor_identities "
+            "UPDATE catalog_contributors "
             "SET contributor_name_sha256 = %s, role = %s "
             "WHERE revision = %s AND publication_key = %s AND position = %s",
             (name, role, 2, publication_key, 0),
@@ -3387,7 +3316,7 @@ def test_sqlite_exact_changed_item_plan_uses_leading_key_searches(
     )
     for leading_index_family in (
         "CATALOG_PUBLICATION_CONTENTS",
-        "CATALOG_CONTRIBUTOR_SEALS",
+        "CATALOG_CONTRIBUTORS",
         "CATALOG_SUBJECTS",
     ):
         assert any(

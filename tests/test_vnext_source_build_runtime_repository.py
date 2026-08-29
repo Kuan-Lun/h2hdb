@@ -2276,8 +2276,12 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                 (first.build_id,),
             ) == (first.build_id, base_receipt_id)
             assert connector.fetch_one(
-                "SELECT build_id, base_source_revision, base_source_generation "
-                "FROM catalog_source_build_base_source WHERE build_id = %s",
+                "SELECT base.build_id, committed.source_revision, "
+                "committed.generation "
+                "FROM catalog_source_build_base_publication_commits AS base "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.receipt_id = base.base_receipt_id "
+                "WHERE base.build_id = %s",
                 (first.build_id,),
             ) == (first.build_id, 1, 1)
 
@@ -2415,8 +2419,11 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
         )
         assert (
             connector.fetch_all(
-                "SELECT build_id, base_source_revision, base_source_generation "
-                "FROM catalog_source_build_base_source"
+                "SELECT base.build_id, committed.source_revision, "
+                "committed.generation "
+                "FROM catalog_source_build_base_publication_commits AS base "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.receipt_id = base.base_receipt_id"
             )
             == []
         )
@@ -3645,9 +3652,13 @@ def test_discovery_new_generation_assembly_and_response_loss(
             assert sealed_source[1] <= sealed_source[2]
             assert sealed_source[2] != 52
             assert connector.fetch_one(
-                "SELECT manifest_sha256, gallery_count, file_count, byte_count, "
-                "computed_at "
-                "FROM catalog_build_manifests"
+                "SELECT manifest.manifest_sha256, discovery.gallery_count, "
+                "manifest.file_count, manifest.byte_count, sealed.sealed_at "
+                "FROM catalog_build_manifest_core AS manifest "
+                "JOIN catalog_source_build_discoveries AS discovery "
+                "ON discovery.build_id = manifest.build_id "
+                "JOIN catalog_source_build_sealed_ats AS sealed "
+                "ON sealed.build_id = manifest.build_id"
             ) == (
                 sealed.next_manifest_chain_sha256,
                 3,
@@ -4119,7 +4130,8 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             ):
                 fail_once(method, fragment, commit_seal)
                 assert (
-                    connector.fetch_all("SELECT 1 FROM catalog_build_manifests") == []
+                    connector.fetch_all("SELECT 1 FROM catalog_build_manifest_core")
+                    == []
                 )
                 assert connector.fetch_one(
                     "SELECT state, sealed_at FROM catalog_source_builds"

@@ -419,8 +419,14 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
     assert result.source_receipt is not None
     with SQLiteConnector(str(path)) as connector:
         durable = connector.fetch_one(
-            "SELECT manifest_sha256, gallery_count, file_count, byte_count "
-            "FROM catalog_build_manifests WHERE build_id = %s",
+            "SELECT manifest.manifest_sha256, discovery.gallery_count, "
+            "manifest.file_count, manifest.byte_count "
+            "FROM catalog_build_manifest_core AS manifest "
+            "JOIN catalog_source_build_discoveries AS discovery "
+            "ON discovery.build_id = manifest.build_id "
+            "JOIN catalog_source_build_sealed_ats AS sealed "
+            "ON sealed.build_id = manifest.build_id "
+            "WHERE manifest.build_id = %s",
             (result.source_receipt.build_id,),
         )
     assert durable == (
@@ -475,8 +481,14 @@ def test_staging_uses_only_frozen_spool_after_prepare_and_close_cleans_it(
         assert result.source_receipt is not None
         with SQLiteConnector(str(path)) as connector:
             assert connector.fetch_one(
-                "SELECT manifest_sha256, gallery_count, file_count, byte_count "
-                "FROM catalog_build_manifests WHERE build_id = %s",
+                "SELECT manifest.manifest_sha256, discovery.gallery_count, "
+                "manifest.file_count, manifest.byte_count "
+                "FROM catalog_build_manifest_core AS manifest "
+                "JOIN catalog_source_build_discoveries AS discovery "
+                "ON discovery.build_id = manifest.build_id "
+                "JOIN catalog_source_build_sealed_ats AS sealed "
+                "ON sealed.build_id = manifest.build_id "
+                "WHERE manifest.build_id = %s",
                 (result.source_receipt.build_id,),
             ) == (
                 expected.manifest_sha256,
@@ -522,8 +534,14 @@ def test_live_mutation_after_prepare_stages_the_frozen_snapshot(
     assert result.source_receipt is not None
     with SQLiteConnector(str(path)) as connector:
         assert connector.fetch_one(
-            "SELECT manifest_sha256, gallery_count, file_count, byte_count "
-            "FROM catalog_build_manifests WHERE build_id = %s",
+            "SELECT manifest.manifest_sha256, discovery.gallery_count, "
+            "manifest.file_count, manifest.byte_count "
+            "FROM catalog_build_manifest_core AS manifest "
+            "JOIN catalog_source_build_discoveries AS discovery "
+            "ON discovery.build_id = manifest.build_id "
+            "JOIN catalog_source_build_sealed_ats AS sealed "
+            "ON sealed.build_id = manifest.build_id "
+            "WHERE manifest.build_id = %s",
             (result.source_receipt.build_id,),
         ) == (
             frozen.manifest_sha256,
@@ -656,7 +674,7 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
         assert (
             connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
         )
-        assert connector.fetch_all("SELECT * FROM catalog_build_manifests") == []
+        assert connector.fetch_all("SELECT * FROM catalog_build_manifest_core") == []
         assert connector.fetch_one(
             "SELECT state, processed_gallery_count "
             "FROM operational_source_build_assembly_checkpoints"

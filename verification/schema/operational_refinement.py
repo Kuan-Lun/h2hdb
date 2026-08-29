@@ -109,7 +109,6 @@ class SourceBuildGenerationCleanupFacts:
     is_current_coordination_generation: bool
     owner_resume_authority: bool
     live_lease_resume_authority: bool
-    handoff_resume_authority: bool
 
 
 def operational_preparation_cleanup_eligible(facts: PreparationCleanupFacts) -> bool:
@@ -138,7 +137,6 @@ def source_build_generation_cleanup_eligible(
         and not facts.is_current_coordination_generation
         and not facts.owner_resume_authority
         and not facts.live_lease_resume_authority
-        and not facts.handoff_resume_authority
     )
 
 
@@ -239,7 +237,7 @@ def ingest_generation_history_cleanup_authorized(
     strictly_older_than_current: bool,
     current_or_completed_head_reference: bool,
     build_upload_or_staging_reference: bool,
-    owner_lease_or_handoff_resume_authority: bool,
+    owner_resume_authority: bool,
     exclusive_maintenance_gate_held: bool,
     rows_selected: int,
     maximum_rows: int,
@@ -248,7 +246,7 @@ def ingest_generation_history_cleanup_authorized(
         strictly_older_than_current
         and not current_or_completed_head_reference
         and not build_upload_or_staging_reference
-        and not owner_lease_or_handoff_resume_authority
+        and not owner_resume_authority
         and exclusive_maintenance_gate_held
         and 0 <= rows_selected <= maximum_rows
         and maximum_rows > 0
@@ -540,7 +538,6 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
             "cleanup_checkpoint",
-            "cleanup_batch_receipt",
         ),
         "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan.",
     ),
@@ -574,7 +571,7 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
+            "publication_commit",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
@@ -606,7 +603,6 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
-            "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
@@ -674,6 +670,14 @@ def validate_operational_machine_contract_documents(
     """Document-level entry point used by drift and adversarial tests."""
 
     logical_relations = _raw_relation_map(logical)
+    physical_logical_relations = {
+        name: relation
+        for name, relation in logical_relations.items()
+        if not (
+            isinstance(relation.get("materialization"), dict)
+            and relation["materialization"].get("storage") == "inline_projection"
+        )
+    }
     physical_relations = _raw_relation_map(physical)
     external_names = {
         _required_text(value, "name", "external_relation")
@@ -765,7 +769,7 @@ def validate_operational_machine_contract_documents(
         raise ValueError("physical semantic obligations drift from logical contract")
 
     seeds, seed_ranges, seeded_relations, absent_relations, epoch_owned = (
-        _validate_bootstrap(logical, physical, logical_relations)
+        _validate_bootstrap(logical, physical, physical_logical_relations)
     )
     checks: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], None]] = {
         "operational_refinement.check_physical_domains_v1": check_physical_domains_v1,
@@ -791,7 +795,7 @@ def validate_operational_machine_contract_documents(
     for obligation in obligations:
         checks[obligation.check](logical, physical)
     validate_operational_fk_access_paths(physical)
-    if set(physical_relations) != set(logical_relations):
+    if set(physical_relations) != set(physical_logical_relations):
         raise ValueError("operational physical relation coverage drifts from logical")
     return OperationalMachineContract(
         tuple(obligations),
@@ -815,7 +819,7 @@ def check_fencing_contract_v1(
         "authorization_rule": "current_generation_and_exact_owner_and_unexpired_lease",
         "takeover_rule": "strictly_greater_generation",
         "stale_rule": "no_mutation",
-        "history_cleanup_rule": "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, handoff, and every live owner row carrying lease resume authority are absent; delete handoff, owner, then generation child-first with row-lock recheck, while current and completed head references always block",
+        "history_cleanup_rule": "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, and every live owner row carrying resume authority are absent; delete owner then generation child-first with row-lock recheck, while current and completed head references always block",
     }
     _require_exact_table(logical, "fencing_contract", expected)
     owner = _raw_relation_map(logical).get("ingest_generation_owner")
@@ -1092,7 +1096,7 @@ def check_bounded_work_contract_v1(
         "preparation_effect_rule": "each bounded page locks the OPEN preparation and exact checkpoint generation, writes a contiguous coordinate range of base events and exactly one matching typed subtype per event, recomputes every event digest and the running chain, and commits those rows with the request receipt and checkpoint CAS; an empty terminal page proves no remaining work, after which one transaction inserts the exact effect seal last and marks the preparation COMPLETE without scanning prior event rows",
         "cleanup_policy_relation": "cleanup_job",
         "cleanup_checkpoint_relation": "cleanup_checkpoint",
-        "cleanup_receipt_relation": "cleanup_batch_receipt",
+        "cleanup_receipt_relation": "cleanup_checkpoint",
     }
     _require_exact_table(logical, "bounded_work_contract", expected)
     relations = _raw_relation_map(logical)
@@ -1340,7 +1344,7 @@ def check_build_generation_contract_v1(
         {
             "reservation_relation": "source_build_generation",
             "rule": "first begin or resume locks and verifies the exact current ingest head, matching owner row, and its unexpired lease_expires_at, then transactionally reserves at most one build for that immutable ingest generation; a strictly greater live takeover generation may reserve the same build, a no-build generation has no row, and the mapping may outlive deletion of its completed owner because authorization is a writer check rather than an FK",
-            "cleanup_rule": "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner row carrying lease authority or handoff resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress",
+            "cleanup_rule": "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner row carrying resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress",
         },
     )
     reservation = _raw_relation_map(logical)["source_build_generation"]
@@ -1577,7 +1581,7 @@ def check_attempt_identity_contract_v1(
         {
             "job_relation": "cleanup_job",
             "attempt_attribute": "cycle_generation",
-            "allocation_rule": "advance positive portable int63 cycle_generation monotonically on the one reusable job row per fixed shard under lock or exact CAS; fail closed before 2^63 and derive cleanup_id exactly as SHA256(h2hdb-cleanup-cycle-v1 NUL target_kind)[0:7] || u8(shard_no) || u64be(cycle_generation), atomically remove the prior completion when opening, require exact recomputed cleanup_id plus checkpoint generation on every mutation, require completion cycle_generation equals job cycle_generation and job state COMPLETE on replay, and reject every stale generation",
+            "allocation_rule": "advance positive portable int63 cycle_generation monotonically on the one reusable job row per fixed shard under lock or exact CAS; fail closed before 2^63 and derive cleanup_id exactly as SHA256(h2hdb-cleanup-cycle-v1 NUL target_kind)[0:7] || u8(shard_no) || u64be(cycle_generation), atomically replace the prior completed job when opening, require exact recomputed cleanup_id plus checkpoint generation on every mutation, require the job-owned final replay facts to be present only at the exact COMPLETE cycle_generation, and reject every stale generation",
         },
     )
     _require_exact_table(
@@ -1657,11 +1661,7 @@ _CLEANUP_TARGET_SHAPES = {
         "h2hdb.cleanup.catalog_publication.v1",
         (
             "CP_STORAGE",
-            "CP_CONTRIBUTOR_SEAL",
-            "CP_CONTRIBUTOR_IDENTITY",
-            "CP_CONTRIBUTOR_NAME",
-            "CP_CONTRIBUTOR_ROLE",
-            "CP_CONTRIBUTOR_ANCHOR",
+            "CP_CONTRIBUTOR",
             "CP_ORDER",
             "CP_CONTENT",
             "CP_SUBJECT",
@@ -1728,8 +1728,6 @@ _CLEANUP_TARGET_SHAPES = {
             "PC_SEALS",
             "PC_PREPARED",
             "PC_INPUT",
-            "PC_CONTRIBUTOR_NAME",
-            "PC_CONTRIBUTOR_ROLE",
             "PC_CHECKPOINT",
             "PC_SELECTION_STORAGE",
             "PC_CONTENT",
@@ -1841,7 +1839,7 @@ _CLEANUP_TARGET_SHAPES = {
         ),
     ),
     "FILE_NAME_IDENTITY": (
-        "file_name_identity_anchor",
+        "file_name_identity",
         ("file_key",),
         "target_kind_tag16_u64be_zero8_v1",
         "file_name_identity_unreferenced_v1",
@@ -2012,9 +2010,9 @@ def check_cleanup_reachability_v1(
             "frozen_root_count_maximum": 256,
             "registry_rule": "target kinds and phases are exact provider-seeded rows; runtime dispatch is a closed-world map from registered IDs to versioned writer functions and never interpolates a relation, predicate, blocker, or phase from database text",
             "eligibility_rule": "under the exact EXCLUSIVE maintenance gate and one transaction, permit globally at most one OPEN cleanup_job, evaluate the registered initial eligibility predicate and every registered blocker, freeze at most max_rows_per_transaction and no more than 256 typed roots into cleanup_cycle_root, encode each root with the canonical version-one typed scalar frame bounded to the registered-shape maximum 260 bytes, and seal the sorted complete membership with immutable frozen_root_count plus domain-separated frozen_root_set_sha256 on cleanup_job; frozen_root_key is a cleanup-protocol identity decoded back into the registered typed root columns, never business payload, EAV, or a relation-count packing device",
-            "phase_rule": "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; every static phase reloads and validates the exact sealed cleanup_cycle_root set, joins only those typed roots, rejects any current-spec coordinate at or before its durable cursor that reappears, and each batch deletes only the registered relation set child-first while committing rows, receipt, and checkpoint CAS atomically. Before accepting a zero-row terminal transition, runtime probes every raw registered responsibility through the current phase under frozen root, shard, and spec extra predicates but without the mutable plan eligibility predicate; any remaining row blocks rather than falsely completing, and roots made newly eligible by an earlier deletion wait for a later cycle",
+            "phase_rule": "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; every static phase reloads and validates the exact sealed cleanup_cycle_root set, joins only those typed roots, rejects any current-spec coordinate at or before its durable cursor that reappears, and each batch deletes only the registered relation set child-first while atomically committing the checkpoint poststate and its latest receipt prestate fields in one CAS. Before accepting a zero-row terminal transition, runtime probes every raw registered responsibility through the current phase under frozen root, shard, and spec extra predicates but without the mutable plan eligibility predicate; any remaining row blocks rather than falsely completing, and roots made newly eligible by an earlier deletion wait for a later cycle",
             "completion_rule": "a cleanup job becomes COMPLETE only after every registered phase has a durable empty terminal receipt, the target root phase completed, and a final blocker recheck still finds no reachable retention root",
-            "compaction_rule": "each page commit atomically advances checkpoint generation and replaces the prior ambiguity receipt so at most one receipt per live checkpoint is retained; that receipt stores the exact prior chain and prior deleted count beside its bounded row-key input digest, and runtime plus full CHECK recompute the canonical output chain and exact post-deleted count without claiming to retain or rescan full history. Terminal transaction exact-validates then deletes cleanup_cycle_root membership, updates cleanup_job COMPLETE and completed_at, upserts the shard latest cleanup_completion generation/final chain/deleted count, deletes live receipts then checkpoints, and makes completion the response-loss replay authority; stale generations cannot resume",
+            "compaction_rule": "each page commit atomically advances checkpoint generation and replaces the nullable latest-receipt fields on that same checkpoint; those fields store the exact batch key, start cursor, prior chain, prior deleted count, bounded row-key input digest, and row count, while the checkpoint poststate supplies next cursor, output chain, committed generation, and committed time. Runtime plus full CHECK recompute the canonical output chain and exact post-deleted count without claiming to retain or rescan full history. The terminal transaction exact-validates then deletes cleanup_cycle_root membership and checkpoints, sets cleanup_job COMPLETE with completed_at plus final_chain_sha256 and final_deleted_count in one CAS, and makes that same job the response-loss replay authority; stale generations cannot resume",
         },
     )
     if _maximum_cleanup_frozen_root_frame_bytes() != 260:
@@ -2417,11 +2415,9 @@ def check_cleanup_reachability_v1(
             "artifact_operation",
             "catalog_publication_storage",
         ],
-        ["prepared_artifact", "catalog_contributor_seal"],
-        ["artifact_input", "catalog_contributor_identity"],
-        ["catalog_contributor_name_sha256"],
-        ["catalog_contributor_role"],
-        ["publication_checkpoint", "catalog_contributor_anchor"],
+        ["prepared_artifact", "catalog_contributor"],
+        ["artifact_input"],
+        ["publication_checkpoint"],
         ["publication_selection_storage", "catalog_publication_order"],
         ["catalog_publication_content"],
         ["catalog_subject"],
@@ -2494,8 +2490,7 @@ def check_cleanup_reachability_v1(
             "coordination_head_relation": "ingest_coordination_head",
             "generation_relation": "ingest_generation",
             "owner_relation": "ingest_generation_owner",
-            "handoff_relation": "ingest_generation_handoff",
-            "rule": "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; a current owner row carrying lease authority or handoff resume authority always rejects",
+            "rule": "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; a current owner row carrying resume authority always rejects",
         }
     ]:
         raise ValueError("source-build generation liveness rule drifts")
@@ -2526,8 +2521,11 @@ def check_cleanup_reachability_v1(
         ["target_key"],
     ]:
         raise ValueError("cleanup sweep target alternate key drifts")
-    if relation_map["cleanup_completion"].get("declared_keys") != [["target_key"]]:
-        raise ValueError("cleanup completion key drifts")
+    if set(map(tuple, relation_map["cleanup_job"].get("declared_keys", []))) != {
+        ("cleanup_id",),
+        ("target_key",),
+    }:
+        raise ValueError("cleanup job replay-authority keys drift")
     if relation_map["cleanup_phase"].get("declared_keys") != [
         ["phase"],
         ["target_kind", "phase_order"],
@@ -2743,6 +2741,12 @@ def _validate_catalog_cleanup_fk_coverage(
 
     operational_children: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
     for child_name, operational_relation in operational_relations.items():
+        materialization = operational_relation.get("materialization")
+        if (
+            isinstance(materialization, dict)
+            and materialization.get("storage") == "inline_projection"
+        ):
+            continue
         for foreign_key in operational_relation.get("foreign_keys", []):
             operational_children.setdefault(str(foreign_key["relation"]), set()).add(
                 (child_name, tuple(str(value) for value in foreign_key["attributes"]))
@@ -2785,6 +2789,17 @@ def _validate_catalog_cleanup_fk_coverage(
             # cross-manifest boundary explicit even though it is represented
             # as an external logical relation in the operational manifest.
             expected_blockers.add(("publication_commit", ("preparation_id",)))
+        if kind == "PUBLICATION_COMMIT":
+            # The commit row itself is catalog-owned external authority that is
+            # deleted by this mixed catalog/operational lifecycle.  Its direct
+            # source and preparation boundaries replace the former SQL-view
+            # projection edges and therefore remain explicit here.
+            expected_blockers.update(
+                {
+                    ("publication_commit", ("source_revision",)),
+                    ("publication_commit", ("preparation_id",)),
+                }
+            )
         if actual_blockers != expected_blockers:
             raise ValueError(
                 f"cleanup target {kind} operational FK boundary is incomplete: "
@@ -2941,7 +2956,7 @@ def check_gallery_staging_contract_v1(
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_contract).hexdigest() != (
-        "83dae97917cf141292613c33fa53d9ab3623df697b2a2d51ba6b8612da76cd6f"
+        "1693cf759a9aa1e297815a2a9a43a7bd804d82ec1cc1d9fd433f346e18e0fda7"
     ):
         raise ValueError("gallery staging exact protocol text drifts")
     gc_boundary = logical.get("gallery_page_gc_boundary")
@@ -4629,7 +4644,6 @@ def check_physical_domains_v1(
         "operational_preparation_checkpoint",
         "operational_preparation_batch_receipt",
         "cleanup_checkpoint",
-        "cleanup_batch_receipt",
     ):
         relation = relations[relation_name]
         for attribute in {"cursor_bytes", "start_cursor", "next_cursor"} & {
@@ -4670,7 +4684,15 @@ def check_epoch_manifest_v1(
 def check_bootstrap_contract_v1(
     logical: Mapping[str, Any], physical: Mapping[str, Any]
 ) -> None:
-    _validate_bootstrap(logical, physical, _raw_relation_map(logical))
+    logical_relations = {
+        name: relation
+        for name, relation in _raw_relation_map(logical).items()
+        if not (
+            isinstance(relation.get("materialization"), dict)
+            and relation["materialization"].get("storage") == "inline_projection"
+        )
+    }
+    _validate_bootstrap(logical, physical, logical_relations)
 
 
 def validate_operational_fk_access_paths(physical: Mapping[str, Any]) -> None:
@@ -5143,13 +5165,36 @@ def provider_relation_names(path: str | Path) -> tuple[str, ...]:
 def load_combined_logical_schema(
     logical_path: str | Path,
 ) -> tuple[refinement.LogicalSchema, tuple[str, ...]]:
-    """Load local operational relations plus exact external candidate-key shapes."""
+    """Load physical local relations plus exact external candidate-key shapes.
+
+    Logical ``inline_projection`` relations remain part of the independently
+    checked operational contract, but intentionally have no SQL refinement
+    mapping or schema object.
+    """
 
     local = refinement.load_logical_schema(logical_path)
     with Path(logical_path).open("rb") as stream:
         document = tomllib.load(stream)
+    with Path(logical_path).with_name("physical.toml").open("rb") as stream:
+        catalog_physical = tomllib.load(stream)
+    external_inline_relations = {
+        str(value) for value in catalog_physical.get("inline_projections", [])
+    }
+    inline_relations = {
+        _string(raw, "name")
+        for raw in document.get("relation", [])
+        if isinstance(raw.get("materialization"), dict)
+        and raw["materialization"].get("storage") == "inline_projection"
+    }
+    local_relations = tuple(
+        relation
+        for relation in local.relations
+        if relation.name not in inline_relations
+    )
     external_relations: list[refinement.LogicalRelation] = []
     for raw in document.get("external_relation", []):
+        if _string(raw, "name") in external_inline_relations:
+            continue
         external_relations.append(
             refinement.LogicalRelation(
                 _string(raw, "name"),
@@ -5164,9 +5209,9 @@ def load_combined_logical_schema(
     return (
         refinement.LogicalSchema(
             local.name,
-            (*local.relations, *external_relations),
+            (*local_relations, *external_relations),
         ),
-        tuple(relation.name for relation in local.relations),
+        tuple(relation.name for relation in local_relations),
     )
 
 
@@ -5179,6 +5224,24 @@ def load_operational_physical_schema(
 
     with Path(path).open("rb") as stream:
         document = tomllib.load(stream)
+    with Path(path).with_name("physical.toml").open("rb") as stream:
+        catalog_physical = tomllib.load(stream)
+    with Path(path).with_name("operational.toml").open("rb") as stream:
+        operational_logical = tomllib.load(stream)
+    catalog_inline = {
+        str(value) for value in catalog_physical.get("inline_projections", [])
+    }
+    expected_external_inline = tuple(
+        _string(raw, "name")
+        for raw in operational_logical.get("external_relation", [])
+        if _string(raw, "name") in catalog_inline
+    )
+    if tuple(document.get("external_inline_projections", [])) != (
+        expected_external_inline
+    ):
+        raise ValueError(
+            "external_inline_projections must exactly match catalog inline authorities"
+        )
     relations = tuple(_physical_relation(raw) for raw in document.get("relation", []))
     physical = refinement.PhysicalSchema(
         _string(document, "name"),

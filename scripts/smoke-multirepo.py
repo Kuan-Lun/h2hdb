@@ -180,8 +180,8 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
                 "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
             )
         }
-    assert sum(kind == "table" for kind in relation_types.values()) == 230
-    assert sum(kind == "view" for kind in relation_types.values()) == 50
+    assert sum(kind == "table" for kind in relation_types.values()) == 217
+    assert sum(kind == "view" for kind in relation_types.values()) == 33
     assert required <= relation_types.keys()
     assert removed.isdisjoint(relation_types)
     assert relation_types["catalog_analysis_impacted_gid"] == "table"

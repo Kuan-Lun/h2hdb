@@ -587,10 +587,6 @@ TABLE_NAMES = {
     "gallery_observation_directory": "catalog_gallery_observation_directories",
     "gallery_observation_stat": "catalog_gallery_observation_stat",
     "source_build_gallery": "catalog_source_build_galleries",
-    "file_name_identity_anchor": "catalog_file_name_identity_anchors",
-    "file_name_identity_name_bytes": "catalog_file_name_identity_name_bytes",
-    "file_name_identity_file_role": "catalog_file_name_identity_file_roles",
-    "file_name_identity_seal": "catalog_file_name_identity_seals",
     "file_name_identity": "catalog_file_name_identities",
     "content_blob": "catalog_content_blobs",
     "gallery_observation_file_anchor": "catalog_gallery_observation_file_anchors",
@@ -605,9 +601,6 @@ TABLE_NAMES = {
     "gallery_observation_file_filesystem_changed_ns": "catalog_gallery_observation_file_filesystem_changed_nses",
     "gallery_observation_file_filesystem_seal": "catalog_gallery_observation_file_filesystem_seals",
     "gallery_observation_file_filesystem": "catalog_gallery_observation_file_filesystem",
-    "tag_term_anchor": "catalog_tag_term_anchors",
-    "tag_term_identity": "catalog_tag_term_identities",
-    "tag_term_seal": "catalog_tag_term_seals",
     "tag_term": "catalog_tag_terms",
     "gallery_observation_tag": "catalog_gallery_observation_tags",
     "build_manifest": "catalog_build_manifests",
@@ -725,11 +718,6 @@ TABLE_NAMES = {
     "catalog_publication_title": "catalog_publication_titles",
     "catalog_publication_content": "catalog_publication_contents",
     "catalog_contributor": "catalog_contributors",
-    "catalog_contributor_anchor": "catalog_contributor_anchors",
-    "catalog_contributor_name_sha256": "catalog_contributor_name_sha256s",
-    "catalog_contributor_role": "catalog_contributor_roles",
-    "catalog_contributor_identity": "catalog_contributor_identities",
-    "catalog_contributor_seal": "catalog_contributor_seals",
     "catalog_subject": "catalog_subjects",
     "catalog_artifact": "catalog_artifacts",
     "publication_receipt": "catalog_publication_receipts",
@@ -1118,9 +1106,6 @@ def relation_checks(
         )
         sqlite.append(receipt_rule)
         maria.append(receipt_rule)
-    if name == "file_name_identity_file_role":
-        sqlite.append("file_role IN (X'434F4E54454E54', X'4D45544144415441')")
-        maria.append("file_role IN ('CONTENT', 'METADATA')")
     if "component" in attributes:
         sqlite.append(
             "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')"
@@ -1843,8 +1828,54 @@ def topological_order(
     return result
 
 
+def inline_projection_names(catalog: dict[str, Any]) -> tuple[str, ...]:
+    """Return logical views expanded by runtime queries instead of SQL VIEWs."""
+
+    names: list[str] = []
+    for relation in catalog["relation"]:
+        materialization = relation.get("materialization")
+        if not isinstance(materialization, dict):
+            continue
+        storage = materialization.get("storage")
+        if storage != "inline_projection":
+            continue
+        if materialization.get("authoritative") is not False:
+            raise RuntimeError(
+                f"Inline projection {relation['name']!r} must be non-authoritative"
+            )
+        names.append(str(relation["name"]))
+    return tuple(names)
+
+
 def render() -> str:
     catalog = tomllib.loads(CATALOG_PATH.read_text())
+    inline_projections = inline_projection_names(catalog)
+    inline_projection_set = set(inline_projections)
+    for logical in catalog["relation"]:
+        relation_name = str(logical["name"])
+        if relation_name in inline_projection_set:
+            continue
+        for foreign_key in logical.get("foreign_keys", []):
+            target = str(foreign_key["relation"])
+            if target in inline_projection_set:
+                raise RuntimeError(
+                    f"Physical relation {relation_name!r} cannot reference inline "
+                    f"projection {target!r} through a foreign key"
+                )
+        materialization = logical.get("materialization")
+        if (
+            isinstance(materialization, dict)
+            and materialization.get("storage") == "logical_view"
+        ):
+            dependencies = {
+                str(value) for value in materialization.get("derived_from", [])
+            }
+            invalid = sorted(dependencies & inline_projection_set)
+            if invalid:
+                raise RuntimeError(
+                    f"SQL view {relation_name!r} cannot depend on inline projections: "
+                    + ", ".join(invalid)
+                )
     obligation_records = runtime_obligation_records(catalog)
     vertical_family_by_name = {
         str(family["name"]): family for family in catalog.get("vertical_family", [])
@@ -2008,6 +2039,8 @@ def render() -> str:
         bootstrap_seeds.append(projected_seed(str(family["seal_relation"]), family_key))
     relations: list[dict[str, Any]] = []
     for ordinal, logical in enumerate(catalog["relation"], 1):
+        if str(logical["name"]) in inline_projection_set:
+            continue
         relations.append(
             make_relation(
                 logical,
@@ -2017,7 +2050,9 @@ def render() -> str:
             )
         )
     relation_by_name = {str(relation["name"]): relation for relation in relations}
-    stale_table_names = sorted(set(TABLE_NAMES) - set(relation_by_name))
+    stale_table_names = sorted(
+        set(TABLE_NAMES) - set(relation_by_name) - inline_projection_set
+    )
     if stale_table_names:
         raise RuntimeError(
             "Physical table-name registry contains non-catalog relations: "
@@ -2141,6 +2176,9 @@ def render() -> str:
         "]",
         "source_slice = [",
         *(f"  {q(name)}," for name in order),
+        "]",
+        "inline_projections = [",
+        *(f"  {q(name)}," for name in inline_projections),
         "]",
         "",
         "[bootstrap_contract]",

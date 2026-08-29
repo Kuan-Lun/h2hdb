@@ -85,11 +85,7 @@ _READER_PRODUCER = (
     b"zlib-test",
 )
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
-    "catalog_contributor_seals",
-    "catalog_contributor_identities",
-    "catalog_contributor_name_sha256s",
-    "catalog_contributor_roles",
-    "catalog_contributor_anchors",
+    "catalog_contributors",
     "catalog_publication_order",
     "catalog_publication_titles",
     "catalog_publication_contents",
@@ -994,7 +990,7 @@ def test_artifact_name_lookup_uses_one_bounded_set_query_per_publication_family(
         )
         assert (
             sum(
-                "FROM catalog_contributor_anchors AS a JOIN selected" in query
+                "FROM catalog_contributors AS contributor JOIN selected" in query
                 for query in queries
             )
             == 1
@@ -1454,14 +1450,10 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
 
     attempts = [facade.drain_current_only_maintenance(30_000_000)]
     assert attempts == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
-    with SQLiteConnector(str(database_path)) as inspection:
-        assert inspection.fetch_one(
-            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
-        ) == (1,)
 
-    # A bounded attempt releases EXCLUSIVE while retaining its durable OPEN
-    # checkpoint.  A tentative SHARED ingest claim must atomically roll back
-    # until that interrupted, partially destructive cycle is complete.
+    # A bounded attempt releases EXCLUSIVE after either retaining an OPEN
+    # checkpoint or completing an empty phase. A tentative SHARED ingest claim
+    # must atomically roll back while any actionable predecessor payload remains.
     assert facade.try_claim_ingest(True, 30_000_000) is None
     with SQLiteConnector(str(database_path)) as inspection:
         for table in (
@@ -1581,9 +1573,7 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
         ):
             assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
         assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_term_anchors") == (
-            0,
-        )
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (0,)
         assert connector.fetch_one(
             "SELECT publication_count FROM catalog_revision_descriptors "
             "WHERE revision = 1"

@@ -97,7 +97,6 @@ _CATALOG_WORKING_TABLE = "operational_catalog_working_candidates"
 _CANDIDATE_PREPARATION_TABLE = "operational_publication_candidate_preparations"
 _PREPARATION_TABLE = "operational_operational_preparations"
 _EFFECT_SEAL_TABLE = "operational_operational_preparation_effect_seals"
-_ACTIVATION_TABLE = "operational_operational_activations"
 _DELETION_HEAD_TABLE = "operational_deletion_request_generation_heads"
 
 _SOURCE_MANIFEST_DOMAIN = b"source_snapshot_manifest_v1"
@@ -1769,8 +1768,8 @@ def _validate_published_commit(connector: Any, commit: _PublishedCommit) -> None
                 "publication commit predecessor is not a sealed commit"
             )
     activation = connector.fetch_one(
-        f"SELECT preparation_id, operational_policy_id, activated_at "
-        f"FROM {_ACTIVATION_TABLE} WHERE source_revision = %s",
+        f"SELECT preparation_id, operational_policy_id, committed_at "
+        f"FROM {_COMMIT_TABLE} WHERE source_revision = %s",
         (commit.source_revision,),
     )
     if activation != (

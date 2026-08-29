@@ -322,6 +322,24 @@ def _operational_obligations() -> tuple[Mapping[str, Any], ...]:
     return tuple(result)
 
 
+def _inline_projection_names() -> frozenset[str]:
+    values: list[str] = []
+    for key in ("data_inline_projections", "operational_inline_projections"):
+        raw = ARTIFACT.get(key)
+        if not isinstance(raw, tuple) or not all(
+            isinstance(value, str) and value for value in raw
+        ):
+            raise OperationalSemanticRegistryError(
+                f"generated {key} registry is malformed"
+            )
+        values.extend(cast(tuple[str, ...], raw))
+    if len(values) != len(set(values)):
+        raise OperationalSemanticRegistryError(
+            "generated inline projection registries overlap"
+        )
+    return frozenset(values)
+
+
 def _known_relation_names() -> frozenset[str]:
     values: list[str] = []
     for key in ("data_relations", "operational_relations"):
@@ -333,6 +351,7 @@ def _known_relation_names() -> frozenset[str]:
                 f"generated {key} registry is malformed"
             )
         values.extend(cast(tuple[str, ...], raw))
+    values.extend(_inline_projection_names())
     values.append("schema_epoch_control")
     return frozenset(values)
 
@@ -635,11 +654,14 @@ def _validate_static_relations(backend: Backend, obligation_id: str) -> None:
         raise OperationalSemanticRegistryError(
             f"generated obligation {obligation_id!r} has no relations"
         )
+    inline_projections = _inline_projection_names()
     for relation_name in relations:
         if not isinstance(relation_name, str):
             raise OperationalSemanticRegistryError(
                 f"generated obligation {obligation_id!r} relation is malformed"
             )
+        if relation_name in inline_projections:
+            continue
         relation = _relation(backend, relation_name)
         if (
             not isinstance(relation.get("table"), str)
@@ -758,7 +780,6 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
     head_table = _table(backend, "ingest_coordination_head")
     generation_table = _table(backend, "ingest_generation")
     owner_table = _table(backend, "ingest_generation_owner")
-    handoff_table = _table(backend, "ingest_generation_handoff")
 
     head = _exact_lookup(
         connector,
@@ -777,12 +798,7 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
     current = _as_int(head[0], label="ingest.current_generation")
     completed = _as_int(head[1], label="ingest.completed_generation")
     phase = _as_text(head[2], label="ingest.phase")
-    if completed > current or phase not in {
-        "READY",
-        "INGEST_REQUESTED",
-        "DOWNLOADING",
-        "INGESTING",
-    }:
+    if completed > current or phase not in {"READY", "INGESTING"}:
         raise OperationalSemanticValidationError(
             "operational READY current ingest head values are invalid"
         )
@@ -811,15 +827,6 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
         key_column="generation",
         key=current,
     )
-    handoff = _exact_lookup(
-        connector,
-        label="current ingest handoff",
-        table=handoff_table,
-        columns="requested_at",
-        key_column="generation",
-        key=current,
-    )
-
     if current_row is None or completed_row is None:
         raise OperationalSemanticValidationError(
             "operational READY ingest head lacks an exact generation row"
@@ -838,24 +845,11 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
     _as_int(completed_row[1], label="completed generation timestamp")
 
     if phase == "READY":
-        if (
-            current != completed
-            or current_row[1] is None
-            or owner is not None
-            or handoff is not None
-        ):
+        if current != completed or current_row[1] is None or owner is not None:
             raise OperationalSemanticValidationError(
                 "operational READY ingest phase has live resume authority"
             )
         _as_int(current_row[1], label="current generation completion")
-        return
-
-    if (
-        phase == "INGEST_REQUESTED"
-        and current == completed == 0
-        and owner is None
-        and handoff is None
-    ):
         return
 
     if owner is None:
@@ -870,22 +864,10 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
     _as_int(owner[1], label="current ingest owner claimed_at")
     _as_int(owner[2], label="current ingest owner lease_expires_at")
 
-    if phase == "INGEST_REQUESTED":
-        if current <= completed or current_row[1] is not None or handoff is None:
-            raise OperationalSemanticValidationError(
-                "operational READY requested ingest handoff shape is invalid"
-            )
-        _as_int(handoff[0], label="current ingest handoff requested_at")
-        return
-
-    if phase == "DOWNLOADING" and (
-        current <= completed or current_row[1] is not None or handoff is not None
-    ):
+    if current <= completed or current_row[1] is not None:
         raise OperationalSemanticValidationError(
-            "operational READY downloading generation shape is invalid"
+            "operational READY ingesting generation shape is invalid"
         )
-    if handoff is not None:
-        _as_int(handoff[0], label="current ingest handoff requested_at")
 
 
 def check_download_ingest_handoff_contract_v1(connector: SQLConnector) -> None:
@@ -1298,7 +1280,6 @@ def _cleanup_jobs(
 ) -> dict[bytes, _CleanupJob]:
     job_table = _table(backend, "cleanup_job")
     sweep_table = _table(backend, "cleanup_sweep_target")
-    completion_table = _table(backend, "cleanup_completion")
     rows = _fetch_all(
         connector,
         "fixed cleanup jobs",
@@ -1307,12 +1288,10 @@ def _cleanup_jobs(
                j.algorithm_version, j.max_rows_per_transaction,
                j.frozen_root_count, j.frozen_root_set_sha256, j.state,
                j.created_at, j.completed_at,
-               s.target_kind, s.shard_no,
-               c.target_key, c.cycle_generation,
-               c.final_chain_sha256, c.deleted_count
+               j.final_chain_sha256, j.final_deleted_count,
+               s.target_kind, s.shard_no
         FROM {job_table} AS j
         LEFT JOIN {sweep_table} AS s ON s.target_key = j.target_key
-        LEFT JOIN {completion_table} AS c ON c.target_key = j.target_key
         ORDER BY j.target_key
         LIMIT {len(sweep) + 1}
         """,
@@ -1336,12 +1315,10 @@ def _cleanup_jobs(
             state_value,
             created_at,
             completed_at,
+            final_chain,
+            final_deleted,
             target_kind_value,
             shard_no_value,
-            completion_target_key,
-            completion_generation,
-            completion_chain,
-            completion_deleted,
         ) = row
         cleanup_id = _as_bytes(cleanup_id_value, label="cleanup_id", length=16)
         target_key = _as_bytes(target_key_value, label="cleanup target key", length=32)
@@ -1392,42 +1369,27 @@ def _cleanup_jobs(
                 "operational READY cleanup_id is duplicated"
             )
 
-        has_completion = completion_target_key is not None
         if state == "OPEN":
-            if completed_at is not None or has_completion:
+            if (
+                completed_at is not None
+                or final_chain is not None
+                or final_deleted is not None
+            ):
                 raise OperationalSemanticValidationError(
                     "operational READY OPEN cleanup has terminal authority"
                 )
         elif state == "COMPLETE":
-            if completed_at is None or not has_completion:
+            if completed_at is None or final_chain is None or final_deleted is None:
                 raise OperationalSemanticValidationError(
                     "operational READY COMPLETE cleanup lacks replay authority"
                 )
-            _as_int(completed_at, label="cleanup completed_at")
-            if (
-                _as_bytes(
-                    completion_target_key,
-                    label="cleanup completion target key",
-                    length=32,
-                )
-                != target_key
-            ):
+            completed_timestamp = _as_int(completed_at, label="cleanup completed_at")
+            if completed_timestamp < _as_int(created_at, label="cleanup created_at"):
                 raise OperationalSemanticValidationError(
-                    "operational READY cleanup completion target disagrees"
+                    "operational READY cleanup completion predates creation"
                 )
-            if (
-                _as_int(
-                    completion_generation,
-                    label="cleanup completion generation",
-                    minimum=1,
-                )
-                != cycle_generation
-            ):
-                raise OperationalSemanticValidationError(
-                    "operational READY cleanup completion generation is stale"
-                )
-            _as_bytes(completion_chain, label="cleanup completion chain", length=32)
-            _as_int(completion_deleted, label="cleanup completion deleted count")
+            _as_bytes(final_chain, label="cleanup final chain", length=32)
+            _as_int(final_deleted, label="cleanup final deleted count")
         else:
             raise OperationalSemanticValidationError(
                 "operational READY cleanup job state is invalid"
@@ -1444,21 +1406,6 @@ def _cleanup_jobs(
             state=state,
         )
 
-    orphan_completion = _fetch_all(
-        connector,
-        "fixed cleanup completions",
-        f"""
-        SELECT c.target_key
-        FROM {completion_table} AS c
-        LEFT JOIN {job_table} AS j ON j.target_key = c.target_key
-        WHERE j.cleanup_id IS NULL
-        LIMIT {len(sweep) + 1}
-        """,
-    )
-    if orphan_completion:
-        raise OperationalSemanticValidationError(
-            "operational READY cleanup completion has no current fixed-shard job"
-        )
     return result
 
 
@@ -1621,21 +1568,18 @@ def _validate_cleanup_checkpoints(
     jobs: Mapping[bytes, _CleanupJob],
 ) -> None:
     checkpoint_table = _table(backend, "cleanup_checkpoint")
-    receipt_table = _table(backend, "cleanup_batch_receipt")
     max_checkpoints = sum(len(phases_by_kind[kind]) for kind, _shard, _key in sweep)
     rows = _fetch_all(
         connector,
         "fixed cleanup checkpoints",
         f"""
         SELECT p.cleanup_id, p.phase, p.generation, p.cursor_bytes,
-               p.deleted_count, p.chain_sha256, p.state,
-               r.cleanup_id, r.batch_key, r.start_cursor, r.next_cursor,
-               r.prior_chain_sha256, r.prior_deleted_count,
-               r.input_sha256, r.output_sha256, r.row_count,
-               r.committed_generation, r.committed_at
+               p.deleted_count, p.chain_sha256, p.state, p.updated_at,
+               p.receipt_batch_key, p.receipt_start_cursor,
+               p.receipt_prior_chain_sha256,
+               p.receipt_prior_deleted_count,
+               p.receipt_input_sha256, p.receipt_row_count
         FROM {checkpoint_table} AS p
-        LEFT JOIN {receipt_table} AS r
-          ON r.cleanup_id = p.cleanup_id AND r.phase = p.phase
         ORDER BY p.cleanup_id, p.phase
         LIMIT {max_checkpoints + 1}
         """,
@@ -1655,17 +1599,13 @@ def _validate_cleanup_checkpoints(
             deleted_count,
             chain_value,
             state_value,
-            receipt_cleanup_id,
+            updated_at,
             batch_key,
             start_cursor,
-            next_cursor,
             prior_chain_sha256,
             prior_deleted_count,
             input_sha256,
-            output_sha256,
             row_count_value,
-            committed_generation,
-            committed_at,
         ) = row
         cleanup_id = _as_bytes(
             cleanup_id_value, label="cleanup checkpoint id", length=16
@@ -1680,6 +1620,7 @@ def _validate_cleanup_checkpoints(
             chain_value, label="cleanup checkpoint chain", length=32
         )
         state = _as_text(state_value, label="cleanup checkpoint state")
+        _as_int(updated_at, label="cleanup checkpoint updated_at")
         job = jobs.get(cleanup_id)
         if job is None or job.state != "OPEN":
             raise OperationalSemanticValidationError(
@@ -1691,25 +1632,23 @@ def _validate_cleanup_checkpoints(
                 "operational READY cleanup checkpoint phase has the wrong target kind"
             )
 
-        has_receipt = receipt_cleanup_id is not None
+        receipt_fields = (
+            batch_key,
+            start_cursor,
+            prior_chain_sha256,
+            prior_deleted_count,
+            input_sha256,
+            row_count_value,
+        )
+        has_receipt = batch_key is not None
         if has_receipt:
-            if (
-                _as_bytes(
-                    receipt_cleanup_id,
-                    label="cleanup receipt id",
-                    length=16,
-                )
-                != cleanup_id
-            ):
+            if any(value is None for value in receipt_fields):
                 raise OperationalSemanticValidationError(
-                    "operational READY cleanup receipt owner disagrees"
+                    "operational READY cleanup receipt is partially NULL"
                 )
             _as_bytes(batch_key, label="cleanup receipt batch key", length=32)
             receipt_start_cursor = _as_bytes(
                 start_cursor, label="cleanup receipt start cursor"
-            )
-            receipt_next_cursor = _as_bytes(
-                next_cursor, label="cleanup receipt next cursor"
             )
             receipt_prior_chain = _as_bytes(
                 prior_chain_sha256,
@@ -1723,20 +1662,13 @@ def _validate_cleanup_checkpoints(
             receipt_input = _as_bytes(
                 input_sha256, label="cleanup receipt input", length=32
             )
-            receipt_output = _as_bytes(
-                output_sha256, label="cleanup receipt output", length=32
-            )
             row_count = _as_int(row_count_value, label="cleanup receipt row count")
-            receipt_generation = _as_int(
-                committed_generation, label="cleanup receipt generation"
-            )
-            _as_int(committed_at, label="cleanup receipt committed_at")
             expected_output = _cleanup_next_chain_sha256(
                 receipt_prior_chain,
                 phase,
-                receipt_generation,
+                generation,
                 receipt_start_cursor,
-                receipt_next_cursor,
+                cursor,
                 receipt_input,
                 row_count,
             )
@@ -1745,10 +1677,8 @@ def _validate_cleanup_checkpoints(
                 label="cleanup receipt next deleted count",
             )
             if (
-                receipt_next_cursor != cursor
-                or expected_output != receipt_output
-                or receipt_output != checkpoint_chain
-                or receipt_generation != generation
+                generation <= 1
+                or expected_output != checkpoint_chain
                 or row_count > job.max_rows_per_transaction
                 or checkpoint_deleted_count != expected_deleted
             ):
@@ -1756,9 +1686,13 @@ def _validate_cleanup_checkpoints(
                     "operational READY cleanup receipt does not match checkpoint poststate"
                 )
         else:
-            if any(value is not None for value in row[8:]):
+            if any(value is not None for value in receipt_fields):
                 raise OperationalSemanticValidationError(
                     "operational READY cleanup receipt is partially NULL"
+                )
+            if generation != 1:
+                raise OperationalSemanticValidationError(
+                    "operational READY advanced cleanup checkpoint lacks a receipt"
                 )
             row_count = -1
 
@@ -1769,9 +1703,7 @@ def _validate_cleanup_checkpoints(
             raise OperationalSemanticValidationError(
                 "operational READY cleanup checkpoint terminal receipt equivalence fails"
             )
-        if has_receipt and (
-            (receipt_start_cursor == receipt_next_cursor) != terminal_receipt
-        ):
+        if has_receipt and ((receipt_start_cursor == cursor) != terminal_receipt):
             raise OperationalSemanticValidationError(
                 "operational READY cleanup receipt cursor movement disagrees"
             )
@@ -1787,23 +1719,6 @@ def _validate_cleanup_checkpoints(
                 raise OperationalSemanticValidationError(
                     "operational READY cleanup phase bypasses an earlier phase"
                 )
-
-    orphan_receipts = _fetch_all(
-        connector,
-        "fixed cleanup receipt ownership",
-        f"""
-        SELECT r.cleanup_id, r.phase
-        FROM {receipt_table} AS r
-        LEFT JOIN {checkpoint_table} AS p
-          ON p.cleanup_id = r.cleanup_id AND p.phase = r.phase
-        WHERE p.cleanup_id IS NULL
-        LIMIT {max_checkpoints + 1}
-        """,
-    )
-    if orphan_receipts:
-        raise OperationalSemanticValidationError(
-            "operational READY cleanup receipt has no checkpoint"
-        )
 
 
 def _validate_fixed_cleanup_state(connector: SQLConnector, backend: Backend) -> None:
@@ -2177,7 +2092,6 @@ def _validate_open_pcom_event_transition(
     checkpoint = _table(backend, "cleanup_checkpoint")
     phase_registry = _table(backend, "cleanup_phase")
     root = _table(backend, "cleanup_cycle_root")
-    receipt = _table(backend, "cleanup_batch_receipt")
     jobs = _fetch_all(
         connector,
         "OPEN PCOM job",
@@ -2354,8 +2268,8 @@ def _validate_open_pcom_event_transition(
                 connector,
                 label="empty PCOM compound receipt proof",
                 query=(
-                    f"SELECT start_cursor, next_cursor, row_count FROM {receipt} "
-                    "WHERE cleanup_id = %s "
+                    f"SELECT receipt_start_cursor, cursor_bytes, receipt_row_count "
+                    f"FROM {checkpoint} WHERE cleanup_id = %s "
                     "AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
                 ),
                 parameters=(cleanup_id,),
@@ -2434,8 +2348,9 @@ def _validate_open_pcom_event_transition(
         connector,
         label="PCOM compound receipt proof",
         query=(
-            f"SELECT start_cursor, next_cursor, row_count FROM {receipt} "
-            "WHERE cleanup_id = %s AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
+            f"SELECT receipt_start_cursor, cursor_bytes, receipt_row_count "
+            f"FROM {checkpoint} WHERE cleanup_id = %s "
+            "AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
         ),
         parameters=(cleanup_id,),
     )

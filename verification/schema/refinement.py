@@ -453,6 +453,7 @@ class PhysicalSchema:
     source_locator_protocol: PhysicalSourceLocatorProtocol | None = None
     bounded_values: tuple[PhysicalBoundedValue, ...] = ()
     runtime_obligations: tuple[str, ...] = ()
+    inline_projections: tuple[str, ...] = ()
 
     def relation(self, name: str) -> PhysicalRelationSpec | None:
         return next(
@@ -732,6 +733,7 @@ def load_physical_schema(
     name = _required_string(document, "name")
     logical_contract = _required_string(document, "logical_contract")
     source_slice = _required_string_tuple(document, "source_slice")
+    inline_projections = _required_string_tuple(document, "inline_projections")
     maximum_mariadb_index_bytes = document.get("maximum_mariadb_index_bytes", 3072)
     if (
         not isinstance(maximum_mariadb_index_bytes, int)
@@ -1152,6 +1154,7 @@ def load_physical_schema(
         source_locator_protocol=source_locator_protocol,
         bounded_values=tuple(bounded_values),
         runtime_obligations=runtime_obligations,
+        inline_projections=inline_projections,
     )
     _validate_bootstrap_contract(document, physical)
     _validate_physical_schema(physical, logical_schema)
@@ -3433,28 +3436,35 @@ def _validate_physical_schema(
                 "canonical digest protocol must declare bounded streamed tree "
                 "validation and collision comparison"
             )
-        relation_names = (
+        physical_relation_names = (
             protocol.policy_relation,
             protocol.allocation_relation,
-            protocol.page_relation,
-            protocol.descriptor_relation,
             protocol.parent_relation,
             protocol.value_relation,
         )
-        protocol_relations = tuple(physical.relation(name) for name in relation_names)
+        protocol_relations = tuple(
+            physical.relation(name) for name in physical_relation_names
+        )
         if any(relation is None for relation in protocol_relations):
             raise ValueError(
                 "canonical digest protocol references a missing graph relation"
             )
-        policy_relation, allocation, page, descriptor, parent, value_relation = (
-            protocol_relations
-        )
+        policy_relation, allocation, parent, value_relation = protocol_relations
         assert policy_relation is not None
         assert allocation is not None
-        assert page is not None
-        assert descriptor is not None
         assert parent is not None
         assert value_relation is not None
+        if {
+            protocol.page_relation,
+            protocol.descriptor_relation,
+        } - set(physical.inline_projections):
+            raise ValueError(
+                "canonical page read shapes must be declared inline projections"
+            )
+        page_logical = logical.relation(protocol.page_relation)
+        descriptor_logical = logical.relation(protocol.descriptor_relation)
+        if page_logical is None or descriptor_logical is None:
+            raise ValueError("canonical page inline projections lack logical contracts")
         allocation_family_names = (
             "canonical_value_allocation_anchor",
             "canonical_value_allocation_digest_domain",
@@ -3527,10 +3537,10 @@ def _validate_physical_schema(
                 "canonical value allocation must be a sealed narrow digest family"
             )
         if (
-            page.kind != "view"
-            or page.vertical_view is None
-            or page.primary_key != ("page_sha256",)
-            or page.runtime_unique_keys != (("page_bytes",),)
+            set(page_logical.candidate_keys)
+            != {frozenset({"page_sha256"}), frozenset({"page_bytes"})}
+            or page_logical.attributes
+            != ("page_sha256", protocol.digest_attribute, "page_bytes")
             or page_payload.primary_key != ("page_sha256",)
             or page_payload.runtime_unique_keys != (("page_bytes",),)
         ):
@@ -3538,29 +3548,24 @@ def _validate_physical_schema(
                 "canonical page must project a sealed collision-checked payload"
             )
         if (
-            descriptor.kind != "view"
-            or descriptor.vertical_view is None
-            or descriptor.primary_key != ("page_sha256",)
-            or descriptor.unique_keys
-            != ((protocol.digest_attribute, "level", "page_position"),)
+            set(descriptor_logical.candidate_keys)
+            != {
+                frozenset({"page_sha256"}),
+                frozenset({protocol.digest_attribute, "level", "page_position"}),
+            }
+            or descriptor_logical.attributes
+            != (
+                "page_sha256",
+                protocol.digest_attribute,
+                "level",
+                "page_position",
+                "subtree_item_count",
+            )
             or page_coordinate.primary_key
             != (protocol.digest_attribute, "level", "page_position")
             or page_coordinate.unique_keys != (("page_sha256",),)
         ):
             raise ValueError("canonical page descriptor keys are not exact")
-        if (
-            page.vertical_view.family != descriptor.vertical_view.family
-            or page.vertical_view.seal_relation
-            != descriptor.vertical_view.seal_relation
-            or page.vertical_view.anchor_relation
-            != descriptor.vertical_view.anchor_relation
-            or page.vertical_view.projection_attributes
-            != ("page_sha256", protocol.digest_attribute, "page_bytes")
-            or descriptor.vertical_view.projection_attributes
-        ):
-            raise ValueError(
-                "canonical page and descriptor must share one sealed family"
-            )
         if parent.primary_key != (
             "parent_sha256",
             "position",
@@ -3871,10 +3876,15 @@ def _validate_physical_schema(
         raise ValueError("physical specification contains duplicate relation names")
     logical_names = {relation.name for relation in logical.relations}
     physical_names = set(implemented_relation_names)
-    if logical_names != physical_names:
+    inline_names = set(physical.inline_projections)
+    if len(physical.inline_projections) != len(inline_names):
+        raise ValueError("inline_projections contains duplicate relation names")
+    if physical_names & inline_names:
+        raise ValueError("inline projections cannot also be SQL relations")
+    if logical_names != physical_names | inline_names:
         raise ValueError(
             "physical relation coverage differs from the logical contract: "
-            f"missing={sorted(logical_names - physical_names)!r} "
+            f"missing={sorted(logical_names - physical_names - inline_names)!r} "
             f"unknown={sorted(physical_names - logical_names)!r}"
         )
     if len(physical.source_slice) != len(set(physical.source_slice)):

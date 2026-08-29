@@ -21,15 +21,15 @@ conditional_limit_trigger_table_count = 250
 planning_gallery_count = 300000
 planning_average_files_per_gallery = 50
 stress_gallery_count = 1000000
-selected_catalog_family_count = 27
-selected_catalog_physical_relations_before = 178
-selected_catalog_physical_relations_after = 32
+selected_catalog_family_count = 30
+selected_catalog_physical_relations_before = 190
+selected_catalog_physical_relations_after = 35
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 160
+catalog_physical_table_count_after = 151
 operational_physical_table_count_before = 75
-operational_physical_table_count_after = 70
+operational_physical_table_count_after = 66
 total_physical_table_count_before = 381
-total_physical_table_count_after = 230
+total_physical_table_count_after = 217
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -61,7 +61,8 @@ affected_catalog_relations = [
   "source_snapshot_manifest_identity",
   "source_scope",
 ]
-affected_operational_relations = ["download_generation_owner", "ingest_generation_owner", "gallery_observation_staging", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "cleanup_job", "cleanup_cycle_root"]
+capacity_neutral_catalog_authority_substitutions = ["file_name_identity", "tag_term", "catalog_contributor"]
+affected_operational_relations = ["download_generation_owner", "ingest_generation_owner", "gallery_observation_staging", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 fixed_bootstrap_relations = ["analysis_stage", "publication_stage", "artifact_storage_codec", "artifact_zip_writer_policy"]
 bounded_registry_relations = ["manifest_policy", "analysis_policy", "title_sort_policy", "display_title_policy", "artifact_producer_fingerprint", "artifact_policy_semantics"]
 lineage_current_only_relations = [
@@ -84,7 +85,7 @@ lineage_current_only_relations = [
 ]
 singleton_owner_relations = ["download_generation_owner", "ingest_generation_owner"]
 planning_gallery_derived_relations = ["source_scope"]
-bounded_protocol_relations = ["cleanup_job", "cleanup_cycle_root"]
+bounded_protocol_relations = ["cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 staging_capacity_relations = ["gallery_observation_staging", "gallery_observation_staging_request", "gallery_observation_staging_request_budget"]
 bounded_registry_maximum_rows = 50000
 fixed_analysis_stage_rows = 15
@@ -118,6 +119,9 @@ cleanup_cycle_root_peak_rows = 256
 cleanup_frozen_root_key_maximum_bytes = 260
 cleanup_cycle_root_accounted_bytes_per_row = 1280
 cleanup_cycle_root_conservative_peak_bytes = 327680
+cleanup_checkpoint_peak_rows = 16
+cleanup_checkpoint_accounted_bytes_per_row = 16384
+cleanup_checkpoint_conservative_peak_bytes = 262144
 cleanup_frozen_root_obligation_id = "h2hdb.operational.cleanup-frozen-root-set.v1"
 planning_source_scope_peak_rows = 300019
 source_scope_measurement_relation = "source_scope"
@@ -160,7 +164,7 @@ bounded_nonmeasured_accounted_bytes_per_row = 1000000
 bounded_nonmeasured_conservative_peak_bytes = 285000000
 capacity_measurement_receipt = "capacity_measurement.toml"
 capacity_measurement_raw = "capacity_measurement.json"
-capacity_obligation = "apply the soft limit only to the exact closed set of newly recomposed or widened tables; bind accepted measurements to exact physical relation shapes without a manifest-hash cycle; enforce the staging emergency budget independently of files-per-gallery assumptions; retire acknowledged terminal staging control state in-band under the live shared ingest fence before admitting the next gallery, with serialized exclusive fixed-point cleanup only as a backstop; measure source_scope at the retained planning peak; reject an unbounded retention policy; retain an explicit published depth-zero baseline prune; and treat existing high-cardinality payload tables as outside this recomposition decision"
+capacity_obligation = "apply the soft limit only to the exact closed set of newly recomposed or widened tables; treat file_name_identity, tag_term, and catalog_contributor as capacity-neutral authority substitutions because each retains the exact complete column shape and candidate keys of an existing widest member while deleting redundant PK-only or duplicated-member tables; bind accepted measurements to exact physical relation shapes without a manifest-hash cycle; enforce the staging emergency budget independently of files-per-gallery assumptions; retire acknowledged terminal staging control state in-band under the live shared ingest fence before admitting the next gallery, with serialized exclusive fixed-point cleanup only as a backstop; measure source_scope at the retained planning peak; reject an unbounded retention policy; retain an explicit published depth-zero baseline prune; and treat existing high-cardinality payload tables as outside this recomposition decision"
 
 [canonical_digest_contract]
 policy_relation = "canonical_digest_policy"
@@ -278,8 +282,8 @@ framing = "ascii('h2hdb-vnext-file-key\\0') || u32be(algorithm_version) || u32be
 collision_model = "collision_checked_stored_identity"
 role_classifier_version = 1
 metadata_name = "galleryinfo.txt"
-write_obligation = "derive file_key deterministically by SHA-256 over the exact versioned framed name_bytes, reject caller-supplied keys, and establish digest-to-name only as a stored FD through UNIQUE, byte-compare the full name_bytes, rejection on mismatch, and immutable identity use after an observation seal under the collision-checked stored-identity rule; classify file_role as METADATA if and only if name_bytes is the exact ASCII byte sequence galleryinfo.txt; every other valid direct-child dirent is CONTENT; persist anchor, exact unique name bytes, and derived role before inserting the PK-only file-name seal last"
-read_obligation = "read only the sealed file-name projection, recompute file_key and file_role from exact name_bytes on READY validation, and reject unknown algorithm/classifier versions, Unicode normalization, case folding, trimming, or collation-based filename identity"
+write_obligation = "derive file_key deterministically by SHA-256 over the exact versioned framed name_bytes, reject caller-supplied keys, and establish the complete digest-to-name identity as one immutable stored FD through reciprocal UNIQUE keys; byte-compare the full name_bytes and reject every collision mismatch under the collision-checked stored-identity rule; derive but do not persist file_role as METADATA if and only if name_bytes is the exact ASCII byte sequence galleryinfo.txt, with every other valid direct-child dirent classified as CONTENT"
+read_obligation = "read the authoritative file-name identity row, recompute file_key and derive file_role from exact name_bytes on every runtime boundary and READY validation, and reject unknown algorithm/classifier versions, Unicode normalization, case folding, trimming, or collation-based filename identity"
 
 [gallery_observation_identity_contract]
 relation = "gallery_observation"
@@ -418,24 +422,6 @@ rationale = "Represent a nonempty page's lower and upper ordering bounds as sepa
 write_obligation = "for every nonempty decoded page derive exact first_key and last_key, require unsigned bytewise first_key less than or equal to last_key, insert or exact-compare the bounds anchor and both facts, and insert the PK-only bounds seal last; for the unique empty leaf insert no bounds-family row"
 
 [[vertical_family]]
-name = "file_name_identity_vertical"
-anchor_relation = "file_name_identity_anchor"
-seal_relation = "file_name_identity_seal"
-view_relation = "file_name_identity"
-key_attributes = ["file_key"]
-visibility = "sealed_total"
-members = [
-  { relation = "file_name_identity_name_bytes", key_attributes = ["file_key"], value_attribute = "name_bytes", join = { source_relation = "file_name_identity_seal", source_attributes = ["file_key"], member_attributes = ["file_key"] }, project = true },
-  { relation = "file_name_identity_file_role", key_attributes = ["file_key"], value_attribute = "file_role", join = { source_relation = "file_name_identity_seal", source_attributes = ["file_key"], member_attributes = ["file_key"] }, project = true },
-]
-semantic_fds = [
-  { determinant = ["file_key"], dependent = ["name_bytes", "file_role"] },
-  { determinant = ["name_bytes"], dependent = ["file_key", "file_role"] },
-]
-rationale = "Keep the exact collision-checked file-name bytes and their deterministic classifier in separate hot facts while the PK-only seal makes only complete, byte-compared identities visible."
-write_obligation = "derive file_key from the exact framed name_bytes, byte-compare every digest or name conflict, derive file_role from the exact classifier, insert or exact-compare the anchor, unique name-bytes fact, and role fact, and insert the PK-only file-name seal last before any observation file may reference it; every mismatch performs zero durable writes"
-
-[[vertical_family]]
 name = "gallery_observation_file_vertical"
 anchor_relation = "gallery_observation_file_anchor"
 seal_relation = "gallery_observation_file_seal"
@@ -451,43 +437,7 @@ semantic_fds = [
   { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
 ]
 rationale = "Use the compact observation/file-name coordinate as the family key, keep ordinal and payload digest in separate hot facts, and enforce the alternate observation/file-number key directly on the ordinal fact."
-write_obligation = "under the locked gallery staging checkpoint, derive every file_no as the exact zero-based contiguous 0..n-1 FILE-component ordinal, require a sealed file-name identity and exact content blob, insert or exact-compare the observation-file anchor, unique file-number fact, and file-digest fact, then insert the PK-only observation-file seal last before filesystem facts, hash occurrences, manifests, or semantic readers may reference the file"
-
-[[vertical_family]]
-name = "tag_term_vertical"
-anchor_relation = "tag_term_anchor"
-seal_relation = "tag_term_seal"
-view_relation = "tag_term"
-key_attributes = ["tag_id"]
-visibility = "sealed_total"
-members = [
-  { relation = "tag_term_identity", key_attributes = ["namespace", "tag_value_sha256"], value_attribute = "tag_id", join = { source_relation = "tag_term_seal", source_attributes = ["tag_id"], member_attributes = ["tag_id"] }, project = true },
-]
-semantic_fds = [
-  { determinant = ["tag_id"], dependent = ["namespace", "tag_value_sha256"] },
-  { determinant = ["namespace", "tag_value_sha256"], dependent = ["tag_id"] },
-]
-rationale = "Keep the true namespace/canonical-value natural key in one narrow identity map and expose it through a surrogate-keyed anchor and PK-only completion seal."
-write_obligation = "after the canonical tag-value identity is fully sealed, insert or exact-compare the tag anchor and natural identity map, reject any namespace, value, or surrogate mismatch, and insert the PK-only tag seal last before observation, analysis, or publication associations may reference the tag"
-
-[[vertical_family]]
-name = "catalog_contributor_vertical"
-anchor_relation = "catalog_contributor_anchor"
-seal_relation = "catalog_contributor_seal"
-view_relation = "catalog_contributor"
-key_attributes = ["revision", "publication_key", "position"]
-visibility = "sealed_total"
-members = [
-  { relation = "catalog_contributor_name_sha256", key_attributes = ["revision", "publication_key", "position"], value_attribute = "contributor_name_sha256", join = { source_relation = "catalog_contributor_seal", source_attributes = ["revision", "publication_key", "position"], member_attributes = ["revision", "publication_key", "position"] }, project = true },
-  { relation = "catalog_contributor_role", key_attributes = ["revision", "publication_key", "position"], value_attribute = "role", join = { source_relation = "catalog_contributor_seal", source_attributes = ["revision", "publication_key", "position"], member_attributes = ["revision", "publication_key", "position"] }, project = true },
-  { relation = "catalog_contributor_identity", key_attributes = ["revision", "publication_key", "contributor_name_sha256", "role"], value_attribute = "position", join = { source_relation = "catalog_contributor_seal", source_attributes = ["revision", "publication_key", "position"], member_attributes = ["revision", "publication_key", "position"] }, project = false },
-]
-semantic_fds = [
-  { determinant = ["revision", "publication_key", "position"], dependent = ["contributor_name_sha256", "role"] },
-  { determinant = ["revision", "publication_key", "contributor_name_sha256", "role"], dependent = ["position"] },
-]
-rationale = "Keep ordered contributor name and role atoms in hot occurrence-keyed facts while one cold natural identity preserves exact no-duplicate name/role membership and composite FKs make both copies congruent."
-write_obligation = "require the parent catalog publication seal, insert or exact-compare contributor anchor, referentially UNIQUE name and role facts, insert the full revision/publication/name/role identity with congruence FKs, then insert the PK-only contributor seal last; no optional contributor field has production authority"
+write_obligation = "under the locked gallery staging checkpoint, derive every file_no as the exact zero-based contiguous 0..n-1 FILE-component ordinal, require the authoritative file_name_identity row, derive file_role exactly from its name_bytes, and require the exact content blob; insert or exact-compare the observation-file anchor, unique file-number fact, and file-digest fact, then insert the PK-only observation-file seal last before filesystem facts, hash occurrences, manifests, or semantic readers may reference the file"
 
 [[vertical_family]]
 name = "analysis_file_hash_decision_shadow_vertical"
@@ -525,7 +475,7 @@ candidate_baseline_relation = "publication_candidate_base_publication_commit"
 activation_relation = "operational_activation"
 operational_effect_seal_relation = "operational_preparation_effect_seal"
 operational_policy_relation = "operational_policy"
-runtime_obligation = "publication_commit is the sole complete immutable commit authority; the catalog/source descriptors and operational effect exist first, a fresh writer inserts publication_commit_anchor, initializes the one-row permanent finalization checkpoint from that anchor, and inserts the complete wide publication_commit last after the generation successor and all policy/count/timestamp facts are validated; replay is candidate/preparation-key local O(1); candidate_id recovery is permanent and independent of transient candidates; the common head stores only one receipt and CASes in the same transaction; operational_activation is a derived read-only view and is never inserted or updated; finalization remains one append-only marker inserted with the retained current terminal FINALIZE_ARTIFACTS receipt"
+runtime_obligation = "publication_commit is the sole complete immutable commit authority; the catalog/source descriptors and operational effect exist first, a fresh writer inserts publication_commit_anchor, initializes the one-row permanent finalization checkpoint from that anchor, and inserts the complete wide publication_commit last after the generation successor and all policy/count/timestamp facts are validated; replay is candidate/preparation-key local O(1); candidate_id recovery is permanent and independent of transient candidates; the common head stores only one receipt and CASes in the same transaction; operational_activation is a derived read-only inline projection, not a SQL schema object, and is never inserted or updated; finalization remains one append-only marker inserted with the retained current terminal FINALIZE_ARTIFACTS receipt"
 ready_obligation = "full SchemaAdmin.check scans only the retained current/reachable publication window and validates every wide commit plus anchor/checkpoint insertion graph, candidate/revision/source/generation/preparation candidate-key uniqueness, contiguous successor edges inside that window, successor equals predecessor plus one, no fork/orphan/gap after the compacted floor, the unique maximum no-successor head, baseline/protection references, published projections, derived activation and finalization; generation zero is required only before first compaction and the oldest retained positive node may be the floor without an incoming edge; quick check_readiness remains epoch-only O(1) and no OPDS hot path scans even the retained window"
 
 [[batch_receipt_projection]]
@@ -622,7 +572,7 @@ metadata_leaf_record = "u64be(byte_offset_int63) || u32be(chunk_length) || exact
 metadata_stream_framing = "ascii('h2hdb-vnext-gallery-observation-metadata\\0') || u32be(version=1) || u64be(gid_int63) || u8(field=1:title) || u64be(strict_utf8_length_int63) || exact_utf8 || u8(field=2:comment) || u64be(strict_utf8_length_int63) || exact_utf8 || u8(field=3:upload_account) || u64be(strict_utf8_length_int63) || exact_utf8 || u64be(upload_time_int63) || u64be(download_time_int63) || u64be(modified_time_int63) || u32be(scan_observation_version) || u64be(source_file_count_int63) || u8(page_count_presence) || if_present(u32be(page_count)); fields are fixed in this order, presence is exactly 0 or 1, no generic map exists, and arbitrary text streams across deterministic chunks without a monolithic database value"
 branch_record = "raw32(child_sha256) || u64be(child_subtree_item_count)"
 canonical_tree_rule = "leaf records are strictly ordered by file_no, tag position, exact unsigned DIRECTORY name bytes, or METADATA byte offset; FILE file_no and TAG position are exact zero-based contiguous canonical ordinals across the whole component, DIRECTORY names come from os.fsencode with surrogateescape round-trip and use the exact opaque POSIX 1..255-byte direct-child dirent domain (NUL, slash, dot, and dot-dot forbidden; backslash and invalid UTF-8 allowed), and lstat without symlink following classifies REGULAR/DIRECTORY/SYMLINK/OTHER; DIRECTORY canonical_ordinal equals the zero-based sorted position and duplicate names are forbidden; for a nonempty component every leaf before the final leaf is full and the final leaf has 1..capacity entries including a full final leaf, so an exact capacity multiple never appends an empty page; FILE and TAG leaf capacity is 256, DIRECTORY leaf capacity is 192 so the 311-byte maximum record cannot exceed the 65536-byte page limit, METADATA leaf capacity is one deterministic 1..32768-byte chunk whose offset begins at zero and is exactly contiguous, every nonfinal METADATA chunk is exactly 32768 bytes and the final is 1..32768, branch pages have analogous ordered groups with capacity 256 and the root has minimal height with no unary wrapper; a single empty level-zero leaf exists if and only if a FILE, TAG, or DIRECTORY component has zero items, while the fixed-prefix METADATA stream is never empty; branch child digests are unique within a parent; branch count is the exact sum of child record counts or METADATA byte lengths; depth is at most eight and every portable identifier, size, record count, byte offset, and aggregate count is checked in unbounded host arithmetic then required to be at most signed-int63 without wrap, device/inode preserve full unsigned u64 raw bytes, and modified/changed nanoseconds preserve signed i64 two's-complement bytes"
-materialization_rule = "decode every page exactly and materialize its single gallery_observation_page_descriptor row plus an optional gallery_observation_page_key_bounds row; FILE/TAG boundaries are exact u64be(file_no or position), DIRECTORY boundaries are exact opaque name bytes, METADATA boundaries are exact u64be(byte_offset), the bounds row is absent if and only if the page is the unique empty FILE/TAG/DIRECTORY tree leaf, and otherwise its first_key and last_key derive recursively from exact decoded records or child bounds and satisfy unsigned bytewise first_key less than or equal to last_key; adjacent METADATA leaves require the next offset to equal the previous offset plus the exact previous chunk length rather than only comparing bounds; for every branch page also materialize one gallery_observation_page_child row per child position with the exact child digest; in each bounded leaf write transaction require exact equality between every FILE record and the sealed file_name_identity view plus content_blob, write the observation-file anchor, its exact zero-based contiguous file_no and file_sha256 facts, seal that family last, then write the gallery_observation_file_filesystem family seal-last; for every TAG record require the sealed tag view plus its canonical tag-value payload, then write gallery_observation_tag; advance only receipted exact counters; establish an independent durable exact merge-join over canonical name bytes between every DIRECTORY REGULAR record and exactly one FILE record by exact name/file_key, size_bytes, device, inode, modified_ns, and changed_ns, require no FILE absent from DIRECTORY, and require every nonregular DIRECTORY record to have no FILE record; DIRECTORY leaf records are the sole row-level authority for nonregular exact direct-child facts while gallery_observation_directory remains an aggregate audit receipt whose count is checked against receipted DIRECTORY coverage; derive every count, component, and boundary only from normalized page authority, and reject unknown tags, mixed components, duplicate positions, count mismatch, cross-component mismatch, normalized-row mismatch, boundary mismatch, truncation, trailing bytes, or a noncanonical page/tree"
+materialization_rule = "decode every page exactly and materialize its single gallery_observation_page_descriptor row plus an optional gallery_observation_page_key_bounds row; FILE/TAG boundaries are exact u64be(file_no or position), DIRECTORY boundaries are exact opaque name bytes, METADATA boundaries are exact u64be(byte_offset), the bounds row is absent if and only if the page is the unique empty FILE/TAG/DIRECTORY tree leaf, and otherwise its first_key and last_key derive recursively from exact decoded records or child bounds and satisfy unsigned bytewise first_key less than or equal to last_key; adjacent METADATA leaves require the next offset to equal the previous offset plus the exact previous chunk length rather than only comparing bounds; for every branch page also materialize one gallery_observation_page_child row per child position with the exact child digest; in each bounded leaf write transaction require exact equality between every FILE record and the authoritative file_name_identity row after deriving file_role from exact name_bytes, plus content_blob, write the observation-file anchor, its exact zero-based contiguous file_no and file_sha256 facts, seal that family last, then write the gallery_observation_file_filesystem family seal-last; for every TAG record require the authoritative tag_term row plus its canonical tag-value payload, then write gallery_observation_tag; advance only receipted exact counters; establish an independent durable exact merge-join over canonical name bytes between every DIRECTORY REGULAR record and exactly one FILE record by exact name/file_key, size_bytes, device, inode, modified_ns, and changed_ns, require no FILE absent from DIRECTORY, and require every nonregular DIRECTORY record to have no FILE record; DIRECTORY leaf records are the sole row-level authority for nonregular exact direct-child facts while gallery_observation_directory remains an aggregate audit receipt whose count is checked against receipted DIRECTORY coverage; derive every count, component, and boundary only from normalized page authority, and reject unknown tags, mixed components, duplicate positions, count mismatch, cross-component mismatch, normalized-row mismatch, boundary mismatch, truncation, trailing bytes, or a noncanonical page/tree"
 collision_obligation = "page_sha256 is raw SHA-256 of the exact already-domain-prefixed page_bytes frame; on an existing digest compare all page_bytes byte-for-byte before reuse; any payload or decoded descriptor mismatch performs zero durable writes"
 seal_obligation = "gallery_observation_page_descriptor_seal reverse-references the descriptor anchor, raw immutable page payload, component, level, and subtree-count fact, and all semantic page readers require that descriptor seal; all observation children may reference gallery_observation_allocation while staged, but readers and source_build_gallery require the final gallery_observation seal inserted last after joining root page descriptors and proving exactly one METADATA, one FILE, one TAG, and one DIRECTORY gallery_observation_tree_root, complete canonical page-tree validation, exact receipted leaf-to-normalized-row coverage, completed FILE/DIRECTORY merge-join equality, root counts obtained only from page descriptors, and exact observation descriptor equality; final seal validates only bounded scalar checkpoints and never rescans a giant child relation"
 cleanup_rule = "every bounded page insert or reuse transaction atomically inserts gallery_observation_allocation_page for the staging allocation, and final seal advances only from durable association receipts; observation cleanup removes those associations child-first; a GALLERY_OBSERVATION_PAGE sweep runs only behind the outer maintenance gate that excludes concurrent page association inserts, requires zero allocation associations, zero tree roots, and zero incoming child edges, deletes outgoing parent edges, then bounds seal, facts, and anchor, then descriptor seal, descriptor facts, raw page payload, and descriptor anchor in exact child-first order, skips FK-blocked rows, and repeats parent-level-first until convergence because every branch edge strictly decreases level"
@@ -690,14 +640,10 @@ root_key = ["revision", "publication_key"]
 external_blockers = []
 retained_outliving = []
 semantic_blockers = []
-derived_views = ["catalog_contributor"]
+derived_views = []
 child_phases = [
   ["catalog_publication_storage"],
-  ["catalog_contributor_seal"],
-  ["catalog_contributor_identity"],
-  ["catalog_contributor_name_sha256"],
-  ["catalog_contributor_role"],
-  ["catalog_contributor_anchor"],
+  ["catalog_contributor"],
   ["catalog_publication_order"],
   ["catalog_publication_content"],
   ["catalog_subject"],
@@ -793,14 +739,12 @@ semantic_blockers = [
 machine_gates = [
   { id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" },
 ]
-derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new", "catalog_contributor"]
+derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
   ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage"],
-  ["prepared_artifact", "catalog_contributor_seal"],
-  ["artifact_input", "catalog_contributor_identity"],
-  ["catalog_contributor_name_sha256"],
-  ["catalog_contributor_role"],
-  ["publication_checkpoint", "catalog_contributor_anchor"],
+  ["prepared_artifact", "catalog_contributor"],
+  ["artifact_input"],
+  ["publication_checkpoint"],
   ["publication_selection_storage", "catalog_publication_order"],
   ["catalog_publication_content"],
   ["catalog_subject"],
@@ -907,9 +851,9 @@ external_blockers = [
   { relation = "gallery_identity", attributes = ["scope_key"], referenced_relation = "source_scope", referenced_attributes = ["scope_key"] },
   { relation = "gallery_identity", attributes = ["locator_sha256"], referenced_relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
   { relation = "gallery_observation", attributes = ["observation_identity_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "gallery_observation_tag", attributes = ["tag_id"], referenced_relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
-  { relation = "gallery_observation_artist", attributes = ["artist_tag_id"], referenced_relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
-  { relation = "catalog_subject", attributes = ["tag_id"], referenced_relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
+  { relation = "gallery_observation_tag", attributes = ["tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
+  { relation = "gallery_observation_artist", attributes = ["artist_tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
+  { relation = "catalog_subject", attributes = ["tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
   { relation = "analysis_impacted_content", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "analysis_impacted_content_provenance", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "analysis_content_owner_candidate_shadow", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
@@ -932,7 +876,7 @@ retained_outliving = [
   { relation = "catalog_publication_storage", attributes = ["summary_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["language_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["source_title_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "catalog_contributor_name_sha256", attributes = ["contributor_name_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "catalog_contributor", attributes = ["contributor_name_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 semantic_blockers = []
 machine_gates = [
@@ -942,9 +886,9 @@ machine_gates = [
   { id = "operational.canonical_value_upload(generation,value_sha256)", semantic_obligation_id = "catalog.retention.v2" },
   { id = "operational.canonical_value_maintenance_fence", semantic_obligation_id = "catalog.retention.v2" },
 ]
-derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "tag_term", "artifact_delta_old", "artifact_delta_new", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor"]
+derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "artifact_delta_old", "artifact_delta_new", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor"]
 child_phases = [
-  ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term_seal", "tag_term_identity", "tag_term_anchor", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"],
+  ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"],
   ["artifact_policy_semantics"],
   ["canonical_value_identity"],
   ["canonical_value_page_parent", "canonical_value_page_seal"],
@@ -1002,18 +946,15 @@ phase_selectors = [
 
 [[retention_target]]
 target = "FILE_NAME_IDENTITY"
-root_relation = "file_name_identity_anchor"
+root_relation = "file_name_identity"
 root_key = ["file_key"]
 external_blockers = [
-  { relation = "gallery_observation_file_anchor", attributes = ["file_key"], referenced_relation = "file_name_identity_seal", referenced_attributes = ["file_key"] },
+  { relation = "gallery_observation_file_anchor", attributes = ["file_key"], referenced_relation = "file_name_identity", referenced_attributes = ["file_key"] },
 ]
 retained_outliving = []
 semantic_blockers = []
-derived_views = ["file_name_identity"]
-child_phases = [
-  ["file_name_identity_seal"],
-  ["file_name_identity_file_role", "file_name_identity_name_bytes"],
-]
+derived_views = []
+child_phases = []
 
 [[retention_target]]
 target = "PUBLICATION_IDENTITY"
@@ -1884,7 +1825,7 @@ ready_check = "catalog_refinement.check_identity_codecs_v1"
 writer_hook = "catalog_writer.validate_identity_codecs"
 writer_hook_version = 1
 scope = "catalog.identity-codecs"
-relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "source_scope", "source_locator_identity", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "publication_identity"]
+relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "source_scope", "source_locator_identity", "gallery_identity", "file_name_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "publication_identity"]
 covers = [
   "machine_contract.identity-codecs",
   "canonical_digest_contract.write_obligation",
@@ -1915,7 +1856,7 @@ ready_check = "catalog_refinement.check_canonical_reference_domains_v1"
 writer_hook = "catalog_writer.validate_canonical_reference_domain"
 writer_hook_version = 1
 scope = "catalog.canonical-reference-domains"
-relations = ["canonical_digest_policy", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "tag_term_identity"]
+relations = ["canonical_digest_policy", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "tag_term"]
 covers = [
   "machine_contract.canonical-reference-domains",
   "canonical_digest_contract.read_obligation",
@@ -2083,7 +2024,7 @@ ready_check = "catalog_refinement.check_role_derivation_v1"
 writer_hook = "catalog_writer.validate_file_role"
 writer_hook_version = 1
 scope = "catalog.role-derivation"
-relations = ["file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation_file_hash_occurrence"]
+relations = ["file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation_file_hash_occurrence"]
 covers = [
   "machine_contract.role-derivation",
   "file_identity_contract.write_obligation",
@@ -2113,8 +2054,6 @@ relations = [
   "canonical_value_page_coordinate",
   "canonical_value_page_subtree_item_count",
   "canonical_value_page_seal",
-  "canonical_value_page",
-  "canonical_value_page_descriptor",
   "canonical_value_page_parent",
   "source_locator_identity",
   "source_build_descriptor",
@@ -2123,22 +2062,13 @@ relations = [
   "source_build",
   "source_build_discovery",
   "build_manifest_core",
-  "build_manifest",
   "gallery_identity",
-  "file_name_identity_anchor",
-  "file_name_identity_name_bytes",
-  "file_name_identity_file_role",
-  "file_name_identity_seal",
   "file_name_identity",
   "gallery_observation_file_anchor",
   "gallery_observation_file_file_no",
   "gallery_observation_file_file_sha256",
   "gallery_observation_file_seal",
-  "gallery_observation_file",
   "gallery_manifest",
-  "tag_term_anchor",
-  "tag_term_identity",
-  "tag_term_seal",
   "tag_term",
   "source_snapshot_manifest_identity",
   "publication_identity",
@@ -2154,7 +2084,6 @@ relations = [
   "gallery_observation_page_descriptor_level",
   "gallery_observation_page_descriptor_subtree_item_count",
   "gallery_observation_page_descriptor_seal",
-  "gallery_observation_page_descriptor",
   "gallery_observation_page_key_bounds_anchor",
   "gallery_observation_page_key_bounds_first_key",
   "gallery_observation_page_key_bounds_last_key",
@@ -2173,7 +2102,6 @@ relations = [
   "analysis_exclusion_delta_new_excluded",
   "analysis_exclusion_delta_change",
   "analysis_exclusion_delta_seal",
-  "analysis_exclusion_delta",
   "analysis_file_hash_decision_shadow_anchor",
   "analysis_file_hash_decision_shadow_occurrence_count",
   "analysis_file_hash_decision_shadow_artist_count",
@@ -2204,7 +2132,6 @@ relations = [
   "publication_candidate_projection",
   "publication_candidate_base_publication_commit",
   "publication_candidate_base_catalog",
-  "publication_candidate_base_source",
   "publication_selection_storage",
   "publication_selection_occurrence_identity",
   "publication_selection",
@@ -2218,12 +2145,10 @@ relations = [
   "artifact_policy",
   "artifact_input",
   "artifact_delta_old",
-  "artifact_delta_new",
   "artifact_operation",
   "artifact_blob",
   "catalog_revision_descriptor",
   "catalog_revision",
-  "catalog_revision_generation",
   "publication_generation_node",
   "publication_generation_successor",
   "display_title_policy",
@@ -2237,11 +2162,6 @@ relations = [
   "catalog_publication_title",
   "catalog_publication_content",
   "contributor_role_registry",
-  "catalog_contributor_anchor",
-  "catalog_contributor_name_sha256",
-  "catalog_contributor_role",
-  "catalog_contributor_identity",
-  "catalog_contributor_seal",
   "catalog_contributor",
   "catalog_subject",
   "publication_commit_anchor",
@@ -2250,9 +2170,6 @@ relations = [
   "publication_commit_head_receipt",
   "publication_commit_head",
   "publication_receipt",
-  "publication_head_revision",
-  "publication_head_advanced_at",
-  "publication_head",
 ]
 covers = [
   "machine_contract.physical-domains",
@@ -2298,7 +2215,7 @@ ready_check = "catalog_refinement.check_retention_contract_v2"
 writer_hook = "catalog_writer.validate_retention_transition"
 writer_hook_version = 2
 scope = "catalog.retention"
-relations = ["source_head", "publication_head", "publication_commit_head_receipt", "publication_commit_anchor", "publication_commit", "publication_generation_node", "publication_generation_successor", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_commit_finalization", "catalog_revision_descriptor", "source_revision_descriptor", "publication_candidate", "publication_receipt", "source_build_descriptor", "source_build", "analysis_run_descriptor", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "catalog_revision"]
+relations = ["source_head", "publication_head", "publication_commit_head_receipt", "publication_commit_anchor", "publication_commit", "publication_generation_node", "publication_generation_successor", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_commit_finalization", "catalog_revision_descriptor", "source_revision_descriptor", "publication_candidate", "publication_receipt", "source_build_descriptor", "source_build", "analysis_run_descriptor", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term", "catalog_revision"]
 covers = ["machine_contract.retention", "canonical_value_page_contract.cleanup_rule", "gallery_observation_page_contract.cleanup_rule"]
 description = "Validate current-head, active-working, pending-effect, protection, receipt and overlay-descendant blockers; enforce state-based receipt pruning and every exported child-first phase DAG; compact unreachable publication commits, descriptors and generation prefixes after replacement finalization; and retain no time-based or lifetime history."
 
@@ -2323,7 +2240,7 @@ relations = ["analysis_content_owner_candidate_resolved", "analysis_content_owne
 [[canonical_reference_role]]
 attribute = "contributor_name_sha256"
 digest_domain = "contributor_name_utf8_v1"
-relations = ["catalog_contributor_name_sha256", "catalog_contributor_identity"]
+relations = ["catalog_contributor"]
 
 [[canonical_reference_role]]
 attribute = "effective_content_component_sha256"
@@ -2398,7 +2315,7 @@ relations = ["catalog_publication_storage"]
 [[canonical_reference_role]]
 attribute = "tag_value_sha256"
 digest_domain = "tag_value_utf8_v1"
-relations = ["tag_term_identity"]
+relations = ["tag_term"]
 
 [[canonical_reference_role]]
 attribute = "title_sha256"
@@ -3430,7 +3347,7 @@ fds = [
   { determinant = ["page_bytes"], dependent = ["page_sha256", "value_sha256"] },
 ]
 foreign_keys = [{ attributes = ["page_sha256"], relation = "canonical_value_page_seal", referenced_attributes = ["page_sha256"] }]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "sealed_vertical_projection", vertical_family = "canonical_value_page_vertical", projection_members = ["canonical_value_page_payload", "canonical_value_page_coordinate"], rationale = "Preserve the historical page payload read shape while exposing only sealed, coordinate-congruent pages.", derived_from = ["canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_seal"], refresh_strategy = "read-only non-materialized projection from the sealed page family" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "sealed_vertical_projection", vertical_family = "canonical_value_page_vertical", projection_members = ["canonical_value_page_payload", "canonical_value_page_coordinate"], rationale = "Preserve the historical page payload read shape while exposing only sealed, coordinate-congruent pages.", derived_from = ["canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_seal"], refresh_strategy = "read-only inline projection from the sealed page family" }
 
 [[relation]]
 name = "canonical_value_page_descriptor"
@@ -3442,7 +3359,7 @@ fds = [
   { determinant = ["value_sha256", "level", "page_position"], dependent = ["page_sha256", "subtree_item_count"] },
 ]
 foreign_keys = [{ attributes = ["page_sha256"], relation = "canonical_value_page_seal", referenced_attributes = ["page_sha256"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Expose the historical deterministic coordinate and subtree-count shape only after the complete canonical page family is sealed.", derived_from = ["canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+materialization = { authoritative = false, storage = "inline_projection", rationale = "Expose the historical deterministic coordinate and subtree-count shape only after the complete canonical page family is sealed.", derived_from = ["canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal"], refresh_strategy = "read-only inline sealed vertical join" }
 
 [[relation]]
 name = "canonical_value_page_parent"
@@ -3553,7 +3470,7 @@ fds = [
 foreign_keys = [
   { attributes = ["build_id"], relation = "source_build_base_publication_commit", referenced_attributes = ["build_id"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_baseline", projection = "source", owner_attribute = "build_id", base_relation = "source_build_base_publication_commit", rationale = "Preserve the reachable source baseline projection while deriving both values from one complete wide publication receipt.", derived_from = ["source_build_base_publication_commit", "publication_commit"], refresh_strategy = "non-materialized inner join on base_receipt_id to complete publication_commit.receipt_id" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_baseline", projection = "source", owner_attribute = "build_id", base_relation = "source_build_base_publication_commit", rationale = "Preserve the reachable source baseline projection while deriving both values from one complete wide publication receipt.", derived_from = ["source_build_base_publication_commit", "publication_commit"], refresh_strategy = "inline inner join on base_receipt_id to complete publication_commit.receipt_id" }
 
 [[relation]]
 name = "channel_registry"
@@ -3751,7 +3668,7 @@ attributes = ["page_sha256", "component", "level", "subtree_item_count"]
 declared_keys = [["page_sha256"]]
 fds = [{ determinant = ["page_sha256"], dependent = ["component", "level", "subtree_item_count"] }]
 foreign_keys = [{ attributes = ["page_sha256"], relation = "gallery_observation_page_descriptor_seal", referenced_attributes = ["page_sha256"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Preserve the historical descriptor shape only for complete sealed decoded page families.", derived_from = ["gallery_observation_page_descriptor_anchor", "gallery_observation_page", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+materialization = { authoritative = false, storage = "inline_projection", rationale = "Preserve the historical descriptor shape only for complete sealed decoded page families.", derived_from = ["gallery_observation_page_descriptor_anchor", "gallery_observation_page", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal"], refresh_strategy = "read-only inline sealed vertical join" }
 
 [[relation]]
 name = "gallery_observation_page_key_bounds_anchor"
@@ -4029,15 +3946,7 @@ foreign_keys = [
 rationale = "Final visible membership. The expected-membership foreign key forbids extra galleries at schema level; the bounded assembly evaluator independently proves no expected gallery is missing and consumes its exact observation statistics before build sealing."
 
 [[relation]]
-name = "file_name_identity_anchor"
-kind = "source_of_truth"
-attributes = ["file_key"]
-declared_keys = [["file_key"]]
-fds = []
-rationale = "Allocate one deterministic file-name digest before its exact bytes and derived role are persisted."
-
-[[relation]]
-name = "file_name_identity_name_bytes"
+name = "file_name_identity"
 kind = "source_of_truth"
 attributes = ["file_key", "name_bytes"]
 declared_keys = [["file_key"], ["name_bytes"]]
@@ -4045,42 +3954,7 @@ fds = [
   { determinant = ["file_key"], dependent = ["name_bytes"] },
   { determinant = ["name_bytes"], dependent = ["file_key"] },
 ]
-foreign_keys = [{ attributes = ["file_key"], relation = "file_name_identity_anchor", referenced_attributes = ["file_key"] }]
-rationale = "Collision-checked one-to-one stored identity for the exact bounded file-name bytes."
-
-[[relation]]
-name = "file_name_identity_file_role"
-kind = "controlled_materialization"
-attributes = ["file_key", "file_role"]
-declared_keys = [["file_key"]]
-fds = [{ determinant = ["file_key"], dependent = ["file_role"] }]
-foreign_keys = [{ attributes = ["file_key"], relation = "file_name_identity_anchor", referenced_attributes = ["file_key"] }]
-materialization = { authoritative = false, rationale = "Store the exact classifier result as one directly readable fact while deriving it only from exact name bytes.", derived_from = ["file_name_identity_name_bytes"], refresh_strategy = "derive and exact-compare before the family seal" }
-
-[[relation]]
-name = "file_name_identity_seal"
-kind = "source_of_truth"
-attributes = ["file_key"]
-declared_keys = [["file_key"]]
-fds = []
-foreign_keys = [
-  { attributes = ["file_key"], relation = "file_name_identity_anchor", referenced_attributes = ["file_key"] },
-  { attributes = ["file_key"], relation = "file_name_identity_name_bytes", referenced_attributes = ["file_key"] },
-  { attributes = ["file_key"], relation = "file_name_identity_file_role", referenced_attributes = ["file_key"] },
-]
-rationale = "PK-only completion seal inserted only after exact bytes and their deterministic role exist."
-
-[[relation]]
-name = "file_name_identity"
-kind = "controlled_materialization"
-attributes = ["file_key", "name_bytes", "file_role"]
-declared_keys = [["file_key"], ["name_bytes"]]
-fds = [
-  { determinant = ["file_key"], dependent = ["name_bytes", "file_role"] },
-  { determinant = ["name_bytes"], dependent = ["file_key", "file_role"] },
-]
-foreign_keys = [{ attributes = ["file_key"], relation = "file_name_identity_seal", referenced_attributes = ["file_key"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Preserve the historical exact-name and role read shape only for sealed identities.", derived_from = ["file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+rationale = "Store the complete immutable collision-checked file-name identity in one BCNF relation. file_key and exact name_bytes are reciprocal candidate keys; file_role is a deterministic protocol classifier derived from exact name_bytes and is never persisted."
 
 [[relation]]
 name = "content_blob"
@@ -4099,7 +3973,7 @@ declared_keys = [["gallery_id", "observation_id", "file_key"]]
 fds = []
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] },
-  { attributes = ["file_key"], relation = "file_name_identity_seal", referenced_attributes = ["file_key"] },
+  { attributes = ["file_key"], relation = "file_name_identity", referenced_attributes = ["file_key"] },
 ]
 rationale = "Allocate one observation-local file-name coordinate before its ordinal and content digest facts."
 
@@ -4154,7 +4028,7 @@ fds = [
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_seal", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Preserve the historical observation-file read shape while hiding every incomplete ordinal or digest family.", derived_from = ["gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+materialization = { authoritative = false, storage = "inline_projection", rationale = "Preserve the historical observation-file read shape while hiding every incomplete ordinal or digest family.", derived_from = ["gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal"], refresh_strategy = "read-only inline sealed vertical join" }
 
 [[relation]]
 name = "gallery_observation_file_filesystem_anchor"
@@ -4248,52 +4122,16 @@ foreign_keys = [
 materialization = { authoritative = false, rationale = "Preserve the historical filesystem read shape while exposing only fully sealed lstat tuples.", derived_from = ["gallery_observation_file_filesystem_anchor", "gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns", "gallery_observation_file_filesystem_seal"], refresh_strategy = "read-only non-materialized inner-join view rooted at the completion seal", storage = "logical_view" }
 
 [[relation]]
-name = "tag_term_anchor"
-kind = "source_of_truth"
-attributes = ["tag_id"]
-declared_keys = [["tag_id"]]
-fds = []
-rationale = "Allocate one opaque tag surrogate before its canonical natural identity is attached."
-
-[[relation]]
-name = "tag_term_identity"
-kind = "source_of_truth"
-attributes = ["namespace", "tag_value_sha256", "tag_id"]
-declared_keys = [["namespace", "tag_value_sha256"], ["tag_id"]]
-fds = [
-  { determinant = ["namespace", "tag_value_sha256"], dependent = ["tag_id"] },
-  { determinant = ["tag_id"], dependent = ["namespace", "tag_value_sha256"] },
-]
-foreign_keys = [
-  { attributes = ["tag_id"], relation = "tag_term_anchor", referenced_attributes = ["tag_id"] },
-  { attributes = ["tag_value_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-rationale = "Map the exact namespace and sealed canonical tag-value identity one-to-one to its tag surrogate. A, a, and A-space remain distinct."
-
-[[relation]]
-name = "tag_term_seal"
-kind = "source_of_truth"
-attributes = ["tag_id"]
-declared_keys = [["tag_id"]]
-fds = []
-foreign_keys = [
-  { attributes = ["tag_id"], relation = "tag_term_anchor", referenced_attributes = ["tag_id"] },
-  { attributes = ["tag_id"], relation = "tag_term_identity", referenced_attributes = ["tag_id"] },
-]
-rationale = "PK-only completion seal inserted after the canonical natural identity exists."
-
-[[relation]]
 name = "tag_term"
-kind = "controlled_materialization"
+kind = "source_of_truth"
 attributes = ["tag_id", "namespace", "tag_value_sha256"]
 declared_keys = [["tag_id"], ["namespace", "tag_value_sha256"]]
 fds = [
   { determinant = ["tag_id"], dependent = ["namespace", "tag_value_sha256"] },
   { determinant = ["namespace", "tag_value_sha256"], dependent = ["tag_id"] },
 ]
-foreign_keys = [{ attributes = ["tag_id"], relation = "tag_term_seal", referenced_attributes = ["tag_id"] }]
-rationale = "Preserve the historical byte-exact tag identity shape only after its natural map is sealed."
-materialization = { authoritative = false, storage = "logical_view", rationale = "Project the namespace and canonical tag-value identity only through the tag completion seal.", derived_from = ["tag_term_anchor", "tag_term_identity", "tag_term_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+foreign_keys = [{ attributes = ["tag_value_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }]
+rationale = "Store one complete byte-exact tag identity atomically. The opaque surrogate and the namespace/canonical-value pair are both candidate keys, so the authoritative relation is BCNF; A, a, and A-space remain distinct, and no partial tag identity can exist."
 
 [[relation]]
 name = "gallery_observation_tag"
@@ -4309,7 +4147,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] },
-  { attributes = ["tag_id"], relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
 ]
 
 [[relation]]
@@ -4330,7 +4168,7 @@ declared_keys = [["build_id"]]
 fds = [{ determinant = ["build_id"], dependent = ["manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"] }]
 foreign_keys = [{ attributes = ["build_id"], relation = "build_manifest_core", referenced_attributes = ["build_id"] }]
 rationale = "Project the terminal manifest without copying gallery_count or computation time: those values remain exactly the discovery count and source-build sealed_at."
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "build_manifest_projection", core_relation = "build_manifest_core", discovery_relation = "source_build_discovery", sealed_at_relation = "source_build_sealed_at", rationale = "Expose only the complete core/discovery/lifecycle intersection as the historical build-manifest row.", derived_from = ["build_manifest_core", "source_build_discovery", "source_build_sealed_at"], refresh_strategy = "read-only inner join; gallery_count comes from discovery and computed_at is the database-owned source-build sealed_at" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "build_manifest_projection", core_relation = "build_manifest_core", discovery_relation = "source_build_discovery", sealed_at_relation = "source_build_sealed_at", rationale = "Expose only the complete core/discovery/lifecycle intersection as the historical build-manifest row.", derived_from = ["build_manifest_core", "source_build_discovery", "source_build_sealed_at"], refresh_strategy = "read-only inline inner join; gallery_count comes from discovery and computed_at is the database-owned source-build sealed_at" }
 
 [[relation]]
 name = "gallery_manifest"
@@ -4560,7 +4398,7 @@ declared_keys = [["gallery_id", "observation_id", "artist_tag_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] },
-  { attributes = ["artist_tag_id"], relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
+  { attributes = ["artist_tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
 ]
 materialization = { authoritative = false, rationale = "Normalize artist membership once per immutable gallery observation; source_build_gallery selects observations, so removal is membership absence and no analysis copies these facts.", derived_from = ["gallery_observation", "gallery_observation_tag", "tag_term"], refresh_strategy = "populate once with the immutable observation and retain while any source snapshot or analysis overlay can reach it", immutable_scope = "gallery_observation" }
 
@@ -4663,7 +4501,7 @@ attributes = ["analysis_id", "file_sha256", "old_excluded", "new_excluded"]
 declared_keys = [["analysis_id", "file_sha256"]]
 fds = [{ determinant = ["analysis_id", "file_sha256"], dependent = ["old_excluded", "new_excluded"] }]
 foreign_keys = [{ attributes = ["analysis_id", "file_sha256"], relation = "analysis_exclusion_delta_seal", referenced_attributes = ["analysis_id", "file_sha256"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Preserve the historical old/new receipt shape only for complete sealed delta families.", derived_from = ["analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+materialization = { authoritative = false, storage = "inline_projection", rationale = "Preserve the historical old/new receipt shape only for complete sealed delta families.", derived_from = ["analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_seal"], refresh_strategy = "read-only inline sealed vertical join" }
 
 [[relation]]
 name = "analysis_impacted_gallery"
@@ -4704,7 +4542,7 @@ foreign_keys = [
   { attributes = ["content_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { attributes = ["analysis_id", "gallery_id"], relation = "analysis_impacted_gallery", referenced_attributes = ["analysis_id", "gallery_id"] },
 ]
-materialization = { authoritative = false, rationale = "Retain the exact gallery provenance for each old-or-new content key without forcing downstream DISTINCT over the potentially many-to-many mapping.", derived_from = ["analysis_impacted_gallery", "analysis_baseline", "analysis_content_owner_candidate_resolved", "analysis_run_descriptor", "analysis_policy", "source_build_gallery", "analysis_file_hash_decision_resolved", "gallery_observation_file", "file_name_identity", "gallery_manifest"], refresh_strategy = "before content-candidate mutation and on replay, resolve the old key only through analysis_baseline.base_analysis_id into the baseline candidate overlay, including genesis absence; derive the current effective-content key through the current analysis_run_descriptor to the exact target source_build_gallery observation, use file_name_identity.file_role to retain only CONTENT files, and evaluate the atomic file-decision counts under the current analysis_run_descriptor and sealed analysis_policy before joining the immutable file and manifest facts; append only in strictly increasing gallery_id order; exact page replay compares the complete selected-gallery key set and performs zero DML" }
+materialization = { authoritative = false, rationale = "Retain the exact gallery provenance for each old-or-new content key without forcing downstream DISTINCT over the potentially many-to-many mapping.", derived_from = ["analysis_impacted_gallery", "analysis_baseline", "analysis_content_owner_candidate_resolved", "analysis_run_descriptor", "analysis_policy", "source_build_gallery", "analysis_file_hash_decision_resolved", "gallery_observation_file", "file_name_identity", "gallery_manifest"], refresh_strategy = "before content-candidate mutation and on replay, resolve the old key only through analysis_baseline.base_analysis_id into the baseline candidate overlay, including genesis absence; derive the current effective-content key through the current analysis_run_descriptor to the exact target source_build_gallery observation, use the exact file_name_identity.name_bytes classifier to retain only CONTENT files, and evaluate the atomic file-decision counts under the current analysis_run_descriptor and sealed analysis_policy before joining the immutable file and manifest facts; append only in strictly increasing gallery_id order; exact page replay compares the complete selected-gallery key set and performs zero DML" }
 
 [[relation]]
 name = "analysis_impacted_gid_storage"
@@ -4857,7 +4695,7 @@ foreign_keys = [
   { attributes = ["content_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 rationale = "Store the complete content-owner candidate and all four independent comparator atoms atomically. The analysis/gallery key is the only determinant, so the recomposed relation is BCNF and a partial candidate cannot become visible."
-materialization = { authoritative = false, rationale = "Derive the complete changed candidate from the pinned observation, exact canonical content, tags, title stream, and local metadata timestamp.", derived_from = ["analysis_impacted_gallery", "analysis_run_descriptor", "analysis_policy", "source_build_gallery", "gallery_observation_file", "file_name_identity", "analysis_file_hash_decision_resolved", "gallery_observation_tag", "tag_term_identity", "canonical_value_identity", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "gallery_observation_tree_root", "gallery_observation_page_child", "gallery_observation_metadata_local"], refresh_strategy = "stream and validate every comparator input, insert the complete row atomically, and exact-compare all values on replay", overlay_role = "shadow", state_component = "content_owner_candidate", mutually_exclusive_with = "analysis_content_owner_candidate_tombstone", exactness = "changed_keys_or_full_compaction" }
+materialization = { authoritative = false, rationale = "Derive the complete changed candidate from the pinned observation, exact canonical content, tags, title stream, and local metadata timestamp.", derived_from = ["analysis_impacted_gallery", "analysis_run_descriptor", "analysis_policy", "source_build_gallery", "gallery_observation_file", "file_name_identity", "analysis_file_hash_decision_resolved", "gallery_observation_tag", "tag_term", "canonical_value_identity", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "gallery_observation_tree_root", "gallery_observation_page_child", "gallery_observation_metadata_local"], refresh_strategy = "stream and validate every comparator input, insert the complete row atomically, and exact-compare all values on replay", overlay_role = "shadow", state_component = "content_owner_candidate", mutually_exclusive_with = "analysis_content_owner_candidate_tombstone", exactness = "changed_keys_or_full_compaction" }
 
 [[relation]]
 name = "analysis_content_owner_candidate_tombstone"
@@ -5151,7 +4989,7 @@ fds = [
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate_base_publication_commit", referenced_attributes = ["candidate_id"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_baseline", projection = "source", owner_attribute = "candidate_id", base_relation = "publication_candidate_base_publication_commit", rationale = "Preserve the reachable base-source projection while deriving revision and generation from the same common sealed receipt as the catalog baseline.", derived_from = ["publication_candidate_base_publication_commit", "publication_commit"], refresh_strategy = "non-materialized inner join on base_receipt_id to complete publication_commit.receipt_id" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_baseline", projection = "source", owner_attribute = "candidate_id", base_relation = "publication_candidate_base_publication_commit", rationale = "Preserve the reachable base-source projection while deriving revision and generation from the same common sealed receipt as the catalog baseline.", derived_from = ["publication_candidate_base_publication_commit", "publication_commit"], refresh_strategy = "inline inner join on base_receipt_id to complete publication_commit.receipt_id" }
 
 [[relation]]
 name = "publication_selection_storage"
@@ -5416,7 +5254,7 @@ foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "artifact_input", referenced_attributes = ["candidate_id", "publication_key"] },
   { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "artifact_delta_new", rationale = "Expose desired new artifact presence directly from the artifact input key and semantic identity; no copied surrogate row exists.", derived_from = ["artifact_input"], refresh_strategy = "read-only non-materialized projection of artifact_input" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "artifact_delta_new", rationale = "Expose desired new artifact presence directly from the artifact input key and semantic identity; no copied surrogate row exists.", derived_from = ["artifact_input"], refresh_strategy = "read-only inline projection of artifact_input" }
 
 [[relation]]
 name = "artifact_operation"
@@ -5489,7 +5327,7 @@ foreign_keys = [
   { attributes = ["revision"], relation = "publication_commit", referenced_attributes = ["revision"] },
   { attributes = ["generation"], relation = "publication_commit", referenced_attributes = ["generation"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_generation", projection = "catalog", rationale = "Preserve the retained catalog revision/generation projection as a projection of one complete wide common commit, never as independent authority.", derived_from = ["publication_commit"], refresh_strategy = "read-only projection from complete retained publication commits" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_generation", projection = "catalog", rationale = "Preserve the retained catalog revision/generation projection as a projection of one complete wide common commit, never as independent authority.", derived_from = ["publication_commit"], refresh_strategy = "read-only inline projection from complete retained publication commits" }
 
 [[relation]]
 name = "publication_generation_node"
@@ -5678,41 +5516,7 @@ fds = []
 rationale = "Provider-seeded closed production contributor-role authority: exactly artist, author, cosplayer, group, illustrator, and uploader."
 
 [[relation]]
-name = "catalog_contributor_anchor"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "position"]
-declared_keys = [["revision", "publication_key", "position"]]
-fds = []
-foreign_keys = [
-  { attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] },
-]
-
-[[relation]]
-name = "catalog_contributor_name_sha256"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "position", "contributor_name_sha256"]
-declared_keys = [["revision", "publication_key", "position"]]
-referential_unique_keys = [["revision", "publication_key", "position", "contributor_name_sha256"]]
-fds = [{ determinant = ["revision", "publication_key", "position"], dependent = ["contributor_name_sha256"] }]
-foreign_keys = [
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_anchor", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["contributor_name_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "catalog_contributor_role"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "position", "role"]
-declared_keys = [["revision", "publication_key", "position"]]
-referential_unique_keys = [["revision", "publication_key", "position", "role"]]
-fds = [{ determinant = ["revision", "publication_key", "position"], dependent = ["role"] }]
-foreign_keys = [
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_anchor", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["role"], relation = "contributor_role_registry", referenced_attributes = ["role"] },
-]
-
-[[relation]]
-name = "catalog_contributor_identity"
+name = "catalog_contributor"
 kind = "source_of_truth"
 attributes = ["revision", "publication_key", "contributor_name_sha256", "role", "position"]
 declared_keys = [
@@ -5724,39 +5528,11 @@ fds = [
   { determinant = ["revision", "publication_key", "position"], dependent = ["contributor_name_sha256", "role"] },
 ]
 foreign_keys = [
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_anchor", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["revision", "publication_key", "position", "contributor_name_sha256"], relation = "catalog_contributor_name_sha256", referenced_attributes = ["revision", "publication_key", "position", "contributor_name_sha256"] },
-  { attributes = ["revision", "publication_key", "position", "role"], relation = "catalog_contributor_role", referenced_attributes = ["revision", "publication_key", "position", "role"] },
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["contributor_name_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["role"], relation = "contributor_role_registry", referenced_attributes = ["role"] },
 ]
-rationale = "Preserve the true no-duplicate contributor name/role key and make it exactly congruent with the hot occurrence-keyed facts."
-
-[[relation]]
-name = "catalog_contributor_seal"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "position"]
-declared_keys = [["revision", "publication_key", "position"]]
-fds = []
-foreign_keys = [
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_anchor", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_name_sha256", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_role", referenced_attributes = ["revision", "publication_key", "position"] },
-  { attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_identity", referenced_attributes = ["revision", "publication_key", "position"] },
-]
-
-[[relation]]
-name = "catalog_contributor"
-kind = "controlled_materialization"
-attributes = ["revision", "publication_key", "position", "contributor_name_sha256", "role"]
-declared_keys = [
-  ["revision", "publication_key", "position"],
-  ["revision", "publication_key", "contributor_name_sha256", "role"],
-]
-fds = [
-  { determinant = ["revision", "publication_key", "position"], dependent = ["contributor_name_sha256", "role"] },
-  { determinant = ["revision", "publication_key", "contributor_name_sha256", "role"], dependent = ["position"] },
-]
-foreign_keys = [{ attributes = ["revision", "publication_key", "position"], relation = "catalog_contributor_seal", referenced_attributes = ["revision", "publication_key", "position"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Expose only complete congruent contributor occurrences; production has no optional sort-as authority.", derived_from = ["catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+rationale = "Store each complete immutable contributor occurrence in one BCNF relation. The occurrence coordinate and the revision-scoped name/role identity are reciprocal candidate keys, so neither determinant violates BCNF and no anchor or seal is needed inside the publication transaction."
 
 [[relation]]
 name = "catalog_subject"
@@ -5772,7 +5548,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] },
-  { attributes = ["tag_id"], relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
 ]
 rationale = "Catalog subjects retain the immutable exact tag identity and a deterministic order. The alternate revision/publication/tag key forbids duplicate semantic subjects; namespace and value bytes are read from the permanently retained tag_term identity without duplicated scheme/code/name dependents."
 
@@ -5869,7 +5645,7 @@ fds = [
   { determinant = ["revision"], dependent = ["channel"] },
 ]
 foreign_keys = [{ attributes = ["revision"], relation = "publication_commit", referenced_attributes = ["revision"] }]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_head_projection", projection = "catalog_revision", rationale = "Preserve the historical publication-head revision shape as a projection of the single common commit head.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only projection from the common head receipt" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_head_projection", projection = "catalog_revision", rationale = "Preserve the historical publication-head revision shape as a projection of the single common commit head.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only inline projection from the common head receipt" }
 
 [[relation]]
 name = "publication_head_advanced_at"
@@ -5878,7 +5654,7 @@ attributes = ["channel", "advanced_at"]
 declared_keys = [["channel"]]
 fds = [{ determinant = ["channel"], dependent = ["advanced_at"] }]
 foreign_keys = [{ attributes = ["channel"], relation = "publication_commit_head", referenced_attributes = ["channel"] }]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_head_projection", projection = "catalog_advanced_at", rationale = "Derive publication advanced_at exactly from the common head commit time.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only projection from the common head receipt" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_head_projection", projection = "catalog_advanced_at", rationale = "Derive publication advanced_at exactly from the common head commit time.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only inline projection from the common head receipt" }
 
 [[relation]]
 name = "publication_head"
@@ -5891,7 +5667,7 @@ fds = [
   { determinant = ["generation"], dependent = ["channel", "revision", "advanced_at"] },
 ]
 foreign_keys = [{ attributes = ["channel"], relation = "publication_commit_head", referenced_attributes = ["channel"] }]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "publication_commit_head_projection", projection = "catalog", rationale = "Expose the current publication-head projection only from the single complete common commit head.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only projection from the common head receipt" }
+materialization = { authoritative = false, storage = "inline_projection", view_pattern = "publication_commit_head_projection", projection = "catalog", rationale = "Expose the current publication-head projection only from the single complete common commit head.", derived_from = ["publication_commit_head"], refresh_strategy = "read-only inline projection from the common head receipt" }
 
 [[decomposition]]
 name = "source_build_and_optional_base_source"
@@ -6062,23 +5838,22 @@ name = "file_identity_and_gallery_observation_file"
 universal_attributes = [
   "file_key",
   "name_bytes",
-  "file_role",
   "gallery_id",
   "observation_id",
   "file_no",
   "file_sha256",
 ]
 fds = [
-  { determinant = ["file_key"], dependent = ["name_bytes", "file_role"] },
-  { determinant = ["name_bytes"], dependent = ["file_key", "file_role"] },
+  { determinant = ["file_key"], dependent = ["name_bytes"] },
+  { determinant = ["name_bytes"], dependent = ["file_key"] },
   { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
   { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
 ]
 projections = [
-  { relation = "file_name_identity", attributes = ["file_key", "name_bytes", "file_role"] },
+  { relation = "file_name_identity", attributes = ["file_key", "name_bytes"] },
   { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"] },
 ]
-rationale = "Separate deterministic filename bytes and role from immutable observation occurrences. file_key determines the identity projection; observation-scoped file_no and file_key are alternate semantic keys."
+rationale = "Separate the complete deterministic filename identity from immutable observation occurrences. file_key and name_bytes are reciprocal identity keys; file_role remains a protocol-derived classifier rather than stored data, while observation-scoped file_no and file_key are alternate semantic keys."
 
 [[decomposition]]
 name = "file_content_payload_and_gallery_observation_file"

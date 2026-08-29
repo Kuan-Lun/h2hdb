@@ -24,7 +24,6 @@ from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 _GENERATION_TABLE = "operational_ingest_generations"
 _HEAD_TABLE = "operational_ingest_coordination_heads"
 _OWNER_TABLE = "operational_ingest_generation_owners"
-_HANDOFF_TABLE = "operational_ingest_generation_handoffs"
 
 
 class IngestFenceUnavailableError(RuntimeError):
@@ -286,10 +285,6 @@ class IngestFenceRepository:
             ),
             authority="ingest coordination completion",
         )
-        work.connector.execute_affected(
-            f"DELETE FROM {_HANDOFF_TABLE} WHERE generation = %s",
-            (current.generation,),
-        )
         _delete_exactly_one(
             work,
             f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s "
@@ -407,10 +402,6 @@ class IngestFenceRepository:
     ) -> None:
         if lease_expires_at is None or lease_expires_at > now:
             raise IngestFenceUnavailableError("ingest authority is not expired")
-        work.connector.execute_affected(
-            f"DELETE FROM {_HANDOFF_TABLE} WHERE generation = %s",
-            (generation,),
-        )
         _delete_exactly_one(
             work,
             f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s "

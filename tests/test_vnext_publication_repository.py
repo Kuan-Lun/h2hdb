@@ -623,7 +623,8 @@ def test_atomic_publication_genesis_and_successor(
         (_CHANNEL,),
     ) == (reserved, 2 if with_base else 1)
     assert connector.fetch_one(
-        "SELECT revision, generation FROM catalog_publication_heads WHERE channel = %s",
+        "SELECT revision, generation FROM catalog_publication_commit_heads "
+        "WHERE channel = %s",
         (_CHANNEL,),
     ) == (reserved, 2 if with_base else 1)
     assert connector.fetch_one(
@@ -632,7 +633,7 @@ def test_atomic_publication_genesis_and_successor(
         (reserved,),
     ) == (reserved, 2 if with_base else 1)
     assert connector.fetch_one(
-        "SELECT revision, generation FROM catalog_revision_generations "
+        "SELECT revision, generation FROM catalog_publication_commits "
         "WHERE revision = %s",
         (reserved,),
     ) == (reserved, 2 if with_base else 1)
@@ -1365,7 +1366,7 @@ def test_missing_or_conflicting_o1_authority_fails_closed(
     expected_lifecycle = "OPEN" if authority == "projection" else "SEALED"
     assert _candidate_lifecycle(connector) == expected_lifecycle
     assert not connector.fetch_one("SELECT 1 FROM catalog_publication_receipts")
-    assert not connector.fetch_one("SELECT 1 FROM operational_operational_activations")
+    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
     connector.close()
 
 
@@ -1466,20 +1467,13 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
         assert not connector.fetch_one("SELECT 1 FROM catalog_source_revisions")
         assert not connector.fetch_one("SELECT 1 FROM catalog_source_head_revisions")
         assert not connector.fetch_one("SELECT 1 FROM catalog_source_head_advanced_ats")
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_publication_head_revisions"
-        )
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_publication_head_advanced_ats"
-        )
+        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commit_heads")
         assert not connector.fetch_one(
             "SELECT 1 FROM catalog_source_revision_generations"
         )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_revision_generations")
+        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
         assert not connector.fetch_one("SELECT 1 FROM catalog_publication_receipts")
-        assert not connector.fetch_one(
-            "SELECT 1 FROM operational_operational_activations"
-        )
+        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
             (1,),

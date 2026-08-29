@@ -273,8 +273,8 @@ def _publish_preparation(
             committed_at=now,
         )
     row = connector.fetch_one(
-        "SELECT source_revision, preparation_id, operational_policy_id, activated_at "
-        "FROM operational_operational_activations WHERE source_revision = %s",
+        "SELECT source_revision, preparation_id, operational_policy_id, committed_at "
+        "FROM catalog_publication_commits WHERE source_revision = %s",
         (1,),
     )
     assert len(row) == 4
@@ -476,7 +476,7 @@ def test_zero_event_seal_remains_invisible_without_publication_commit(
                 requested_at=30,
             )
         assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_activations"
+            "SELECT COUNT(*) FROM catalog_publication_commits"
         ) == (0,)
 
         successor = _begin(connector, gate, turn, now=32)

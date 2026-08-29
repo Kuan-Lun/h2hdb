@@ -1694,19 +1694,29 @@ theorem rotated_cleanup_id_rejects_stale_checkpoint_mutation
   exact rotated authorized.2.2
 
 def CleanupCompletionReplayAuthorized
-    (jobComplete : Bool) (jobGeneration completionGeneration : Nat) : Prop :=
-  jobComplete = true ∧ jobGeneration = completionGeneration
+    (current presented : CleanupCycle Target Cleanup)
+    (jobComplete finalFactsPresent : Bool) : Prop :=
+  jobComplete = true ∧
+    finalFactsPresent = true ∧
+    current.target = presented.target ∧
+    current.cycleGeneration = presented.cycleGeneration ∧
+    current.cleanupId = presented.cleanupId
 
-theorem stale_cleanup_completion_generation_cannot_replay_complete
-    (stale : jobGeneration ≠ completionGeneration) :
-    ¬ CleanupCompletionReplayAuthorized true jobGeneration completionGeneration := by
+theorem stale_cleanup_job_generation_cannot_replay_complete
+    (different : current.cycleGeneration ≠ stale.cycleGeneration) :
+    ¬ CleanupCompletionReplayAuthorized current stale true true := by
   intro authorized
-  exact stale authorized.2
+  exact different authorized.2.2.2.1
 
 theorem open_cleanup_job_cannot_replay_complete :
-    ¬ CleanupCompletionReplayAuthorized false jobGeneration completionGeneration := by
+    ¬ CleanupCompletionReplayAuthorized current presented false true := by
   intro authorized
   exact Bool.false_ne_true authorized.1
+
+theorem cleanup_job_without_final_facts_cannot_replay_complete :
+    ¬ CleanupCompletionReplayAuthorized current presented true false := by
+  intro authorized
+  exact Bool.false_ne_true authorized.2.1
 
 structure PreparationIdentity (Build Policy : Type) where
   build : Build
@@ -2117,7 +2127,7 @@ theorem building_only_and_ready_obligations_are_disjoint :
   native_decide
 
 def operationalBootstrapAbsentRelations : List String :=
-  ["download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_handoff", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
+  ["download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 
 theorem operational_bootstrap_has_no_invented_active_control_facts :
     ∀ relation ∈ ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
@@ -2139,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "433651141fb3b4c55ef66d6657e49614409becc09a9dfa4b4a7dacd71247c047"
+def operationalManifestSha256 : String := "a4ed0edbfa38523f8beff8353af1b2cdcac69c70d7bdaa86c5543f0cde8e0964"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -2608,52 +2618,6 @@ theorem ingest_generation_owner_bcnf_check :
 theorem ingest_generation_owner_bcnf : BCNF ingest_generation_owner_contract :=
   bcnfCheck_sound ingest_generation_owner_contract ingest_generation_owner_bcnf_check
 
-def ingest_generation_handoff_contract : RelationContract where
-  name := "ingest_generation_handoff"
-  attributes := ["generation", "requested_at"]
-  declaredKeys := [["generation"]]
-  declaredFDs := [
-    { determinant := ["generation"], dependent := ["requested_at"] }
-  ]
-
-theorem ingest_generation_handoff_schema_well_formed :
-    schemaWellFormedCheck ingest_generation_handoff_contract = true := by
-  native_decide
-
-theorem ingest_generation_handoff_candidate_keys_check :
-    keysDetermineAllCheck ingest_generation_handoff_contract = true := by
-  native_decide
-
-theorem ingest_generation_handoff_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes ingest_generation_handoff_contract :=
-  keysDetermineAllCheck_sound ingest_generation_handoff_contract
-    ingest_generation_handoff_candidate_keys_check
-
-theorem ingest_generation_handoff_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck ingest_generation_handoff_contract = true := by
-  native_decide
-
-theorem ingest_generation_handoff_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal ingest_generation_handoff_contract :=
-  declaredKeysMinimalCheck_sound ingest_generation_handoff_contract
-    ingest_generation_handoff_candidate_keys_minimal_check
-
-theorem ingest_generation_handoff_closure_fixed_check :
-    closureFixedPointCheck ingest_generation_handoff_contract = true := by
-  native_decide
-
-theorem ingest_generation_handoff_closure_reached_fixed_point :
-    ClosureReachedFixedPoint ingest_generation_handoff_contract :=
-  closureFixedPointCheck_sound ingest_generation_handoff_contract
-    ingest_generation_handoff_closure_fixed_check
-
-theorem ingest_generation_handoff_bcnf_check :
-    bcnfCheck ingest_generation_handoff_contract = true := by
-  native_decide
-
-theorem ingest_generation_handoff_bcnf : BCNF ingest_generation_handoff_contract :=
-  bcnfCheck_sound ingest_generation_handoff_contract ingest_generation_handoff_bcnf_check
-
 def source_build_generation_contract : RelationContract where
   name := "source_build_generation"
   attributes := ["build_id", "generation"]
@@ -3069,52 +3033,6 @@ theorem maintenance_gate_holder_bcnf_check :
 
 theorem maintenance_gate_holder_bcnf : BCNF maintenance_gate_holder_contract :=
   bcnfCheck_sound maintenance_gate_holder_contract maintenance_gate_holder_bcnf_check
-
-def maintenance_work_state_contract : RelationContract where
-  name := "maintenance_work_state"
-  attributes := ["singleton_id", "accumulated_work", "last_evaluated_at", "last_optimized_at"]
-  declaredKeys := [["singleton_id"]]
-  declaredFDs := [
-    { determinant := ["singleton_id"], dependent := ["accumulated_work", "last_evaluated_at", "last_optimized_at"] }
-  ]
-
-theorem maintenance_work_state_schema_well_formed :
-    schemaWellFormedCheck maintenance_work_state_contract = true := by
-  native_decide
-
-theorem maintenance_work_state_candidate_keys_check :
-    keysDetermineAllCheck maintenance_work_state_contract = true := by
-  native_decide
-
-theorem maintenance_work_state_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes maintenance_work_state_contract :=
-  keysDetermineAllCheck_sound maintenance_work_state_contract
-    maintenance_work_state_candidate_keys_check
-
-theorem maintenance_work_state_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck maintenance_work_state_contract = true := by
-  native_decide
-
-theorem maintenance_work_state_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal maintenance_work_state_contract :=
-  declaredKeysMinimalCheck_sound maintenance_work_state_contract
-    maintenance_work_state_candidate_keys_minimal_check
-
-theorem maintenance_work_state_closure_fixed_check :
-    closureFixedPointCheck maintenance_work_state_contract = true := by
-  native_decide
-
-theorem maintenance_work_state_closure_reached_fixed_point :
-    ClosureReachedFixedPoint maintenance_work_state_contract :=
-  closureFixedPointCheck_sound maintenance_work_state_contract
-    maintenance_work_state_closure_fixed_check
-
-theorem maintenance_work_state_bcnf_check :
-    bcnfCheck maintenance_work_state_contract = true := by
-  native_decide
-
-theorem maintenance_work_state_bcnf : BCNF maintenance_work_state_contract :=
-  bcnfCheck_sound maintenance_work_state_contract maintenance_work_state_bcnf_check
 
 def source_working_build_contract : RelationContract where
   name := "source_working_build"
@@ -5200,11 +5118,11 @@ theorem cleanup_phase_bcnf : BCNF cleanup_phase_contract :=
 
 def cleanup_job_contract : RelationContract where
   name := "cleanup_job"
-  attributes := ["cleanup_id", "target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"]
+  attributes := ["cleanup_id", "target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"]
   declaredKeys := [["cleanup_id"], ["target_key"]]
   declaredFDs := [
-    { determinant := ["cleanup_id"], dependent := ["target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"] },
-    { determinant := ["target_key"], dependent := ["cleanup_id", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at"] }
+    { determinant := ["cleanup_id"], dependent := ["target_key", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"] },
+    { determinant := ["target_key"], dependent := ["cleanup_id", "cycle_generation", "cycle_cutoff_at", "algorithm_version", "max_rows_per_transaction", "hash_cache_max_age_microseconds", "frozen_root_count", "frozen_root_set_sha256", "state", "created_at", "completed_at", "final_chain_sha256", "final_deleted_count"] }
   ]
 
 theorem cleanup_job_schema_well_formed :
@@ -5292,10 +5210,10 @@ theorem cleanup_cycle_root_bcnf : BCNF cleanup_cycle_root_contract :=
 
 def cleanup_checkpoint_contract : RelationContract where
   name := "cleanup_checkpoint"
-  attributes := ["cleanup_id", "phase", "generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at"]
+  attributes := ["cleanup_id", "phase", "generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at", "receipt_batch_key", "receipt_start_cursor", "receipt_prior_chain_sha256", "receipt_prior_deleted_count", "receipt_input_sha256", "receipt_row_count"]
   declaredKeys := [["cleanup_id", "phase"]]
   declaredFDs := [
-    { determinant := ["cleanup_id", "phase"], dependent := ["generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at"] }
+    { determinant := ["cleanup_id", "phase"], dependent := ["generation", "cursor_bytes", "deleted_count", "chain_sha256", "state", "updated_at", "receipt_batch_key", "receipt_start_cursor", "receipt_prior_chain_sha256", "receipt_prior_deleted_count", "receipt_input_sha256", "receipt_row_count"] }
   ]
 
 theorem cleanup_checkpoint_schema_well_formed :
@@ -5336,98 +5254,6 @@ theorem cleanup_checkpoint_bcnf_check :
 theorem cleanup_checkpoint_bcnf : BCNF cleanup_checkpoint_contract :=
   bcnfCheck_sound cleanup_checkpoint_contract cleanup_checkpoint_bcnf_check
 
-def cleanup_batch_receipt_contract : RelationContract where
-  name := "cleanup_batch_receipt"
-  attributes := ["cleanup_id", "phase", "batch_key", "start_cursor", "next_cursor", "prior_chain_sha256", "prior_deleted_count", "input_sha256", "output_sha256", "row_count", "committed_generation", "committed_at"]
-  declaredKeys := [["cleanup_id", "phase"]]
-  declaredFDs := [
-    { determinant := ["cleanup_id", "phase"], dependent := ["batch_key", "start_cursor", "next_cursor", "prior_chain_sha256", "prior_deleted_count", "input_sha256", "output_sha256", "row_count", "committed_generation", "committed_at"] }
-  ]
-
-theorem cleanup_batch_receipt_schema_well_formed :
-    schemaWellFormedCheck cleanup_batch_receipt_contract = true := by
-  native_decide
-
-theorem cleanup_batch_receipt_candidate_keys_check :
-    keysDetermineAllCheck cleanup_batch_receipt_contract = true := by
-  native_decide
-
-theorem cleanup_batch_receipt_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes cleanup_batch_receipt_contract :=
-  keysDetermineAllCheck_sound cleanup_batch_receipt_contract
-    cleanup_batch_receipt_candidate_keys_check
-
-theorem cleanup_batch_receipt_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck cleanup_batch_receipt_contract = true := by
-  native_decide
-
-theorem cleanup_batch_receipt_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal cleanup_batch_receipt_contract :=
-  declaredKeysMinimalCheck_sound cleanup_batch_receipt_contract
-    cleanup_batch_receipt_candidate_keys_minimal_check
-
-theorem cleanup_batch_receipt_closure_fixed_check :
-    closureFixedPointCheck cleanup_batch_receipt_contract = true := by
-  native_decide
-
-theorem cleanup_batch_receipt_closure_reached_fixed_point :
-    ClosureReachedFixedPoint cleanup_batch_receipt_contract :=
-  closureFixedPointCheck_sound cleanup_batch_receipt_contract
-    cleanup_batch_receipt_closure_fixed_check
-
-theorem cleanup_batch_receipt_bcnf_check :
-    bcnfCheck cleanup_batch_receipt_contract = true := by
-  native_decide
-
-theorem cleanup_batch_receipt_bcnf : BCNF cleanup_batch_receipt_contract :=
-  bcnfCheck_sound cleanup_batch_receipt_contract cleanup_batch_receipt_bcnf_check
-
-def cleanup_completion_contract : RelationContract where
-  name := "cleanup_completion"
-  attributes := ["target_key", "cycle_generation", "final_chain_sha256", "deleted_count"]
-  declaredKeys := [["target_key"]]
-  declaredFDs := [
-    { determinant := ["target_key"], dependent := ["cycle_generation", "final_chain_sha256", "deleted_count"] }
-  ]
-
-theorem cleanup_completion_schema_well_formed :
-    schemaWellFormedCheck cleanup_completion_contract = true := by
-  native_decide
-
-theorem cleanup_completion_candidate_keys_check :
-    keysDetermineAllCheck cleanup_completion_contract = true := by
-  native_decide
-
-theorem cleanup_completion_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes cleanup_completion_contract :=
-  keysDetermineAllCheck_sound cleanup_completion_contract
-    cleanup_completion_candidate_keys_check
-
-theorem cleanup_completion_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck cleanup_completion_contract = true := by
-  native_decide
-
-theorem cleanup_completion_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal cleanup_completion_contract :=
-  declaredKeysMinimalCheck_sound cleanup_completion_contract
-    cleanup_completion_candidate_keys_minimal_check
-
-theorem cleanup_completion_closure_fixed_check :
-    closureFixedPointCheck cleanup_completion_contract = true := by
-  native_decide
-
-theorem cleanup_completion_closure_reached_fixed_point :
-    ClosureReachedFixedPoint cleanup_completion_contract :=
-  closureFixedPointCheck_sound cleanup_completion_contract
-    cleanup_completion_closure_fixed_check
-
-theorem cleanup_completion_bcnf_check :
-    bcnfCheck cleanup_completion_contract = true := by
-  native_decide
-
-theorem cleanup_completion_bcnf : BCNF cleanup_completion_contract :=
-  bcnfCheck_sound cleanup_completion_contract cleanup_completion_bcnf_check
-
 def manifestContracts : List RelationContract := [
   schema_epoch_control_contract,
   download_generation_contract,
@@ -5439,7 +5265,6 @@ def manifestContracts : List RelationContract := [
   ingest_generation_contract,
   ingest_coordination_head_contract,
   ingest_generation_owner_contract,
-  ingest_generation_handoff_contract,
   source_build_generation_contract,
   source_build_discovery_checkpoint_contract,
   source_build_discovery_batch_receipt_contract,
@@ -5449,7 +5274,6 @@ def manifestContracts : List RelationContract := [
   maintenance_gate_head_contract,
   maintenance_gate_owner_contract,
   maintenance_gate_holder_contract,
-  maintenance_work_state_contract,
   source_working_build_contract,
   catalog_working_candidate_contract,
   revision_allocator_contract,
@@ -5497,13 +5321,11 @@ def manifestContracts : List RelationContract := [
   cleanup_phase_contract,
   cleanup_job_contract,
   cleanup_cycle_root_contract,
-  cleanup_checkpoint_contract,
-  cleanup_batch_receipt_contract,
-  cleanup_completion_contract
+  cleanup_checkpoint_contract
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 71 := by
+    manifestContracts.length = 67 := by
   native_decide
 
 set_option maxRecDepth 10000 in
@@ -5518,7 +5340,6 @@ theorem all_manifest_base_relations_bcnf :
     BCNF ingest_generation_contract ∧
     BCNF ingest_coordination_head_contract ∧
     BCNF ingest_generation_owner_contract ∧
-    BCNF ingest_generation_handoff_contract ∧
     BCNF source_build_generation_contract ∧
     BCNF source_build_discovery_checkpoint_contract ∧
     BCNF source_build_discovery_batch_receipt_contract ∧
@@ -5528,7 +5349,6 @@ theorem all_manifest_base_relations_bcnf :
     BCNF maintenance_gate_head_contract ∧
     BCNF maintenance_gate_owner_contract ∧
     BCNF maintenance_gate_holder_contract ∧
-    BCNF maintenance_work_state_contract ∧
     BCNF source_working_build_contract ∧
     BCNF catalog_working_candidate_contract ∧
     BCNF revision_allocator_contract ∧
@@ -5575,9 +5395,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF cleanup_phase_contract ∧
     BCNF cleanup_job_contract ∧
     BCNF cleanup_cycle_root_contract ∧
-    BCNF cleanup_checkpoint_contract ∧
-    BCNF cleanup_batch_receipt_contract ∧
-    BCNF cleanup_completion_contract := by
+    BCNF cleanup_checkpoint_contract := by
   exact ⟨schema_epoch_control_bcnf,
     download_generation_bcnf,
     download_coordination_head_bcnf,
@@ -5588,7 +5406,6 @@ theorem all_manifest_base_relations_bcnf :
     ingest_generation_bcnf,
     ingest_coordination_head_bcnf,
     ingest_generation_owner_bcnf,
-    ingest_generation_handoff_bcnf,
     source_build_generation_bcnf,
     source_build_discovery_checkpoint_bcnf,
     source_build_discovery_batch_receipt_bcnf,
@@ -5598,7 +5415,6 @@ theorem all_manifest_base_relations_bcnf :
     maintenance_gate_head_bcnf,
     maintenance_gate_owner_bcnf,
     maintenance_gate_holder_bcnf,
-    maintenance_work_state_bcnf,
     source_working_build_bcnf,
     catalog_working_candidate_bcnf,
     revision_allocator_bcnf,
@@ -5645,9 +5461,7 @@ theorem all_manifest_base_relations_bcnf :
     cleanup_phase_bcnf,
     cleanup_job_bcnf,
     cleanup_cycle_root_bcnf,
-    cleanup_checkpoint_bcnf,
-    cleanup_batch_receipt_bcnf,
-    cleanup_completion_bcnf⟩
+    cleanup_checkpoint_bcnf⟩
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
@@ -5661,7 +5475,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes ingest_generation_contract ∧
     KeysDetermineAllAttributes ingest_coordination_head_contract ∧
     KeysDetermineAllAttributes ingest_generation_owner_contract ∧
-    KeysDetermineAllAttributes ingest_generation_handoff_contract ∧
     KeysDetermineAllAttributes source_build_generation_contract ∧
     KeysDetermineAllAttributes source_build_discovery_checkpoint_contract ∧
     KeysDetermineAllAttributes source_build_discovery_batch_receipt_contract ∧
@@ -5671,7 +5484,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes maintenance_gate_head_contract ∧
     KeysDetermineAllAttributes maintenance_gate_owner_contract ∧
     KeysDetermineAllAttributes maintenance_gate_holder_contract ∧
-    KeysDetermineAllAttributes maintenance_work_state_contract ∧
     KeysDetermineAllAttributes source_working_build_contract ∧
     KeysDetermineAllAttributes catalog_working_candidate_contract ∧
     KeysDetermineAllAttributes revision_allocator_contract ∧
@@ -5719,9 +5531,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes cleanup_phase_contract ∧
     KeysDetermineAllAttributes cleanup_job_contract ∧
     KeysDetermineAllAttributes cleanup_cycle_root_contract ∧
-    KeysDetermineAllAttributes cleanup_checkpoint_contract ∧
-    KeysDetermineAllAttributes cleanup_batch_receipt_contract ∧
-    KeysDetermineAllAttributes cleanup_completion_contract := by
+    KeysDetermineAllAttributes cleanup_checkpoint_contract := by
   exact ⟨schema_epoch_control_candidate_keys_determine_all_attributes,
     download_generation_candidate_keys_determine_all_attributes,
     download_coordination_head_candidate_keys_determine_all_attributes,
@@ -5732,7 +5542,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     ingest_generation_candidate_keys_determine_all_attributes,
     ingest_coordination_head_candidate_keys_determine_all_attributes,
     ingest_generation_owner_candidate_keys_determine_all_attributes,
-    ingest_generation_handoff_candidate_keys_determine_all_attributes,
     source_build_generation_candidate_keys_determine_all_attributes,
     source_build_discovery_checkpoint_candidate_keys_determine_all_attributes,
     source_build_discovery_batch_receipt_candidate_keys_determine_all_attributes,
@@ -5742,7 +5551,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     maintenance_gate_head_candidate_keys_determine_all_attributes,
     maintenance_gate_owner_candidate_keys_determine_all_attributes,
     maintenance_gate_holder_candidate_keys_determine_all_attributes,
-    maintenance_work_state_candidate_keys_determine_all_attributes,
     source_working_build_candidate_keys_determine_all_attributes,
     catalog_working_candidate_candidate_keys_determine_all_attributes,
     revision_allocator_candidate_keys_determine_all_attributes,
@@ -5790,9 +5598,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     cleanup_phase_candidate_keys_determine_all_attributes,
     cleanup_job_candidate_keys_determine_all_attributes,
     cleanup_cycle_root_candidate_keys_determine_all_attributes,
-    cleanup_checkpoint_candidate_keys_determine_all_attributes,
-    cleanup_batch_receipt_candidate_keys_determine_all_attributes,
-    cleanup_completion_candidate_keys_determine_all_attributes⟩
+    cleanup_checkpoint_candidate_keys_determine_all_attributes⟩
 
 /- END GENERATED OPERATIONAL CONTRACTS -/
 
