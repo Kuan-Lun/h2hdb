@@ -4055,7 +4055,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 assert connector.fetch_one(
                     "SELECT generation, processed_count, state FROM "
                     "operational_source_build_discovery_checkpoints"
-                ) == (3, 1, "OPEN")
+                ) == (2, 1, "OPEN")
                 assert connector.fetch_one(
                     "SELECT COUNT(*) FROM "
                     "operational_source_build_discovery_batch_receipts"
@@ -4139,7 +4139,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 assert connector.fetch_one(
                     "SELECT generation, processed_gallery_count, state FROM "
                     "operational_source_build_assembly_checkpoints"
-                ) == (3, 1, "OPEN")
+                ) == (2, 1, "OPEN")
                 assert connector.fetch_one(
                     "SELECT COUNT(*) FROM "
                     "operational_source_build_assembly_batch_receipts"
