@@ -55,7 +55,10 @@ def _delete_transient_candidate_definition(
     ("corruption", "error_match"),
     (
         ("sealed-member", "anchors differ from complete retained common commits"),
-        ("missing-head", "common publication head family is incomplete"),
+        (
+            "missing-head",
+            "only one reader-invisible DB_COMMITTED genesis may precede a head",
+        ),
     ),
 )
 def test_ready_rejects_common_commit_or_head_corruption(
@@ -228,7 +231,14 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
     try:
         gate, turn = publication_support._authorities(connector)
         publication_support._seed_candidate(connector, turn, with_base=True)
-        publication_support._commit(connector, gate, turn)
+        committed = publication_support._commit(connector, gate, turn)
+        publication_support._finalize_empty_publication(
+            connector,
+            gate=gate,
+            turn=turn,
+            receipt_id=committed.receipt_id,
+            finalized_at=101,
+        )
 
         # Generation one is now inactive. Its source build remains reachable from
         # the retained immutable commit, so child-first cleanup must preserve it

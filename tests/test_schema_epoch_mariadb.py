@@ -372,8 +372,8 @@ def _initialize_fake_building(
 ) -> None:
     connector.objects[SCHEMA_EPOCH_CONTROL_TABLE] = "BASE TABLE"
     connector.control_row = (
-        2,
-        1,
+        definition.epoch,
+        definition.schema_version,
         "BUILDING",
         bytes.fromhex(definition.manifest_sha256),
         1,
@@ -630,9 +630,13 @@ def test_mariadb_epoch_resumes_committed_partial_ddl(
             INSERT INTO h2hdb_schema_epoch (
                 singleton_id, epoch, schema_version, state,
                 manifest_sha256, started_at, ready_at
-            ) VALUES (1, 2, 1, 'BUILDING', %s, 1, NULL)
+            ) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)
             """,
-            (bytes.fromhex(definition.manifest_sha256),),
+            (
+                definition.epoch,
+                definition.schema_version,
+                bytes.fromhex(definition.manifest_sha256),
+            ),
         )
         connector.execute(PARENT_STATEMENT.sql)
 
@@ -665,9 +669,13 @@ def test_mariadb_epoch_resumes_after_committed_bootstrap_seed(
             INSERT INTO h2hdb_schema_epoch (
                 singleton_id, epoch, schema_version, state,
                 manifest_sha256, started_at, ready_at
-            ) VALUES (1, 2, 1, 'BUILDING', %s, 1, NULL)
+            ) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)
             """,
-            (bytes.fromhex(definition.manifest_sha256),),
+            (
+                definition.epoch,
+                definition.schema_version,
+                bytes.fromhex(definition.manifest_sha256),
+            ),
         )
         connector.execute(PARENT_STATEMENT.sql)
         connector.execute(CHILD_STATEMENT.sql)

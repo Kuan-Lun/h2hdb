@@ -2376,7 +2376,7 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
         ),
         (
             "ready_obligation",
-            "unique maximum no-successor head",
+            "unique maximum no-successor tip",
             "full READY/quick readiness distinction",
         ),
         (
@@ -3362,7 +3362,7 @@ def test_artifact_name_is_normalized_identity_not_delta_state() -> None:
             "artifact_storage_key_contract",
             "golden_payload_hex",
             "00",
-            "artifact storage-key golden payload is not GID-derived",
+            "artifact storage-key golden is not GID-derived",
         ),
         (
             "artifact_protection_token_contract",

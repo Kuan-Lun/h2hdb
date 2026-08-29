@@ -321,6 +321,13 @@ def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> 
         committed_at=20,
         channel=_CHANNEL,
     )
+    seed_publication_finalization(
+        connector,
+        receipt_id=receipt_id,
+        cursor=b"",
+        processed_count=0,
+        finalized_at=20,
+    )
     return receipt_id
 
 
