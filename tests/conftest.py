@@ -18,6 +18,7 @@ MARIADB_PASSWORD = "h2hdb-test-password"
 MARIADB_MAX_ALLOWED_PACKET = 1024 * 1024
 MARIADB_XDIST_GROUP = "live-mariadb"
 AUTO_WORKER_CAP = 10
+MARIADB_AUTO_WORKER_CAP = 4
 OVERRIDE_WORKER_CAP = 16
 PYTEST_WORKER_OVERRIDE = "H2HDB_PYTEST_WORKERS"
 MACOS_PERFORMANCE_CORE_SYSCTL = "hw.perflevel0.physicalcpu"
@@ -27,6 +28,7 @@ MACOS_SYSCTL_TIMEOUT_SECONDS = 2
 def select_pytest_worker_count(
     *,
     override: str | None,
+    mariadb_enabled: bool,
     system: str,
     macos_performance_cores: int | None,
     process_cpus: int | None,
@@ -60,7 +62,8 @@ def select_pytest_worker_count(
         detected_count = process_cpus
     if detected_count is None or detected_count < 1:
         detected_count = 1
-    return min(detected_count, AUTO_WORKER_CAP)
+    workload_cap = MARIADB_AUTO_WORKER_CAP if mariadb_enabled else AUTO_WORKER_CAP
+    return min(detected_count, workload_cap)
 
 
 def macos_performance_core_count() -> int | None:
@@ -86,6 +89,7 @@ def macos_performance_core_count() -> int | None:
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     del config
     override = os.environ.get(PYTEST_WORKER_OVERRIDE)
+    mariadb_enabled = os.environ.get("H2HDB_TEST_MARIADB") == "1"
     system = platform.system()
     performance_cores = (
         macos_performance_core_count()
@@ -96,6 +100,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     try:
         return select_pytest_worker_count(
             override=override,
+            mariadb_enabled=mariadb_enabled,
             system=system,
             macos_performance_cores=performance_cores,
             process_cpus=process_cpus,

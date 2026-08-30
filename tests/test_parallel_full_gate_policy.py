@@ -8,6 +8,7 @@ from conftest import (
     AUTO_WORKER_CAP,
     MACOS_PERFORMANCE_CORE_SYSCTL,
     MACOS_SYSCTL_TIMEOUT_SECONDS,
+    MARIADB_AUTO_WORKER_CAP,
     MARIADB_XDIST_GROUP,
     OVERRIDE_WORKER_CAP,
     claim_live_mariadb_container,
@@ -107,6 +108,35 @@ def test_auto_worker_policy_uses_performance_or_affinity_aware_counts(
     assert (
         select_pytest_worker_count(
             override=None,
+            mariadb_enabled=False,
+            system=system,
+            macos_performance_cores=performance_cores,
+            process_cpus=process_cpus,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("system", "performance_cores", "process_cpus", "expected"),
+    (
+        ("Darwin", 10, 14, MARIADB_AUTO_WORKER_CAP),
+        ("Darwin", 10, 4, MARIADB_AUTO_WORKER_CAP),
+        ("Linux", None, 32, MARIADB_AUTO_WORKER_CAP),
+        ("Linux", None, 2, 2),
+        ("Linux", None, None, 1),
+    ),
+)
+def test_mariadb_auto_worker_policy_caps_database_contention(
+    system: str,
+    performance_cores: int | None,
+    process_cpus: int | None,
+    expected: int,
+) -> None:
+    assert (
+        select_pytest_worker_count(
+            override=None,
+            mariadb_enabled=True,
             system=system,
             macos_performance_cores=performance_cores,
             process_cpus=process_cpus,
@@ -119,6 +149,7 @@ def test_worker_override_is_explicit_and_not_silently_clamped() -> None:
     assert (
         select_pytest_worker_count(
             override="10",
+            mariadb_enabled=True,
             system="Darwin",
             macos_performance_cores=6,
             process_cpus=6,
@@ -128,6 +159,7 @@ def test_worker_override_is_explicit_and_not_silently_clamped() -> None:
     assert (
         select_pytest_worker_count(
             override=str(OVERRIDE_WORKER_CAP),
+            mariadb_enabled=True,
             system="Linux",
             macos_performance_cores=None,
             process_cpus=2,
@@ -143,6 +175,7 @@ def test_worker_override_rejects_invalid_or_out_of_range_values(
     with pytest.raises(ValueError, match="H2HDB_PYTEST_WORKERS"):
         select_pytest_worker_count(
             override=override,
+            mariadb_enabled=True,
             system="Darwin",
             macos_performance_cores=10,
             process_cpus=10,

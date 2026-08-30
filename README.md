@@ -333,6 +333,12 @@ validates task-level version impact and dependency-audit evidence, then runs:
 
 The gate requires the development environment, Docker for MariaDB, the Lean
 toolchain declared by `lean-toolchain`, and either host Java or Docker for TLC.
+Pytest selects its worker count from the host's available CPUs and, on macOS,
+performance cores. The ordinary auto policy is capped at ten workers. The full
+MariaDB suite is capped at four because its single live-container group is
+serialized and higher SQLite concurrency lengthens that critical path. Set
+`H2HDB_PYTEST_WORKERS` to an integer from 1 through 16 only when explicitly
+benchmarking or diagnosing a different host.
 Deep TLC remains an explicit manual check. A successful gate writes a local,
 non-versioned receipt under the repository's Git metadata and binds it to the
 exact committed tree and project version. The push proceeds only when that

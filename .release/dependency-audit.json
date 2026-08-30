@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-30T19:12:15+00:00",
+  "checked_at": "2026-08-30T19:31:05+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, development, and Node dependency for h2hdb 0.27.0 against current registry metadata and official release notes on 2026-08-31. Added pytest-xdist 3.8.0 as a development-only gate dependency; its loadgroup scheduler keeps all live MariaDB nodes on one worker and one session container, while the default worker policy uses available host capacity (10 performance-core workers on this Darwin host, capped at 10) and permits an explicit validated override up to 16. The rebuilt Python 3.14.1 environment resolves pytest 9.1.1, pytest-xdist 3.8.0, and execnet 2.1.2 successfully. The worker policy and test acceleration affect development gates only and do not alter shipped runtime artifacts, schema, or durability. All other latest candidates remain within reviewed compatibility ranges; the exact-tree SQLite, MariaDB 10.11.11, formal, and distribution gates remain the compatibility authority.",
+    "note": "Reviewed every direct build, runtime, development, and Node dependency for h2hdb 0.27.0 against current registry metadata and official release notes on 2026-08-31. Added pytest-xdist 3.8.0 as a development-only gate dependency; its loadgroup scheduler keeps all live MariaDB nodes on one worker and one session container. Ordinary auto runs use available host capacity up to ten workers, while H2HDB_TEST_MARIADB=1 caps auto runs at four because same-host full-suite benchmarks showed that four workers outperform six and ten under the serialized MariaDB critical path. An explicit validated override from 1 through 16 remains available for diagnosis and rebenchmarking. The rebuilt Python 3.14.1 environment resolves pytest 9.1.1, pytest-xdist 3.8.0, and execnet 2.1.2 successfully. The worker policy and test acceleration affect development gates only and do not alter shipped runtime artifacts, schema, or durability. All other latest candidates remain within reviewed compatibility ranges; the exact-tree SQLite, MariaDB 10.11.11, formal, and distribution gates remain the compatibility authority.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
