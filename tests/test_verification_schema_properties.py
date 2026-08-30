@@ -37,7 +37,7 @@ def test_all_recomposition_decompositions_are_lossless_and_dependency_preserving
     None
 ):
     contract = checker.load_contract(CATALOG)
-    assert len(contract.decompositions) == 28
+    assert len(contract.decompositions) == 29
     assert all(
         checker.is_binary_lossless(decomposition)
         for decomposition in contract.decompositions
