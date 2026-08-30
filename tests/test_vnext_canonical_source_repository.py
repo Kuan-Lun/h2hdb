@@ -13,10 +13,10 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_source_build
 
 import h2hdb.vnext_source_build_repository as source_build_module
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_family import (
     load_allocation_family,
@@ -65,15 +65,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
+    connector = open_generated_sqlite_database(path)
     seed_manifest_policy(connector)
     return connector
 

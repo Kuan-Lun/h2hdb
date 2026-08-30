@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 from vnext_catalog_registry_fixtures import seed_manifest_policy
+from vnext_generated_database import open_generated_sqlite_database
 
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
@@ -32,15 +31,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
+    connector = open_generated_sqlite_database(path)
     seed_manifest_policy(connector)
     return connector
 

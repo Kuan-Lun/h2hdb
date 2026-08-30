@@ -18,6 +18,7 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_sealed_source_build, seed_snapshot_manifest
 from vnext_publication_fixtures import (
     clone_catalog_publication_families,
@@ -39,7 +40,6 @@ from h2hdb import (
     VNextDatabaseAdminFacade,
     VNextIngestFacade,
 )
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.catalog_errors import CatalogRevisionNotFoundError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_artifact_family import (
@@ -159,16 +159,7 @@ def _assert_canonical_value_storage(
 
 
 def _database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def test_selected_key_cte_uses_backend_binary_types() -> None:

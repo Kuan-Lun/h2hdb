@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
 
 import pytest
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_publication_fixtures import (
     seed_catalog_publication,
     seed_catalog_publication_title,
@@ -13,7 +13,6 @@ from vnext_publication_fixtures import (
 )
 
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_artifact_family import (
     CatalogArtifactFamily,
@@ -29,16 +28,7 @@ _CHANNEL = b"default"
 
 
 def _database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def _insert_finalization_batch(

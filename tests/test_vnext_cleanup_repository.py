@@ -29,6 +29,7 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_gallery_manifest,
     seed_sealed_source_build,
@@ -44,7 +45,6 @@ from vnext_publication_fixtures import (
 import h2hdb.operational_refinement as operational_refinement_module
 import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
@@ -66,16 +66,7 @@ from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork
 
 
 def _database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def _exclusive(connector: SQLiteConnector, *, token: bytes = b"x" * 16) -> GateLease:

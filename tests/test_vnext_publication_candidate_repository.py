@@ -28,6 +28,7 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_sealed_source_build,
     seed_snapshot_manifest,
@@ -35,7 +36,6 @@ from vnext_manifest_fixtures import (
 from vnext_publication_fixtures import seed_publication_commit
 
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import CanonicalValueRepository
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
@@ -92,16 +92,7 @@ def test_publication_candidate_dto_rejects_non_graph_abandoned_state() -> None:
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def _canonical_identity(

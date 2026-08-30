@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_generated_database import open_generated_sqlite_database
 
 import h2hdb.vnext_queue_repository as queue_repository_module
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_queue_repository import (
@@ -21,16 +21,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 class _MariaQueueRecorder:
@@ -134,6 +125,11 @@ def _seed_current_catalog_candidates(
                     redownload_at,
                     b"t" * 32,
                 ),
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_download_times "
+                "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
+                (occurrence, redownload_at),
             )
             connector.execute(
                 "INSERT INTO operational_gallery_redownload_states "

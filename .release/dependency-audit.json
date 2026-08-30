@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-08-30T17:56:40+00:00",
-  "manifest_sha256": "a7e8b5c134349c95aabb0597ac5e5241ec79218d91cf0b9f27e0835986ef155a",
+  "checked_at": "2026-08-30T18:34:46+00:00",
+  "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
       "declared": ">=0.18.1",
@@ -93,6 +93,15 @@
       "url": "https://pypi.org/project/pytest/"
     },
     {
+      "declared": "pytest-xdist>=3.8.0,<4.0.0",
+      "group": "optional:dev",
+      "latest": "3.8.0",
+      "latest_satisfies": true,
+      "name": "pytest-xdist",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/pytest-xdist/"
+    },
+    {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
       "latest": "0.16.5",
@@ -112,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, development, and Node dependency for h2hdb 0.27.0 against current registry metadata and official release notes on 2026-08-31. This breaking catalog schema and reader API change introduces no dependency and uses only existing SQL/Python capabilities. Hypothesis 6.165.11 fixes an internal numeric-pair shrink guard, while 6.166.0 and 6.167.0 change explain-phase and observability diagnostics; h2hdb uses none of the affected private or observability surfaces. All latest candidates remain within declared compatibility ranges, so no source or bound change is required. SQLite, MariaDB 10.11.11, schema, formal, and distribution gates remain the compatibility authority.",
+    "note": "Reviewed every direct build, runtime, development, and Node dependency for h2hdb 0.27.0 against current registry metadata and official release notes on 2026-08-31. Added pytest-xdist 3.8.0 as a development-only gate dependency; its documented loadgroup scheduler supports the bounded four-worker policy, while all live MariaDB nodes are fail-closed into one worker and one session container. The rebuilt Python 3.14.1 environment resolves pytest 9.1.1, pytest-xdist 3.8.0, and execnet 2.1.2 successfully. This test-orchestration change does not alter shipped runtime artifacts, schema, or durability. All other latest candidates remain within reviewed compatibility ranges; the exact-tree SQLite, MariaDB 10.11.11, formal, and distribution gates remain the compatibility authority.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

@@ -20,12 +20,12 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_build_manifest, seed_source_build
 
 import h2hdb.domain as domain_module
 import h2hdb.vnext_gallery_staging_budget as staging_budget_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_allocator_repository import (
@@ -100,16 +100,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def _seed_canonical_identity(

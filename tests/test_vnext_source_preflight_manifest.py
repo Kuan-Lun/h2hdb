@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import (
     CoreConfig,
@@ -27,7 +28,6 @@ from h2hdb import (
     VNextIngestPolicy,
     VNextSourceManifestMismatchError,
 )
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.repository import RepositoryContext
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_gallery_staging_repository import (
@@ -51,18 +51,7 @@ from h2hdb.vnext_source_observation_spool import _iter_metadata_chunks
 
 
 def _generated_database(path: Path) -> None:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    try:
-        payload: Any = ARTIFACT["backends"]
-        payload = payload["sqlite"]
-        for _slice_id, statements in payload["slices"]:
-            for _statement_id, _kind, _name, sql in statements:
-                connector.execute(sql)
-        for seed in payload["bootstrap_seeds"]:
-            connector.execute(seed["sql"], seed["parameters"])
-    finally:
-        connector.close()
+    open_generated_sqlite_database(path).close()
 
 
 def _drain_current_only_maintenance(facade: VNextIngestFacade) -> None:

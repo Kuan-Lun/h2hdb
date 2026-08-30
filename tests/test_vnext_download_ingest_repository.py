@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_generated_database import open_generated_sqlite_database
 
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector, SQLiteDuplicateKeyError
 from h2hdb.vnext_download_ingest_repository import (
     DownloadCapabilityCollisionError,
@@ -41,16 +41,7 @@ class _FaultConnector(SQLiteConnector):
 def _generated_database(
     path: Path, *, connector_type: type[SQLiteConnector] = SQLiteConnector
 ) -> SQLiteConnector:
-    connector = connector_type(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path, connector_type=connector_type)
 
 
 def _claim_download(

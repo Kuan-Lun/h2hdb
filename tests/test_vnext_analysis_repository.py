@@ -34,6 +34,7 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
+from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_sealed_source_build,
     seed_snapshot_manifest,
@@ -45,7 +46,6 @@ from vnext_publication_fixtures import (
 
 import h2hdb.vnext_analysis_repository as analysis_module
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_family import (
@@ -403,16 +403,7 @@ def test_gid_narrow_materialization_response_loss_rolls_back_statement(
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
-    return connector
+    return open_generated_sqlite_database(path)
 
 
 def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:

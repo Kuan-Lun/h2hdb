@@ -9,6 +9,7 @@ from typing import Any, BinaryIO, cast
 from unicodedata import unidata_version
 
 import pytest
+from vnext_generated_database import open_generated_sqlite_database
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
 import h2hdb.vnext_ingest_policy_repository as policy_module
@@ -42,7 +43,6 @@ from h2hdb import (
     artifact_producer_fingerprint_sha256,
 )
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_catalog_registry_repository import ArtifactProducerFingerprintRecord
 from h2hdb.vnext_cleanup_repository import (
@@ -71,18 +71,7 @@ def _metadata() -> GalleryObservationMetadata:
 
 
 def _generated_database(path: Path) -> None:
-    connector = SQLiteConnector(str(path))
-    connector.connect()
-    try:
-        payload: Any = ARTIFACT["backends"]
-        payload = payload["sqlite"]
-        for _slice_id, statements in payload["slices"]:
-            for _statement_id, _kind, _name, sql in statements:
-                connector.execute(sql)
-        for seed in payload["bootstrap_seeds"]:
-            connector.execute(seed["sql"], seed["parameters"])
-    finally:
-        connector.close()
+    open_generated_sqlite_database(path).close()
 
 
 def test_public_policy_contains_natural_facts_and_derives_fingerprints() -> None:
