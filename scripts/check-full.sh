@@ -5,8 +5,6 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repository_root"
 
-readonly pytest_workers=4
-
 run_timed_stage() {
     local stage_name="$1"
     shift
@@ -39,10 +37,10 @@ run_timed_stage \
     .venv/bin/python scripts/verify-formal.py lean
 
 run_timed_stage \
-    "pytest (SQLite and MariaDB, ${pytest_workers} workers)" \
+    "pytest (SQLite and MariaDB, auto workers)" \
     env H2HDB_TEST_MARIADB=1 PYTHONDONTWRITEBYTECODE=1 \
     .venv/bin/pytest \
-    --numprocesses="$pytest_workers" \
+    --numprocesses=auto \
     --dist=loadgroup \
     --max-worker-restart=0 \
     --durations=50

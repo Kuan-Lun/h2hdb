@@ -1,4 +1,6 @@
 import os
+import platform
+import subprocess
 import uuid
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
@@ -15,6 +17,91 @@ MARIADB_USER = "h2hdb"
 MARIADB_PASSWORD = "h2hdb-test-password"
 MARIADB_MAX_ALLOWED_PACKET = 1024 * 1024
 MARIADB_XDIST_GROUP = "live-mariadb"
+AUTO_WORKER_CAP = 10
+OVERRIDE_WORKER_CAP = 16
+PYTEST_WORKER_OVERRIDE = "H2HDB_PYTEST_WORKERS"
+MACOS_PERFORMANCE_CORE_SYSCTL = "hw.perflevel0.physicalcpu"
+MACOS_SYSCTL_TIMEOUT_SECONDS = 2
+
+
+def select_pytest_worker_count(
+    *,
+    override: str | None,
+    system: str,
+    macos_performance_cores: int | None,
+    process_cpus: int | None,
+) -> int:
+    if override is not None:
+        if not override.isascii() or not override.isdigit():
+            msg = (
+                f"{PYTEST_WORKER_OVERRIDE} must be an integer from 1 through "
+                f"{OVERRIDE_WORKER_CAP}"
+            )
+            raise ValueError(msg)
+        worker_count = int(override)
+        if not 1 <= worker_count <= OVERRIDE_WORKER_CAP:
+            msg = (
+                f"{PYTEST_WORKER_OVERRIDE} must be an integer from 1 through "
+                f"{OVERRIDE_WORKER_CAP}"
+            )
+            raise ValueError(msg)
+        return worker_count
+
+    detected_count: int | None
+    if (
+        system == "Darwin"
+        and macos_performance_cores is not None
+        and macos_performance_cores > 0
+    ):
+        detected_count = macos_performance_cores
+        if process_cpus is not None and process_cpus > 0:
+            detected_count = min(detected_count, process_cpus)
+    else:
+        detected_count = process_cpus
+    if detected_count is None or detected_count < 1:
+        detected_count = 1
+    return min(detected_count, AUTO_WORKER_CAP)
+
+
+def macos_performance_core_count() -> int | None:
+    try:
+        completed = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", MACOS_PERFORMANCE_CORE_SYSCTL],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=MACOS_SYSCTL_TIMEOUT_SECONDS,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    if not value.isascii() or not value.isdigit():
+        return None
+    count = int(value)
+    return count if count > 0 else None
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    del config
+    override = os.environ.get(PYTEST_WORKER_OVERRIDE)
+    system = platform.system()
+    performance_cores = (
+        macos_performance_core_count()
+        if override is None and system == "Darwin"
+        else None
+    )
+    process_cpus = os.process_cpu_count() if override is None else None
+    try:
+        return select_pytest_worker_count(
+            override=override,
+            system=system,
+            macos_performance_cores=performance_cores,
+            process_cpus=process_cpus,
+        )
+    except ValueError as error:
+        raise pytest.UsageError(str(error)) from error
 
 
 def live_mariadb_xdist_group(
