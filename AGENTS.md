@@ -251,6 +251,17 @@ Schema變更依序進行：
   保留。
 - Catalog calls只接受 current publication head。 supplied `CatalogRevision`只在
   仍精確等於該 head時有效，每次 read回傳前都須重查 head。
+- 每個 published catalog occurrence必須有一筆 immutable
+  `catalog_publication_download_time` child，保存被選 observation的
+  `download_time`；publication seal、READY audit與 cleanup都必須證明或維持
+  這個 total authority，不得從 mutable downloader queue推導。
+- `CatalogReader.list_recent_artifact_publications`只提供 current revision中
+  artifact-bearing publications的固定完整 top 128 window，不接受 caller
+  `limit`或 cursor。`UPLOADED`依 `upload_time DESC, gid DESC`，`DOWNLOADED`依
+  published `download_time DESC, gid DESC`；reader每次動態掃描／排序完整
+  current artifact set、hydrate最多128筆並重查 head。本契約明確接受查詢的
+  current-set scan/sort成本，不宣稱 indexed或 bounded database work，也不得
+  另建未經 manifest審核的 recency materialization。
 - 在 manifest定義 normalized current-head index前，nonblank search維持不可用。
 - 在 manifest定義 durable revision-scoped authority與 replay semantics前，
   不得從 transient joins推導 `redownload_required`。

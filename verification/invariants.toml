@@ -741,7 +741,7 @@ id = "integration.data.sqlite-refinement"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "supporting"
-claim = "A complete generated SQLite data schema is created, re-applied idempotently, and required to refine all 184 catalog SQL objects (151 tables plus 33 SQL views), while the closed physical manifest accounts for 13 inline projections and therefore covers all 197 logical data relations."
+claim = "A complete generated SQLite data schema is created, re-applied idempotently, and required to refine all 185 catalog SQL objects (152 tables plus 33 SQL views), while the closed physical manifest accounts for 13 inline projections and therefore covers all 198 logical data relations."
 assumptions = ["Schema-shape refinement does not by itself establish writer transaction semantics."]
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
@@ -1622,7 +1622,7 @@ id = "runtime.production.schema-epoch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 5,832 bootstrap seeds per backend and all 28 recurring semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
+claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 5,833 bootstrap seeds per backend and all 28 recurring semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
 assumptions = ["The MariaDB 10.11.11 test remains an opt-in testcontainer integration gate."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
@@ -1659,7 +1659,7 @@ id = "integration.sqlite.schema-epoch"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 5,832 SQLite seeds and 28 resolved writer bindings."
+claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 5,833 SQLite seeds and 28 resolved writer bindings."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
@@ -1676,7 +1676,7 @@ id = "integration.live-mariadb.schema-epoch"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 5,832 MariaDB seeds, all 28 resolved writer bindings, and the non-null publication-candidate projection metadata."
+claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 5,833 MariaDB seeds, all 28 resolved writer bindings, and the non-null publication-candidate projection metadata."
 assumptions = ["The MariaDB 10.11.11 tests remain opt-in testcontainer integration gates."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
@@ -1707,7 +1707,7 @@ id = "runtime.production.writer-bindings"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The wheel-owned closed registry installs all 28 recurring exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 127-relation catalog physical-domain authority set with exactly 105 mutation relations, and the exact exclusion of all 22 read-only catalog relations from mutation authority while rejecting forged values before SQL or event derivation."
+claim = "The wheel-owned closed registry installs all 28 recurring exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 128-relation catalog physical-domain authority set with exactly 106 mutation relations, and the exact exclusion of all 22 read-only catalog relations from mutation authority while rejecting forged values before SQL or event derivation."
 assumptions = ["Binding evidence identifies the complete mutation-owner family; each referenced repository evidence record establishes the corresponding runtime semantics at those entrypoints. The adversarial boundary set is representative and does not constitute the exhaustive cross-backend fault matrix required by the fault layer."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_writer.py"

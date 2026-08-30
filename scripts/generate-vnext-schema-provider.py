@@ -1548,6 +1548,7 @@ def _render_catalog_publication_view(
     }
     storage = sources["catalog_publication_storage"]
     occurrence = sources["catalog_publication_occurrence_identity"]
+    download = sources["catalog_publication_download_time"]
     access = sources["gallery_source_name_access"]
     name_gid = sources["source_gallery_name_gid"]
     publication = sources["publication_identity"]
@@ -1564,6 +1565,7 @@ def _render_catalog_publication_view(
         "summary_sha256": f"stored.{q(_column_name(storage, 'summary_sha256'))}",
         "language_sha256": f"stored.{q(_column_name(storage, 'language_sha256'))}",
         "modified_at": f"stored.{q(_column_name(storage, 'modified_at'))}",
+        "download_time": f"download.{q(_column_name(download, 'download_time'))}",
     }
     return _render_projection_view(
         relation,
@@ -1573,6 +1575,9 @@ def _render_catalog_publication_view(
         f"JOIN {q(str(occurrence['table']))} AS occurrence\n"
         f"  ON occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
         f"   = stored.{q(_column_name(storage, 'catalog_occurrence_sha256'))}\n"
+        f"JOIN {q(str(download['table']))} AS download\n"
+        f"  ON download.{q(_column_name(download, 'catalog_occurrence_sha256'))}\n"
+        f"   = occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
         f"JOIN {q(str(access['table']))} AS access\n"
         f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
         f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"

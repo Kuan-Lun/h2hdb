@@ -115,9 +115,9 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
     }
     assert set(data["inline_projections"]) == expected_data_inline
     assert operational["inline_projections"] == ["operational_activation"]
-    assert len(data["relation"]) == 184
+    assert len(data["relation"]) == 185
     assert (
-        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 151
+        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 152
     )
     assert sum(value.get("kind", "table") == "view" for value in data["relation"]) == 33
     assert len(operational["relation"]) == 66
@@ -152,10 +152,10 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
             if value["name"] != "schema_epoch_control"
         }
         assert len(generated_tables) == len(backend_payload["relations"])
-        assert len(backend_payload["relations"]) == 249
+        assert len(backend_payload["relations"]) == 250
         assert (
             sum(value["kind"] == "table" for value in backend_payload["relations"])
-            == 216
+            == 217
         )
         assert (
             sum(value["kind"] == "view" for value in backend_payload["relations"]) == 33

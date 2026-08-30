@@ -497,7 +497,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.selected_catalog_family_count,
         plan.selected_catalog_physical_relations_before,
         plan.selected_catalog_physical_relations_after,
-    ) == (30, 190, 35)
+    ) == (30, 190, 36)
     assert (
         plan.catalog_physical_table_count_before,
         plan.catalog_physical_table_count_after,
@@ -505,7 +505,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 151, 75, 66, 381, 217)
+    ) == (306, 152, 75, 66, 381, 218)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -671,10 +671,10 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
     assert plan.total_physical_table_count_after <= (
         plan.conditional_limit_trigger_table_count
     )
-    assert len(catalog.decompositions) == 28
+    assert len(catalog.decompositions) == 29
     report = checker.validate_contract(catalog)
-    assert len(report.lossless_decompositions) == 28
-    assert len(report.dependency_preserving_decompositions) == 28
+    assert len(report.lossless_decompositions) == 29
+    assert len(report.dependency_preserving_decompositions) == 29
     checker.validate_cross_manifest_contracts(catalog, operational)
 
 
@@ -688,8 +688,8 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         ),
         (
             "catalog_physical_table_count_after",
-            152,
-            "catalog_physical_table_count_after must be 151",
+            153,
+            "catalog_physical_table_count_after must be 152",
         ),
         (
             "affected_operational_relations",
@@ -1131,7 +1131,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     )
     assert publication_graph & inline_publication_graph == inline_publication_graph
     assert inline_publication_graph.isdisjoint(physical_domains.relations)
-    assert len(physical_domains.relations) == 127
+    assert len(physical_domains.relations) == 128
 
     invalid_domains = replace(
         physical_domains,
@@ -1159,8 +1159,8 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 127" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 105" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 128" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 106" in catalog_lean
     assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
@@ -3090,16 +3090,26 @@ def test_candidate_retention_requires_exact_uncommitted_projection_fold() -> Non
     assert tuple(gate.id for gate in target.machine_gates) == (
         "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)",
     )
-    assert tuple(phase[-1] for phase in target.child_phases[:9]) == (
-        "catalog_publication_storage",
-        "catalog_contributor",
-        "artifact_input",
-        "publication_checkpoint",
-        "catalog_publication_order",
-        "catalog_publication_content",
-        "catalog_subject",
-        "catalog_artifact",
-        "catalog_publication_occurrence_identity",
+    assert target.child_phases == (
+        (
+            "publication_candidate_projection_seal",
+            "publication_batch_receipt_stored",
+            "artifact_operation",
+            "catalog_publication_storage",
+            "catalog_publication_download_time",
+        ),
+        ("prepared_artifact", "catalog_contributor"),
+        ("artifact_input",),
+        ("publication_checkpoint",),
+        ("publication_selection_storage", "catalog_publication_order"),
+        ("catalog_publication_content",),
+        ("catalog_subject",),
+        ("publication_candidate_base_publication_commit", "catalog_artifact"),
+        (
+            "publication_selection_occurrence_identity",
+            "catalog_publication_occurrence_identity",
+        ),
+        ("publication_candidate",),
     )
 
     invalid = _replace_retention_target(
@@ -4025,7 +4035,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "151 BCNF base relations" in valid.stdout
+    assert "152 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (

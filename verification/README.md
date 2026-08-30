@@ -10,29 +10,29 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 151 data-plane base relations checked as BCNF, plus 46 executable logical
+- 152 data-plane base relations checked as BCNF, plus 46 executable logical
   projections (33 SQL views and 13 inline projections) and 8 reusable sealed
   vertical families;
-- 28 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 127-relation catalog physical-domain closure, split into 105
+- 29 explicitly checked lossless and dependency-preserving decompositions;
+- an exact 128-relation catalog physical-domain closure, split into 106
   mutation relations and 22 read-only relations;
 - 66 operational BCNF base relations, including epoch control, plus one inline
   activation projection and no operational SQL view for fencing,
   downloader-to-ingest handoff, staging, allocation, receipts, maintenance,
   queues, caches, and bounded cleanup;
-- 217 tables and 33 SQL views, for exactly 250 SQL objects across the complete
+- 218 tables and 33 SQL views, for exactly 251 SQL objects across the complete
   epoch;
 - 30 versioned semantic obligations: 13 data-plane and 17 operational; and
-- 5,832 typed bootstrap rows per backend, including the real deletion-request
+- 5,833 typed bootstrap rows per backend, including the real deletion-request
   generation-zero history/head and 22 cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
 ordinary physical `catalog_*` base table to be its semantic primary key plus at
-most one atomic non-key column. It reports 112 narrow bases and 39 exact
+most one atomic non-key column. It reports 113 narrow bases and 39 exact
 reviewed-wide BCNF relations. Thirty selected families replace 190 former
-physical relations with 35 bases under the explicit capacity contract. Three
+physical relations with 36 bases under the explicit capacity contract. Three
 authorities (`file_name_identity`, `tag_term`, and `catalog_contributor`) retain
 the exact complete shape of a former widest member and are therefore
 capacity-neutral while their redundant companion tables disappear. Every
@@ -223,7 +223,7 @@ They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 5,832 bootstrap rows per backend. This closes the catalog and operational
+all 5,833 bootstrap rows per backend. This closes the catalog and operational
 bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.

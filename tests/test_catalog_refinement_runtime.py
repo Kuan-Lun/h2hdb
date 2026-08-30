@@ -1352,7 +1352,12 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
 
 @pytest.mark.parametrize(
     "fault",
-    ("missing_payload", "missing_gallery_chain", "wrong_gallery_publication"),
+    (
+        "missing_payload",
+        "missing_download_time",
+        "missing_gallery_chain",
+        "wrong_gallery_publication",
+    ),
 )
 def test_catalog_occurrence_storage_rejects_relational_corruption(
     tmp_path: Path,
@@ -1400,6 +1405,11 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
             "VALUES (%s, %s, %s, %s, %s, %s)",
             (occurrence, 1, b"s" * 32, b"l" * 32, 1, b"t" * 32),
         )
+        connector.execute(
+            "INSERT INTO catalog_publication_download_times "
+            "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
+            (occurrence, 1),
+        )
         connector.execute("PRAGMA foreign_keys = ON")
 
         catalog_refinement._validate_catalog_occurrence_storage(
@@ -1410,6 +1420,12 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
         if fault == "missing_payload":
             connector.execute(
                 "DELETE FROM catalog_publication_storage "
+                "WHERE catalog_occurrence_sha256 = %s",
+                (occurrence,),
+            )
+        elif fault == "missing_download_time":
+            connector.execute(
+                "DELETE FROM catalog_publication_download_times "
                 "WHERE catalog_occurrence_sha256 = %s",
                 (occurrence,),
             )
@@ -1444,7 +1460,7 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
 
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
-            match="identity/storage is not congruent",
+            match="identity/storage/download-time is not congruent",
         ):
             catalog_refinement._validate_catalog_occurrence_storage(
                 connector,

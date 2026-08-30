@@ -80,6 +80,7 @@ from .vnext_maintenance_gate_repository import (
 )
 from .vnext_publication_family import (
     CatalogContributorFamily,
+    CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
     PublicationCandidateFamily,
@@ -88,12 +89,14 @@ from .vnext_publication_family import (
     PublicationIdentityFamily,
     PublicationSelectionFamily,
     ensure_catalog_contributor_family,
+    ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
     ensure_publication_candidate_family,
     ensure_publication_identity_family,
     ensure_publication_selection_family,
     load_catalog_contributor_family,
+    load_catalog_publication_download_time_family,
     load_catalog_publication_family,
     load_catalog_publication_title_family,
     load_publication_candidate_family,
@@ -116,6 +119,7 @@ _PUBLICATION_SELECTION_TABLE = "catalog_publication_selections"
 _DISPLAY_TITLE_TABLE = "catalog_display_title_choices"
 _TITLE_SORT_TABLE = "catalog_title_sorts"
 _PUBLICATION_TABLE = "catalog_publications"
+_PUBLICATION_DOWNLOAD_TIME_TABLE = "catalog_publication_download_times"
 _PUBLICATION_ORDER_TABLE = "catalog_publication_order"
 _PUBLICATION_TITLE_TABLE = "catalog_publication_titles"
 _PUBLICATION_CONTENT_TABLE = "catalog_publication_contents"
@@ -153,6 +157,7 @@ _CATALOG_CHILD_CONTENT = 3
 _CATALOG_CHILD_CONTRIBUTOR = 4
 _CATALOG_CHILD_SUBJECT = 5
 _CATALOG_CHILD_ARTIFACT = 6
+_CATALOG_CHILD_DOWNLOAD_TIME = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +430,7 @@ class _ProjectionChild:
 
     def __post_init__(self) -> None:
         _validate_stage_cursor(_CURSOR_CATALOG_CHILD, self.cursor)
-        if self.kind not in range(7):
+        if self.kind not in range(8):
             raise ValueError("projection child kind is not registered")
         require_digest32(self.publication_key, field="projection child publication_key")
         require_bounded_bytes(
@@ -1742,6 +1747,7 @@ def _initialize_projection_plan_database(database: sqlite3.Connection) -> None:
             summary_sha256 BLOB NOT NULL,
             language_sha256 BLOB NOT NULL,
             published_at INTEGER NOT NULL,
+            download_time INTEGER NOT NULL,
             modified_at INTEGER NOT NULL,
             source_title_sha256 BLOB NOT NULL,
             source_gallery_name BLOB NOT NULL,
@@ -1788,7 +1794,8 @@ def _projection_source_page(
         rows = work.connector.fetch_all(
             "SELECT member.gallery_id, selected.publication_key, "
             "member.observation_id, metadata.gid, metadata.upload_time, "
-            "metadata.modified_time, locator.source_gallery_name "
+            "metadata.download_time, metadata.modified_time, "
+            "locator.source_gallery_name "
             "FROM catalog_source_build_galleries AS member "
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
@@ -1828,7 +1835,8 @@ def _projection_source_page(
         rows = work.connector.fetch_all(
             f"SELECT selected.gallery_id, selected.publication_key, "
             "member.observation_id, metadata.gid, metadata.upload_time, "
-            "metadata.modified_time, locator.source_gallery_name "
+            "metadata.download_time, metadata.modified_time, "
+            "locator.source_gallery_name "
             f"FROM {_PUBLICATION_SELECTION_TABLE} AS selected "
             "JOIN catalog_source_build_galleries AS member "
             "ON member.build_id = %s AND member.gallery_id = selected.gallery_id "
@@ -1845,7 +1853,7 @@ def _projection_source_page(
         )
     result: list[tuple[Any, ...]] = []
     for row in rows:
-        if len(row) != 7:
+        if len(row) != 8:
             raise PublicationCandidateConflictError(
                 "catalog projection source row is malformed"
             )
@@ -1867,9 +1875,10 @@ def _projection_source_page(
                 require_positive_int63(row[2], field="projection observation_id"),
                 gid,
                 require_int63(row[4], field="projection upload_time"),
-                require_int63(row[5], field="projection modified_time"),
+                require_int63(row[5], field="projection download_time"),
+                require_int63(row[6], field="projection modified_time"),
                 require_bounded_bytes(
-                    row[6],
+                    row[7],
                     field="projection source_gallery_name",
                     minimum=1,
                     maximum=255,
@@ -1893,6 +1902,7 @@ class _MetadataProjection:
     account_count: int
     gid: int
     upload_time: int
+    download_time: int
     modified_time: int
 
 
@@ -1908,9 +1918,10 @@ def _prepare_projection_publication(
     observation_id = require_positive_int63(row[2], field="projection observation_id")
     gid = require_positive_int63(row[3], field="projection gid")
     upload_time = require_int63(row[4], field="projection upload_time")
-    modified_time = require_int63(row[5], field="projection modified_time")
+    download_time = require_int63(row[5], field="projection download_time")
+    modified_time = require_int63(row[6], field="projection modified_time")
     source_gallery_name = require_bounded_bytes(
-        row[6],
+        row[7],
         field="projection source_gallery_name",
         minimum=1,
         maximum=255,
@@ -1924,6 +1935,7 @@ def _prepare_projection_publication(
         if (
             metadata.gid != gid
             or metadata.upload_time != upload_time
+            or metadata.download_time != download_time
             or metadata.modified_time != modified_time
         ):
             raise PublicationCandidateConflictError(
@@ -2125,16 +2137,17 @@ def _prepare_projection_publication(
     cursor = database.execute(
         "INSERT INTO publications "
         "(publication_key, gallery_id, summary_sha256, language_sha256, "
-        "published_at, modified_at, source_title_sha256, "
+        "published_at, download_time, modified_at, source_title_sha256, "
         "source_gallery_name, title_sha256, sort_title_sha256, sort_title, "
         "content_sha256, order_position) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, zeroblob(?), ?, NULL)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, zeroblob(?), ?, NULL)",
         (
             sqlite3.Binary(publication_key),
             gallery_id,
             sqlite3.Binary(summary),
             sqlite3.Binary(language),
             upload_time,
+            download_time,
             modified_time,
             sqlite3.Binary(source_title),
             sqlite3.Binary(source_gallery_name),
@@ -2222,6 +2235,7 @@ def _spool_projection_metadata(
                 account_count,
                 receipt.gid,
                 receipt.upload_time,
+                receipt.download_time,
                 receipt.modified_time,
             ),
         )
@@ -2568,6 +2582,10 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
             "SELECT publication_key, position FROM subjects "
             "ORDER BY publication_key, position",
         ),
+        (
+            _CATALOG_CHILD_DOWNLOAD_TIME,
+            "SELECT publication_key, NULL FROM publications ORDER BY publication_key",
+        ),
     )
     for kind, query in sources:
         cursor = database.execute(query)
@@ -2658,7 +2676,7 @@ def _encode_catalog_child_cursor(
     publication_key: bytes,
     subkey: bytes,
 ) -> bytes:
-    if kind not in range(7):
+    if kind not in range(8):
         raise ValueError("catalog child kind is not registered")
     key = require_digest32(publication_key, field="catalog child publication_key")
     exact_subkey = require_bounded_bytes(
@@ -2800,12 +2818,12 @@ def _plan_publication(
 ) -> tuple[Any, ...]:
     row = plan._database.execute(
         "SELECT gallery_id, summary_sha256, language_sha256, published_at, "
-        "modified_at, source_title_sha256, "
+        "download_time, modified_at, source_title_sha256, "
         "source_gallery_name, title_sha256, sort_title_sha256, content_sha256, "
         "order_position FROM publications WHERE publication_key = ?",
         (sqlite3.Binary(publication_key),),
     ).fetchone()
-    if row is None or len(row) != 11:
+    if row is None or len(row) != 12:
         raise PublicationCandidateConflictError(
             "catalog projection plan publication is missing"
         )
@@ -2905,7 +2923,7 @@ def _insert_projection_child(
         summary = require_digest32(publication[1], field="publication summary_sha256")
         language = require_digest32(publication[2], field="publication language_sha256")
         source_title = require_digest32(
-            publication[5], field="publication source_title_sha256"
+            publication[6], field="publication source_title_sha256"
         )
         _consume_projection_canonical(
             work,
@@ -2956,7 +2974,7 @@ def _insert_projection_child(
                     summary,
                     language,
                     require_int63(
-                        publication[4],
+                        publication[5],
                         field="publication modified_at",
                     ),
                     source_title,
@@ -2973,7 +2991,7 @@ def _insert_projection_child(
         return
     if child.kind == _CATALOG_CHILD_ORDER:
         position = _position_subkey(child.subkey, field="publication order position")
-        if position != require_int63(publication[10], field="planned order position"):
+        if position != require_int63(publication[11], field="planned order position"):
             raise PublicationCandidateConflictError(
                 "catalog order cursor differs from its planned position"
             )
@@ -2987,9 +3005,9 @@ def _insert_projection_child(
         expected = CatalogPublicationTitleFamily(
             revision,
             child.publication_key,
-            require_digest32(publication[5], field="source_title_sha256"),
+            require_digest32(publication[6], field="source_title_sha256"),
             require_bounded_bytes(
-                publication[6],
+                publication[7],
                 field="source_gallery_name",
                 minimum=1,
                 maximum=255,
@@ -3010,11 +3028,11 @@ def _insert_projection_child(
             ) from error
         return
     if child.kind == _CATALOG_CHILD_CONTENT:
-        if publication[9] is None:
+        if publication[10] is None:
             raise PublicationCandidateConflictError(
                 "catalog content child has no effective-content identity"
             )
-        content = require_digest32(publication[9], field="publication content_sha256")
+        content = require_digest32(publication[10], field="publication content_sha256")
         _require_existing_canonical_domain(
             work,
             content,
@@ -3048,6 +3066,28 @@ def _insert_projection_child(
             ),
         )
         return
+    if child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
+        try:
+            ensure_catalog_publication_download_time_family(
+                work.connector,
+                CatalogPublicationDownloadTimeFamily(
+                    revision,
+                    child.publication_key,
+                    require_int63(
+                        publication[4],
+                        field="publication download_time",
+                    ),
+                ),
+                backend=work.backend,
+            )
+        except (
+            PublicationFamilyCollisionError,
+            PublicationFamilyPartialError,
+        ) as error:
+            raise PublicationCandidateConflictError(
+                "catalog publication download time collides with planned facts"
+            ) from error
+        return
     raise PublicationCandidateNotReadyError(
         "catalog artifact child awaits the typed artifact adapter"
     )
@@ -3062,15 +3102,15 @@ def _insert_projection_title(
     *,
     child_cursor: bytes,
 ) -> None:
-    source_title = require_digest32(publication[5], field="source_title_sha256")
+    source_title = require_digest32(publication[6], field="source_title_sha256")
     source_gallery_name = require_bounded_bytes(
-        publication[6],
+        publication[7],
         field="source_gallery_name",
         minimum=1,
         maximum=255,
     )
-    title = require_digest32(publication[7], field="title_sha256")
-    sort_title = require_digest32(publication[8], field="sort_title_sha256")
+    title = require_digest32(publication[8], field="title_sha256")
+    sort_title = require_digest32(publication[9], field="sort_title_sha256")
     _consume_projection_canonical(
         work,
         plan,
@@ -3244,7 +3284,7 @@ def _load_catalog_child_page(
     boundary = _decode_catalog_child_cursor(after)
     result: list[_ProjectionChild] = []
     revision = authority.candidate.reserved_revision
-    for kind in range(7):
+    for kind in range(8):
         if len(result) == _CATALOG_BATCH_ROWS:
             break
         if boundary is not None and kind < boundary[0]:
@@ -3290,6 +3330,33 @@ def _catalog_child_kind_rows(
     connector = work.connector
     parameters: list[Any] = [revision]
     predicate = ""
+    if kind == _CATALOG_CHILD_DOWNLOAD_TIME:
+        if after_key is not None:
+            if after_subkey:
+                raise PublicationCandidateConflictError(
+                    "catalog download-time boundary must have an empty subkey"
+                )
+            predicate = " AND occurrence.publication_key > %s"
+            parameters.append(after_key)
+        parameters.append(limit)
+        raw = connector.fetch_all(
+            "SELECT occurrence.publication_key "
+            "FROM catalog_publication_occurrence_identities AS occurrence "
+            f"JOIN {_PUBLICATION_DOWNLOAD_TIME_TABLE} AS downloaded "
+            "ON downloaded.catalog_occurrence_sha256 = "
+            "occurrence.catalog_occurrence_sha256 "
+            "WHERE occurrence.revision = %s"
+            + predicate
+            + " ORDER BY occurrence.publication_key LIMIT %s",
+            tuple(parameters),
+        )
+        return tuple(
+            (
+                require_digest32(row[0], field="catalog download publication_key"),
+                b"",
+            )
+            for row in raw
+        )
     if kind in {
         _CATALOG_CHILD_PUBLICATION,
         _CATALOG_CHILD_TITLE,
@@ -3392,8 +3459,8 @@ def _compare_projection_child(
             require_positive_int63(publication[0], field="planned gallery_id"),
             require_digest32(publication[1], field="planned summary_sha256"),
             require_digest32(publication[2], field="planned language_sha256"),
-            require_int63(publication[4], field="planned modified_at"),
-            require_digest32(publication[5], field="planned source_title_sha256"),
+            require_int63(publication[5], field="planned modified_at"),
+            require_digest32(publication[6], field="planned source_title_sha256"),
         )
         try:
             actual_publication = load_catalog_publication_family(
@@ -3429,7 +3496,7 @@ def _compare_projection_child(
             "WHERE revision = %s AND position = %s",
             (revision, position),
         )
-        if row != (child.publication_key,) or position != publication[10]:
+        if row != (child.publication_key,) or position != publication[11]:
             raise PublicationCandidateConflictError(
                 "catalog publication order differs from independent evaluator"
             )
@@ -3438,9 +3505,9 @@ def _compare_projection_child(
         expected_title = CatalogPublicationTitleFamily(
             revision,
             child.publication_key,
-            require_digest32(publication[5], field="planned source_title_sha256"),
+            require_digest32(publication[6], field="planned source_title_sha256"),
             require_bounded_bytes(
-                publication[6],
+                publication[7],
                 field="planned source_gallery_name",
                 minimum=1,
                 maximum=255,
@@ -3474,24 +3541,24 @@ def _compare_projection_child(
                 expected_title.source_gallery_name,
             ),
         )
-        if choice != (require_digest32(publication[7], field="planned title_sha256"),):
+        if choice != (require_digest32(publication[8], field="planned title_sha256"),):
             raise PublicationCandidateConflictError(
                 "catalog display title differs from independent evaluator"
             )
         sort_row = work.connector.fetch_one(
             f"SELECT sort_title_sha256 FROM {_TITLE_SORT_TABLE} "
             "WHERE title_sort_policy_id = %s AND title_sha256 = %s",
-            (authority.begin.title_sort_policy_id, publication[7]),
+            (authority.begin.title_sort_policy_id, publication[8]),
         )
         if sort_row != (
-            require_digest32(publication[8], field="planned sort_title_sha256"),
+            require_digest32(publication[9], field="planned sort_title_sha256"),
         ):
             raise PublicationCandidateConflictError(
                 "catalog title sort differs from independent evaluator"
             )
         return
     if child.kind == _CATALOG_CHILD_CONTENT:
-        content = require_digest32(publication[9], field="planned content_sha256")
+        content = require_digest32(publication[10], field="planned content_sha256")
         row = work.connector.fetch_one(
             f"SELECT content_sha256 FROM {_PUBLICATION_CONTENT_TABLE} "
             "WHERE revision = %s AND publication_key = %s",
@@ -3557,6 +3624,31 @@ def _compare_projection_child(
         if planned is None or row != (planned[0],):
             raise PublicationCandidateConflictError(
                 "catalog subject differs from independent evaluator"
+            )
+        return
+    if child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
+        expected_download_time = CatalogPublicationDownloadTimeFamily(
+            revision,
+            child.publication_key,
+            require_int63(publication[4], field="planned download_time"),
+        )
+        try:
+            actual_download_time = load_catalog_publication_download_time_family(
+                work.connector,
+                revision=revision,
+                publication_key=child.publication_key,
+                backend=work.backend,
+            )
+        except (
+            PublicationFamilyCollisionError,
+            PublicationFamilyPartialError,
+        ) as error:
+            raise PublicationCandidateConflictError(
+                "catalog publication download time is incomplete or corrupt"
+            ) from error
+        if actual_download_time != expected_download_time:
+            raise PublicationCandidateConflictError(
+                "catalog publication download time differs from independent evaluator"
             )
         return
     raise PublicationCandidateNotReadyError(
@@ -5108,7 +5200,7 @@ def _validate_stage_cursor(codec: bytes, cursor: bytes) -> None:
         raise PublicationCandidateConflictError(
             "publication cursor selected an unregistered codec"
         )
-    if len(exact) < 36 or exact[0] != 1 or exact[1] > 6:
+    if len(exact) < 36 or exact[0] != 1 or exact[1] > 7:
         raise PublicationCandidateConflictError(
             "catalog-child cursor has an invalid header"
         )
@@ -5119,7 +5211,7 @@ def _validate_stage_cursor(codec: bytes, cursor: bytes) -> None:
         raise PublicationCandidateConflictError(
             "catalog-child cursor subkey length is not exact"
         )
-    if kind in {0, 2, 3, 6}:
+    if kind in {0, 2, 3, 6, 7}:
         valid = not subkey
     elif kind in {1, 4, 5}:
         valid = len(subkey) == 8 and int.from_bytes(subkey, "big") <= INT63_MAX

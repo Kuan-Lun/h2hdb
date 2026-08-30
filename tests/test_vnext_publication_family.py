@@ -10,13 +10,16 @@ from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_publication_family import (
     CatalogContributorFamily,
+    CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
     PublicationFamilyCollisionError,
     ensure_catalog_contributor_family,
+    ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
     load_catalog_contributor_family,
+    load_catalog_publication_download_time_family,
     load_catalog_publication_family,
     load_catalog_publication_title_family,
 )
@@ -123,6 +126,11 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
         source_title_sha256=b"t" * 32,
         source_gallery_name=b"gallery",
     )
+    download_time = CatalogPublicationDownloadTimeFamily(
+        revision=publication.revision,
+        publication_key=publication.publication_key,
+        download_time=10,
+    )
     try:
         connector.execute("PRAGMA foreign_keys = OFF")
         with connector.transaction():
@@ -145,6 +153,9 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 publication,
                 True,
             )
+            assert ensure_catalog_publication_download_time_family(
+                connector, download_time
+            ) == (download_time, True)
             assert ensure_catalog_publication_title_family(connector, title) == (
                 title,
                 False,
@@ -153,7 +164,7 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
 
         assert connector.fetch_all(
             "SELECT revision, publication_key, gallery_id, summary_sha256, "
-            "language_sha256, modified_at FROM catalog_publications"
+            "language_sha256, modified_at, download_time FROM catalog_publications"
         ) == [
             (
                 publication.revision,
@@ -162,6 +173,7 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 publication.summary_sha256,
                 publication.language_sha256,
                 publication.modified_at,
+                download_time.download_time,
             )
         ]
         assert connector.fetch_all(
@@ -181,6 +193,9 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 publication,
                 False,
             )
+            assert ensure_catalog_publication_download_time_family(
+                connector, download_time
+            ) == (download_time, False)
             assert ensure_catalog_publication_title_family(connector, title) == (
                 title,
                 False,
@@ -193,6 +208,15 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                     locking=True,
                 )
                 == publication
+            )
+            assert (
+                load_catalog_publication_download_time_family(
+                    connector,
+                    revision=download_time.revision,
+                    publication_key=download_time.publication_key,
+                    locking=True,
+                )
+                == download_time
             )
             assert (
                 load_catalog_publication_title_family(
@@ -219,6 +243,21 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
             source_title_sha256=title.source_title_sha256,
             source_gallery_name=b"changed",
         )
+        changed_download_time = CatalogPublicationDownloadTimeFamily(
+            revision=download_time.revision,
+            publication_key=download_time.publication_key,
+            download_time=download_time.download_time + 1,
+        )
+        with (
+            connector.transaction(),
+            pytest.raises(
+                PublicationFamilyCollisionError,
+                match="catalog download-time replay changed exact facts",
+            ),
+        ):
+            ensure_catalog_publication_download_time_family(
+                connector, changed_download_time
+            )
         with (
             connector.transaction(),
             pytest.raises(

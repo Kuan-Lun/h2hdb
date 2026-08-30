@@ -2362,6 +2362,7 @@ def _render_derived_view(
         source_by_name = {source.relation: source for source in sources}
         storage = source_by_name["catalog_publication_storage"]
         occurrence = source_by_name["catalog_publication_occurrence_identity"]
+        download = source_by_name["catalog_publication_download_time"]
         access = source_by_name["gallery_source_name_access"]
         name_gid = source_by_name["source_gallery_name_gid"]
         publication = source_by_name["publication_identity"]
@@ -2372,12 +2373,16 @@ def _render_derived_view(
             "summary_sha256": f"stored.{column(storage, 'summary_sha256')}",
             "language_sha256": f"stored.{column(storage, 'language_sha256')}",
             "modified_at": f"stored.{column(storage, 'modified_at')}",
+            "download_time": f"download.{column(download, 'download_time')}",
         }
         from_sql = (
             f"FROM {table(storage)} AS stored\n"
             f"JOIN {table(occurrence)} AS occurrence\n"
             f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
             f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
+            f"JOIN {table(download)} AS download\n"
+            f"  ON download.{column(download, 'catalog_occurrence_sha256')}\n"
+            f"   = occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
             f"JOIN {table(access)} AS access\n"
             f"  ON access.{column(access, 'gallery_id')}\n"
             f"   = stored.{column(storage, 'gallery_id')}\n"

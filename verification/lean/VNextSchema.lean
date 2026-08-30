@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "ebc533281193fd01b2713ec1867834a08b5088ac0d4296cb7aa77a23c4fb04e4"
+def catalogManifestSha256 : String := "1820418dfc733e179dfcc51c123069f664c8e0fd3800a243c53f9aa32de5c7d6"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -9240,14 +9240,60 @@ theorem catalog_publication_occurrence_identity_bcnf_check :
 theorem catalog_publication_occurrence_identity_bcnf : BCNF catalog_publication_occurrence_identity_contract :=
   bcnfCheck_sound catalog_publication_occurrence_identity_contract catalog_publication_occurrence_identity_bcnf_check
 
+def catalog_publication_download_time_contract : RelationContract where
+  name := "catalog_publication_download_time"
+  attributes := ["catalog_occurrence_sha256", "download_time"]
+  declaredKeys := [["catalog_occurrence_sha256"]]
+  declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["download_time"] }
+  ]
+
+theorem catalog_publication_download_time_schema_well_formed :
+    schemaWellFormedCheck catalog_publication_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_download_time_candidate_keys_check :
+    keysDetermineAllCheck catalog_publication_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_download_time_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes catalog_publication_download_time_contract :=
+  keysDetermineAllCheck_sound catalog_publication_download_time_contract
+    catalog_publication_download_time_candidate_keys_check
+
+theorem catalog_publication_download_time_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck catalog_publication_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_download_time_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal catalog_publication_download_time_contract :=
+  declaredKeysMinimalCheck_sound catalog_publication_download_time_contract
+    catalog_publication_download_time_candidate_keys_minimal_check
+
+theorem catalog_publication_download_time_closure_fixed_check :
+    closureFixedPointCheck catalog_publication_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_download_time_closure_reached_fixed_point :
+    ClosureReachedFixedPoint catalog_publication_download_time_contract :=
+  closureFixedPointCheck_sound catalog_publication_download_time_contract
+    catalog_publication_download_time_closure_fixed_check
+
+theorem catalog_publication_download_time_bcnf_check :
+    bcnfCheck catalog_publication_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_download_time_bcnf : BCNF catalog_publication_download_time_contract :=
+  bcnfCheck_sound catalog_publication_download_time_contract catalog_publication_download_time_bcnf_check
+
 def catalog_publication_contract : RelationContract where
   name := "catalog_publication"
-  attributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
+  attributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
   declaredKeys := [["revision", "publication_key"], ["revision", "gallery_id"]]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at"] }
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time"] }
   ]
 
 theorem catalog_publication_schema_well_formed :
@@ -10185,6 +10231,7 @@ def manifestContracts : List RelationContract := [
   title_sort_contract,
   catalog_publication_storage_contract,
   catalog_publication_occurrence_identity_contract,
+  catalog_publication_download_time_contract,
   catalog_publication_contract,
   catalog_publication_order_contract,
   catalog_publication_title_contract,
@@ -10205,7 +10252,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 197 := by
+    manifestContracts.length = 198 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -10324,6 +10371,7 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   display_title_choice_contract,
   title_sort_contract,
   catalog_publication_storage_contract,
+  catalog_publication_download_time_contract,
   catalog_publication_occurrence_identity_contract,
   catalog_publication_contract,
   catalog_publication_order_contract,
@@ -10436,6 +10484,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   display_title_choice_contract,
   title_sort_contract,
   catalog_publication_storage_contract,
+  catalog_publication_download_time_contract,
   catalog_publication_occurrence_identity_contract,
   catalog_publication_order_contract,
   catalog_publication_content_contract,
@@ -10474,11 +10523,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 127 := by
+    catalogPhysicalDomainContracts.length = 128 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 105 := by
+    catalogPhysicalDomainMutationContracts.length = 106 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -12239,16 +12288,61 @@ theorem catalog_publication_occurrence_and_payload_dependency_preserving :
   dependencyPreservationCheck_sound catalog_publication_occurrence_and_payload_contract
     catalog_publication_occurrence_and_payload_dependency_preservation_check
 
+def catalog_publication_occurrence_and_download_time_contract : BinaryDecompositionContract where
+  name := "catalog_publication_occurrence_and_download_time"
+  universalAttributes := ["catalog_occurrence_sha256", "revision", "publication_key", "download_time"]
+  leftAttributes := ["catalog_occurrence_sha256", "revision", "publication_key"]
+  rightAttributes := ["catalog_occurrence_sha256", "download_time"]
+  declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["revision", "publication_key", "download_time"] },
+    { determinant := ["revision", "publication_key"], dependent := ["catalog_occurrence_sha256", "download_time"] }
+  ]
+
+theorem catalog_publication_occurrence_and_download_time_projection_check :
+    binaryDecompositionWellFormedCheck
+      catalog_publication_occurrence_and_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_download_time_projection_well_formed :
+    BinaryDecompositionWellFormed catalog_publication_occurrence_and_download_time_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    catalog_publication_occurrence_and_download_time_contract catalog_publication_occurrence_and_download_time_projection_check
+
+theorem catalog_publication_occurrence_and_download_time_intersection_check :
+    sameAttrSet (attributeIntersection
+      catalog_publication_occurrence_and_download_time_contract.leftAttributes
+      catalog_publication_occurrence_and_download_time_contract.rightAttributes)
+      ["catalog_occurrence_sha256"] = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_download_time_lossless_check :
+    binaryLosslessCheck catalog_publication_occurrence_and_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_download_time_lossless : BinaryLossless catalog_publication_occurrence_and_download_time_contract :=
+  ⟨catalog_publication_occurrence_and_download_time_projection_well_formed,
+    binaryLosslessCheck_sound catalog_publication_occurrence_and_download_time_contract
+      catalog_publication_occurrence_and_download_time_lossless_check⟩
+
+theorem catalog_publication_occurrence_and_download_time_dependency_preservation_check :
+    dependencyPreservationCheck catalog_publication_occurrence_and_download_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_download_time_dependency_preserving :
+    DependencyPreserving catalog_publication_occurrence_and_download_time_contract :=
+  dependencyPreservationCheck_sound catalog_publication_occurrence_and_download_time_contract
+    catalog_publication_occurrence_and_download_time_dependency_preservation_check
+
 def catalog_publication_and_title_basis_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_title_basis"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"]
-  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"]
+  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
   rightAttributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
     { determinant := ["source_gallery_name"], dependent := ["publication_key"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] }
   ]
 
 theorem catalog_publication_and_title_basis_projection_check :
@@ -12333,13 +12427,13 @@ theorem publication_identity_and_gallery_upload_time_dependency_preserving :
 
 def catalog_publication_and_optional_content_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_optional_content"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "modified_at", "content_sha256"]
-  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"]
+  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
   rightAttributes := ["revision", "publication_key", "content_sha256"]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] }
   ]
 
 theorem catalog_publication_and_optional_content_projection_check :
@@ -12447,6 +12541,7 @@ theorem all_manifest_decompositions_lossless :
     BinaryLossless publication_head_revision_and_advanced_at_contract ∧
     BinaryLossless publication_selection_occurrence_and_gallery_contract ∧
     BinaryLossless catalog_publication_occurrence_and_payload_contract ∧
+    BinaryLossless catalog_publication_occurrence_and_download_time_contract ∧
     BinaryLossless catalog_publication_and_title_basis_contract ∧
     BinaryLossless publication_identity_and_gallery_upload_time_contract ∧
     BinaryLossless catalog_publication_and_optional_content_contract ∧
@@ -12475,6 +12570,7 @@ theorem all_manifest_decompositions_lossless :
     publication_head_revision_and_advanced_at_lossless,
     publication_selection_occurrence_and_gallery_lossless,
     catalog_publication_occurrence_and_payload_lossless,
+    catalog_publication_occurrence_and_download_time_lossless,
     catalog_publication_and_title_basis_lossless,
     publication_identity_and_gallery_upload_time_lossless,
     catalog_publication_and_optional_content_lossless,
@@ -12505,6 +12601,7 @@ theorem all_manifest_decompositions_dependency_preserving :
     DependencyPreserving publication_head_revision_and_advanced_at_contract ∧
     DependencyPreserving publication_selection_occurrence_and_gallery_contract ∧
     DependencyPreserving catalog_publication_occurrence_and_payload_contract ∧
+    DependencyPreserving catalog_publication_occurrence_and_download_time_contract ∧
     DependencyPreserving catalog_publication_and_title_basis_contract ∧
     DependencyPreserving publication_identity_and_gallery_upload_time_contract ∧
     DependencyPreserving catalog_publication_and_optional_content_contract ∧
@@ -12533,6 +12630,7 @@ theorem all_manifest_decompositions_dependency_preserving :
     publication_head_revision_and_advanced_at_dependency_preserving,
     publication_selection_occurrence_and_gallery_dependency_preserving,
     catalog_publication_occurrence_and_payload_dependency_preserving,
+    catalog_publication_occurrence_and_download_time_dependency_preserving,
     catalog_publication_and_title_basis_dependency_preserving,
     publication_identity_and_gallery_upload_time_dependency_preserving,
     catalog_publication_and_optional_content_dependency_preserving,
@@ -12681,6 +12779,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF title_sort_contract ∧
     BCNF catalog_publication_storage_contract ∧
     BCNF catalog_publication_occurrence_identity_contract ∧
+    BCNF catalog_publication_download_time_contract ∧
     BCNF catalog_publication_order_contract ∧
     BCNF catalog_publication_content_contract ∧
     BCNF contributor_role_registry_contract ∧
@@ -12832,6 +12931,7 @@ theorem all_manifest_base_relations_bcnf :
     title_sort_bcnf,
     catalog_publication_storage_bcnf,
     catalog_publication_occurrence_identity_bcnf,
+    catalog_publication_download_time_bcnf,
     catalog_publication_order_bcnf,
     catalog_publication_content_bcnf,
     contributor_role_registry_bcnf,
@@ -13025,6 +13125,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes title_sort_contract ∧
     KeysDetermineAllAttributes catalog_publication_storage_contract ∧
     KeysDetermineAllAttributes catalog_publication_occurrence_identity_contract ∧
+    KeysDetermineAllAttributes catalog_publication_download_time_contract ∧
     KeysDetermineAllAttributes catalog_publication_contract ∧
     KeysDetermineAllAttributes catalog_publication_order_contract ∧
     KeysDetermineAllAttributes catalog_publication_title_contract ∧
@@ -13222,6 +13323,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     title_sort_candidate_keys_determine_all_attributes,
     catalog_publication_storage_candidate_keys_determine_all_attributes,
     catalog_publication_occurrence_identity_candidate_keys_determine_all_attributes,
+    catalog_publication_download_time_candidate_keys_determine_all_attributes,
     catalog_publication_candidate_keys_determine_all_attributes,
     catalog_publication_order_candidate_keys_determine_all_attributes,
     catalog_publication_title_candidate_keys_determine_all_attributes,

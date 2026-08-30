@@ -627,6 +627,10 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("revision", "publication_key"),
         semantic_value=("catalog_occurrence_sha256",),
     ),
+    "catalog_publication_download_times": NarrowLayoutDeclaration(
+        semantic_key=("catalog_occurrence_sha256",),
+        semantic_value=("download_time",),
+    ),
     "catalog_artifact_policies": NarrowLayoutDeclaration(
         semantic_key=("artifact_policy_id",),
         semantic_value=("policy_component_sha256",),

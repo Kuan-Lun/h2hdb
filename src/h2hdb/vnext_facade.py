@@ -27,6 +27,8 @@ from .domain import (
     CatalogArtifactPage,
     CatalogPage,
     CatalogPublication,
+    CatalogRecentArtifactWindow,
+    CatalogRecentOrder,
     CatalogRevision,
     DownloadCandidateState,
 )
@@ -130,6 +132,20 @@ class VNextCatalogFacade:
                 connector,
                 after=after,
                 limit=limit,
+                revision=revision,
+            )
+        )
+
+    def list_recent_artifact_publications(
+        self,
+        *,
+        order: CatalogRecentOrder,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogRecentArtifactWindow:
+        return self.__read(
+            lambda connector: self.__reader.list_recent_artifact_publications(
+                connector,
+                order=order,
                 revision=revision,
             )
         )

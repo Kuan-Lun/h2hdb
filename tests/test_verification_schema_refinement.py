@@ -406,8 +406,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 197
-    assert len(physical_spec.implemented_relations) == 184
+    assert len(logical.relations) == 198
+    assert len(physical_spec.implemented_relations) == 185
     assert set(physical_spec.inline_projections) == {
         "canonical_value_page",
         "canonical_value_page_descriptor",
@@ -459,6 +459,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
         "summary_sha256",
         "language_sha256",
         "modified_at",
+        "download_time",
     )
     resolved = physical_spec.relation("analysis_file_hash_decision_resolved")
     assert resolved is not None
@@ -1208,7 +1209,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 184
+    assert len(report.checked_relations) == 185
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (

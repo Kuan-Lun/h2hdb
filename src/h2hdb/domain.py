@@ -38,6 +38,8 @@ __all__ = [
     "CatalogPublishResult",
     "CatalogPublication",
     "CatalogPublicationSelection",
+    "CatalogRecentArtifactWindow",
+    "CatalogRecentOrder",
     "CatalogRevision",
     "CatalogSourcePage",
     "CatalogSourceRevision",
@@ -1754,6 +1756,7 @@ class CatalogPublication:
     language: str
     published_at: datetime
     modified_at: datetime
+    downloaded_at: datetime
     # The selected canonical source is part of every immutable revision.
     source_gallery_name: str
     contributors: tuple[CatalogContributor, ...] = field(default_factory=tuple)
@@ -1896,6 +1899,41 @@ class CatalogRevision:
             raise ValueError("catalog revision counts must not be negative")
         if self.artifact_count not in {0, self.publication_count}:
             raise ValueError("artifact_count must be zero or equal publication_count")
+
+
+class CatalogRecentOrder(StrEnum):
+    """The two durable publication timestamps exposed by the recent window."""
+
+    UPLOADED = "uploaded"
+    DOWNLOADED = "downloaded"
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogRecentArtifactWindow:
+    """The complete fixed-size recent artifact window for one current revision."""
+
+    revision: CatalogRevision
+    order: CatalogRecentOrder
+    publications: tuple[CatalogPublication, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.revision, CatalogRevision):
+            raise TypeError("recent artifact window revision must be CatalogRevision")
+        if type(self.order) is not CatalogRecentOrder:
+            raise TypeError("recent artifact window order must be CatalogRecentOrder")
+        object.__setattr__(self, "publications", tuple(self.publications))
+        expected_count = min(128, self.revision.artifact_count)
+        if len(self.publications) != expected_count:
+            raise ValueError(
+                "recent artifact window must contain the complete fixed top-128 set"
+            )
+        if any(
+            not isinstance(publication, CatalogPublication) or not publication.artifacts
+            for publication in self.publications
+        ):
+            raise ValueError(
+                "recent artifact window publications must all carry artifacts"
+            )
 
 
 @dataclass(frozen=True, slots=True)

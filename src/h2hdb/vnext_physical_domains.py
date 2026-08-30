@@ -160,6 +160,7 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "display_title_choice",
         "title_sort",
         "catalog_publication_storage",
+        "catalog_publication_download_time",
         "catalog_publication_occurrence_identity",
         "catalog_publication",
         "catalog_publication_order",

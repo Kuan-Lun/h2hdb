@@ -11,11 +11,13 @@ from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_publication_family import (
     CatalogContributorFamily,
+    CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
     PublicationCandidateFamily,
     PublicationIdentityFamily,
     ensure_catalog_contributor_family,
+    ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
     ensure_publication_candidate_family,
@@ -206,6 +208,7 @@ def seed_catalog_publication(
     language_sha256: bytes,
     modified_at: int,
     source_title_sha256: bytes,
+    download_time: int = 0,
     backend: str = "sqlite",
 ) -> CatalogPublicationFamily:
     family = CatalogPublicationFamily(
@@ -218,6 +221,15 @@ def seed_catalog_publication(
         source_title_sha256,
     )
     ensure_catalog_publication_family(connector, family, backend=backend)
+    ensure_catalog_publication_download_time_family(
+        connector,
+        CatalogPublicationDownloadTimeFamily(
+            revision,
+            publication_key,
+            download_time,
+        ),
+        backend=backend,
+    )
     return family
 
 
@@ -273,7 +285,8 @@ def clone_catalog_publication_families(
     publication_rows = connector.fetch_all(
         "SELECT publication.publication_key, publication.gallery_id, "
         "publication.summary_sha256, publication.language_sha256, "
-        "publication.modified_at, title.source_title_sha256 "
+        "publication.modified_at, publication.download_time, "
+        "title.source_title_sha256 "
         "FROM catalog_publications AS publication "
         "JOIN catalog_publication_titles AS title "
         "ON title.revision = publication.revision "
@@ -287,6 +300,7 @@ def clone_catalog_publication_families(
         summary,
         language,
         modified_at,
+        download_time,
         source_title,
     ) in publication_rows:
         seed_catalog_publication(
@@ -298,6 +312,7 @@ def clone_catalog_publication_families(
             language_sha256=language,
             modified_at=modified_at,
             source_title_sha256=source_title,
+            download_time=download_time,
             backend=backend,
         )
     title_rows = connector.fetch_all(

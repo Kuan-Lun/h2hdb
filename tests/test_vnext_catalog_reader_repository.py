@@ -31,6 +31,7 @@ from vnext_publication_fixtures import (
 
 import h2hdb.vnext_identity as identity
 from h2hdb import (
+    CatalogRecentOrder,
     CoreConfig,
     DatabaseConfig,
     VNextCatalogFacade,
@@ -466,7 +467,11 @@ def _seed_commit_authorities(
     return analysis_id
 
 
-def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
+def _published_fixture(
+    connector: SQLiteConnector,
+    *,
+    artifact_count: int | None = None,
+) -> dict[str, bytes]:
     root = _canonical(connector, "source_root_v1", b"\x00\x00\x00\x01\x00\x00\x00\x00")
     scope = source_scope_key("filesystem", root, 1)
     assert seed_source_scope(connector, source_root_sha256=root).scope_key == scope
@@ -554,6 +559,7 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     _publication_commit(
         connector,
         snapshot_manifest_sha256=snapshot,
+        artifact_count=artifact_count,
     )
     seed_catalog_publication(
         connector,
@@ -564,6 +570,7 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         language_sha256=language,
         modified_at=3000000,
         source_title_sha256=source_title,
+        download_time=2500000,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "
@@ -615,6 +622,84 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         "tag_value": tag_value,
         "snapshot_manifest": snapshot,
     }
+
+
+def _add_recent_artifact_publication(
+    connector: SQLiteConnector,
+    *,
+    values: dict[str, bytes],
+    semantics_sha256: bytes,
+    gid: int,
+    position: int,
+    upload_time: int,
+    download_time: int,
+) -> bytes:
+    """Add one exact reader publication while reusing bounded canonical payloads."""
+
+    key = publication_key(gid)
+    gallery_name = f"gallery-{gid}".encode("ascii")
+    connector.execute(
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
+        (gid, upload_time),
+    )
+    seed_publication_identity(connector, gid=gid)
+    connector.execute(
+        "INSERT INTO catalog_source_gallery_name_gids "
+        "(source_gallery_name, gid) VALUES (%s, %s)",
+        (gallery_name, gid),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+        (gid, gallery_name),
+    )
+    seed_catalog_publication(
+        connector,
+        revision=1,
+        publication_key=key,
+        gallery_id=gid,
+        summary_sha256=values["summary"],
+        language_sha256=values["language"],
+        modified_at=3000000 + gid,
+        source_title_sha256=values["source_title"],
+        download_time=download_time,
+    )
+    seed_catalog_publication_title(
+        connector,
+        revision=1,
+        publication_key=key,
+        source_title_sha256=values["source_title"],
+        source_gallery_name=gallery_name,
+    )
+    connector.execute(
+        "INSERT INTO catalog_display_title_choices "
+        "(display_title_policy_id, source_title_sha256, source_gallery_name, "
+        "title_sha256) VALUES (1, %s, %s, %s)",
+        (values["source_title"], gallery_name, values["display_title"]),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_order "
+        "(revision, position, publication_key) VALUES (1, %s, %s)",
+        (position, key),
+    )
+    artifact_sha256 = sha256(
+        b"recent-reader-artifact\0" + gid.to_bytes(8, "big")
+    ).digest()
+    connector.execute(
+        "INSERT INTO catalog_artifact_blobs "
+        "(artifact_sha256, size_bytes) VALUES (%s, %s)",
+        (artifact_sha256, gid),
+    )
+    ensure_catalog_artifact_family(
+        connector,
+        CatalogArtifactFamily(
+            revision=1,
+            publication_key=key,
+            artifact_sha256=artifact_sha256,
+            artifact_semantics_sha256=semantics_sha256,
+        ),
+    )
+    return key
 
 
 def _artifact_fixture(
@@ -779,6 +864,7 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
         assert publication.source_title == "原始標題"
         assert publication.summary == "摘要"
         assert publication.language == "zh"
+        assert publication.downloaded_at.timestamp() == 2.5
         assert publication.source_gallery_name == "gallery-one"
         # Mutable redownload state is operational authority and is not copied
         # into an immutable, historically pinned catalog publication.
@@ -794,6 +880,278 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
             artifact.storage_key.segments == artifact_values["storage_key_components"]
         )
         assert artifact.sha256 == artifact_values["artifact_sha256"].hex()
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_windows_sort_by_authoritative_times_and_gid_ties(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-order.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        _add_recent_artifact_publication(
+            connector,
+            values=values,
+            semantics_sha256=artifact_values["semantics"],
+            gid=124,
+            position=1,
+            upload_time=2000000,
+            download_time=5000000,
+        )
+        _add_recent_artifact_publication(
+            connector,
+            values=values,
+            semantics_sha256=artifact_values["semantics"],
+            gid=125,
+            position=2,
+            upload_time=1000000,
+            download_time=6000000,
+        )
+        connector.execute(
+            "UPDATE catalog_revision_descriptors "
+            "SET publication_count = 3, artifact_count = 3 WHERE revision = 1"
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with connector.read_transaction():
+            uploaded = reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.UPLOADED,
+                revision=1,
+            )
+            downloaded = reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.DOWNLOADED,
+                revision=1,
+            )
+        assert uploaded.order is CatalogRecentOrder.UPLOADED
+        assert [publication.gid for publication in uploaded.publications] == [
+            124,
+            123,
+            125,
+        ]
+        assert downloaded.order is CatalogRecentOrder.DOWNLOADED
+        assert [publication.gid for publication in downloaded.publications] == [
+            125,
+            124,
+            123,
+        ]
+        assert all(
+            len(publication.artifacts) == 1 for publication in downloaded.publications
+        )
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_is_fixed_to_top_128(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-128.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        for position, gid in enumerate(range(1000, 1128), start=1):
+            _add_recent_artifact_publication(
+                connector,
+                values=values,
+                semantics_sha256=artifact_values["semantics"],
+                gid=gid,
+                position=position,
+                upload_time=3000000 + gid,
+                download_time=3000000 + gid,
+            )
+        connector.execute(
+            "UPDATE catalog_revision_descriptors "
+            "SET publication_count = 129, artifact_count = 129 WHERE revision = 1"
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with connector.read_transaction():
+            window = reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.UPLOADED,
+                revision=1,
+            )
+        assert len(window.publications) == 128
+        assert [publication.gid for publication in window.publications] == list(
+            range(1127, 999, -1)
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        excluded_key = values["publication_key"]
+        connector.execute(
+            "DELETE FROM catalog_publication_download_times WHERE "
+            "catalog_occurrence_sha256 = ("
+            "SELECT catalog_occurrence_sha256 "
+            "FROM catalog_publication_occurrence_identities "
+            "WHERE revision = 1 AND publication_key = %s)",
+            (excluded_key,),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="authority is incomplete"),
+        ):
+            reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.UPLOADED,
+                revision=1,
+            )
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_handles_artifactless_revision(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-empty.sqlite3")
+    try:
+        _published_fixture(connector, artifact_count=0)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with connector.read_transaction():
+            window = reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.DOWNLOADED,
+                revision=1,
+            )
+        assert window.publications == ()
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_rejects_artifact_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-count.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        connector.execute(
+            "UPDATE catalog_revision_descriptors "
+            "SET publication_count = 2, artifact_count = 2 WHERE revision = 1"
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="artifact_count disagrees"),
+        ):
+            reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.UPLOADED,
+                revision=1,
+            )
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_rejects_untyped_order_before_sql(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-invalid-order.sqlite3")
+    try:
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with pytest.raises(TypeError, match="must be CatalogRecentOrder"):
+            reader.list_recent_artifact_publications(
+                connector,
+                order="uploaded",  # type: ignore[arg-type]  # Runtime boundary evidence.
+            )
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_rejects_missing_download_authority(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-corrupt.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "DELETE FROM catalog_publication_download_times WHERE "
+            "catalog_occurrence_sha256 = ("
+            "SELECT catalog_occurrence_sha256 "
+            "FROM catalog_publication_occurrence_identities "
+            "WHERE revision = 1 AND publication_key = %s)",
+            (values["publication_key"],),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="authority is incomplete"),
+        ):
+            reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.DOWNLOADED,
+                revision=1,
+            )
+    finally:
+        connector.close()
+
+
+def test_recent_artifact_window_rechecks_head_after_hydration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-recent-head-race.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        _publication_commit(
+            connector,
+            snapshot_manifest_sha256=values["snapshot_manifest"],
+            revision=2,
+            source_revision=2,
+            generation=2,
+            publication_count=0,
+            artifact_count=0,
+            committed_at=5000000,
+            receipt_id=b"s" * 16,
+            candidate_id=b"d" * 16,
+            preparation_id=b"q" * 16,
+        )
+        connector.execute(
+            "UPDATE catalog_publication_commit_head_receipts "
+            "SET receipt_id = %s WHERE channel = %s",
+            (b"r" * 16, b"default"),
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        hydrate = reader._hydrate_publications
+
+        def hydrate_then_advance(*args: Any, **kwargs: Any) -> Any:
+            result = hydrate(*args, **kwargs)
+            connector.execute(
+                "UPDATE catalog_publication_commit_head_receipts "
+                "SET receipt_id = %s WHERE channel = %s",
+                (b"s" * 16, b"default"),
+            )
+            return result
+
+        monkeypatch.setattr(reader, "_hydrate_publications", hydrate_then_advance)
+        with pytest.raises(VNextCatalogReadError, match="head advanced"):
+            reader.list_recent_artifact_publications(
+                connector,
+                order=CatalogRecentOrder.UPLOADED,
+            )
     finally:
         connector.close()
 

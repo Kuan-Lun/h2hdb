@@ -4506,9 +4506,17 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "JOIN catalog_publication_occurrence_identities AS r "
         "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
     )
+    download_time = _indirect_spec(
+        "catalog_publication_download_times",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_download_times AS c "
+        "JOIN catalog_publication_occurrence_identities AS r "
+        "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
+    )
 
     return {
         "CP_STORAGE": (storage,),
+        "CP_DOWNLOAD_TIME": (download_time,),
         "CP_CONTRIBUTOR": (
             direct(
                 "catalog_contributors",
@@ -4739,6 +4747,19 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.candidate_id = reserved.candidate_id",
         extra_predicate=uncommitted,
     )
+    projection_download_time = _indirect_spec(
+        "catalog_publication_download_times",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_download_times AS c "
+        "JOIN catalog_publication_occurrence_identities AS occurrence "
+        "ON occurrence.catalog_occurrence_sha256 = "
+        "c.catalog_occurrence_sha256 "
+        "JOIN catalog_publication_candidates AS reserved "
+        "ON reserved.reserved_revision = occurrence.revision "
+        "JOIN catalog_publication_candidates AS r "
+        "ON r.candidate_id = reserved.candidate_id",
+        extra_predicate=uncommitted,
+    )
 
     def projection(table: str, primary_key: tuple[str, ...]) -> _StaticDeleteSpec:
         return _indirect_spec(
@@ -4765,6 +4786,7 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             ),
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
             projection_storage,
+            projection_download_time,
         ),
         "PC_PREPARED": (
             prepared,

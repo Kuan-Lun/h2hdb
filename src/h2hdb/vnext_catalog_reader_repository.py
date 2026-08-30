@@ -33,6 +33,8 @@ from .domain import (
     CatalogContributor,
     CatalogPage,
     CatalogPublication,
+    CatalogRecentArtifactWindow,
+    CatalogRecentOrder,
     CatalogRevision,
     CatalogSubject,
     artifact_storage_key,
@@ -431,6 +433,109 @@ class VNextCatalogReaderRepository:
             total=pinned.artifact_count,
         )
 
+    def list_recent_artifact_publications(
+        self,
+        connector: SQLConnector,
+        *,
+        order: CatalogRecentOrder,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogRecentArtifactWindow:
+        """Dynamically sort the complete artifact set and return its fixed top 128."""
+
+        if type(order) is not CatalogRecentOrder:
+            raise TypeError("recent artifact order must be CatalogRecentOrder")
+        pinned = self._pin(connector, revision)
+        order_expression = (
+            "upload.upload_time"
+            if order is CatalogRecentOrder.UPLOADED
+            else "downloaded.download_time"
+        )
+        rows = connector.fetch_all(
+            "SELECT artifact.publication_key, occurrence.publication_key, "
+            "identity.publication_key, identity.gid, upload.upload_time, "
+            "downloaded.download_time, COUNT(*) OVER (), "
+            "MAX(CASE WHEN occurrence.publication_key IS NULL "
+            "OR identity.publication_key IS NULL OR upload.upload_time IS NULL "
+            "OR downloaded.download_time IS NULL THEN 1 ELSE 0 END) OVER () "
+            "FROM catalog_artifacts AS artifact "
+            "LEFT JOIN catalog_publication_occurrence_identities AS occurrence "
+            "ON occurrence.revision = artifact.revision "
+            "AND occurrence.publication_key = artifact.publication_key "
+            "LEFT JOIN catalog_publication_download_times AS downloaded "
+            "ON downloaded.catalog_occurrence_sha256 = "
+            "occurrence.catalog_occurrence_sha256 "
+            "LEFT JOIN catalog_publication_identities AS identity "
+            "ON identity.publication_key = artifact.publication_key "
+            "LEFT JOIN catalog_gallery_upload_times AS upload "
+            "ON upload.gid = identity.gid "
+            "WHERE artifact.revision = %s "
+            f"ORDER BY {order_expression} DESC, identity.gid DESC LIMIT 128",
+            (pinned.revision,),
+        )
+        expected_count = min(128, pinned.artifact_count)
+        if len(rows) != expected_count:
+            raise VNextCatalogReadError(
+                "catalog artifact_count disagrees with the recent artifact set"
+            )
+        keys: list[bytes] = []
+        gids: dict[bytes, int] = {}
+        for row in rows:
+            if len(row) != 8 or any(value is None for value in row):
+                raise VNextCatalogReadError(
+                    "recent artifact ordering authority is incomplete"
+                )
+            key = require_digest32(row[0], field="recent artifact publication_key")
+            occurrence_key = require_digest32(
+                row[1], field="recent occurrence publication_key"
+            )
+            identity_key = require_digest32(
+                row[2], field="recent identity publication_key"
+            )
+            gid = require_positive_int63(row[3], field="recent publication GID")
+            require_int63(row[4], field="recent upload_time")
+            require_int63(row[5], field="recent download_time")
+            total = require_int63(row[6], field="recent artifact total")
+            incomplete = require_int63(
+                row[7], field="recent incomplete authority count"
+            )
+            if incomplete != 0:
+                raise VNextCatalogReadError(
+                    "recent artifact ordering authority is incomplete"
+                )
+            if (
+                occurrence_key != key
+                or identity_key != key
+                or identity.publication_key(gid) != key
+                or key in gids
+                or total != pinned.artifact_count
+            ):
+                raise VNextCatalogReadError(
+                    "recent artifact ordering authority is noncongruent"
+                )
+            gids[key] = gid
+            keys.append(key)
+        loader = _CanonicalLoader(connector, backend=self._backend)
+        hydrated = self._hydrate_publications(
+            connector,
+            loader,
+            revision=pinned.revision,
+            publication_keys=keys,
+        )
+        publications = tuple(hydrated[key] for key in keys)
+        if any(
+            publication.gid != gids[key] or len(publication.artifacts) != 1
+            for key, publication in zip(keys, publications, strict=True)
+        ):
+            raise VNextCatalogReadError(
+                "recent artifact window hydrated a noncongruent publication"
+            )
+        self._assert_still_current(connector, pinned)
+        return CatalogRecentArtifactWindow(
+            revision=pinned,
+            order=order,
+            publications=publications,
+        )
+
     def get_publication(
         self,
         connector: SQLConnector,
@@ -643,7 +748,8 @@ class VNextCatalogReaderRepository:
             "SELECT family.publication_key, ordering.publication_key, "
             "publication.publication_key, publication.gallery_id, "
             "publication.summary_sha256, publication.language_sha256, "
-            "publication.modified_at, identity.gid, upload.upload_time, "
+            "publication.modified_at, publication.download_time, "
+            "identity.gid, upload.upload_time, "
             "title.publication_key, title.source_title_sha256, "
             "title.source_gallery_name, "
             "committed.receipt_id, committed.display_title_policy_id, "
@@ -682,7 +788,7 @@ class VNextCatalogReaderRepository:
         expected = set(selected)
         scalar_by_key: dict[bytes, tuple[object, ...]] = {}
         for row in rows:
-            if len(row) != 19:
+            if len(row) != 20:
                 raise VNextCatalogReadError(
                     "published item scalar query returned an invalid shape"
                 )
@@ -691,30 +797,31 @@ class VNextCatalogReaderRepository:
                 raise VNextCatalogReadError(
                     "published item scalar query is not one-to-one"
                 )
-            if any(value is None for value in row[1:18]):
+            if any(value is None for value in row[1:19]):
                 raise VNextCatalogReadError(
                     "published item scalar/title row is missing or noncongruent"
                 )
-            if row[1] != key or row[2] != key or row[9] != key:
+            if row[1] != key or row[2] != key or row[10] != key:
                 raise VNextCatalogReadError(
                     "published item scalar/title keys are noncongruent"
                 )
-            if row[13] != row[14]:
+            if row[14] != row[15]:
                 raise VNextCatalogReadError(
                     "publication display-title policy is noncongruent"
                 )
             scalar_by_key[key] = (
                 key,
-                row[7],
+                row[8],
                 row[4],
                 row[5],
-                row[8],
+                row[9],
                 row[6],
-                row[10],
+                row[7],
                 row[11],
-                row[15],
-                row[17],
+                row[12],
+                row[16],
                 row[18],
+                row[19],
             )
         if require_all and set(scalar_by_key) != expected:
             raise VNextCatalogReadError(
@@ -743,15 +850,15 @@ class VNextCatalogReaderRepository:
                     "publication key disagrees with its immutable GID"
                 )
             source_gallery_name = require_utf8_bytes(
-                row[7],
+                row[8],
                 field="source_gallery_name",
                 minimum=1,
                 maximum=255,
                 reject_nul=True,
             ).decode("utf-8")
             content_sha256 = None
-            if row[10] is not None:
-                content = require_digest32(row[10], field="content_sha256")
+            if row[11] is not None:
+                content = require_digest32(row[11], field="content_sha256")
                 loader.validate_effective_content(content)
                 content_sha256 = content.hex()
             modified_at = _datetime_from_microseconds(
@@ -777,13 +884,13 @@ class VNextCatalogReaderRepository:
                 publication_id=identity.publication_id(gid).decode("ascii"),
                 gid=gid,
                 title=loader.text(
-                    row[8], domain=b"display_title_utf8_v1", field="display title"
+                    row[9], domain=b"display_title_utf8_v1", field="display title"
                 ),
                 source_title=loader.text(
-                    row[6], domain=b"source_title_utf8_v1", field="source title"
+                    row[7], domain=b"source_title_utf8_v1", field="source title"
                 ),
                 sort_title=loader.text(
-                    row[9], domain=b"title_sort_utf8_v1", field="sort title"
+                    row[10], domain=b"title_sort_utf8_v1", field="sort title"
                 ),
                 summary=loader.text(
                     row[2], domain=b"catalog_summary_utf8_v1", field="catalog summary"
@@ -797,6 +904,9 @@ class VNextCatalogReaderRepository:
                     row[4], field="publication published_at"
                 ),
                 modified_at=modified_at,
+                downloaded_at=_datetime_from_microseconds(
+                    row[6], field="publication downloaded_at"
+                ),
                 source_gallery_name=source_gallery_name,
                 contributors=contributors.get(key, ()),
                 subjects=subjects.get(key, ()),

@@ -15,16 +15,16 @@ sibling packages.
 
 The current schema is a clean epoch-3 design:
 
-- 151 catalog data-plane base relations checked as BCNF, plus 46 logical
+- 152 catalog data-plane base relations checked as BCNF, plus 46 logical
   read projections: 33 generated SQL views and 13 inline projections. Eight
   remaining sealed vertical families are reserved for relations whose partial
   construction is itself observable workflow state.
-- 28 declared decompositions, each checked as lossless and
+- 29 declared decompositions, each checked as lossless and
   dependency-preserving.
 - 66 operational control-plane base relations checked as BCNF, including the
   separately created epoch-control relation, plus one inline activation
   projection and no operational SQL view. The complete epoch therefore contains
-  151 + 66 = 217 base tables and 33 SQL views, or 250 SQL objects.
+  152 + 66 = 218 base tables and 33 SQL views, or 251 SQL objects.
 - Operational events are current/retry publication control rather than an OPDS
   delivery log. Unreachable finalized non-head snapshots are retired by bounded
   compound cleanup; no event-consumer registry, per-event acknowledgement, or
@@ -37,17 +37,17 @@ The current schema is a clean epoch-3 design:
   SQL rendered from the same closed-world manifests.
 - A separate physical-width gate requires each ordinary `catalog_*` base table
   to have its semantic primary key plus at most one atomic non-key value. It
-  reports 112 narrow bases and 39 exact reviewed-wide BCNF relations. Thirty
-  selected families replace 190 former physical relations with 35 base relations;
+  reports 113 narrow bases and 39 exact reviewed-wide BCNF relations. Thirty
+  selected families replace 190 former physical relations with 36 base relations;
   each new wide table is covered by the capacity contract. Of those families,
   `file_name_identity`, `tag_term`, and `catalog_contributor` are
   capacity-neutral authority substitutions: each keeps the exact complete shape
   of an existing widest member and deletes only redundant companion tables.
   Logical projections are excluded from the width policy.
-- The closed catalog physical-domain authority contains exactly 127 relations:
-  105 mutation relations and 22 read-only relations. The complete publication graph
+- The closed catalog physical-domain authority contains exactly 128 relations:
+  106 mutation relations and 22 read-only relations. The complete publication graph
   is inside that closure, including current-only finalization replay state.
-- The generated provider installs exactly 5,832 typed bootstrap rows per
+- The generated provider installs exactly 5,833 typed bootstrap rows per
   backend, including all 22 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are

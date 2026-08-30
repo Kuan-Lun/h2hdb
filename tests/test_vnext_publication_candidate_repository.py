@@ -1365,7 +1365,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         ) as validation,
     ):
         assert plan.publication_count == validation.publication_count == 1
-        assert plan.child_count == validation.child_count == 7
+        assert plan.child_count == validation.child_count == 8
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1384,7 +1384,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-1",
                 now=112,
             )
-        assert built.row_count == 7 and not built.terminal
+        assert built.row_count == 8 and not built.terminal
         with connector.transaction():
             replay = PublicationCandidateRepository.process_catalog_projection_batch(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1406,7 +1406,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-2",
                 now=114,
             )
-        assert terminal.terminal and terminal.next_processed_count == 7
+        assert terminal.terminal and terminal.next_processed_count == 8
 
         with connector.transaction():
             checked = PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1418,7 +1418,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-validate-1",
                 now=115,
             )
-        assert checked.row_count == 7 and not checked.terminal
+        assert checked.row_count == 8 and not checked.terminal
         with connector.transaction():
             checked_terminal = (
                 PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1432,7 +1432,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 )
             )
         assert checked_terminal.terminal
-        assert checked_terminal.next_processed_count == 7
+        assert checked_terminal.next_processed_count == 8
 
     publication_key = identity.publication_key(10_001)
     assert connector.fetch_one(
@@ -1443,6 +1443,11 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         "FROM catalog_publications WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (1, 3)
+    assert connector.fetch_one(
+        "SELECT download_time FROM catalog_publications "
+        "WHERE revision = 1 AND publication_key = %s",
+        (publication_key,),
+    ) == (2,)
     assert connector.fetch_one(
         "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
         "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
@@ -1497,7 +1502,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
             authority=authority,
         ) as validation,
     ):
-        assert plan.child_count == validation.child_count == 200
+        assert plan.child_count == validation.child_count == 250
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1530,8 +1535,8 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                             now=112 + index,
                         )
                     )
-        assert [batch.row_count for batch in built] == [128, 72, 0]
-        assert built[-1].terminal and built[-1].next_processed_count == 200
+        assert [batch.row_count for batch in built] == [128, 122, 0]
+        assert built[-1].terminal and built[-1].next_processed_count == 250
         normalized = " ".join(mutation_queries).upper()
         assert "COUNT(" not in normalized and "SUM(" not in normalized
         assert "CATALOG_GALLERY_OBSERVATION_TAGS" not in normalized
@@ -1551,8 +1556,8 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                         now=120 + index,
                     )
                 )
-        assert [batch.row_count for batch in checked] == [128, 72, 0]
-        assert checked[-1].terminal and checked[-1].next_processed_count == 200
+        assert [batch.row_count for batch in checked] == [128, 122, 0]
+        assert checked[-1].terminal and checked[-1].next_processed_count == 250
     assert connector.fetch_one(
         "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
     ) == (50,)
@@ -1593,6 +1598,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         original_execute_affected = connector.execute_affected
         failures = (
             "INSERT INTO catalog_publication_occurrence_identities",
+            "INSERT INTO catalog_publication_download_times",
             "INSERT INTO catalog_publication_batch_receipt_stored",
             "UPDATE catalog_publication_checkpoints",
         )

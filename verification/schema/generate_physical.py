@@ -713,6 +713,7 @@ TABLE_NAMES = {
     "display_title_choice": "catalog_display_title_choices",
     "title_sort": "catalog_title_sorts",
     "catalog_publication_storage": "catalog_publication_storage",
+    "catalog_publication_download_time": "catalog_publication_download_times",
     "catalog_publication_occurrence_identity": "catalog_publication_occurrence_identities",
     "catalog_publication": "catalog_publications",
     "catalog_publication_order": "catalog_publication_order",

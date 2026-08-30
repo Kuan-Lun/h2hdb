@@ -27,6 +27,7 @@ from vnext_publication_fixtures import (
 )
 
 from h2hdb import (
+    CatalogRecentOrder,
     VNextCatalogFacade,
     VNextDatabaseAdminFacade,
     VNextDownloadQueueFacade,
@@ -555,6 +556,10 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
     facade = VNextCatalogFacade(_config(path, read_only=True))
     revision = facade.get_catalog_revision()
     page = facade.list_publications(revision=revision, limit=10)
+    recent = facade.list_recent_artifact_publications(
+        order=CatalogRecentOrder.DOWNLOADED,
+        revision=revision,
+    )
     publication = facade.get_publication(
         cast(str, values["publication_id"]),
         revision=revision,
@@ -576,6 +581,8 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
     )
     assert isinstance(page, CatalogPage)
     assert page.publications == (publication,)
+    assert recent.order is CatalogRecentOrder.DOWNLOADED
+    assert recent.publications == (publication,)
     assert by_name == {"h2h-123.cbz": publication}
     assert publication is not None
     assert publication.artifacts == (artifact,)

@@ -23,13 +23,13 @@ planning_average_files_per_gallery = 50
 stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
-selected_catalog_physical_relations_after = 35
+selected_catalog_physical_relations_after = 36
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 151
+catalog_physical_table_count_after = 152
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 66
 total_physical_table_count_before = 381
-total_physical_table_count_after = 217
+total_physical_table_count_after = 218
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -643,6 +643,7 @@ semantic_blockers = []
 derived_views = []
 child_phases = [
   ["catalog_publication_storage"],
+  ["catalog_publication_download_time"],
   ["catalog_contributor"],
   ["catalog_publication_order"],
   ["catalog_publication_content"],
@@ -741,7 +742,7 @@ machine_gates = [
 ]
 derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
-  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage"],
+  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"],
   ["prepared_artifact", "catalog_contributor"],
   ["artifact_input"],
   ["publication_checkpoint"],
@@ -1526,11 +1527,11 @@ revision_relation = "catalog_revision"
 head_relation = "publication_head"
 finalization_stage = "FINALIZE_ARTIFACTS"
 selection_rule = "BUILD_SELECTION streams every immutable source_build_gallery member of candidate.analysis_id in unsigned positive gallery_id keyset order and inserts a row if and only if the gallery is its analysis_content_owner_resolved owner for its nonexcluded effective CONTENT digest, treating a gallery with no nonexcluded CONTENT digest as its own owner, and the same gallery is the analysis_gid_winner_resolved winner for its exact metadata GID; derive publication_key only with publication-key.v1 from that positive GID; publication_selection stores no audit digest; VALIDATE_SELECTION independently streams the same predicate, exact merge-compares candidate_id, gallery_id, and publication_key against the materialization, and only its empty terminal receipt owns publication_count"
-cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact and u64be(position) for order/contributor/subject; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
+cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6,DOWNLOAD_TIME=7) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact/download-time and u64be(position) for order/contributor/subject; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
 batch_rule = "the registry remains exactly seventeen ordered stages, with candidate-owned wide checkpoints only for the first sixteen; FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint. Every maximum-128 candidate batch locks one wide checkpoint, derives the next exact server-side keyset page, inserts one immutable wide current receipt under both generation and batch candidate keys, generation-CASes the complete wide checkpoint, and deletes the safely acknowledged predecessor receipt in the same bounded transaction. The read-only current receipt projection derives committed_generation, next_processed_count, terminal and next_state; exact retained batch-key or generation replay compares every field with zero DML. Once an exact successor or terminal projection handoff is durable, the superseded receipt is pruned and an older retry returns stale/not-found with zero DML; no time-based replay window or lifetime history is retained. Terminal is exactly an empty page with unchanged cursor/count and COMPLETE next state; every nonterminal page has positive row_count and OPEN next state; caller values never authorize mutation"
 projection_seal_rule = "after VALIDATE_DUPLICATE_LOSER becomes COMPLETE, one short certification transaction locks the candidate definition seal and terminal checkpoints for VALIDATE_SELECTION, VALIDATE_CATALOG_PROJECTION, VALIDATE_ARTIFACT_INPUT_DELTA, VALIDATE_PREPARED_ARTIFACT, VALIDATE_CREATE, VALIDATE_REBUILD, VALIDATE_DELETE, VALIDATE_UNCHANGED, VALIDATE_NEW_GALLERY, VALIDATE_CHANGED_GALLERY, VALIDATE_REMOVED_GALLERY, and VALIDATE_DUPLICATE_LOSER; require VALIDATE_CATALOG_PROJECTION terminal COMPLETE after its independent exact child merge but never compare its child processed_count with publication count; take publication_count only from terminal VALIDATE_SELECTION, require prepared_artifact_count equals create_count plus rebuild_count, and require artifact_input_count equals create_count plus rebuild_count plus unchanged_count; insert only the PK-only publication_candidate_projection_seal certification marker after all equations hold, so graph-derived candidate lifecycle becomes SEALED; the logical projection derives only create_count, rebuild_count, delete_count, new_galleries, and changed_galleries by fixed O(1) terminal-receipt joins, while every other receipt-owned count remains derived at its authority; never copy terminal validation scalars; never SUM receipts or child relations, trust an audit digest, or seal from a BUILD stage"
 finalization_rule = "after the initial pointer transaction inserts a reader-invisible DB_COMMITTED successor without changing the common head, the external library adapter activates stable GID storage-key pages in batches of at most 128 and reconciles at most 128 installs or removals per call until its durable checkpoint reports READY. Only then FINALIZE_ARTIFACTS uses the permanent receipt-owned wide checkpoint: issue reads one exact generation and bounded PREPARED page without mutation; external token release is idempotent; commit exact-revalidates acknowledgements, advances only acknowledged rows, inserts one immutable wide current finalization receipt, generation-CASes the complete wide checkpoint, and deletes its safely acknowledged predecessor in one bounded transaction. Retained batch-key or start-generation replay returns the exact derived response with zero DML; pruned retries return stale/not-found. The empty terminal transaction writes the COMPLETE checkpoint and PUBLISHED marker, CASes the common head, and exact-deletes both working roots atomically, retaining that terminal current receipt so its committed_at remains finalized_at authority; the subsequent adapter COMPLETE call is idempotent and response loss resumes cleanup without republishing; no arbitrary historical receipt, MAX, marker timestamp or transient candidate state is accepted"
-runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes, artifact old/new delta classification, prepared artifact byte digest/size/member plan/exact ZIP comment and bounded protection token; derive every exact four-segment stable storage key from the positive GID, validate the complete artifact_storage_key_bytes_v1 frame is at most 4096 bytes, stream it through iter_artifact_storage_key_payload exactly as u32be(codec_version=1) || u32be(segment_count) || repeated(u32be(segment_utf8_length) || strict_utf8_segment), and reject caller components, empty/dot/NUL/separator segments, alternate codecs, or noncanonical shards; readers validate exact EOF within the same 4096-byte cap before exposing a segment; the monolithic digest helpers are bounded convenience oracles and never the production write path for arbitrary summary/language bytes; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, the terminal finalization transaction compares the candidate-pinned base head and CASes the PUBLISHED revision while deleting the exact working roots; compare every immutable revision child field and digest/count before sealing the projection; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
+runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; publish the selected observation download_time as one immutable occurrence-key child for every selected publication and independently exact-compare it before sealing; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes, artifact old/new delta classification, prepared artifact byte digest/size/member plan/exact ZIP comment and bounded protection token; derive every exact four-segment stable storage key from the positive GID, validate the complete artifact_storage_key_bytes_v1 frame is at most 4096 bytes, stream it through iter_artifact_storage_key_payload exactly as u32be(codec_version=1) || u32be(segment_count) || repeated(u32be(segment_utf8_length) || strict_utf8_segment), and reject caller components, empty/dot/NUL/separator segments, alternate codecs, or noncanonical shards; readers validate exact EOF within the same 4096-byte cap before exposing a segment; the monolithic digest helpers are bounded convenience oracles and never the production write path for arbitrary summary/language bytes; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, the terminal finalization transaction compares the candidate-pinned base head and CASes the PUBLISHED revision while deleting the exact working roots; compare every immutable revision child field and digest/count before sealing the projection; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
 
 [[publication_atomic_contract.batch_stage]]
 name = "BUILD_SELECTION"
@@ -1977,7 +1978,7 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication_download_time", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
 covers = [
   "machine_contract.publication-atomicity",
   "publication_atomic_contract.selection_rule",
@@ -2156,6 +2157,7 @@ relations = [
   "display_title_choice",
   "title_sort",
   "catalog_publication_storage",
+  "catalog_publication_download_time",
   "catalog_publication_occurrence_identity",
   "catalog_publication",
   "catalog_publication_order",
@@ -5443,20 +5445,33 @@ foreign_keys = [
 rationale = "Persist the exact collision-checked mapping SHA256(ascii('h2hdb-vnext-catalog-publication-occurrence-v1\\0') || u64be(revision) || raw32(publication_key)). The digest and revision/publication tuple are alternate keys; every conflict full-compares both determinant fields before reuse."
 
 [[relation]]
+name = "catalog_publication_download_time"
+kind = "source_of_truth"
+attributes = ["catalog_occurrence_sha256", "download_time"]
+declared_keys = [["catalog_occurrence_sha256"]]
+fds = [
+  { determinant = ["catalog_occurrence_sha256"], dependent = ["download_time"] },
+]
+foreign_keys = [
+  { attributes = ["catalog_occurrence_sha256"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["catalog_occurrence_sha256"] },
+]
+rationale = "Publish the selected observation download_time as one immutable atomic occurrence fact. Keeping this independent from the already-wide scalar/title payload preserves BCNF and the narrow physical-table rule while the occurrence foreign key and publication seal require exactly one value for every published publication."
+
+[[relation]]
 name = "catalog_publication"
 kind = "controlled_materialization"
-attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
+attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
 declared_keys = [
   ["revision", "publication_key"],
   ["revision", "gallery_id"],
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
 ]
 foreign_keys = []
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "catalog_publication_projection", rationale = "Expose the catalog publication shape from two BCNF occurrence projections. gallery_id globally determines publication_key, while the collision-checked revision occurrence identity enforces the reverse revision-scoped winner uniqueness without storing the violating pair in one base.", derived_from = ["catalog_publication_storage", "catalog_publication_occurrence_identity", "gallery_source_name_access", "source_gallery_name_gid", "publication_identity"], refresh_strategy = "read-only exact join on catalog_occurrence_sha256 plus an inner congruence join through the immutable gallery/name/GID/publication chain" }
+materialization = { authoritative = false, storage = "logical_view", view_pattern = "catalog_publication_projection", rationale = "Expose the catalog publication shape from three BCNF occurrence projections. gallery_id globally determines publication_key, while the collision-checked revision occurrence identity enforces the reverse revision-scoped winner uniqueness without storing the violating pair in one base.", derived_from = ["catalog_publication_storage", "catalog_publication_occurrence_identity", "catalog_publication_download_time", "gallery_source_name_access", "source_gallery_name_gid", "publication_identity"], refresh_strategy = "read-only exact join of the total occurrence scalar and download-time facts plus an inner congruence join through the immutable gallery/name/GID/publication chain" }
 
 [[relation]]
 name = "catalog_publication_order"
@@ -6111,6 +6126,24 @@ projections = [
 rationale = "Split one catalog occurrence into its collision-checked revision/publication identity and its complete physical gallery/scalar/title payload. The shared occurrence digest is a key of both projections, so the join is lossless and both revision-scoped occurrence dependencies are preserved; the separately declared gallery_id -> publication_key chain supplies the global dependency without repeating it in a base."
 
 [[decomposition]]
+name = "catalog_publication_occurrence_and_download_time"
+universal_attributes = [
+  "catalog_occurrence_sha256",
+  "revision",
+  "publication_key",
+  "download_time",
+]
+fds = [
+  { determinant = ["catalog_occurrence_sha256"], dependent = ["revision", "publication_key", "download_time"] },
+  { determinant = ["revision", "publication_key"], dependent = ["catalog_occurrence_sha256", "download_time"] },
+]
+projections = [
+  { relation = "catalog_publication_occurrence_identity", attributes = ["catalog_occurrence_sha256", "revision", "publication_key"] },
+  { relation = "catalog_publication_download_time", attributes = ["catalog_occurrence_sha256", "download_time"] },
+]
+rationale = "Split the selected observation download time from the collision-checked publication occurrence identity. The shared occurrence digest is a key of both projections, so the binary decomposition is lossless and dependency-preserving while keeping the timestamp in one narrow atomic base."
+
+[[decomposition]]
 name = "catalog_publication_and_title_basis"
 universal_attributes = [
   "revision",
@@ -6121,15 +6154,16 @@ universal_attributes = [
   "summary_sha256",
   "language_sha256",
   "modified_at",
+  "download_time",
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
   { determinant = ["source_gallery_name"], dependent = ["publication_key"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
+  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
   { relation = "catalog_publication_title", attributes = ["revision", "publication_key", "source_title_sha256", "source_gallery_name"] },
 ]
 rationale = "Expose the historical publication and title read shapes from the normalized occurrence storage. The publication occurrence key determines the shared intersection, while gallery_id -> publication_key and source_gallery_name -> publication_key are declared explicitly in their respective logical projections; the binary read decomposition is lossless and dependency-preserving without claiming either denormalized view is a physical BCNF base."
@@ -6160,15 +6194,16 @@ universal_attributes = [
   "summary_sha256",
   "language_sha256",
   "modified_at",
+  "download_time",
   "content_sha256",
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
+  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
   { relation = "catalog_publication_content", attributes = ["revision", "publication_key", "content_sha256"] },
 ]
 rationale = "Separate optional effective-content identity from the mandatory publication row. Positive content rows reconstruct losslessly by the publication key; row absence remains distinct from an invented empty content digest."

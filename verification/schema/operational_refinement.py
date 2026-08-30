@@ -1661,6 +1661,7 @@ _CLEANUP_TARGET_SHAPES = {
         "h2hdb.cleanup.catalog_publication.v1",
         (
             "CP_STORAGE",
+            "CP_DOWNLOAD_TIME",
             "CP_CONTRIBUTOR",
             "CP_ORDER",
             "CP_CONTENT",
@@ -2414,6 +2415,7 @@ def check_cleanup_reachability_v1(
             "publication_batch_receipt_stored",
             "artifact_operation",
             "catalog_publication_storage",
+            "catalog_publication_download_time",
         ],
         ["prepared_artifact", "catalog_contributor"],
         ["artifact_input"],

@@ -691,6 +691,7 @@ _ALL_ANALYSIS_OVERLAY_TABLES = tuple(
 
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
     "catalog_publication_storage",
+    "catalog_publication_download_times",
     "catalog_contributors",
     "catalog_publication_order",
     "catalog_publication_contents",
@@ -806,6 +807,16 @@ def _seed_catalog_publication_cleanup_fixture(
                         b"s" * 32,
                         b"l" * 32,
                         b"t" * 32,
+                    ),
+                ),
+                (
+                    "INSERT INTO catalog_publication_download_times "
+                    "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
+                    (
+                        identity.catalog_publication_occurrence_sha256(
+                            revision, publication_key
+                        ),
+                        revision,
                     ),
                 ),
                 (
@@ -2251,6 +2262,7 @@ def test_all_twenty_two_strategies_match_the_closed_phase_registry(
         ),
         CleanupTargetKind.CATALOG_PUBLICATION: (
             "CP_STORAGE",
+            "CP_DOWNLOAD_TIME",
             "CP_CONTRIBUTOR",
             "CP_ORDER",
             "CP_CONTENT",
@@ -4468,12 +4480,15 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
             _CATALOG_PUBLICATION_PAYLOAD_TABLES
         )
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
-            if table == "catalog_publication_storage":
+            if table in {
+                "catalog_publication_storage",
+                "catalog_publication_download_times",
+            }:
                 selector = (
-                    "SELECT COUNT(*) FROM catalog_publication_storage AS storage "
+                    f"SELECT COUNT(*) FROM {table} AS child "
                     "JOIN catalog_publication_occurrence_identities AS occurrence "
                     "ON occurrence.catalog_occurrence_sha256 = "
-                    "storage.catalog_occurrence_sha256 WHERE occurrence.revision = %s"
+                    "child.catalog_occurrence_sha256 WHERE occurrence.revision = %s"
                 )
             else:
                 selector = f"SELECT COUNT(*) FROM {table} WHERE revision = %s"
@@ -5264,6 +5279,11 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                     "language_sha256, modified_at, source_title_sha256) "
                     "VALUES (%s, 1, %s, %s, 1, %s)",
                     (occurrence, b"s" * 32, b"l" * 32, b"t" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_publication_download_times "
+                    "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
+                    (occurrence, revision),
                 ),
                 (
                     "INSERT INTO catalog_publication_order "

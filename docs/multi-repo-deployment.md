@@ -8,18 +8,18 @@ or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-3/version-1 database. Its 151 catalog BCNF base relations and
+There is one epoch-3/version-1 database. Its 152 catalog BCNF base relations and
 46 logical catalog projections are generated for both SQLite and MariaDB from
 the same logical manifests; 33 projections are SQL views and 13 are inline.
 The operational manifest has 66 BCNF base relations, including the separately
 created epoch-control relation, plus one inline activation projection and no
-operational SQL view. The database therefore has 217 base tables and 33 SQL
-views, or 250 SQL objects. The catalog graph has 8 sealed vertical families,
-28 checked decompositions, 112 narrow bases plus 39 reviewed-wide BCNF
-relations, and an exact 127-relation physical authority closure (105 mutation
+operational SQL view. The database therefore has 218 base tables and 33 SQL
+views, or 251 SQL objects. The catalog graph has 8 sealed vertical families,
+29 checked decompositions, 113 narrow bases plus 39 reviewed-wide BCNF
+relations, and an exact 128-relation physical authority closure (106 mutation
 relations plus 22 read-only relations). Thirty selected capacity families
-replace 190 former physical relations with 35 bases. Each backend receives
-exactly 5,832 typed bootstrap rows.
+replace 190 former physical relations with 36 bases. Each backend receives
+exactly 5,833 typed bootstrap rows.
 
 Operational events are publication-owned current/retry state, not OPDS history
 or a durable delivery queue. Bounded current-only cleanup retires each

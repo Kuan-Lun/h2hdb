@@ -724,63 +724,73 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "CP_STORAGE" }, { at
 invariant = "Delete unified publication storage before its occurrence identity."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.cp-contributor.v1"
+id = "h2hdb.operational.cleanup-phase.cp-download-time.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTRIBUTOR", "CATALOG_PUBLICATION", "2"]
+values = ["CP_DOWNLOAD_TIME", "CATALOG_PUBLICATION", "2"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_DOWNLOAD_TIME" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Delete the immutable selected-observation download time before its publication occurrence identity."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.cp-contributor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["CP_CONTRIBUTOR", "CATALOG_PUBLICATION", "3"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTRIBUTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
 invariant = "Delete complete contributor occurrences before their parent publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-order.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ORDER", "CATALOG_PUBLICATION", "3"]
+values = ["CP_ORDER", "CATALOG_PUBLICATION", "4"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ORDER" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ORDER" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
 invariant = "Delete publication order rows before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-content.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_CONTENT", "CATALOG_PUBLICATION", "4"]
+values = ["CP_CONTENT", "CATALOG_PUBLICATION", "5"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_CONTENT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
 invariant = "Delete publication content rows before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-subject.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_SUBJECT", "CATALOG_PUBLICATION", "5"]
+values = ["CP_SUBJECT", "CATALOG_PUBLICATION", "6"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_SUBJECT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
 invariant = "Delete subject occurrences before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-artifact.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ARTIFACT", "CATALOG_PUBLICATION", "6"]
+values = ["CP_ARTIFACT", "CATALOG_PUBLICATION", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ARTIFACT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ARTIFACT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
 invariant = "Delete catalog artifact occurrences before their publication occurrence."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ROOT", "CATALOG_PUBLICATION", "7"]
+values = ["CP_ROOT", "CATALOG_PUBLICATION", "8"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
 invariant = "Delete the finalized non-head catalog publication occurrence only after every revision-scoped payload child."
 
 [[bootstrap_seed]]
@@ -6253,8 +6263,8 @@ sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 mariadb_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_registry"
-sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
-mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
 [[relation.check]]
 name = "ck_cleanup_phase_order_positive"
 sqlite_expression = "phase_order > 0"

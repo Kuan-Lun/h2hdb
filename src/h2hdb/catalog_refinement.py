@@ -2753,6 +2753,9 @@ def _validate_catalog_occurrence_storage(
         LEFT JOIN catalog_publication_storage AS stored
           ON stored.catalog_occurrence_sha256 =
              occurrence.catalog_occurrence_sha256
+        LEFT JOIN catalog_publication_download_times AS downloaded
+          ON downloaded.catalog_occurrence_sha256 =
+             occurrence.catalog_occurrence_sha256
         LEFT JOIN catalog_gallery_source_name_accesses AS access
           ON access.gallery_id = stored.gallery_id
         LEFT JOIN catalog_source_gallery_name_gids AS name_gid
@@ -2762,6 +2765,7 @@ def _validate_catalog_occurrence_storage(
         WHERE occurrence.revision = %s
           AND (
             stored.catalog_occurrence_sha256 IS NULL
+            OR downloaded.catalog_occurrence_sha256 IS NULL
             OR derived.publication_key IS NULL
             OR derived.publication_key <> occurrence.publication_key
           )
@@ -2771,7 +2775,7 @@ def _validate_catalog_occurrence_storage(
     )
     if mismatch:
         raise CatalogSemanticValidationError(
-            "active catalog occurrence identity/storage is not congruent"
+            "active catalog occurrence identity/storage/download-time is not congruent"
         )
 
 

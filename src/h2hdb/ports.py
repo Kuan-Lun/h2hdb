@@ -21,6 +21,8 @@ from .domain import (
     CatalogArtifactPage,
     CatalogPage,
     CatalogPublication,
+    CatalogRecentArtifactWindow,
+    CatalogRecentOrder,
     CatalogRevision,
     DirectoryObservation,
     FileObservation,
@@ -51,6 +53,13 @@ class CatalogReader(Protocol):
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogArtifactPage: ...
+
+    def list_recent_artifact_publications(
+        self,
+        *,
+        order: CatalogRecentOrder,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogRecentArtifactWindow: ...
 
     def get_publication(
         self,

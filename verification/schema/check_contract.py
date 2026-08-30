@@ -1833,13 +1833,13 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "stress_gallery_count": 1_000_000,
         "selected_catalog_family_count": 30,
         "selected_catalog_physical_relations_before": 190,
-        "selected_catalog_physical_relations_after": 35,
+        "selected_catalog_physical_relations_after": 36,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 151,
+        "catalog_physical_table_count_after": 152,
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 66,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 217,
+        "total_physical_table_count_after": 218,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -3935,6 +3935,7 @@ def _validate_retention_target(
                 "publication_batch_receipt_stored",
                 "artifact_operation",
                 "catalog_publication_storage",
+                "catalog_publication_download_time",
             ),
             ("prepared_artifact", "catalog_contributor"),
             ("artifact_input",),
@@ -5116,13 +5117,14 @@ def _validate_publication_atomic_contract(
         "summary_sha256",
         "language_sha256",
         "modified_at",
+        "download_time",
     }
     if catalog_publication is None or set(catalog_publication.attributes) != (
         expected_publication_attributes
     ):
         errors.append(
-            f"{prefix} immutable catalog publication must exclude mutable "
-            "redownload queue state"
+            f"{prefix} immutable catalog publication must include its exact "
+            "published scalar authority and must exclude mutable redownload queue state"
         )
     expected_batch_stages = (
         (
