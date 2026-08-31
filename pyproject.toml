@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb"
-version = "0.27.0"
+version = "0.28.0"
 description = "Database, coordination, and revision catalog core for H2HDB"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
