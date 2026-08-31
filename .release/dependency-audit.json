@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-31T01:57:39+00:00",
+  "checked_at": "2026-08-31T02:19:28+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.28.0",
+  "project_version": "0.28.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, optional-development, and Node dependency for the breaking 0.28.0 epoch-3/schema-version-2 catalog discovery and presentation contract. Current registry candidates were checked against Python 3.14 support and declared compatibility ranges. The exact candidate tree passes Ruff, formatting, strict mypy, Markdown, schema/provider/capacity drift, 1,560 SQLite and live MariaDB 10.11.11 tests, Lean, all required small TLA+ profiles, and fresh sdist/wheel/CLI verification. mysql-connector-python and pydantic remain within the reviewed major-version bounds; build, test, typing, lint, packaging, testcontainers, and markdown tooling are development-only and their latest candidates pass the same gate. No dependency change or additional upper bound is required.",
+    "note": "Reviewed every direct build, runtime, optional-development, and Node dependency for the compatible 0.28.1 MariaDB READY SQL-portability fix. The dependency manifest is unchanged from 0.28.0 and all current registry candidates remain within the reviewed Python 3.14 and declared compatibility ranges. The 0.28.0 exact tree passed 1,560 SQLite/live MariaDB 10.11.11 tests, schema/provider/capacity drift, Lean, small TLA+ profiles, and distribution verification; this SQL-only patch additionally passes the full fast gate, a live MariaDB reserved-alias regression, and the two previously failing cross-repository Ingest MariaDB READY workflows. The exact 0.28.1 candidate remains subject to the repository release gate. No dependency change or new upper bound is required.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
