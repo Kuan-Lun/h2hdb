@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -89,7 +89,7 @@ def _definition(
 ) -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=1,
+        schema_version=2,
         ddl_manifest_sha256=ddl_manifest_sha256,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=obligation_manifest_sha256,
@@ -109,6 +109,11 @@ def _definition(
             "versioned-leaf-byte-bounds",
         ),
     )
+
+
+def test_schema_v1_definition_is_rejected_without_compatibility_path() -> None:
+    with pytest.raises(ValueError, match="supports schema version 2, not 1"):
+        replace(_definition(), schema_version=1)
 
 
 @dataclass
@@ -187,7 +192,7 @@ class FakeProvider:
         # and seed queries named by its checksum-pinned obligation manifest.
         assert connector.fetch_one(
             "SELECT singleton_id, epoch, schema_version FROM h2hdb_schema_epoch"
-        ) == (1, 3, 1)
+        ) == (1, 3, 2)
         expected = (
             self.definition.activation_semantic_obligation_ids
             if phase is SchemaSemanticValidationPhase.ACTIVATION
@@ -231,7 +236,7 @@ def _initialize_building(
             INSERT INTO h2hdb_schema_epoch (
                 singleton_id, epoch, schema_version, state,
                 manifest_sha256, started_at, ready_at
-            ) VALUES (1, 3, 1, 'BUILDING', %s, 1, NULL)
+            ) VALUES (1, 3, 2, 'BUILDING', %s, 1, NULL)
             """,
             (bytes.fromhex(definition.manifest_sha256),),
         )
@@ -396,7 +401,7 @@ def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None
     _initialize_building(connector, definition)
     updates: dict[str, object] = {
         "epoch": 4,
-        "schema_version": 2,
+        "schema_version": 1,
         "manifest_sha256": b"x" * 32,
     }
     connector.execute(
@@ -417,7 +422,7 @@ def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None
         FakeProvider(
             SchemaEpochDefinition(
                 epoch=3,
-                schema_version=1,
+                schema_version=2,
                 ddl_manifest_sha256=DDL_MANIFEST,
                 seed_manifest_sha256="44" * 32,
                 obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -455,7 +460,7 @@ def test_ready_rejects_ddl_or_obligation_manifest_drift(
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("epoch", 4), ("schema_version", 2), ("manifest_sha256", b"z" * 32)],
+    [("epoch", 4), ("schema_version", 1), ("manifest_sha256", b"z" * 32)],
 )
 def test_ready_control_identity_drift_is_rejected(
     tmp_path: Path, field: str, value: object
@@ -716,6 +721,37 @@ def test_semantic_validator_cannot_create_schema_objects(tmp_path: Path) -> None
         connector.close()
 
 
+def test_semantic_validator_accepts_one_read_only_cte(tmp_path: Path) -> None:
+    connector = _connected(tmp_path / "validator-read-only-cte.sqlite3")
+    definition = _definition()
+
+    class ReadOnlyCTEProvider(FakeProvider):
+        def validate_semantics(
+            self,
+            connector: SQLConnector,
+            phase: SchemaSemanticValidationPhase,
+        ) -> Sequence[str]:
+            assert connector.fetch_one(
+                "WITH family_keys(parent_id) AS ("
+                "SELECT parent_id FROM vnext_epoch_parents WHERE parent_id = %s) "
+                "SELECT parent.payload FROM family_keys AS family "
+                "JOIN vnext_epoch_parents AS parent "
+                "ON parent.parent_id = family.parent_id",
+                (0,),
+            ) == (b"\x00" * 32,)
+            return (
+                self.definition.activation_semantic_obligation_ids
+                if phase is SchemaSemanticValidationPhase.ACTIVATION
+                else self.definition.ready_semantic_obligation_ids
+            )
+
+    try:
+        report = run_sqlite_schema_epoch(connector, ReadOnlyCTEProvider(definition))
+        assert report.state == "READY"
+    finally:
+        connector.close()
+
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -723,6 +759,15 @@ def test_semantic_validator_cannot_create_schema_objects(tmp_path: Path) -> None
         "PRAGMA foreign_keys = OFF",
         "SELECT GET_LOCK('validator-side-effect', 0)",
         "SELECT 1; DELETE FROM vnext_epoch_parents",
+        (
+            "WITH changed AS (UPDATE vnext_epoch_parents SET payload = X'00' "
+            "WHERE parent_id = 0 RETURNING parent_id) "
+            "SELECT parent_id FROM changed"
+        ),
+        (
+            "WITH selected AS (SELECT parent_id FROM vnext_epoch_parents) "
+            "UPDATE vnext_epoch_parents SET payload = X'00'"
+        ),
     ],
 )
 def test_semantic_validator_fetch_cannot_smuggle_side_effects(
@@ -863,7 +908,7 @@ def test_provider_object_whitelist_must_exactly_match_statements() -> None:
     with pytest.raises(ValueError, match="exactly match"):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=1,
+            schema_version=2,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -885,7 +930,7 @@ def test_provider_cannot_own_control_table() -> None:
     with pytest.raises(ValueError, match="must not declare"):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=1,
+            schema_version=2,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -903,7 +948,7 @@ def test_epoch_requires_at_least_one_semantic_obligation() -> None:
     ):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=1,
+            schema_version=2,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,

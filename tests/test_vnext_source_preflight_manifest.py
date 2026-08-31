@@ -10,6 +10,7 @@ import pytest
 from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import (
+    ArtifactSourceRole,
     CoreConfig,
     DatabaseConfig,
     DirectoryObservation,
@@ -18,8 +19,7 @@ from h2hdb import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
     TagObservation,
-    VNextArtifactProducer,
-    VNextArtifactStoragePolicy,
+    VNextArtifactAdapterPolicy,
     VNextCurrentOnlyMaintenanceOutcome,
     VNextDatabaseAdminFacade,
     VNextIngestFacade,
@@ -78,6 +78,7 @@ class _BoundarySource:
             FileObservation(
                 f"{index:04d}.jpg".encode("ascii"),
                 FileContentReceipt.from_parts((index.to_bytes(2, "big"),)),
+                ArtifactSourceRole.PAGE,
                 1,
                 index + 1,
                 index,
@@ -197,14 +198,10 @@ class _BoundarySource:
 
 def _policy() -> VNextIngestPolicy:
     return VNextIngestPolicy(
-        producer=VNextArtifactProducer(
-            writer_id=b"writer",
-            python_abi=b"cp313",
-            pillow_build=b"pillow-11",
-            libjpeg_build=b"libjpeg-turbo-3",
-            zlib_build=b"zlib-1.3",
+        artifact=VNextArtifactAdapterPolicy(
+            adapter_id=b"test-artifact-adapter",
+            policy_fingerprint_sha256=b"p" * 32,
         ),
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
     )
 
 
@@ -226,6 +223,7 @@ def test_bounded_component_builder_matches_reference_codec_at_leaf_boundaries(
         FileObservation(
             f"{index:04d}.jpg".encode("ascii"),
             FileContentReceipt.from_parts((index.to_bytes(2, "big"),)),
+            ArtifactSourceRole.PAGE,
             1,
             index + 1,
             index,
@@ -243,6 +241,7 @@ def test_bounded_component_builder_matches_reference_codec_at_leaf_boundaries(
                 file_key(item.name_bytes),
                 item.content.file_sha256,
                 item.content.size_bytes,
+                item.artifact_role.value.encode("ascii"),
                 item.device,
                 item.inode,
                 item.modified_ns,

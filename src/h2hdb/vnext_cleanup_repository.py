@@ -5,7 +5,7 @@ predicates.  Runtime dispatch therefore stays closed-world: every supported
 target and phase below is bound to literal SQL owned by this module.  Database
 text is never interpolated into a statement.
 
-All twenty-two provider-seeded target kinds are implemented here.  The large
+All twenty-three provider-seeded target kinds are implemented here.  The large
 child-first targets use source-owned, immutable statement specifications; the
 database registry is checked for exact equality but is never treated as SQL or
 as an authorization predicate.
@@ -86,6 +86,7 @@ class CleanupTargetKind(StrEnum):
     GALLERY_OBSERVATION = "GALLERY_OBSERVATION"
     GALLERY_OBSERVATION_STAGING = "GALLERY_OBSERVATION_STAGING"
     ARTIFACT_BLOB = "ARTIFACT_BLOB"
+    STORAGE_OBJECT_KEY = "STORAGE_OBJECT_KEY"
     CANONICAL_VALUE = "CANONICAL_VALUE"
     CONTENT_BLOB = "CONTENT_BLOB"
     GALLERY_OBSERVATION_PAGE = "GALLERY_OBSERVATION_PAGE"
@@ -112,6 +113,7 @@ _MAINTENANCE_TARGET_PRIORITY = (
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
     CleanupTargetKind.GALLERY_OBSERVATION,
     CleanupTargetKind.ARTIFACT_BLOB,
+    CleanupTargetKind.STORAGE_OBJECT_KEY,
     CleanupTargetKind.PUBLICATION_IDENTITY,
     CleanupTargetKind.GALLERY_IDENTITY,
     CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
@@ -412,10 +414,10 @@ class VNextCleanupRepository:
         gate_lease: GateLease | None = None,
         now: int | None = None,
     ) -> CatalogPublicationMaintenanceState:
-        """Classify the gallery/CBZ fixed point across 21 of 22 targets.
+        """Classify the catalog/resource fixed point across 22 of 23 targets.
 
         New ``HASH_CACHE_OBSERVATION`` work is deliberately excluded.  It is a
-        file-derived, age-based cache policy rather than gallery/CBZ history;
+        file-derived, age-based cache policy rather than retained catalog state;
         including it with a zero max age would make every resident idle poll
         delete newly observed cache rows and prevent a stable fixed point.  An
         already OPEN hash-cache cycle is nevertheless surfaced as ACTIONABLE
@@ -460,7 +462,7 @@ class VNextCleanupRepository:
         The exact candidate probe and cycle creation share the EXCLUSIVE
         transaction.  A completed cycle is followed by a new call, which
         restarts the priority scan from the first target and therefore reaches
-        a dependency fixed point without walking all 5,376 target shards.  A
+        a dependency fixed point without walking all 5,888 target shards.  A
         previously opened hash-cache cycle is resumed as a liveness handoff;
         this path never starts new hash-cache work.
         """
@@ -1713,11 +1715,19 @@ def _select_artifact_blobs(
           AND (%s = 0 OR artifact_blob.artifact_sha256 > %s)
           AND (%s = 1 OR artifact_blob.artifact_sha256 < %s)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifacts p
-              WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
+              SELECT 1 FROM catalog_prepared_artifact_descriptors prepared
+              WHERE prepared.artifact_sha256 = artifact_blob.artifact_sha256)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_prepared_resource_blob prepared_resource
+              WHERE prepared_resource.storage_object_sha256 =
+                    artifact_blob.artifact_sha256)
           AND NOT EXISTS (
               SELECT 1 FROM catalog_artifacts retained
               WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_storage_objects stored_resource
+              WHERE stored_resource.storage_object_sha256 =
+                    artifact_blob.artifact_sha256)
         ORDER BY artifact_blob.artifact_sha256
         LIMIT %s
         """,
@@ -1740,11 +1750,19 @@ def _select_artifact_blobs(
             FROM catalog_artifact_blobs AS artifact_blob
             WHERE artifact_blob.artifact_sha256 = %s
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifacts p
-                  WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
+                  SELECT 1 FROM catalog_prepared_artifact_descriptors prepared
+                  WHERE prepared.artifact_sha256 = artifact_blob.artifact_sha256)
+              AND NOT EXISTS (
+                  SELECT 1 FROM catalog_prepared_resource_blob prepared_resource
+                  WHERE prepared_resource.storage_object_sha256 =
+                        artifact_blob.artifact_sha256)
               AND NOT EXISTS (
                   SELECT 1 FROM catalog_artifacts retained
                   WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
+              AND NOT EXISTS (
+                  SELECT 1 FROM catalog_storage_objects stored_resource
+                  WHERE stored_resource.storage_object_sha256 =
+                        artifact_blob.artifact_sha256)
             """,
             (key,),
         )
@@ -1855,6 +1873,7 @@ _FROZEN_ROOT_DIGEST_ATTRIBUTES = frozenset(
         "page_sha256",
         "publication_key",
         "source_identity_sha256",
+        "storage_object_key_sha256",
         "value_sha256",
     }
 )
@@ -4458,7 +4477,30 @@ def _publication_commit_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 def _catalog_revision_descriptor_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_revision_descriptors"
     key = ("revision",)
-    return {"CRD_ROOT": (_owned_spec(root, key, root, key),)}
+    return {
+        "CRD_ROOT": (
+            _owned_spec("catalog_discovery_seals", key, root, key),
+            _owned_spec(
+                "catalog_language_facet_order",
+                ("revision", "position"),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_subject_facet_order",
+                ("revision", "position"),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_contributor_facet_order",
+                ("revision", "position"),
+                root,
+                key,
+            ),
+            _owned_spec(root, key, root, key),
+        )
+    }
 
 
 def _source_revision_descriptor_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
@@ -4492,6 +4534,32 @@ def _publication_generation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]
     }
 
 
+_STORAGE_OBJECT_KEY_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_prepared_artifacts prepared
+    WHERE prepared.storage_object_key_sha256 = r.storage_object_key_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_storage_objects retained
+    WHERE retained.storage_object_key_sha256 = r.storage_object_key_sha256)
+"""
+
+
+def _storage_object_key_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_storage_object_key_identities"
+    key = ("storage_object_key_sha256",)
+    return {
+        "SK_SEGMENT": (
+            _owned_spec(
+                "catalog_storage_object_key_segments",
+                ("storage_object_key_sha256", "segment_position"),
+                root,
+                key,
+            ),
+        ),
+        "SK_ROOT": (_owned_spec(root, key, root, key),),
+    }
+
+
 def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_publication_occurrence_identities"
     key = ("revision", "publication_key")
@@ -4515,7 +4583,23 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     )
 
     return {
-        "CP_STORAGE": (storage,),
+        "CP_STORAGE": (
+            direct(
+                "catalog_search_postings",
+                ("revision", "value_sha256", "publication_key"),
+            ),
+            direct("catalog_search_documents", key),
+            direct(
+                "catalog_pages",
+                ("revision", "publication_key", "page_index"),
+            ),
+            direct("catalog_thumbnails", key),
+            direct(
+                "catalog_storage_objects",
+                ("revision", "publication_key", "resource_kind"),
+            ),
+            storage,
+        ),
         "CP_DOWNLOAD_TIME": (download_time,),
         "CP_CONTRIBUTOR": (
             direct(
@@ -4715,14 +4799,15 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "JOIN catalog_publication_candidates AS r "
         "ON r.candidate_id = c.candidate_id"
     )
-    prepared_key = ("candidate_id", "publication_key")
+    prepared_key = ("candidate_id", "publication_key", "resource_kind")
     prepared = _indirect_spec(
         "catalog_prepared_artifacts",
         prepared_key,
         prepared_source,
         delete_sql=(
             "DELETE FROM catalog_prepared_artifacts "
-            "WHERE candidate_id = %s AND publication_key = %s",
+            "WHERE candidate_id = %s AND publication_key = %s "
+            "AND resource_kind = %s",
         ),
     )
     selection_storage = _indirect_spec(
@@ -4775,6 +4860,38 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 
     return {
         "PC_SEALS": (
+            direct(
+                "catalog_prepared_pages",
+                ("candidate_id", "publication_key", "page_index"),
+            ),
+            direct(
+                "catalog_prepared_thumbnails",
+                ("candidate_id", "publication_key"),
+            ),
+            direct(
+                "catalog_prepared_storage_objects",
+                ("candidate_id", "publication_key", "resource_kind"),
+            ),
+            direct(
+                "catalog_prepared_resource_blob",
+                ("candidate_id", "publication_key", "resource_kind"),
+            ),
+            projection(
+                "catalog_search_postings",
+                ("revision", "value_sha256", "publication_key"),
+            ),
+            projection(
+                "catalog_pages",
+                ("revision", "publication_key", "page_index"),
+            ),
+            projection(
+                "catalog_thumbnails",
+                ("revision", "publication_key"),
+            ),
+            projection(
+                "catalog_storage_objects",
+                ("revision", "publication_key", "resource_kind"),
+            ),
             direct("operational_publication_candidate_preparations", ("candidate_id",)),
             direct(
                 "catalog_publication_candidate_projection_seals",
@@ -4790,6 +4907,14 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
         "PC_PREPARED": (
             prepared,
+            direct(
+                "catalog_prepared_artifact_descriptors",
+                ("candidate_id", "publication_key"),
+            ),
+            projection(
+                "catalog_search_documents",
+                ("revision", "publication_key"),
+            ),
             projection(
                 "catalog_contributors",
                 (
@@ -5265,6 +5390,9 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     "WHERE gallery_id = %s AND observation_id = %s "
                     "AND file_key = %s",
                     "DELETE FROM catalog_gallery_observation_file_file_nos "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND file_key = %s",
+                    "DELETE FROM catalog_gallery_observation_file_artifact_role "
                     "WHERE gallery_id = %s AND observation_id = %s "
                     "AND file_key = %s",
                     "DELETE FROM catalog_gallery_observation_file_anchors "
@@ -5747,6 +5875,8 @@ AND NOT EXISTS (SELECT 1 FROM catalog_candidate_artifact_inputs x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_artifacts x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_search_postings x
+                WHERE x.value_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_contributors x
@@ -5852,6 +5982,13 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             "ON r.value_sha256 = c.policy_component_sha256",
         ),
     )
+    search_lexeme = _indirect_spec(
+        "catalog_search_lexemes",
+        ("value_sha256",),
+        "catalog_search_lexemes AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = c.value_sha256",
+    )
     parent = _indirect_spec(
         "catalog_canonical_value_page_parents",
         ("parent_sha256", "position"),
@@ -5895,6 +6032,7 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     )
     return {
         "CV_DICTIONARY": (
+            search_lexeme,
             display_title_choice,
             title_sort,
             *source_scope,
@@ -6020,6 +6158,15 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         16,
         _PUBLICATION_CANDIDATE_ELIGIBILITY,
         _publication_candidate_phases(),
+    ),
+    CleanupTargetKind.STORAGE_OBJECT_KEY: _StaticTargetPlan(
+        CleanupTargetKind.STORAGE_OBJECT_KEY,
+        "catalog_storage_object_key_identities",
+        ("storage_object_key_sha256",),
+        "storage_object_key_sha256",
+        32,
+        _STORAGE_OBJECT_KEY_ELIGIBILITY,
+        _storage_object_key_phases(),
     ),
     CleanupTargetKind.OPERATIONAL_PREPARATION: _StaticTargetPlan(
         CleanupTargetKind.OPERATIONAL_PREPARATION,
@@ -6226,11 +6373,19 @@ def _next_artifact_blob_candidate_shard(work: VNextUnitOfWork) -> int | None:
         SELECT artifact_blob.artifact_sha256
         FROM catalog_artifact_blobs AS artifact_blob
         WHERE NOT EXISTS (
-            SELECT 1 FROM catalog_prepared_artifacts prepared
+            SELECT 1 FROM catalog_prepared_artifact_descriptors prepared
             WHERE prepared.artifact_sha256 = artifact_blob.artifact_sha256)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_prepared_resource_blob prepared_resource
+              WHERE prepared_resource.storage_object_sha256 =
+                    artifact_blob.artifact_sha256)
           AND NOT EXISTS (
             SELECT 1 FROM catalog_artifacts retained
             WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_storage_objects stored_resource
+            WHERE stored_resource.storage_object_sha256 =
+                  artifact_blob.artifact_sha256)
         ORDER BY artifact_blob.artifact_sha256
         LIMIT 1
         """)
@@ -6422,6 +6577,9 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
     CleanupTargetKind.ARTIFACT_BLOB: _Strategy(
         ("AB_ROOT",),
         (_select_artifact_blobs,),
+    ),
+    CleanupTargetKind.STORAGE_OBJECT_KEY: _static_strategy(
+        CleanupTargetKind.STORAGE_OBJECT_KEY
     ),
     CleanupTargetKind.CANONICAL_VALUE: _static_strategy(
         CleanupTargetKind.CANONICAL_VALUE

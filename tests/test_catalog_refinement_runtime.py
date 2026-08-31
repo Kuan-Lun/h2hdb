@@ -5,9 +5,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
 
 from h2hdb import catalog_refinement, vnext_identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.catalog_search import iter_search_lexemes
 from h2hdb.sqlite_connector import SQLiteConnector
 
 
@@ -25,20 +27,16 @@ def _generated_catalog_database(path: Path) -> SQLiteConnector:
     return connector
 
 
-def _insert_artifact_producer(
+def _insert_artifact_adapter_policy(
     connector: SQLiteConnector,
     *,
-    fingerprint: bytes,
-    algorithm_version: int,
-    equivalence_class: bytes,
-    fields: tuple[bytes, bytes, bytes, bytes, bytes],
+    policy_fingerprint: bytes,
+    adapter_id: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_artifact_producer_fingerprints "
-        "(producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        (fingerprint, algorithm_version, equivalence_class, *fields),
+        "INSERT INTO catalog_artifact_adapter_policy "
+        "(policy_fingerprint_sha256, adapter_id) VALUES (%s, %s)",
+        (policy_fingerprint, adapter_id),
     )
 
 
@@ -84,13 +82,14 @@ def _insert_artifact_policy_semantics(
     connector: SQLiteConnector,
     *,
     policy_component: bytes,
-    producer_fingerprint: bytes,
+    algorithm_version: int,
+    policy_fingerprint: bytes,
 ) -> None:
     connector.execute(
         "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, max_image_short_side, "
-        "producer_fingerprint_sha256) VALUES (%s, 2048, %s)",
-        (policy_component, producer_fingerprint),
+        "(policy_component_sha256, artifact_algorithm_version, "
+        "policy_fingerprint_sha256) VALUES (%s, %s, %s)",
+        (policy_component, algorithm_version, policy_fingerprint),
     )
 
 
@@ -178,16 +177,17 @@ def test_closed_digest_registry_rejects_an_unregistered_row(tmp_path: Path) -> N
     ("mutation_sql", "error_match"),
     (
         (
-            "UPDATE catalog_artifact_zip_writer_policies SET compression_level = 8",
-            "artifact_zip_writer_policy.*exact v1 singleton",
+            "DELETE FROM catalog_resource_kinds "
+            "WHERE resource_kind = X'7468756d626e61696c'",
+            "catalog_resource_kind.*exact neutral two-role registry",
         ),
         (
-            "UPDATE catalog_artifact_storage_codecs SET storage_key_codec_version = 2",
-            "artifact_storage_codec.*managed-filesystem v1 singleton",
+            "DELETE FROM catalog_resource_kinds",
+            "catalog_resource_kind.*exact neutral two-role registry",
         ),
     ),
 )
-def test_bootstrap_rejects_artifact_registry_corruption(
+def test_bootstrap_rejects_resource_kind_registry_corruption(
     tmp_path: Path,
     mutation_sql: str,
     error_match: str,
@@ -207,26 +207,29 @@ def test_bootstrap_rejects_artifact_registry_corruption(
         connector.close()
 
 
-def test_static_wide_seed_registry_rejects_missing_extra_order_and_partial(
+def test_static_search_policy_seed_rejects_missing_extra_order_and_partial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = cast(tuple[dict[str, Any], ...], ARTIFACT["bootstrap_seeds"])
-    zip_indexes = tuple(
+    search_policy_indexes = tuple(
         index
         for index, seed in enumerate(original)
-        if seed["relation"] in {"artifact_zip_writer_policy", "artifact_storage_codec"}
+        if seed["relation"] == "search_policy"
     )
-    assert len(zip_indexes) == 2
-    first, second = zip_indexes[:2]
-    partial_policy = dict(original[first])
+    assert len(search_policy_indexes) == 1
+    index = search_policy_indexes[0]
+    partial_policy = dict(original[index])
     partial_policy["value"] = partial_policy["value"][:-1]
-    extra_seed = dict(original[first])
+    extra_seed = dict(original[index])
     extra_seed["id"] = f"{extra_seed['id']}.duplicate"
+    reordered_policy = dict(original[index])
+    first_cell, second_cell, *remaining_cells = reordered_policy["value"]
+    reordered_policy["value"] = (second_cell, first_cell, *remaining_cells)
     mutations = (
-        original[:first] + original[first + 1 :],
-        original[: second + 1] + (extra_seed,) + original[second + 1 :],
-        original[:first] + (original[second], original[first]) + original[second + 1 :],
-        original[:first] + (partial_policy,) + original[first + 1 :],
+        original[:index] + original[index + 1 :],
+        original[: index + 1] + (extra_seed,) + original[index + 1 :],
+        original[:index] + (reordered_policy,) + original[index + 1 :],
+        original[:index] + (partial_policy,) + original[index + 1 :],
     )
 
     for mutated in mutations:
@@ -864,34 +867,30 @@ def _insert_active_publication(
 ) -> tuple[bytes, bytes]:
     artifact_policy_id = 1
     display_title_policy_id = 1
-    producer_values = (b"writer", b"cp314", b"pillow", b"libjpeg", b"zlib")
-    producer_fingerprint = vnext_identity.artifact_producer_fingerprint_sha256(
-        *producer_values
-    )
+    algorithm_version = 2
+    adapter_id = b"test-artifact-adapter"
+    policy_fingerprint = b"p" * 32
     policy_component = vnext_identity.artifact_policy_digest(
-        1,
-        2048,
-        producer_fingerprint,
+        algorithm_version,
+        adapter_id,
+        policy_fingerprint,
     )
     _insert_canonical_seal(
         connector,
         value_sha256=policy_component,
-        digest_domain=b"artifact_policy_v2",
+        digest_domain=b"artifact_policy_v3",
         page_sha256=sha256(b"artifact-policy-page").digest(),
     )
-    _insert_artifact_producer(
+    _insert_artifact_adapter_policy(
         connector,
-        fingerprint=producer_fingerprint,
-        algorithm_version=1,
-        equivalence_class=vnext_identity.artifact_producer_equivalence_class(
-            producer_fingerprint
-        ),
-        fields=producer_values,
+        policy_fingerprint=policy_fingerprint,
+        adapter_id=adapter_id,
     )
     _insert_artifact_policy_semantics(
         connector,
         policy_component=policy_component,
-        producer_fingerprint=producer_fingerprint,
+        algorithm_version=algorithm_version,
+        policy_fingerprint=policy_fingerprint,
     )
     connector.execute(
         "INSERT INTO catalog_artifact_policies "
@@ -919,8 +918,202 @@ def _insert_active_publication(
         "(candidate_id) VALUES (%s)",
         (candidate_id,),
     )
+    connector.execute(
+        "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+    )
     receipt_id = b"t" * 16
     return candidate_id, receipt_id
+
+
+def _insert_exact_canonical_payload(
+    connector: SQLiteConnector,
+    *,
+    domain: str,
+    payload: bytes,
+) -> bytes:
+    value_sha256 = vnext_identity.canonical_value_digest(domain, payload)
+    page = vnext_identity.CanonicalValuePage(
+        value_sha256,
+        vnext_identity.GalleryObservationNodeKind.LEAF,
+        0,
+        0,
+        len(payload),
+        (vnext_identity.CanonicalValueChunk(0, payload),),
+    )
+    page_bytes = vnext_identity.encode_canonical_value_page(page)
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=domain.encode("ascii"),
+        page_sha256=vnext_identity.canonical_value_page_digest(page_bytes),
+        page_bytes=page_bytes,
+        subtree_item_count=len(payload),
+        allocated_at=1,
+    )
+    return value_sha256
+
+
+def _insert_nonempty_discovery_projection(
+    connector: SQLiteConnector,
+) -> dict[str, bytes]:
+    """Install one exact active discovery root for validator corruption tests."""
+
+    analysis_id = _insert_active_source_head(connector)
+    _insert_active_publication(connector, analysis_id)
+    source_title = _insert_exact_canonical_payload(
+        connector,
+        domain="source_title_utf8_v1",
+        payload=b"source",
+    )
+    display_title = _insert_exact_canonical_payload(
+        connector,
+        domain="display_title_utf8_v1",
+        payload=b"display",
+    )
+    replacement_title = _insert_exact_canonical_payload(
+        connector,
+        domain="display_title_utf8_v1",
+        payload=b"changed",
+    )
+    summary = _insert_exact_canonical_payload(
+        connector,
+        domain="catalog_summary_utf8_v1",
+        payload=b"summary",
+    )
+    language = _insert_exact_canonical_payload(
+        connector,
+        domain="catalog_language_utf8_v1",
+        payload=b"en",
+    )
+    contributor = _insert_exact_canonical_payload(
+        connector,
+        domain="contributor_name_utf8_v1",
+        payload=b"writer",
+    )
+    subject = _insert_exact_canonical_payload(
+        connector,
+        domain="tag_value_utf8_v1",
+        payload=b"space",
+    )
+    publication_key = vnext_identity.publication_key(17)
+    occurrence = vnext_identity.catalog_publication_occurrence_sha256(
+        1,
+        publication_key,
+    )
+    source_gallery_name = b"gallery-17"
+
+    connector.execute("PRAGMA foreign_keys = OFF")
+    connector.execute(
+        "UPDATE catalog_revision_descriptors "
+        "SET publication_count = 1 WHERE revision = 1"
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (17, 1)"
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_identities (publication_key, gid) "
+        "VALUES (%s, 17)",
+        (publication_key,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
+        "VALUES (%s, 17)",
+        (source_gallery_name,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (17, %s)",
+        (source_gallery_name,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_occurrence_identities "
+        "(catalog_occurrence_sha256, revision, publication_key) "
+        "VALUES (%s, 1, %s)",
+        (occurrence, publication_key),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_storage "
+        "(catalog_occurrence_sha256, gallery_id, summary_sha256, "
+        "language_sha256, modified_at, source_title_sha256) "
+        "VALUES (%s, 17, %s, %s, 1, %s)",
+        (occurrence, summary, language, source_title),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_download_times "
+        "(catalog_occurrence_sha256, download_time) VALUES (%s, 1)",
+        (occurrence,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_display_title_choices "
+        "(display_title_policy_id, source_title_sha256, source_gallery_name, "
+        "title_sha256) VALUES (1, %s, %s, %s)",
+        (source_title, source_gallery_name, display_title),
+    )
+    connector.execute(
+        "INSERT INTO catalog_contributors "
+        "(revision, publication_key, contributor_name_sha256, role, position) "
+        "VALUES (1, %s, %s, %s, 0)",
+        (publication_key, contributor, b"author"),
+    )
+    connector.execute(
+        "INSERT INTO catalog_tag_terms (tag_id, namespace, tag_value_sha256) "
+        "VALUES (1, %s, %s)",
+        (b"genre", subject),
+    )
+    connector.execute(
+        "INSERT INTO catalog_subjects "
+        "(revision, publication_key, position, tag_id) VALUES (1, %s, 0, 1)",
+        (publication_key,),
+    )
+
+    lexemes = tuple(
+        dict.fromkeys(iter_search_lexemes((b"source", b"display", b"writer", b"space")))
+    )
+    connector.execute(
+        "INSERT INTO catalog_search_documents "
+        "(revision, publication_key, row_count) VALUES (1, %s, %s)",
+        (publication_key, len(lexemes)),
+    )
+    for lexeme in (*lexemes, b"changed"):
+        value_sha256 = _insert_exact_canonical_payload(
+            connector,
+            domain="search_lexeme_utf8_v1",
+            payload=lexeme,
+        )
+        connector.execute(
+            "INSERT INTO catalog_search_lexemes (value_sha256) VALUES (%s)",
+            (value_sha256,),
+        )
+        if lexeme in lexemes:
+            connector.execute(
+                "INSERT INTO catalog_search_postings "
+                "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+                (value_sha256, publication_key),
+            )
+    connector.execute(
+        "INSERT INTO catalog_language_facet_order "
+        "(revision, position, language_sha256, occurrence_count) "
+        "VALUES (1, 0, %s, 1)",
+        (language,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_subject_facet_order "
+        "(revision, position, tag_id, occurrence_count) VALUES (1, 0, 1, 1)"
+    )
+    connector.execute(
+        "INSERT INTO catalog_contributor_facet_order "
+        "(revision, position, contributor_name_sha256, role, occurrence_count) "
+        "VALUES (1, 0, %s, %s, 1)",
+        (contributor, b"author"),
+    )
+    connector.execute("PRAGMA foreign_keys = ON")
+    return {
+        "publication_key": publication_key,
+        "source_title": source_title,
+        "source_gallery_name": source_gallery_name,
+        "display_title": display_title,
+        "replacement_title": replacement_title,
+    }
 
 
 def test_active_source_head_requires_all_five_analysis_seals(tmp_path: Path) -> None:
@@ -1230,11 +1423,9 @@ def test_depth_16_analysis_validation_has_a_fixed_query_and_index_budget(
             "CATALOG_PUBLICATION_STAGES",
             "CATALOG_SOURCE_PROVIDER_REGISTRY",
             "CATALOG_CANONICAL_DIGEST_POLICIES",
+            "CATALOG_RESOURCE_KINDS",
             "CATALOG_SOURCE_HEAD_REVISIONS",
             "CATALOG_SOURCE_HEAD_ADVANCED_ATS",
-            "CATALOG_ARTIFACT_PRODUCER_FINGERPRINTS",
-            "CATALOG_ARTIFACT_ZIP_WRITER_POLICIES",
-            "CATALOG_ARTIFACT_STORAGE_CODECS",
             "MEMBER_1",
             "REGISTRY",
             "HEAD",
@@ -1287,20 +1478,18 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
             (b"c" * 16,),
         ) == [(0, 0, 0, 0, 0)]
         catalog_refinement.check_publication_atomicity_v1(cast(Any, recorder))
-        # READY audits only the compacted retained commit window. Active-context
-        # reads remain keyed/bounded; only the five window-set comparisons below
-        # are allowed to scale with reachable publication state.
+        # READY audits the compacted retained commit window and the current
+        # discovery projection through disk-backed, keyset-bounded aggregation.
+        # Only the five retained-window set comparisons may omit a SQL LIMIT.
         permitted_scans = {
             "CATALOG_ANALYSIS_STAGES",
             "CATALOG_CHANNEL_REGISTRY",
             "CATALOG_PUBLICATION_STAGES",
             "CATALOG_SOURCE_PROVIDER_REGISTRY",
             "CATALOG_CANONICAL_DIGEST_POLICIES",
+            "CATALOG_RESOURCE_KINDS",
             "CATALOG_PUBLICATION_HEAD_REVISIONS",
             "CATALOG_PUBLICATION_HEAD_ADVANCED_ATS",
-            "CATALOG_ARTIFACT_PRODUCER_FINGERPRINTS",
-            "CATALOG_ARTIFACT_ZIP_WRITER_POLICIES",
-            "CATALOG_ARTIFACT_STORAGE_CODECS",
             "CATALOG_PUBLICATION_COMMIT_ANCHORS",
             "CATALOG_PUBLICATION_COMMITS",
             "CATALOG_PUBLICATION_GENERATION_NODES",
@@ -1310,6 +1499,7 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
             "COMMITTED",
             "DESCRIPTOR",
             "FINALIZATION",
+            "OCCURRENCE",
             "RECEIPT",
             "REGISTRY",
             "MAPPING",
@@ -1331,8 +1521,10 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
     finally:
         connector.close()
 
-    assert len(recorder.reads) <= 52
-    assert sum(row_count for _query, _data, row_count in recorder.reads) <= 100
+    # Exact discovery coverage adds eight bounded seal/source/facet reads.
+    assert len(recorder.reads) <= 60
+    # The closed neutral resource registry contributes exactly two bounded rows.
+    assert sum(row_count for _query, _data, row_count in recorder.reads) <= 102
     unbounded = tuple(
         query for query in recorder.queries if " LIMIT " not in f" {query.upper()} "
     )
@@ -1344,10 +1536,128 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
         for query in recorder.queries
         for table in (
             "catalog_publication_selections",
-            "catalog_publications",
             "catalog_candidate_artifact_inputs",
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("relation", "mutation_sql", "parameters"),
+    (
+        (
+            "search_document",
+            "INSERT INTO catalog_search_documents "
+            "(revision, publication_key, row_count) VALUES (1, %s, 0)",
+            (b"d" * 32,),
+        ),
+        (
+            "search_posting",
+            "INSERT INTO catalog_search_postings "
+            "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+            (b"l" * 32, b"d" * 32),
+        ),
+        (
+            "language_facet",
+            "INSERT INTO catalog_language_facet_order "
+            "(revision, position, language_sha256, occurrence_count) "
+            "VALUES (1, 0, %s, 1)",
+            (b"l" * 32,),
+        ),
+        (
+            "subject_facet",
+            "INSERT INTO catalog_subject_facet_order "
+            "(revision, position, tag_id, occurrence_count) VALUES (1, 0, 1, 1)",
+            (),
+        ),
+        (
+            "contributor_facet",
+            "INSERT INTO catalog_contributor_facet_order "
+            "(revision, position, contributor_name_sha256, role, occurrence_count) "
+            "VALUES (1, 0, %s, %s, 1)",
+            (b"n" * 32, b"author"),
+        ),
+    ),
+)
+def test_ready_rejects_active_discovery_projection_corruption(
+    tmp_path: Path,
+    relation: str,
+    mutation_sql: str,
+    parameters: tuple[object, ...],
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / f"active-discovery-{relation}.sqlite3"
+    )
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        catalog_refinement.check_discovery_exactness_v1(connector)
+
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(mutation_sql, parameters)
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_accepts_exact_nonempty_discovery_projection(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(tmp_path / "active-discovery-valid.sqlite3")
+    try:
+        _insert_nonempty_discovery_projection(connector)
+
+        catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_rejects_same_cardinality_display_title_replacement(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "active-discovery-display-title.sqlite3"
+    )
+    try:
+        values = _insert_nonempty_discovery_projection(connector)
+        connector.execute(
+            "UPDATE catalog_display_title_choices SET title_sha256 = %s "
+            "WHERE display_title_policy_id = 1 AND source_title_sha256 = %s "
+            "AND source_gallery_name = %s",
+            (
+                values["replacement_title"],
+                values["source_title"],
+                values["source_gallery_name"],
+            ),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="postings differ from exact tokenizer output",
+        ):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_rejects_non_utf8_subject_namespace(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "active-discovery-subject-namespace.sqlite3"
+    )
+    try:
+        _insert_nonempty_discovery_projection(connector)
+        connector.execute(
+            "UPDATE catalog_tag_terms SET namespace = %s WHERE tag_id = 1",
+            (b"\xff",),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="subject namespace is not exact bounded UTF-8",
+        ):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
 
 
 @pytest.mark.parametrize(
@@ -1470,7 +1780,7 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
         connector.close()
 
 
-def test_active_publication_compares_descriptor_count_with_transient_projection(
+def test_active_publication_compares_descriptor_count_with_discovery_projection(
     tmp_path: Path,
 ) -> None:
     connector = _generated_catalog_database(tmp_path / "publication-count.sqlite3")
@@ -1483,7 +1793,28 @@ def test_active_publication_compares_descriptor_count_with_transient_projection(
         )
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
-            match="terminal selection receipt and catalog publication_count differ",
+            match="active search source count differs from catalog revision",
+        ):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_active_publication_rejects_partial_artifact_coverage(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(tmp_path / "partial-artifacts.sqlite3")
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        connector.execute("PRAGMA ignore_check_constraints = ON")
+        connector.execute(
+            "UPDATE catalog_revision_descriptors "
+            "SET publication_count = 2, artifact_count = 1 WHERE revision = 1"
+        )
+        connector.execute("PRAGMA ignore_check_constraints = OFF")
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="artifact_count is neither zero nor publication_count",
         ):
             catalog_refinement.check_publication_atomicity_v1(connector)
     finally:
@@ -1826,14 +2157,14 @@ def test_publication_history_accepts_a_positive_compacted_generation_floor(
     (
         (
             (
-                "UPDATE catalog_artifact_producer_fingerprints "
+                "UPDATE catalog_artifact_policy_semantics "
                 "SET artifact_algorithm_version = 999",
             ),
             "unregistered runtime algorithm version",
         ),
         (
-            ("UPDATE catalog_artifact_producer_fingerprints SET writer_id = X'78'",),
-            "active artifact producer fingerprint does not match",
+            ("UPDATE catalog_artifact_adapter_policy SET adapter_id = X'78'",),
+            "active artifact policy component does not match its exact tuple",
         ),
         (
             (

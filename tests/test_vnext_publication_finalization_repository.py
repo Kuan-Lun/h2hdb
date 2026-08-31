@@ -11,7 +11,12 @@ from vnext_generated_database import open_generated_sqlite_database
 from vnext_publication_fixtures import seed_publication_commit
 
 from h2hdb import vnext_identity as identity
-from h2hdb.domain import ArtifactStorageKey
+from h2hdb import vnext_ingest_publication as ingest_publication
+from h2hdb.domain import (
+    CatalogResourceKind,
+    StorageObjectKey,
+    VNextLibraryActivationCursor,
+)
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
@@ -37,7 +42,6 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 _CANDIDATE = b"c" * 16
 _RECEIPT = b"r" * 16
 _CHANNEL = b"default"
-_PREPARED_STAGE = b"VALIDATE_PREPARED_ARTIFACT"
 _ANALYSIS = b"a" * 16
 _BUILD = b"b" * 16
 _BASE_ANALYSIS = b"z" * 16
@@ -62,85 +66,6 @@ def _shared_gate(connector: SQLiteConnector) -> GateLease:
         )
 
 
-def _insert_validation_batch(
-    connector: SQLiteConnector,
-    *,
-    start_generation: int,
-    batch_key: bytes,
-    start_cursor: bytes,
-    start_count: int,
-    next_cursor: bytes,
-    row_count: int,
-    committed_at: int,
-) -> None:
-    connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_stored "
-        "(candidate_id, stage, start_generation, batch_key, start_cursor, "
-        "start_processed_count, next_cursor, row_count, committed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (
-            _CANDIDATE,
-            _PREPARED_STAGE,
-            start_generation,
-            batch_key,
-            start_cursor,
-            start_count,
-            next_cursor,
-            row_count,
-            committed_at,
-        ),
-    )
-
-
-def _seed_validation_receipt(
-    connector: SQLiteConnector,
-    *,
-    publication_keys: tuple[bytes, ...],
-) -> None:
-    expected_count = len(publication_keys)
-    cursor = max(publication_keys, default=b"")
-    if publication_keys:
-        _insert_validation_batch(
-            connector,
-            start_generation=1,
-            batch_key=b"prepared-rows",
-            start_cursor=b"",
-            start_count=0,
-            next_cursor=cursor,
-            row_count=expected_count,
-            committed_at=18,
-        )
-        terminal_start_generation = 2
-        checkpoint_generation = 3
-    else:
-        terminal_start_generation = 1
-        checkpoint_generation = 2
-    _insert_validation_batch(
-        connector,
-        start_generation=terminal_start_generation,
-        batch_key=b"prepared-terminal",
-        start_cursor=cursor,
-        start_count=expected_count,
-        next_cursor=cursor,
-        row_count=0,
-        committed_at=19,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_checkpoints "
-        "(candidate_id, stage, generation, `cursor`, processed_count, state, "
-        "updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (
-            _CANDIDATE,
-            _PREPARED_STAGE,
-            checkpoint_generation,
-            cursor,
-            expected_count,
-            "COMPLETE",
-            19,
-        ),
-    )
-
-
 def _seed_prepared_artifact(
     connector: SQLiteConnector,
     *,
@@ -148,18 +73,23 @@ def _seed_prepared_artifact(
     publication_key: bytes,
     artifact_sha256: bytes,
     storage_generation: int,
+    resource_kind: CatalogResourceKind = CatalogResourceKind.ACQUISITION,
 ) -> bytes:
     size_bytes = 100 + storage_generation
-    storage_key_components = identity.artifact_storage_key_components(gid)
-    storage_key_sha256 = identity.artifact_storage_key_digest(storage_key_components)
+    storage_key = StorageObjectKey(
+        "opaque-v2",
+        ("library", str(gid), resource_kind.value),
+    )
+    storage_key_sha256 = identity.artifact_storage_key_digest(
+        storage_key.codec,
+        storage_key.segments,
+    )
     protection_token = identity.encode_artifact_protection_token(
-        1,
         _CANDIDATE,
         publication_key,
-        artifact_sha256,
+        resource_kind.value,
         storage_key_sha256,
         storage_generation,
-        size_bytes,
     )
     connector.execute(
         "INSERT INTO catalog_artifact_blobs "
@@ -167,16 +97,57 @@ def _seed_prepared_artifact(
         (artifact_sha256, size_bytes),
     )
     connector.execute(
+        "INSERT INTO catalog_storage_object_key_identities "
+        "(storage_object_key_sha256, key_codec, segment_count) "
+        "VALUES (%s, %s, %s)",
+        (
+            storage_key_sha256,
+            storage_key.codec.encode("ascii"),
+            len(storage_key.segments),
+        ),
+    )
+    for position, segment in enumerate(storage_key.segments):
+        connector.execute(
+            "INSERT INTO catalog_storage_object_key_segments "
+            "(storage_object_key_sha256, segment_position, key_segment) "
+            "VALUES (%s, %s, %s)",
+            (storage_key_sha256, position, segment.encode("utf-8")),
+        )
+    connector.execute(
         "INSERT INTO catalog_prepared_artifacts "
-        "(candidate_id, publication_key, artifact_sha256, storage_codec_version, "
-        "storage_generation, protection_token, state) "
-        "VALUES (%s, %s, %s, 1, %s, %s, 'PREPARED')",
+        "(candidate_id, publication_key, resource_kind, "
+        "storage_object_key_sha256, storage_generation, protection_token, state) "
+        "VALUES (%s, %s, %s, %s, %s, %s, 'PREPARED')",
         (
             _CANDIDATE,
             publication_key,
-            artifact_sha256,
+            resource_kind.value.encode("ascii"),
+            storage_key_sha256,
             storage_generation,
             protection_token,
+        ),
+    )
+    connector.execute(
+        "INSERT INTO catalog_prepared_resource_blob "
+        "(candidate_id, publication_key, resource_kind, storage_object_sha256) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            _CANDIDATE,
+            publication_key,
+            resource_kind.value.encode("ascii"),
+            artifact_sha256,
+        ),
+    )
+    connector.execute(
+        "INSERT INTO catalog_prepared_storage_objects "
+        "(candidate_id, publication_key, resource_kind, storage_object_sha256, "
+        "size_bytes, modified_at) VALUES (%s, %s, %s, %s, %s, 1)",
+        (
+            _CANDIDATE,
+            publication_key,
+            resource_kind.value.encode("ascii"),
+            artifact_sha256,
+            size_bytes,
         ),
     )
     return protection_token
@@ -205,6 +176,22 @@ def _seed_publication(
             (_CHANNEL, b"s" * 32),
         )
         _seed_published_analysis_lineage(connector)
+        connector.execute(
+            "INSERT INTO catalog_artifact_adapter_policy "
+            "(policy_fingerprint_sha256, adapter_id) VALUES (%s, %s)",
+            (b"f" * 32, b"test-artifact-adapter"),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_policy_semantics "
+            "(policy_component_sha256, artifact_algorithm_version, "
+            "policy_fingerprint_sha256) VALUES (%s, 2, %s)",
+            (b"p" * 32, b"f" * 32),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_policies "
+            "(artifact_policy_id, policy_component_sha256) VALUES (1, %s)",
+            (b"p" * 32,),
+        )
         seed_publication_commit(
             connector,
             receipt_id=_RECEIPT,
@@ -237,10 +224,6 @@ def _seed_publication(
                     storage_generation=index,
                 )
             )
-        _seed_validation_receipt(
-            connector,
-            publication_keys=publication_keys,
-        )
     finally:
         connector.execute("PRAGMA foreign_keys = ON")
     assert connector.fetch_one(
@@ -558,47 +541,53 @@ def _commit(
 
 
 def _delete_transient_candidate_state(connector: SQLiteConnector) -> None:
-    tables = (
-        "catalog_publication_batch_receipt_stored",
-        "catalog_publication_checkpoints",
-        "catalog_prepared_artifacts",
-    )
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
-        for table in tables:
-            connector.execute(
-                f"DELETE FROM {table} WHERE candidate_id = %s",
-                (_CANDIDATE,),
-            )
+        connector.execute(
+            "DELETE FROM catalog_prepared_artifacts WHERE candidate_id = %s",
+            (_CANDIDATE,),
+        )
     finally:
         connector.execute("PRAGMA foreign_keys = ON")
 
 
 class _MonotoneAdapter:
-    adapter_id = b"managed-filesystem"
+    adapter_id = b"test-artifact-adapter"
 
     def __init__(self, connector: SQLiteConnector | None = None) -> None:
         self.connector = connector
-        self.calls: list[tuple[ArtifactStorageKey, bytes]] = []
+        self.calls: list[tuple[StorageObjectKey, bytes]] = []
+        self.object_facts: list[tuple[StorageObjectKey, bytes, int, bytes]] = []
         self.tombstones: set[bytes] = set()
 
     def release(
         self,
-        storage_key: ArtifactStorageKey,
-        expected_artifact_sha256: bytes,
+        storage_key: StorageObjectKey,
+        expected_sha256: bytes,
         expected_size_bytes: int,
         protection_token: bytes,
     ) -> PublicationFinalizationStorageEvidence:
         if self.connector is not None:
             with self.connector.read_transaction():
                 assert self.connector.fetch_one("SELECT 1") == (1,)
-        token = identity.decode_artifact_protection_token(protection_token)
-        assert token.artifact_sha256 == expected_artifact_sha256
-        assert token.size_bytes == expected_size_bytes
-        assert identity.artifact_storage_key_digest(storage_key.segments) == (
-            token.artifact_storage_key_sha256
+        assert identity.decode_artifact_protection_token(protection_token) == (
+            protection_token
+        )
+        assert len(expected_sha256) == 32
+        assert expected_size_bytes > 0
+        assert identity.artifact_storage_key_digest(
+            storage_key.codec,
+            storage_key.segments,
         )
         self.calls.append((storage_key, protection_token))
+        self.object_facts.append(
+            (
+                storage_key,
+                expected_sha256,
+                expected_size_bytes,
+                protection_token,
+            )
+        )
         self.tombstones.add(protection_token)
         return PublicationFinalizationStorageEvidence(True)
 
@@ -661,6 +650,122 @@ def test_current_batch_replays_after_cleanup_and_expired_gate(
         assert replayed == committed
         execute.assert_not_called()
         execute_affected.assert_not_called()
+    finally:
+        connector.close()
+
+
+def test_same_publication_resources_finalize_as_distinct_coordinates(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "multi-resource-finalization.sqlite3")
+    try:
+        publication_keys, acquisition_tokens = _seed_publication(
+            connector,
+            item_count=1,
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            thumbnail_token = _seed_prepared_artifact(
+                connector,
+                gid=1,
+                publication_key=publication_keys[0],
+                artifact_sha256=b"t" * 32,
+                storage_generation=2,
+                resource_kind=CatalogResourceKind.THUMBNAIL,
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"resource-page",
+            page_limit=2,
+            now=30,
+        )
+        assert tuple(item.resource_kind for item in page.items) == (
+            CatalogResourceKind.ACQUISITION,
+            CatalogResourceKind.THUMBNAIL,
+        )
+        assert (
+            page.next_cursor
+            == VNextLibraryActivationCursor(
+                publication_keys[0],
+                CatalogResourceKind.THUMBNAIL,
+            ).to_bytes()
+        )
+
+        adapter = _MonotoneAdapter()
+        acknowledgement = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=page,
+            adapters={adapter.adapter_id: adapter},
+            now=31,
+        )
+        receipt = _commit(connector, acknowledgement, now=32)
+        assert receipt.row_count == 2
+        assert receipt.next_processed_count == 2
+        assert {token for _key, token in adapter.calls} == {
+            acquisition_tokens[0],
+            thumbnail_token,
+        }
+        assert connector.fetch_all(
+            "SELECT resource_kind, state FROM catalog_prepared_artifacts "
+            "WHERE candidate_id = %s ORDER BY publication_key, resource_kind",
+            (_CANDIDATE,),
+        ) == [
+            (b"acquisition", "COMMITTED"),
+            (b"thumbnail", "COMMITTED"),
+        ]
+
+        terminal_page = _issue(
+            connector,
+            gate,
+            batch_key=b"resource-terminal",
+            page_limit=2,
+            now=33,
+        )
+        assert terminal_page.terminal and terminal_page.items == ()
+        terminal_ack = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=terminal_page,
+            adapters={},
+            now=34,
+        )
+        assert _commit(connector, terminal_ack, now=35).terminal
+    finally:
+        connector.close()
+
+
+def test_ingest_release_consumer_uses_sealed_storage_descriptor(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "ingest-release-descriptor.sqlite3")
+    try:
+        _publication_keys, tokens = _seed_publication(connector, item_count=1)
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"ingest-resource-page",
+            now=30,
+        )
+        adapter = _MonotoneAdapter()
+
+        acknowledgement = ingest_publication._release_finalization_page(
+            page,
+            {adapter.adapter_id: adapter},
+        )
+
+        assert acknowledgement.page == page
+        assert len(adapter.object_facts) == 1
+        key, digest, size_bytes, token = adapter.object_facts[0]
+        assert key == page.items[0].storage_object.key
+        assert digest == bytes.fromhex(page.items[0].storage_object.sha256)
+        assert size_bytes == page.items[0].storage_object.size_bytes
+        assert token == tokens[0]
     finally:
         connector.close()
 
@@ -768,7 +873,16 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
             "FROM catalog_publication_finalization_checkpoints "
             "WHERE receipt_id = %s",
             (_RECEIPT,),
-        ) == (4, publication_keys[-1], 2, "COMPLETE", now + 2)
+        ) == (
+            4,
+            VNextLibraryActivationCursor(
+                publication_keys[-1],
+                CatalogResourceKind.ACQUISITION,
+            ).to_bytes(),
+            2,
+            "COMPLETE",
+            now + 2,
+        )
         assert connector.fetch_one(
             "SELECT state, committed_at, finalized_at "
             "FROM catalog_publication_receipts WHERE receipt_id = %s",
@@ -1138,7 +1252,16 @@ def test_missing_finalization_predecessor_rolls_back_successor_and_checkpoint(
             "FROM catalog_publication_finalization_checkpoints "
             "WHERE receipt_id = %s",
             (_RECEIPT,),
-        ) == (2, publication_keys[0], 1, "OPEN", 32)
+        ) == (
+            2,
+            VNextLibraryActivationCursor(
+                publication_keys[0],
+                CatalogResourceKind.ACQUISITION,
+            ).to_bytes(),
+            1,
+            "OPEN",
+            32,
+        )
         assert connector.fetch_all(
             "SELECT publication_key, state FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s ORDER BY publication_key",
@@ -1287,7 +1410,7 @@ def test_every_post_external_commit_mutation_rolls_back(tmp_path: Path) -> None:
         base,
         backend="sqlite",
         page=page,
-        adapters={b"managed-filesystem": _MonotoneAdapter()},
+        adapters={b"test-artifact-adapter": _MonotoneAdapter()},
         now=31,
     )
     base.close()

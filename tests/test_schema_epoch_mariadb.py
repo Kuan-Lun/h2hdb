@@ -19,6 +19,7 @@ from h2hdb.schema_epoch import (
     SchemaCreateStatement,
     SchemaEpochAdmissionError,
     SchemaEpochDefinition,
+    SchemaEpochDriftError,
     SchemaEpochGateError,
     SchemaEpochValidationError,
     SchemaObject,
@@ -106,7 +107,7 @@ CONTROL_CHECK_ROWS = [
 def _definition() -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=1,
+        schema_version=2,
         ddl_manifest_sha256=DDL_MANIFEST,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -413,6 +414,27 @@ def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
     assert report.resumed_build is True
     assert report.transitioned_to_ready is True
     assert {PARENT.name, CHILD.name} <= set(connector.objects)
+
+
+def test_fake_mariadb_schema_version_one_control_is_rejected() -> None:
+    connector = FakeMariaDBConnector()
+    definition = _definition()
+    _initialize_fake_building(connector, definition)
+    assert connector.control_row is not None
+    epoch, _version, state, manifest, started_at, ready_at = connector.control_row
+    connector.control_row = (epoch, 1, state, manifest, started_at, ready_at)
+
+    with pytest.raises(
+        SchemaEpochDriftError,
+        match="Database schema version is 1, expected 2",
+    ):
+        run_mariadb_schema_epoch(
+            connector,
+            MariaDBTestProvider(definition),
+            lock_timeout_seconds=0,
+        )
+
+    assert connector.lock_held is False
 
 
 def test_fake_mariadb_exact_empty_control_residue_is_resumable() -> None:

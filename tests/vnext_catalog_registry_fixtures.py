@@ -11,20 +11,16 @@ from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_catalog_registry_repository import (
     AnalysisPolicyRecord,
+    ArtifactAdapterPolicyRecord,
     ArtifactPolicySemanticsRecord,
-    ArtifactProducerFingerprintRecord,
-    ArtifactStorageCodecRecord,
-    ArtifactZipWriterPolicyRecord,
     DisplayTitlePolicyRecord,
     ManifestPolicyRecord,
     SourceScopeRecord,
     TitleSortPolicyRecord,
     ensure_source_scope,
     load_analysis_policy,
+    load_artifact_adapter_policy,
     load_artifact_policy_semantics,
-    load_artifact_producer_fingerprint,
-    load_artifact_storage_codec,
-    load_artifact_zip_writer_policy,
     load_display_title_policy,
     load_manifest_policy,
     load_source_scope,
@@ -122,198 +118,75 @@ def seed_analysis_policy(
     return load_analysis_policy(connector, policy_id)
 
 
-def seed_artifact_zip_writer_policy(
+def seed_artifact_adapter_policy(
     connector: SQLConnector,
     *,
-    artifact_algorithm_version: int = 1,
-    zip_codec_version: int = 1,
-    compression_method: int = 8,
-    compression_level: int = 9,
-    dos_date: int = 33,
-    dos_time: int = 0,
-    unix_mode: int = 33188,
-    general_purpose_flags: int = 2048,
-    create_system: int = 3,
-    archive_name_codec_version: int = 1,
-    artifact_name_codec_version: int = 1,
-) -> ArtifactZipWriterPolicyRecord:
-    existing = connector.fetch_one(
-        "SELECT artifact_algorithm_version, zip_codec_version, "
-        "compression_method, compression_level, dos_date, dos_time, unix_mode, "
-        "general_purpose_flags, create_system, archive_name_codec_version, "
-        "artifact_name_codec_version FROM catalog_artifact_zip_writer_policies "
-        "WHERE artifact_algorithm_version = %s",
-        (artifact_algorithm_version,),
-    )
-    expected = ArtifactZipWriterPolicyRecord(
-        artifact_algorithm_version,
-        zip_codec_version,
-        compression_method,
-        compression_level,
-        dos_date,
-        dos_time,
-        unix_mode,
-        general_purpose_flags,
-        create_system,
-        archive_name_codec_version,
-        artifact_name_codec_version,
-    )
-    if existing:
-        return _exact_fixture_replay(
-            "artifact ZIP writer policy",
-            ArtifactZipWriterPolicyRecord(*existing),
-            expected,
-        )
-    connector.execute(
-        "INSERT INTO catalog_artifact_zip_writer_policies "
-        "(artifact_algorithm_version, zip_codec_version, compression_method, "
-        "compression_level, dos_date, dos_time, unix_mode, general_purpose_flags, "
-        "create_system, archive_name_codec_version, artifact_name_codec_version) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (
-            expected.artifact_algorithm_version,
-            expected.zip_codec_version,
-            expected.compression_method,
-            expected.compression_level,
-            expected.dos_date,
-            expected.dos_time,
-            expected.unix_mode,
-            expected.general_purpose_flags,
-            expected.create_system,
-            expected.archive_name_codec_version,
-            expected.artifact_name_codec_version,
-        ),
-    )
-    return load_artifact_zip_writer_policy(connector, artifact_algorithm_version)
-
-
-def seed_artifact_storage_codec(
-    connector: SQLConnector,
-    *,
-    storage_codec_version: int = 1,
-    adapter_id: bytes = b"managed-filesystem",
-    storage_key_codec_version: int = 1,
-    protection_token_codec_version: int = 1,
-) -> ArtifactStorageCodecRecord:
-    existing = connector.fetch_one(
-        "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
-        "protection_token_codec_version FROM catalog_artifact_storage_codecs "
-        "WHERE storage_codec_version = %s",
-        (storage_codec_version,),
-    )
-    expected = ArtifactStorageCodecRecord(
-        storage_codec_version,
+    policy_fingerprint_sha256: bytes,
+    adapter_id: bytes = b"test-artifact-adapter",
+) -> ArtifactAdapterPolicyRecord:
+    expected = ArtifactAdapterPolicyRecord(
+        policy_fingerprint_sha256,
         adapter_id,
-        storage_key_codec_version,
-        protection_token_codec_version,
     )
-    if existing:
-        return _exact_fixture_replay(
-            "artifact storage codec",
-            ArtifactStorageCodecRecord(*existing),
-            expected,
-        )
-    connector.execute(
-        "INSERT INTO catalog_artifact_storage_codecs "
-        "(storage_codec_version, adapter_id, storage_key_codec_version, "
-        "protection_token_codec_version) VALUES (%s, %s, %s, %s)",
-        (
-            expected.storage_codec_version,
-            expected.adapter_id,
-            expected.storage_key_codec_version,
-            expected.protection_token_codec_version,
-        ),
-    )
-    return load_artifact_storage_codec(connector, storage_codec_version)
-
-
-def seed_artifact_producer_fingerprint(
-    connector: SQLConnector,
-    *,
-    artifact_algorithm_version: int = 1,
-    writer_id: bytes = b"writer",
-    python_abi: bytes = b"python",
-    pillow_build: bytes = b"pillow",
-    libjpeg_build: bytes = b"jpeg",
-    zlib_build: bytes = b"zlib",
-) -> ArtifactProducerFingerprintRecord:
-    fields = (writer_id, python_abi, pillow_build, libjpeg_build, zlib_build)
-    fingerprint = identity.artifact_producer_fingerprint_sha256(*fields)
     existing = connector.fetch_one(
-        "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build FROM catalog_artifact_producer_fingerprints "
-        "WHERE producer_fingerprint_sha256 = %s",
-        (fingerprint,),
-    )
-    expected = ArtifactProducerFingerprintRecord(
-        fingerprint,
-        artifact_algorithm_version,
-        identity.artifact_producer_equivalence_class(fingerprint),
-        *fields,
+        "SELECT policy_fingerprint_sha256, adapter_id "
+        "FROM catalog_artifact_adapter_policy "
+        "WHERE policy_fingerprint_sha256 = %s",
+        (expected.policy_fingerprint_sha256,),
     )
     if existing:
         return _exact_fixture_replay(
-            "artifact producer fingerprint",
-            ArtifactProducerFingerprintRecord(*existing),
+            "artifact adapter policy",
+            ArtifactAdapterPolicyRecord(*existing),
             expected,
         )
     connector.execute(
-        "INSERT INTO catalog_artifact_producer_fingerprints "
-        "(producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO catalog_artifact_adapter_policy "
+        "(policy_fingerprint_sha256, adapter_id) VALUES (%s, %s)",
         (
-            expected.producer_fingerprint_sha256,
-            expected.artifact_algorithm_version,
-            expected.producer_equivalence_class,
-            expected.writer_id,
-            expected.python_abi,
-            expected.pillow_build,
-            expected.libjpeg_build,
-            expected.zlib_build,
+            expected.policy_fingerprint_sha256,
+            expected.adapter_id,
         ),
     )
-    return load_artifact_producer_fingerprint(connector, fingerprint)
+    return load_artifact_adapter_policy(
+        connector,
+        expected.policy_fingerprint_sha256,
+    )
 
 
 def seed_artifact_policy_semantics(
     connector: SQLConnector,
     *,
-    artifact_algorithm_version: int = 1,
-    max_image_short_side: int = 2048,
-    producer_fingerprint_sha256: bytes,
+    policy_fingerprint_sha256: bytes,
+    adapter_id: bytes = b"test-artifact-adapter",
+    artifact_algorithm_version: int = 2,
 ) -> ArtifactPolicySemanticsRecord:
-    producer = load_artifact_producer_fingerprint(
+    adapter = seed_artifact_adapter_policy(
         connector,
-        producer_fingerprint_sha256,
+        policy_fingerprint_sha256=policy_fingerprint_sha256,
+        adapter_id=adapter_id,
     )
-    if producer.artifact_algorithm_version != artifact_algorithm_version:
-        raise AssertionError(
-            "artifact policy fixture algorithm differs from its registered producer"
-        )
     policy_digest = identity.artifact_policy_digest(
         artifact_algorithm_version,
-        max_image_short_side,
-        producer_fingerprint_sha256,
+        adapter.adapter_id,
+        adapter.policy_fingerprint_sha256,
     )
     existing = connector.fetch_one(
         "SELECT semantics.policy_component_sha256, "
-        "producer.artifact_algorithm_version, "
-        "semantics.max_image_short_side, "
-        "semantics.producer_fingerprint_sha256 "
+        "semantics.artifact_algorithm_version, "
+        "semantics.policy_fingerprint_sha256, adapter.adapter_id "
         "FROM catalog_artifact_policy_semantics AS semantics "
-        "JOIN catalog_artifact_producer_fingerprints AS producer "
-        "ON producer.producer_fingerprint_sha256 = "
-        "semantics.producer_fingerprint_sha256 "
+        "JOIN catalog_artifact_adapter_policy AS adapter "
+        "ON adapter.policy_fingerprint_sha256 = "
+        "semantics.policy_fingerprint_sha256 "
         "WHERE semantics.policy_component_sha256 = %s",
         (policy_digest,),
     )
     expected = ArtifactPolicySemanticsRecord(
         policy_digest,
         artifact_algorithm_version,
-        max_image_short_side,
-        producer_fingerprint_sha256,
+        policy_fingerprint_sha256,
+        adapter_id,
     )
     if existing:
         return _exact_fixture_replay(
@@ -323,12 +196,12 @@ def seed_artifact_policy_semantics(
         )
     connector.execute(
         "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, max_image_short_side, "
-        "producer_fingerprint_sha256) VALUES (%s, %s, %s)",
+        "(policy_component_sha256, artifact_algorithm_version, "
+        "policy_fingerprint_sha256) VALUES (%s, %s, %s)",
         (
             expected.policy_component_sha256,
-            expected.max_image_short_side,
-            expected.producer_fingerprint_sha256,
+            expected.artifact_algorithm_version,
+            expected.policy_fingerprint_sha256,
         ),
     )
     return load_artifact_policy_semantics(connector, policy_digest)

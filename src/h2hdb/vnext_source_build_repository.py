@@ -430,7 +430,8 @@ class SourceDiscoveryPlan:
         cls,
         locators: Iterable[tuple[str, ...]],
     ) -> SourceDiscoveryPlan:
-        if isinstance(locators, (str, bytes)):
+        untrusted_locators: object = locators
+        if isinstance(untrusted_locators, (str, bytes)):
             raise TypeError("locators must be an iterable of exact tuples")
         temporary = TemporaryDirectory(prefix="h2hdb-source-discovery-")
         directory = Path(temporary.name)

@@ -8,7 +8,6 @@ import pytest
 from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_registry_fixtures import (
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -41,6 +40,9 @@ from h2hdb.vnext_operational_event_repository import (
 )
 from h2hdb.vnext_queue_repository import VNextQueueRepository
 from h2hdb.vnext_transaction import StaleWriteError, VNextUnitOfWork
+
+_ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
+_ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
@@ -92,24 +94,15 @@ def _seed_catalog_authority(connector: SQLiteConnector) -> None:
         file_count=0,
         byte_count=0,
     )
-    producer = seed_artifact_producer_fingerprint(
-        connector,
-        artifact_algorithm_version=1,
-        writer_id=b"writer",
-        python_abi=b"abi",
-        pillow_build=b"pillow",
-        libjpeg_build=b"jpeg",
-        zlib_build=b"zlib",
-    )
     policy_component_sha256 = artifact_policy_digest(
-        1,
-        2048,
-        producer.producer_fingerprint_sha256,
+        2,
+        _ARTIFACT_ADAPTER_ID,
+        _ARTIFACT_POLICY_FINGERPRINT,
     )
     seed_canonical_value(
         connector,
         value_sha256=policy_component_sha256,
-        digest_domain=b"artifact_policy_v2",
+        digest_domain=b"artifact_policy_v3",
         page_sha256=b"q" * 32,
         page_bytes=b"p",
         subtree_item_count=1,
@@ -117,9 +110,9 @@ def _seed_catalog_authority(connector: SQLiteConnector) -> None:
     )
     policy_semantics = seed_artifact_policy_semantics(
         connector,
-        artifact_algorithm_version=1,
-        max_image_short_side=2048,
-        producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+        artifact_algorithm_version=2,
+        adapter_id=_ARTIFACT_ADAPTER_ID,
+        policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
     )
     assert policy_semantics.policy_component_sha256 == policy_component_sha256
     connector.execute(

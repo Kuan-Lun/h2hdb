@@ -1,13 +1,13 @@
 """Bounded production refinements for the vNext catalog data plane.
 
-READY validation deliberately does not replay high-cardinality canonical trees,
-artifact plans, analysis workset derivations, or revision projections. Those
-properties belong to the named transaction writer hooks. The recurring checks
-here are read-only and otherwise bounded to closed registries, active channel
-heads, and the at-most-16-deep analysis seal chain. Sealed impacted-key families
-are audited with key-first indexed anti-joins, and publication generation
-history is linearly audited over the single sealed common commit chain. Quick
-readiness remains epoch-only and O(1).
+READY validation independently replays the current revision's canonical search
+and facet projection into a disk-backed, keyset-paged audit plan. Historical
+canonical trees, artifact plans, and analysis workset derivations remain owned
+by their named transaction writer hooks. The other recurring checks are bounded
+to closed registries, active channel heads, and the at-most-16-deep analysis
+seal chain. Sealed impacted-key families use key-first indexed anti-joins, and
+publication generation history is linearly audited over the single sealed
+common commit chain. Quick readiness remains epoch-only and O(1).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ __all__ = [
     "check_artifact_semantics_v1",
     "check_bootstrap_v1",
     "check_canonical_reference_domains_v1",
+    "check_discovery_exactness_v1",
     "check_identity_codecs_v1",
     "check_incremental_impact_v1",
     "check_overlay_resolution_seal_v1",
@@ -33,17 +34,37 @@ __all__ = [
 ]
 
 import re
+import sqlite3
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from hashlib import sha256
+from datetime import UTC, datetime, timedelta
+from tempfile import TemporaryFile
 from types import MappingProxyType
-from typing import Any
+from typing import Any, BinaryIO
 
 from . import vnext_identity as identity
 from ._generated_vnext_schema import ARTIFACT
+from .catalog_search import (
+    SEARCH_POLICY_ID,
+    iter_search_field_lexemes,
+    require_search_runtime_policy,
+)
 from .catalog_writer import validate_artifact_writer_manifest
+from .domain import (
+    ByteExtent,
+    CatalogArtifact,
+    CatalogImageResource,
+    StorageObjectDescriptor,
+    StorageObjectKey,
+)
 from .sql_connector import SQLConnector
+from .vnext_canonical_value_repository import (
+    CanonicalValueCollisionError,
+    CanonicalValueNotReadyError,
+    stream_and_validate_canonical_value,
+)
+from .vnext_domains import require_ascii_bytes, require_digest32
 
 type SemanticValidator = Callable[[SQLConnector], None]
 
@@ -96,6 +117,11 @@ _SPECS = (
         "catalog.publication-atomicity.v1",
         "ready_and_runtime",
         "catalog_refinement.check_publication_atomicity_v1",
+    ),
+    (
+        "catalog.discovery-exactness.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_discovery_exactness_v1",
     ),
     (
         "catalog.state-machines.v1",
@@ -340,22 +366,34 @@ _EXPECTED_DATA_SEEDS = (
         "validate_gid_winner",
     ),
     (
+        "catalog.resource-kind.acquisition.v2",
+        "catalog_resource_kind",
+        "resource_kind",
+        "acquisition",
+    ),
+    (
+        "catalog.resource-kind.thumbnail.v2",
+        "catalog_resource_kind",
+        "resource_kind",
+        "thumbnail",
+    ),
+    (
         "catalog.digest-domain.artifact-effective-content.v1",
         "canonical_digest_policy",
         "digest_domain",
         "artifact_effective_content_v1",
     ),
     (
-        "catalog.digest-domain.artifact-storage-key.v1",
+        "catalog.digest-domain.storage-object-key.v2",
         "canonical_digest_policy",
         "digest_domain",
-        "artifact_storage_key_bytes_v1",
+        "storage_object_key_v2",
     ),
     (
-        "catalog.digest-domain.artifact-member-plan.v1",
+        "catalog.digest-domain.artifact-member-plan.v2",
         "canonical_digest_policy",
         "digest_domain",
-        "artifact_member_plan_v1",
+        "artifact_member_plan_v2",
     ),
     (
         "catalog.digest-domain.artifact-owner.v1",
@@ -364,10 +402,10 @@ _EXPECTED_DATA_SEEDS = (
         "artifact_owner_v1",
     ),
     (
-        "catalog.digest-domain.artifact-policy.v2",
+        "catalog.digest-domain.artifact-policy.v3",
         "canonical_digest_policy",
         "digest_domain",
-        "artifact_policy_v2",
+        "artifact_policy_v3",
     ),
     (
         "catalog.digest-domain.artifact-selected.v1",
@@ -471,6 +509,12 @@ _EXPECTED_DATA_SEEDS = (
         "digest_domain",
         "title_sort_utf8_v1",
     ),
+    (
+        "catalog.digest-domain.search-lexeme.v1",
+        "canonical_digest_policy",
+        "digest_domain",
+        "search_lexeme_utf8_v1",
+    ),
 )
 
 _EXPECTED_DIGEST_DOMAINS = tuple(
@@ -519,7 +563,7 @@ _IMPACTED_KEY_FAMILIES = (
 # physical integer domains.  A new byte producer, display-title rule, casefold
 # implementation, or Unicode table must add a wheel implementation and then
 # extend the corresponding closed registry.
-_SUPPORTED_ARTIFACT_ALGORITHM_VERSIONS = frozenset({1})
+_SUPPORTED_ARTIFACT_ALGORITHM_VERSIONS = frozenset({2})
 _RUNTIME_UNICODE_DATA_VERSION = unicodedata.unidata_version.encode("ascii")
 _SUPPORTED_DISPLAY_TITLE_POLICY_ALGORITHMS = frozenset(
     {(1, 1, _RUNTIME_UNICODE_DATA_VERSION)}
@@ -529,29 +573,16 @@ _WIDE_POLICY_BOOTSTRAP_VALUES: Mapping[
     str, tuple[str, tuple[tuple[str, str, str, int | str], ...]]
 ] = MappingProxyType(
     {
-        "artifact_zip_writer_policy": (
-            "catalog.artifact-zip-writer-policy.v1",
+        "search_policy": (
+            "catalog.search-policy.discovery.v1",
             (
-                ("artifact_algorithm_version", "uint32", "integer", 1),
-                ("zip_codec_version", "uint32", "integer", 1),
-                ("compression_method", "uint32", "integer", 8),
-                ("compression_level", "uint32", "integer", 9),
-                ("dos_date", "uint32", "integer", 33),
-                ("dos_time", "uint32", "integer", 0),
-                ("unix_mode", "uint32", "integer", 33188),
-                ("general_purpose_flags", "uint32", "integer", 2048),
-                ("create_system", "uint32", "integer", 3),
-                ("archive_name_codec_version", "uint32", "integer", 1),
-                ("artifact_name_codec_version", "uint32", "integer", 1),
-            ),
-        ),
-        "artifact_storage_codec": (
-            "catalog.artifact-storage-codec.managed-filesystem.v1",
-            (
-                ("storage_codec_version", "uint32", "integer", 1),
-                ("adapter_id", "ascii_enum", "utf8", "managed-filesystem"),
-                ("storage_key_codec_version", "uint32", "integer", 1),
-                ("protection_token_codec_version", "uint32", "integer", 1),
+                ("policy_id", "uint64", "integer", 1),
+                ("algorithm_version", "uint32", "integer", 2),
+                ("unicode_data_version", "ascii_enum", "utf8", "16.0.0"),
+                ("maximum_field_nfd_bytes", "uint32", "integer", 65536),
+                ("maximum_query_nfd_bytes", "uint32", "integer", 1024),
+                ("maximum_lexeme_bytes", "uint32", "integer", 64),
+                ("maximum_query_lexemes", "uint32", "integer", 16),
             ),
         ),
     }
@@ -609,58 +640,52 @@ _WIDE_POLICY_SHAPES: Mapping[
                 )
             ),
         ),
-        "artifact_zip_writer_policy": (
-            "catalog_artifact_zip_writer_policies",
-            tuple(
-                value[0]
-                for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
-                    "artifact_zip_writer_policy"
-                ][1]
-            ),
-            ("artifact_algorithm_version",),
+        "search_policy": (
+            "catalog_search_policies",
             (
-                tuple(
-                    value[0]
-                    for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
-                        "artifact_zip_writer_policy"
-                    ][1][1:]
+                "policy_id",
+                "algorithm_version",
+                "unicode_data_version",
+                "maximum_field_nfd_bytes",
+                "maximum_query_nfd_bytes",
+                "maximum_lexeme_bytes",
+                "maximum_query_lexemes",
+            ),
+            ("policy_id",),
+            (
+                (
+                    "algorithm_version",
+                    "unicode_data_version",
+                    "maximum_field_nfd_bytes",
+                    "maximum_query_nfd_bytes",
+                    "maximum_lexeme_bytes",
+                    "maximum_query_lexemes",
                 ),
             ),
-            tuple(
-                ("artifact_algorithm_version", value[0])
-                for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
-                    "artifact_zip_writer_policy"
-                ][1][1:]
-            ),
-        ),
-        "artifact_storage_codec": (
-            "catalog_artifact_storage_codecs",
-            tuple(
-                value[0]
-                for value in _WIDE_POLICY_BOOTSTRAP_VALUES["artifact_storage_codec"][1]
-            ),
-            ("storage_codec_version",),
-            (("adapter_id",),),
             (),
         ),
         "artifact_policy_semantics": (
             "catalog_artifact_policy_semantics",
             (
                 "policy_component_sha256",
-                "max_image_short_side",
-                "producer_fingerprint_sha256",
+                "artifact_algorithm_version",
+                "policy_fingerprint_sha256",
             ),
             ("policy_component_sha256",),
             (
                 (
-                    "max_image_short_side",
-                    "producer_fingerprint_sha256",
+                    "artifact_algorithm_version",
+                    "policy_fingerprint_sha256",
                 ),
             ),
-            (
-                ("policy_component_sha256", "max_image_short_side"),
-                ("policy_component_sha256", "producer_fingerprint_sha256"),
-            ),
+            (),
+        ),
+        "artifact_adapter_policy": (
+            "catalog_artifact_adapter_policy",
+            ("policy_fingerprint_sha256", "adapter_id"),
+            ("policy_fingerprint_sha256",),
+            (),
+            (),
         ),
         "title_sort_policy": (
             "catalog_title_sort_policy",
@@ -967,7 +992,7 @@ def _validate_static_catalog_contract() -> None:
         ("VALIDATE_CHANGED_GALLERY", 14, "publication_key_v1"),
         ("VALIDATE_REMOVED_GALLERY", 15, "publication_key_v1"),
         ("VALIDATE_DUPLICATE_LOSER", 16, "publication_gallery_v1"),
-        ("FINALIZE_ARTIFACTS", 17, "publication_key_v1"),
+        ("FINALIZE_ARTIFACTS", 17, "publication_resource_v2"),
     )
     expected_publication_stages = tuple(
         (
@@ -1062,30 +1087,6 @@ def _validate_static_catalog_contract() -> None:
         }
         _validate_wide_policy_provider_shapes(relation_by_name, backend=backend)
         expected_shapes = {
-            "artifact_producer_fingerprint": (
-                "catalog_artifact_producer_fingerprints",
-                (
-                    "producer_fingerprint_sha256",
-                    "artifact_algorithm_version",
-                    "producer_equivalence_class",
-                    "writer_id",
-                    "python_abi",
-                    "pillow_build",
-                    "libjpeg_build",
-                    "zlib_build",
-                ),
-                ("producer_fingerprint_sha256",),
-                (
-                    ("producer_equivalence_class",),
-                    (
-                        "writer_id",
-                        "python_abi",
-                        "pillow_build",
-                        "libjpeg_build",
-                        "zlib_build",
-                    ),
-                ),
-            ),
             "publication_identity": (
                 "catalog_publication_identities",
                 ("publication_key", "gid"),
@@ -1103,14 +1104,102 @@ def _validate_static_catalog_contract() -> None:
                 (
                     "candidate_id",
                     "publication_key",
-                    "artifact_sha256",
-                    "storage_codec_version",
+                    "resource_kind",
+                    "storage_object_key_sha256",
                     "storage_generation",
                     "protection_token",
                     "state",
                 ),
-                ("candidate_id", "publication_key"),
+                ("candidate_id", "publication_key", "resource_kind"),
                 (("protection_token",),),
+            ),
+            "prepared_resource_blob": (
+                "catalog_prepared_resource_blob",
+                (
+                    "candidate_id",
+                    "publication_key",
+                    "resource_kind",
+                    "storage_object_sha256",
+                ),
+                ("candidate_id", "publication_key", "resource_kind"),
+                (),
+            ),
+            "catalog_resource_kind": (
+                "catalog_resource_kinds",
+                ("resource_kind",),
+                ("resource_kind",),
+                (),
+            ),
+            "storage_object_key_identity": (
+                "catalog_storage_object_key_identities",
+                ("storage_object_key_sha256", "key_codec", "segment_count"),
+                ("storage_object_key_sha256",),
+                (),
+            ),
+            "storage_object_key_segment": (
+                "catalog_storage_object_key_segments",
+                ("storage_object_key_sha256", "segment_position", "key_segment"),
+                ("storage_object_key_sha256", "segment_position"),
+                (),
+            ),
+            "prepared_storage_object": (
+                "catalog_prepared_storage_objects",
+                (
+                    "candidate_id",
+                    "publication_key",
+                    "resource_kind",
+                    "storage_object_sha256",
+                    "size_bytes",
+                    "modified_at",
+                ),
+                ("candidate_id", "publication_key", "resource_kind"),
+                (),
+            ),
+            "prepared_artifact_descriptor": (
+                "catalog_prepared_artifact_descriptors",
+                (
+                    "candidate_id",
+                    "publication_key",
+                    "artifact_sha256",
+                    "artifact_name",
+                    "media_type",
+                    "page_count",
+                ),
+                ("candidate_id", "publication_key"),
+                (),
+            ),
+            "prepared_page": (
+                "catalog_prepared_pages",
+                (
+                    "candidate_id",
+                    "publication_key",
+                    "resource_kind",
+                    "page_index",
+                    "extent_offset",
+                    "extent_length",
+                    "media_type",
+                    "image_sha256",
+                    "width",
+                    "height",
+                ),
+                ("candidate_id", "publication_key", "page_index"),
+                (),
+            ),
+            "prepared_thumbnail": (
+                "catalog_prepared_thumbnails",
+                (
+                    "candidate_id",
+                    "publication_key",
+                    "resource_kind",
+                    "extent_offset",
+                    "extent_length",
+                    "media_type",
+                    "image_sha256",
+                    "width",
+                    "height",
+                ),
+                ("candidate_id", "publication_key"),
+                (),
             ),
             "artifact_semantic_input": (
                 "catalog_artifact_semantic_inputs",
@@ -1148,6 +1237,56 @@ def _validate_static_catalog_contract() -> None:
                     "publication_key",
                     "artifact_sha256",
                     "artifact_semantics_sha256",
+                    "artifact_name",
+                    "media_type",
+                    "page_count",
+                ),
+                ("revision", "publication_key"),
+                (),
+            ),
+            "catalog_storage_object": (
+                "catalog_storage_objects",
+                (
+                    "revision",
+                    "publication_key",
+                    "resource_kind",
+                    "storage_object_key_sha256",
+                    "storage_object_sha256",
+                    "size_bytes",
+                    "modified_at",
+                ),
+                ("revision", "publication_key", "resource_kind"),
+                (),
+            ),
+            "catalog_page": (
+                "catalog_pages",
+                (
+                    "revision",
+                    "publication_key",
+                    "resource_kind",
+                    "page_index",
+                    "extent_offset",
+                    "extent_length",
+                    "media_type",
+                    "image_sha256",
+                    "width",
+                    "height",
+                ),
+                ("revision", "publication_key", "page_index"),
+                (),
+            ),
+            "catalog_thumbnail": (
+                "catalog_thumbnails",
+                (
+                    "revision",
+                    "publication_key",
+                    "resource_kind",
+                    "extent_offset",
+                    "extent_length",
+                    "media_type",
+                    "image_sha256",
+                    "width",
+                    "height",
                 ),
                 ("revision", "publication_key"),
                 (),
@@ -1355,35 +1494,15 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
         raise CatalogSemanticValidationError(
             "source_provider_registry is not the exact singleton {filesystem}"
         )
-    zip_policies = connector.fetch_all(
-        "SELECT artifact_algorithm_version, zip_codec_version, compression_method, "
-        "compression_level, dos_date, dos_time, unix_mode, general_purpose_flags, "
-        "create_system, archive_name_codec_version, artifact_name_codec_version "
-        "FROM catalog_artifact_zip_writer_policies "
-        "ORDER BY artifact_algorithm_version LIMIT 2"
+    resource_kinds = connector.fetch_all(
+        "SELECT resource_kind FROM catalog_resource_kinds "
+        "ORDER BY resource_kind LIMIT 3"
     )
-    normalized_zip_policies = tuple(
-        tuple(_as_int(cell, field="artifact ZIP policy") for cell in row)
-        for row in zip_policies
-    )
-    expected_zip_policy = (1, 1, 8, 9, 33, 0, 33188, 2048, 3, 1, 1)
-    if normalized_zip_policies != (expected_zip_policy,):
+    if tuple(
+        _as_bytes(row[0], field="catalog resource kind") for row in resource_kinds
+    ) != (b"acquisition", b"thumbnail"):
         raise CatalogSemanticValidationError(
-            "artifact_zip_writer_policy is not the exact v1 singleton"
-        )
-    storage_codecs = connector.fetch_all(
-        "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
-        "protection_token_codec_version FROM catalog_artifact_storage_codecs "
-        "ORDER BY storage_codec_version LIMIT 2"
-    )
-    if len(storage_codecs) != 1 or (
-        _as_int(storage_codecs[0][0], field="storage codec version"),
-        _as_bytes(storage_codecs[0][1], field="storage adapter id"),
-        _as_int(storage_codecs[0][2], field="storage key codec version"),
-        _as_int(storage_codecs[0][3], field="protection token codec version"),
-    ) != (1, b"managed-filesystem", 1, 1):
-        raise CatalogSemanticValidationError(
-            "artifact_storage_codec is not the exact managed-filesystem v1 singleton"
+            "catalog_resource_kind is not the exact neutral two-role registry"
         )
     stages = connector.fetch_all(
         "SELECT stage, stage_order, cursor_codec "
@@ -1451,7 +1570,7 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
             ("VALIDATE_CHANGED_GALLERY", 14, "publication_key_v1"),
             ("VALIDATE_REMOVED_GALLERY", 15, "publication_key_v1"),
             ("VALIDATE_DUPLICATE_LOSER", 16, "publication_gallery_v1"),
-            ("FINALIZE_ARTIFACTS", 17, "publication_key_v1"),
+            ("FINALIZE_ARTIFACTS", 17, "publication_resource_v2"),
         )
     )
     actual_publication_stages = tuple(
@@ -2547,19 +2666,15 @@ def _validate_active_publication_policies(
         connector,
         """
         SELECT policy.policy_component_sha256,
-               producer.artifact_algorithm_version,
-               semantics.max_image_short_side,
-               semantics.producer_fingerprint_sha256,
-               producer.producer_equivalence_class,
-               producer.writer_id, producer.python_abi,
-               producer.pillow_build, producer.libjpeg_build,
-               producer.zlib_build
+               semantics.artifact_algorithm_version,
+               semantics.policy_fingerprint_sha256,
+               adapter.adapter_id
         FROM catalog_artifact_policies AS policy
         JOIN catalog_artifact_policy_semantics AS semantics
           ON semantics.policy_component_sha256 = policy.policy_component_sha256
-        JOIN catalog_artifact_producer_fingerprints AS producer
-          ON producer.producer_fingerprint_sha256 =
-             semantics.producer_fingerprint_sha256
+        JOIN catalog_artifact_adapter_policy AS adapter
+          ON adapter.policy_fingerprint_sha256 =
+             semantics.policy_fingerprint_sha256
         WHERE policy.artifact_policy_id = %s
         LIMIT 2
         """,
@@ -2573,45 +2688,34 @@ def _validate_active_publication_policies(
     algorithm_version = _as_int(
         artifact_policy_row[1], field="artifact algorithm version", positive=True
     )
-    max_short_side = _as_int(
-        artifact_policy_row[2], field="artifact max short side", positive=True
+    policy_fingerprint = _as_bytes(
+        artifact_policy_row[2], field="artifact policy fingerprint"
     )
-    producer_fingerprint = _as_bytes(
-        artifact_policy_row[3], field="artifact producer fingerprint"
-    )
-    producer_fields = tuple(
-        _as_bytes(value, field="artifact producer build field")
-        for value in artifact_policy_row[5:10]
-    )
+    adapter_id = _as_bytes(artifact_policy_row[3], field="artifact adapter identifier")
     if algorithm_version not in _SUPPORTED_ARTIFACT_ALGORITHM_VERSIONS:
         raise CatalogSemanticValidationError(
             "active artifact policy uses an unregistered runtime algorithm version"
         )
-    if max_short_side > (1 << 32) - 1:
-        raise CatalogSemanticValidationError(
-            "active artifact policy resize bound exceeds uint32"
+    try:
+        require_digest32(
+            policy_fingerprint,
+            field="active artifact policy fingerprint",
         )
-    if (
-        identity.artifact_producer_fingerprint_sha256(*producer_fields)
-        != producer_fingerprint
-    ):
-        raise CatalogSemanticValidationError(
-            "active artifact producer fingerprint does not match its exact build tuple"
+        require_ascii_bytes(
+            adapter_id,
+            field="active artifact adapter identifier",
+            minimum=1,
+            maximum=64,
         )
-    producer_equivalence_class = _as_bytes(
-        artifact_policy_row[4], field="artifact producer equivalence class"
-    )
-    if producer_equivalence_class != identity.artifact_producer_equivalence_class(
-        producer_fingerprint
-    ):
+    except (TypeError, ValueError) as error:
         raise CatalogSemanticValidationError(
-            "active artifact producer equivalence class is not repository-certified"
-        )
+            "active artifact adapter policy contains invalid bounded facts"
+        ) from error
     if (
         identity.artifact_policy_digest(
             algorithm_version,
-            max_short_side,
-            producer_fingerprint,
+            adapter_id,
+            policy_fingerprint,
         )
         != policy_component
     ):
@@ -2621,7 +2725,7 @@ def _validate_active_publication_policies(
     _require_canonical_domain(
         connector,
         policy_component,
-        b"artifact_policy_v2",
+        b"artifact_policy_v3",
         detail="active artifact policy component",
     )
     display_policy_row = _one(
@@ -2779,6 +2883,1522 @@ def _validate_catalog_occurrence_storage(
         )
 
 
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_CATALOG_RESOURCE_PAGE_LIMIT = 128
+_CONTRIBUTOR_FACET_NAMESPACES = frozenset(
+    {b"artist", b"author", b"cosplayer", b"group", b"illustrator", b"uploader"}
+)
+
+
+def _catalog_datetime(value: object, *, field: str) -> datetime:
+    microseconds = _as_int(value, field=field)
+    try:
+        return _UNIX_EPOCH + timedelta(microseconds=microseconds)
+    except OverflowError as error:
+        raise CatalogSemanticValidationError(
+            f"{field} is outside the supported datetime range"
+        ) from error
+
+
+def _catalog_storage_key(
+    connector: SQLConnector,
+    key_digest: bytes,
+) -> StorageObjectKey:
+    require_digest32(key_digest, field="catalog storage object key digest")
+    rows = connector.fetch_all(
+        "SELECT key_codec, segment_count "
+        "FROM catalog_storage_object_key_identities "
+        "WHERE storage_object_key_sha256 = %s LIMIT 2",
+        (key_digest,),
+    )
+    if len(rows) != 1 or any(value is None for value in rows[0]):
+        raise CatalogSemanticValidationError(
+            "catalog storage object key identity is missing or duplicated"
+        )
+    try:
+        codec = require_ascii_bytes(
+            rows[0][0],
+            field="catalog storage object key codec",
+            minimum=1,
+            maximum=64,
+        ).decode("ascii")
+        segment_count = _as_int(
+            rows[0][1], field="catalog storage object segment_count", positive=True
+        )
+        if segment_count > 16:
+            raise CatalogSemanticValidationError(
+                "catalog storage object key exceeds sixteen segments"
+            )
+        segment_rows = connector.fetch_all(
+            "SELECT segment_position, key_segment "
+            "FROM catalog_storage_object_key_segments "
+            "WHERE storage_object_key_sha256 = %s "
+            "ORDER BY segment_position LIMIT 17",
+            (key_digest,),
+        )
+        if len(segment_rows) != segment_count:
+            raise CatalogSemanticValidationError(
+                "catalog storage object key segment family is incomplete"
+            )
+        segments: list[str] = []
+        for expected_position, segment_row in enumerate(segment_rows):
+            if (
+                _as_int(
+                    segment_row[0],
+                    field="catalog storage object segment position",
+                )
+                != expected_position
+            ):
+                raise CatalogSemanticValidationError(
+                    "catalog storage object key segments are not dense"
+                )
+            segments.append(
+                _as_bytes(
+                    segment_row[1],
+                    field="catalog storage object key segment",
+                ).decode("utf-8", errors="strict")
+            )
+        key = StorageObjectKey(codec=codec, segments=tuple(segments))
+        if identity.artifact_storage_key_digest(key.codec, key.segments) != key_digest:
+            raise CatalogSemanticValidationError(
+                "catalog storage object key digest is noncongruent"
+            )
+        return key
+    except (TypeError, ValueError, UnicodeError) as error:
+        if isinstance(error, CatalogSemanticValidationError):
+            raise
+        raise CatalogSemanticValidationError(
+            "catalog storage object key violates its public bounded domain"
+        ) from error
+
+
+def _catalog_storage_objects(
+    connector: SQLConnector,
+    *,
+    revision: int,
+    publication_key: bytes,
+) -> dict[bytes, StorageObjectDescriptor]:
+    rows = connector.fetch_all(
+        "SELECT stored.resource_kind, stored.storage_object_key_sha256, "
+        "stored.storage_object_sha256, stored.size_bytes, stored.modified_at, "
+        "blob.size_bytes "
+        "FROM catalog_storage_objects AS stored "
+        "LEFT JOIN catalog_artifact_blobs AS blob "
+        "ON blob.artifact_sha256 = stored.storage_object_sha256 "
+        "WHERE stored.revision = %s AND stored.publication_key = %s "
+        "ORDER BY stored.resource_kind LIMIT 3",
+        (revision, publication_key),
+    )
+    resources: dict[bytes, StorageObjectDescriptor] = {}
+    for row in rows:
+        if len(row) != 6 or any(value is None for value in row):
+            raise CatalogSemanticValidationError(
+                "catalog storage object lacks its complete key/blob authority"
+            )
+        kind = _as_bytes(row[0], field="catalog storage object resource_kind")
+        if kind not in {b"acquisition", b"thumbnail"} or kind in resources:
+            raise CatalogSemanticValidationError(
+                "catalog storage object has an unknown or duplicate resource kind"
+            )
+        key_digest = _as_bytes(row[1], field="catalog storage object key digest")
+        object_digest = _as_bytes(row[2], field="catalog storage object digest")
+        try:
+            require_digest32(key_digest, field="catalog storage object key digest")
+            require_digest32(object_digest, field="catalog storage object digest")
+            size_bytes = _as_int(
+                row[3], field="catalog storage object size", positive=True
+            )
+            if (
+                _as_int(row[5], field="catalog resource blob size", positive=True)
+                != size_bytes
+            ):
+                raise CatalogSemanticValidationError(
+                    "catalog storage object size differs from its verified blob"
+                )
+            key = _catalog_storage_key(connector, key_digest)
+            resources[kind] = StorageObjectDescriptor(
+                key=key,
+                size_bytes=size_bytes,
+                sha256=object_digest.hex(),
+                modified_at=_catalog_datetime(
+                    row[4], field="catalog storage object modified_at"
+                ),
+            )
+        except (TypeError, ValueError, UnicodeError) as error:
+            if isinstance(error, CatalogSemanticValidationError):
+                raise
+            raise CatalogSemanticValidationError(
+                "catalog storage object violates its public bounded domain"
+            ) from error
+    return resources
+
+
+def _validate_catalog_image_row(
+    row: tuple[Any, ...],
+    *,
+    storage_object: StorageObjectDescriptor,
+    expected_kind: bytes,
+    expected_index: int | None,
+    detail: str,
+) -> CatalogImageResource:
+    index_offset = 1 if expected_index is not None else 0
+    expected_columns = 8 if expected_index is not None else 7
+    if len(row) != expected_columns:
+        raise CatalogSemanticValidationError(f"{detail} has an invalid row shape")
+    kind = _as_bytes(row[0], field=f"{detail} resource_kind")
+    if kind != expected_kind:
+        raise CatalogSemanticValidationError(f"{detail} uses the wrong storage object")
+    if (
+        expected_index is not None
+        and _as_int(row[1], field=f"{detail} page_index") != expected_index
+    ):
+        raise CatalogSemanticValidationError(f"{detail} indices are not dense")
+    try:
+        extent = ByteExtent(
+            offset=_as_int(row[index_offset + 1], field=f"{detail} extent offset"),
+            length=_as_int(
+                row[index_offset + 2],
+                field=f"{detail} extent length",
+                positive=True,
+            ),
+        )
+        media_type = _as_bytes(
+            row[index_offset + 3], field=f"{detail} media_type"
+        ).decode("ascii", errors="strict")
+        image_digest = _as_bytes(row[index_offset + 4], field=f"{detail} image digest")
+        require_digest32(image_digest, field=f"{detail} image digest")
+        return CatalogImageResource(
+            storage_object=storage_object,
+            extent=extent,
+            media_type=media_type,
+            sha256=image_digest.hex(),
+            width=_as_int(
+                row[index_offset + 5], field=f"{detail} width", positive=True
+            ),
+            height=_as_int(
+                row[index_offset + 6], field=f"{detail} height", positive=True
+            ),
+        )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise CatalogSemanticValidationError(
+            f"{detail} violates its public bounded domain"
+        ) from error
+
+
+def _validate_active_catalog_resources(
+    connector: SQLConnector,
+    *,
+    revision: int,
+    expected_artifact_count: int,
+) -> None:
+    orphan = connector.fetch_all(
+        "SELECT stored.publication_key FROM catalog_storage_objects AS stored "
+        "LEFT JOIN catalog_artifacts AS artifact "
+        "ON artifact.revision = stored.revision "
+        "AND artifact.publication_key = stored.publication_key "
+        "WHERE stored.revision = %s AND artifact.publication_key IS NULL LIMIT 1",
+        (revision,),
+    )
+    if orphan:
+        raise CatalogSemanticValidationError(
+            "active catalog has presentation storage without an artifact"
+        )
+
+    after = b""
+    artifact_count = 0
+    while True:
+        rows = connector.fetch_all(
+            "SELECT artifact.publication_key, identity_row.gid, "
+            "artifact.artifact_sha256, artifact.artifact_name, "
+            "artifact.media_type, artifact.page_count, blob.size_bytes "
+            "FROM catalog_artifacts AS artifact "
+            "LEFT JOIN catalog_publication_identities AS identity_row "
+            "ON identity_row.publication_key = artifact.publication_key "
+            "LEFT JOIN catalog_artifact_blobs AS blob "
+            "ON blob.artifact_sha256 = artifact.artifact_sha256 "
+            "WHERE artifact.revision = %s AND artifact.publication_key > %s "
+            "ORDER BY artifact.publication_key LIMIT %s",
+            (revision, after, _CATALOG_RESOURCE_PAGE_LIMIT),
+        )
+        if not rows:
+            break
+        for row in rows:
+            if len(row) != 7 or any(value is None for value in row):
+                raise CatalogSemanticValidationError(
+                    "catalog artifact lacks its complete identity/blob authority"
+                )
+            publication_key = _as_bytes(
+                row[0], field="catalog artifact publication_key"
+            )
+            try:
+                require_digest32(
+                    publication_key, field="catalog artifact publication_key"
+                )
+                gid = _as_int(row[1], field="catalog artifact gid", positive=True)
+                if identity.publication_key(gid) != publication_key:
+                    raise CatalogSemanticValidationError(
+                        "catalog artifact publication key disagrees with its GID"
+                    )
+                artifact_digest = _as_bytes(row[2], field="catalog artifact digest")
+                require_digest32(artifact_digest, field="catalog artifact digest")
+                artifact_name = _as_bytes(row[3], field="catalog artifact name").decode(
+                    "utf-8", errors="strict"
+                )
+                media_type = _as_bytes(
+                    row[4], field="catalog artifact media_type"
+                ).decode("ascii", errors="strict")
+                page_count = _as_int(row[5], field="catalog artifact page_count")
+                if page_count > 4096:
+                    raise CatalogSemanticValidationError(
+                        "catalog artifact exceeds the generic page-count bound"
+                    )
+                artifact_size = _as_int(
+                    row[6], field="catalog artifact blob size", positive=True
+                )
+                resources = _catalog_storage_objects(
+                    connector,
+                    revision=revision,
+                    publication_key=publication_key,
+                )
+                expected_kinds = (
+                    {b"acquisition", b"thumbnail"} if page_count else {b"acquisition"}
+                )
+                if set(resources) != expected_kinds:
+                    raise CatalogSemanticValidationError(
+                        "catalog artifact storage roles are incomplete or excessive"
+                    )
+                acquisition = resources[b"acquisition"]
+                if (
+                    acquisition.sha256 != artifact_digest.hex()
+                    or acquisition.size_bytes != artifact_size
+                ):
+                    raise CatalogSemanticValidationError(
+                        "catalog acquisition differs from artifact byte authority"
+                    )
+                CatalogArtifact(
+                    artifact_id=identity.artifact_id(gid, artifact_digest).decode(
+                        "ascii"
+                    ),
+                    name=artifact_name,
+                    storage_object=acquisition,
+                    media_type=media_type,
+                )
+            except (TypeError, ValueError, UnicodeError) as error:
+                if isinstance(error, CatalogSemanticValidationError):
+                    raise
+                raise CatalogSemanticValidationError(
+                    "catalog artifact violates its public bounded domain"
+                ) from error
+
+            page_rows = connector.fetch_all(
+                "SELECT resource_kind, page_index, extent_offset, extent_length, "
+                "media_type, image_sha256, width, height FROM catalog_pages "
+                "WHERE revision = %s AND publication_key = %s "
+                "ORDER BY page_index LIMIT 4097",
+                (revision, publication_key),
+            )
+            if len(page_rows) != page_count:
+                raise CatalogSemanticValidationError(
+                    "catalog page coverage differs from artifact page_count"
+                )
+            for page_index, page_row in enumerate(page_rows):
+                _validate_catalog_image_row(
+                    page_row,
+                    storage_object=acquisition,
+                    expected_kind=b"acquisition",
+                    expected_index=page_index,
+                    detail="catalog page",
+                )
+
+            thumbnail_rows = connector.fetch_all(
+                "SELECT resource_kind, extent_offset, extent_length, media_type, "
+                "image_sha256, width, height FROM catalog_thumbnails "
+                "WHERE revision = %s AND publication_key = %s LIMIT 2",
+                (revision, publication_key),
+            )
+            if len(thumbnail_rows) != (1 if page_count else 0):
+                raise CatalogSemanticValidationError(
+                    "catalog thumbnail totality differs from artifact page_count"
+                )
+            if thumbnail_rows:
+                thumbnail_object = resources[b"thumbnail"]
+                thumbnail = _validate_catalog_image_row(
+                    thumbnail_rows[0],
+                    storage_object=thumbnail_object,
+                    expected_kind=b"thumbnail",
+                    expected_index=None,
+                    detail="catalog thumbnail",
+                )
+                if (
+                    thumbnail.extent.offset != 0
+                    or thumbnail.extent.length != thumbnail_object.size_bytes
+                    or thumbnail.sha256 != thumbnail_object.sha256
+                ):
+                    raise CatalogSemanticValidationError(
+                        "catalog thumbnail is not its complete sealed object"
+                    )
+            artifact_count += 1
+            if artifact_count > (1 << 63) - 1:
+                raise CatalogSemanticValidationError(
+                    "catalog artifact count exceeds signed-int63"
+                )
+        after = _as_bytes(rows[-1][0], field="catalog artifact keyset cursor")
+    if artifact_count != expected_artifact_count:
+        raise CatalogSemanticValidationError(
+            "active artifact coverage differs from catalog revision artifact_count"
+        )
+
+
+def _validated_canonical_spool(
+    connector: SQLConnector,
+    value_sha256: bytes,
+    *,
+    expected_domain: bytes,
+    detail: str,
+) -> tuple[BinaryIO, int]:
+    spool = TemporaryFile(mode="w+b")
+    written = 0
+
+    def consume(part: bytes) -> None:
+        nonlocal written
+        if spool.write(part) != len(part):
+            raise OSError("canonical READY spool accepted a partial write")
+        written += len(part)
+
+    try:
+        receipt = stream_and_validate_canonical_value(
+            connector,
+            value_sha256=value_sha256,
+            consume_provisional=consume,
+        )
+        if receipt.digest_domain != expected_domain or written != receipt.byte_count:
+            raise CatalogSemanticValidationError(
+                f"{detail} has the wrong domain or exact byte count"
+            )
+        spool.flush()
+        spool.seek(0)
+        return spool, receipt.byte_count
+    except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
+        spool.close()
+        raise CatalogSemanticValidationError(
+            f"{detail} canonical byte authority is incomplete or corrupt"
+        ) from error
+    except BaseException:
+        spool.close()
+        raise
+
+
+def _iter_spool_chunks(source: BinaryIO, *, byte_count: int) -> Iterator[bytes]:
+    source.seek(0)
+    remaining = byte_count
+    while remaining:
+        chunk = source.read(min(64 * 1024, remaining))
+        if not isinstance(chunk, bytes) or not chunk:
+            raise CatalogSemanticValidationError(
+                "canonical READY spool ended before its validated byte count"
+            )
+        remaining -= len(chunk)
+        yield chunk
+    if source.read(1) not in {b"", None}:
+        raise CatalogSemanticValidationError(
+            "canonical READY spool exceeds its validated byte count"
+        )
+
+
+def _register_expected_search_field(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    publication_key: bytes,
+    parts: Iterable[bytes],
+) -> None:
+    try:
+        for lexeme in iter_search_field_lexemes(parts):
+            value_sha256 = identity.canonical_value_digest(
+                "search_lexeme_utf8_v1",
+                lexeme,
+            )
+            already_validated = expected.execute(
+                "SELECT 1 FROM validated_lexemes WHERE value_sha256 = ?",
+                (sqlite3.Binary(value_sha256),),
+            ).fetchone()
+            if already_validated is None:
+                marker = connector.fetch_all(
+                    "SELECT value_sha256 FROM catalog_search_lexemes "
+                    "WHERE value_sha256 = %s LIMIT 2",
+                    (value_sha256,),
+                )
+                if marker != [(value_sha256,)]:
+                    raise CatalogSemanticValidationError(
+                        "derived search lexeme lacks its exact marker"
+                    )
+                spool, byte_count = _validated_canonical_spool(
+                    connector,
+                    value_sha256,
+                    expected_domain=b"search_lexeme_utf8_v1",
+                    detail="derived search lexeme",
+                )
+                try:
+                    if (
+                        byte_count != len(lexeme)
+                        or spool.read(byte_count + 1) != lexeme
+                    ):
+                        raise CatalogSemanticValidationError(
+                            "derived search lexeme digest maps to different exact bytes"
+                        )
+                finally:
+                    spool.close()
+                expected.execute(
+                    "INSERT INTO validated_lexemes (value_sha256) VALUES (?)",
+                    (sqlite3.Binary(value_sha256),),
+                )
+            inserted = expected.execute(
+                "INSERT OR IGNORE INTO expected_postings "
+                "(publication_key, value_sha256) VALUES (?, ?)",
+                (sqlite3.Binary(publication_key), sqlite3.Binary(value_sha256)),
+            )
+            if inserted.rowcount == 1:
+                updated = expected.execute(
+                    "UPDATE expected_documents SET row_count = row_count + 1 "
+                    "WHERE publication_key = ?",
+                    (sqlite3.Binary(publication_key),),
+                )
+                if updated.rowcount != 1:
+                    raise CatalogSemanticValidationError(
+                        "derived search document authority is missing"
+                    )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise CatalogSemanticValidationError(
+            "active search source field violates the pinned tokenizer policy"
+        ) from error
+
+
+def _validate_one_publication_search_projection(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+    publication_key: bytes,
+    language_sha256: bytes,
+    source_title_sha256: bytes,
+    display_title_sha256: bytes,
+    source_gallery_name: bytes,
+) -> None:
+    try:
+        expected.execute(
+            "INSERT INTO expected_documents (publication_key, row_count) VALUES (?, 0)",
+            (sqlite3.Binary(publication_key),),
+        )
+    except sqlite3.IntegrityError as error:
+        raise CatalogSemanticValidationError(
+            "active search source repeats a publication"
+        ) from error
+    expected.execute(
+        "INSERT INTO expected_languages (language_sha256, occurrence_count) "
+        "VALUES (?, 1) ON CONFLICT(language_sha256) DO UPDATE SET "
+        "occurrence_count = occurrence_count + 1",
+        (sqlite3.Binary(language_sha256),),
+    )
+    title_spool, title_byte_count = _validated_canonical_spool(
+        connector,
+        source_title_sha256,
+        expected_domain=b"source_title_utf8_v1",
+        detail="active publication source title",
+    )
+    try:
+        _register_expected_search_field(
+            connector,
+            expected,
+            publication_key=publication_key,
+            parts=_iter_spool_chunks(title_spool, byte_count=title_byte_count),
+        )
+    finally:
+        title_spool.close()
+    display_title_spool, display_title_byte_count = _validated_canonical_spool(
+        connector,
+        display_title_sha256,
+        expected_domain=b"display_title_utf8_v1",
+        detail="active publication display title",
+    )
+    try:
+        if display_title_byte_count == 0:
+            raise CatalogSemanticValidationError(
+                "active publication display title is empty"
+            )
+        _register_expected_search_field(
+            connector,
+            expected,
+            publication_key=publication_key,
+            parts=_iter_spool_chunks(
+                display_title_spool,
+                byte_count=display_title_byte_count,
+            ),
+        )
+    finally:
+        display_title_spool.close()
+
+    expected_position = 0
+    after_position = -1
+    while True:
+        contributors = connector.fetch_all(
+            "SELECT position, contributor_name_sha256, role "
+            "FROM catalog_contributors WHERE revision = %s "
+            "AND publication_key = %s AND position > %s "
+            "ORDER BY position LIMIT %s",
+            (
+                revision,
+                publication_key,
+                after_position,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not contributors:
+            break
+        for row in contributors:
+            if len(row) != 3:
+                raise CatalogSemanticValidationError(
+                    "active contributor search row is malformed"
+                )
+            position = _as_int(row[0], field="active contributor position")
+            if position != expected_position:
+                raise CatalogSemanticValidationError(
+                    "active contributor positions are not exactly contiguous"
+                )
+            digest = _as_bytes(row[1], field="active contributor name digest")
+            role = _as_bytes(row[2], field="active contributor role")
+            if role not in _CONTRIBUTOR_FACET_NAMESPACES:
+                raise CatalogSemanticValidationError(
+                    "active contributor uses an unregistered facet role"
+                )
+            expected.execute(
+                "INSERT INTO expected_contributors "
+                "(contributor_name_sha256, role, occurrence_count) "
+                "VALUES (?, ?, 1) ON CONFLICT(contributor_name_sha256, role) "
+                "DO UPDATE SET occurrence_count = occurrence_count + 1",
+                (sqlite3.Binary(digest), sqlite3.Binary(role)),
+            )
+            spool, byte_count = _validated_canonical_spool(
+                connector,
+                digest,
+                expected_domain=b"contributor_name_utf8_v1",
+                detail="active contributor name",
+            )
+            try:
+                if not 1 <= byte_count <= 65_536:
+                    raise CatalogSemanticValidationError(
+                        "active contributor name is outside its writer bound"
+                    )
+                _register_expected_search_field(
+                    connector,
+                    expected,
+                    publication_key=publication_key,
+                    parts=_iter_spool_chunks(spool, byte_count=byte_count),
+                )
+            finally:
+                spool.close()
+            expected_position += 1
+            after_position = position
+
+    expected_position = 0
+    after_position = -1
+    while True:
+        subjects = connector.fetch_all(
+            "SELECT subject.position, subject.tag_id, term.namespace, "
+            "term.tag_value_sha256 "
+            "FROM catalog_subjects AS subject "
+            "JOIN catalog_tag_terms AS term ON term.tag_id = subject.tag_id "
+            "WHERE subject.revision = %s AND subject.publication_key = %s "
+            "AND subject.position > %s ORDER BY subject.position LIMIT %s",
+            (
+                revision,
+                publication_key,
+                after_position,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not subjects:
+            break
+        for row in subjects:
+            if len(row) != 4:
+                raise CatalogSemanticValidationError(
+                    "active subject search row is malformed"
+                )
+            position = _as_int(row[0], field="active subject position")
+            if position != expected_position:
+                raise CatalogSemanticValidationError(
+                    "active subject positions are not exactly contiguous"
+                )
+            tag_id = _as_int(row[1], field="active subject tag_id", positive=True)
+            namespace = _as_bytes(row[2], field="active subject namespace")
+            digest = _as_bytes(row[3], field="active subject value digest")
+            try:
+                decoded_namespace = namespace.decode("utf-8", errors="strict")
+                if identity.validate_namespace(decoded_namespace) != namespace:
+                    raise ValueError("tag namespace changed during validation")
+            except (TypeError, ValueError, UnicodeError) as error:
+                raise CatalogSemanticValidationError(
+                    "active subject namespace is not exact bounded UTF-8"
+                ) from error
+            if (
+                namespace != b"language"
+                and namespace not in _CONTRIBUTOR_FACET_NAMESPACES
+            ):
+                expected.execute(
+                    "INSERT INTO expected_subjects (tag_id, occurrence_count) "
+                    "VALUES (?, 1) ON CONFLICT(tag_id) DO UPDATE SET "
+                    "occurrence_count = occurrence_count + 1",
+                    (tag_id,),
+                )
+            spool, byte_count = _validated_canonical_spool(
+                connector,
+                digest,
+                expected_domain=b"tag_value_utf8_v1",
+                detail="active subject value",
+            )
+            try:
+                if byte_count > 65_536:
+                    raise CatalogSemanticValidationError(
+                        "active subject value exceeds its writer bound"
+                    )
+                _register_expected_search_field(
+                    connector,
+                    expected,
+                    publication_key=publication_key,
+                    parts=_iter_spool_chunks(spool, byte_count=byte_count),
+                )
+            finally:
+                spool.close()
+            expected_position += 1
+            after_position = position
+
+    document = _one(
+        connector,
+        "SELECT row_count FROM catalog_search_documents "
+        "WHERE revision = %s AND publication_key = %s LIMIT 2",
+        (revision, publication_key),
+        detail="active publication search document",
+    )
+    assert document is not None
+    expected_count_row = expected.execute(
+        "SELECT row_count FROM expected_documents WHERE publication_key = ?",
+        (sqlite3.Binary(publication_key),),
+    ).fetchone()
+    if expected_count_row is None:
+        raise CatalogSemanticValidationError(
+            "expected search projection count is missing"
+        )
+    expected_count = _as_int(
+        expected_count_row[0], field="derived search posting count"
+    )
+    if _as_int(document[0], field="active search document row_count") != expected_count:
+        raise CatalogSemanticValidationError(
+            "active search document count differs from exact tokenizer output"
+        )
+
+    after_lexeme = b""
+    while True:
+        actual_rows = connector.fetch_all(
+            "SELECT value_sha256 FROM catalog_search_postings "
+            "WHERE revision = %s AND publication_key = %s "
+            "AND value_sha256 > %s ORDER BY value_sha256 LIMIT %s",
+            (
+                revision,
+                publication_key,
+                after_lexeme,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        expected_rows = expected.execute(
+            "SELECT value_sha256 FROM expected_postings "
+            "WHERE publication_key = ? AND value_sha256 > ? "
+            "ORDER BY value_sha256 LIMIT ?",
+            (
+                sqlite3.Binary(publication_key),
+                sqlite3.Binary(after_lexeme),
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        ).fetchall()
+        actual = tuple(
+            _as_bytes(row[0], field="active search posting value_sha256")
+            for row in actual_rows
+        )
+        derived = tuple(bytes(row[0]) for row in expected_rows)
+        if actual != derived:
+            raise CatalogSemanticValidationError(
+                "active search postings differ from exact tokenizer output"
+            )
+        if not actual:
+            break
+        after_lexeme = actual[-1]
+
+
+def _compare_canonical_spools(left: BinaryIO, right: BinaryIO) -> int:
+    left.seek(0)
+    right.seek(0)
+    while True:
+        left_chunk = left.read(64 * 1024)
+        right_chunk = right.read(64 * 1024)
+        if not isinstance(left_chunk, bytes) or not isinstance(right_chunk, bytes):
+            raise CatalogSemanticValidationError(
+                "canonical facet spool returned non-bytes"
+            )
+        if left_chunk != right_chunk:
+            return -1 if left_chunk < right_chunk else 1
+        if not left_chunk:
+            return 0
+
+
+def _validate_language_facet_order(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+) -> None:
+    after = -1
+    expected_position = 0
+    previous: tuple[BinaryIO, int, bytes] | None = None
+    try:
+        while True:
+            rows = connector.fetch_all(
+                "SELECT position, language_sha256, occurrence_count "
+                "FROM catalog_language_facet_order WHERE revision = %s "
+                "AND position > %s ORDER BY position LIMIT %s",
+                (revision, after, _CATALOG_RESOURCE_PAGE_LIMIT),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if len(row) != 3:
+                    raise CatalogSemanticValidationError(
+                        "active language facet row is malformed"
+                    )
+                position = _as_int(row[0], field="active language facet position")
+                if position != expected_position:
+                    raise CatalogSemanticValidationError(
+                        "active language facet positions are not exactly contiguous"
+                    )
+                digest = _as_bytes(row[1], field="active language facet digest")
+                try:
+                    require_digest32(digest, field="active language facet digest")
+                except (TypeError, ValueError) as error:
+                    raise CatalogSemanticValidationError(
+                        "active language facet digest is invalid"
+                    ) from error
+                occurrence_count = _as_int(
+                    row[2],
+                    field="active language facet occurrence_count",
+                    positive=True,
+                )
+                expected_row = expected.execute(
+                    "SELECT occurrence_count FROM expected_languages "
+                    "WHERE language_sha256 = ?",
+                    (sqlite3.Binary(digest),),
+                ).fetchone()
+                if expected_row != (occurrence_count,):
+                    raise CatalogSemanticValidationError(
+                        "active language facet differs from exact membership"
+                    )
+                expected.execute(
+                    "DELETE FROM expected_languages WHERE language_sha256 = ?",
+                    (sqlite3.Binary(digest),),
+                )
+                spool, byte_count = _validated_canonical_spool(
+                    connector,
+                    digest,
+                    expected_domain=b"catalog_language_utf8_v1",
+                    detail="active language facet value",
+                )
+                if not 1 <= byte_count <= 65_536:
+                    spool.close()
+                    raise CatalogSemanticValidationError(
+                        "active language facet value is outside its writer bound"
+                    )
+                try:
+                    spool.read(byte_count + 1).decode("utf-8", errors="strict")
+                except UnicodeError as error:
+                    spool.close()
+                    raise CatalogSemanticValidationError(
+                        "active language facet value is not strict UTF-8"
+                    ) from error
+                if previous is not None:
+                    comparison = _compare_canonical_spools(previous[0], spool)
+                    if comparison > 0 or (comparison == 0 and previous[2] >= digest):
+                        spool.close()
+                        raise CatalogSemanticValidationError(
+                            "active language facets are not in canonical byte order"
+                        )
+                    previous[0].close()
+                previous = (spool, byte_count, digest)
+                expected_position += 1
+                after = position
+        if expected.execute("SELECT 1 FROM expected_languages LIMIT 1").fetchone():
+            raise CatalogSemanticValidationError(
+                "active language facets omit current membership"
+            )
+    finally:
+        if previous is not None:
+            previous[0].close()
+
+
+def _validate_subject_facet_order(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+) -> None:
+    after = -1
+    expected_position = 0
+    previous: tuple[bytes, BinaryIO, int, int] | None = None
+    try:
+        while True:
+            rows = connector.fetch_all(
+                "SELECT facet.position, facet.tag_id, facet.occurrence_count, "
+                "term.namespace, term.tag_value_sha256 "
+                "FROM catalog_subject_facet_order AS facet "
+                "LEFT JOIN catalog_tag_terms AS term ON term.tag_id = facet.tag_id "
+                "WHERE facet.revision = %s AND facet.position > %s "
+                "ORDER BY facet.position LIMIT %s",
+                (revision, after, _CATALOG_RESOURCE_PAGE_LIMIT),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if len(row) != 5 or row[3] is None or row[4] is None:
+                    raise CatalogSemanticValidationError(
+                        "active subject facet lacks its tag authority"
+                    )
+                position = _as_int(row[0], field="active subject facet position")
+                if position != expected_position:
+                    raise CatalogSemanticValidationError(
+                        "active subject facet positions are not exactly contiguous"
+                    )
+                tag_id = _as_int(
+                    row[1], field="active subject facet tag_id", positive=True
+                )
+                occurrence_count = _as_int(
+                    row[2],
+                    field="active subject facet occurrence_count",
+                    positive=True,
+                )
+                expected_row = expected.execute(
+                    "SELECT occurrence_count FROM expected_subjects WHERE tag_id = ?",
+                    (tag_id,),
+                ).fetchone()
+                if expected_row != (occurrence_count,):
+                    raise CatalogSemanticValidationError(
+                        "active subject facet differs from exact membership"
+                    )
+                expected.execute(
+                    "DELETE FROM expected_subjects WHERE tag_id = ?",
+                    (tag_id,),
+                )
+                namespace = _as_bytes(row[3], field="active subject facet namespace")
+                if len(namespace) > 128:
+                    raise CatalogSemanticValidationError(
+                        "active subject facet namespace exceeds its bound"
+                    )
+                digest = _as_bytes(row[4], field="active subject facet value digest")
+                try:
+                    require_digest32(digest, field="active subject facet value digest")
+                except (TypeError, ValueError) as error:
+                    raise CatalogSemanticValidationError(
+                        "active subject facet value digest is invalid"
+                    ) from error
+                spool, byte_count = _validated_canonical_spool(
+                    connector,
+                    digest,
+                    expected_domain=b"tag_value_utf8_v1",
+                    detail="active subject facet value",
+                )
+                if previous is not None:
+                    if previous[0] < namespace:
+                        comparison = -1
+                    elif previous[0] > namespace:
+                        comparison = 1
+                    else:
+                        comparison = _compare_canonical_spools(previous[1], spool)
+                        if comparison == 0:
+                            comparison = -1 if previous[3] < tag_id else 1
+                    if comparison >= 0:
+                        spool.close()
+                        raise CatalogSemanticValidationError(
+                            "active subject facets are not in canonical byte order"
+                        )
+                    previous[1].close()
+                previous = (namespace, spool, byte_count, tag_id)
+                expected_position += 1
+                after = position
+        if expected.execute("SELECT 1 FROM expected_subjects LIMIT 1").fetchone():
+            raise CatalogSemanticValidationError(
+                "active subject facets omit current membership"
+            )
+    finally:
+        if previous is not None:
+            previous[1].close()
+
+
+def _validate_contributor_facet_order(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+) -> None:
+    after = -1
+    expected_position = 0
+    previous: tuple[bytes, BinaryIO, int, bytes] | None = None
+    try:
+        while True:
+            rows = connector.fetch_all(
+                "SELECT position, contributor_name_sha256, role, occurrence_count "
+                "FROM catalog_contributor_facet_order WHERE revision = %s "
+                "AND position > %s ORDER BY position LIMIT %s",
+                (revision, after, _CATALOG_RESOURCE_PAGE_LIMIT),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if len(row) != 4:
+                    raise CatalogSemanticValidationError(
+                        "active contributor facet row is malformed"
+                    )
+                position = _as_int(row[0], field="active contributor facet position")
+                if position != expected_position:
+                    raise CatalogSemanticValidationError(
+                        "active contributor facet positions are not exactly contiguous"
+                    )
+                digest = _as_bytes(row[1], field="active contributor facet digest")
+                role = _as_bytes(row[2], field="active contributor facet role")
+                try:
+                    require_digest32(digest, field="active contributor facet digest")
+                    require_ascii_bytes(
+                        role,
+                        field="active contributor facet role",
+                        minimum=1,
+                        maximum=64,
+                    )
+                except (TypeError, ValueError) as error:
+                    raise CatalogSemanticValidationError(
+                        "active contributor facet identity is invalid"
+                    ) from error
+                occurrence_count = _as_int(
+                    row[3],
+                    field="active contributor facet occurrence_count",
+                    positive=True,
+                )
+                expected_row = expected.execute(
+                    "SELECT occurrence_count FROM expected_contributors "
+                    "WHERE contributor_name_sha256 = ? AND role = ?",
+                    (sqlite3.Binary(digest), sqlite3.Binary(role)),
+                ).fetchone()
+                if expected_row != (occurrence_count,):
+                    raise CatalogSemanticValidationError(
+                        "active contributor facet differs from exact membership"
+                    )
+                expected.execute(
+                    "DELETE FROM expected_contributors "
+                    "WHERE contributor_name_sha256 = ? AND role = ?",
+                    (sqlite3.Binary(digest), sqlite3.Binary(role)),
+                )
+                spool, byte_count = _validated_canonical_spool(
+                    connector,
+                    digest,
+                    expected_domain=b"contributor_name_utf8_v1",
+                    detail="active contributor facet value",
+                )
+                if previous is not None:
+                    if previous[0] < role:
+                        comparison = -1
+                    elif previous[0] > role:
+                        comparison = 1
+                    else:
+                        comparison = _compare_canonical_spools(previous[1], spool)
+                        if comparison == 0:
+                            comparison = -1 if previous[3] < digest else 1
+                    if comparison >= 0:
+                        spool.close()
+                        raise CatalogSemanticValidationError(
+                            "active contributor facets are not in canonical byte order"
+                        )
+                    previous[1].close()
+                previous = (role, spool, byte_count, digest)
+                expected_position += 1
+                after = position
+        if expected.execute("SELECT 1 FROM expected_contributors LIMIT 1").fetchone():
+            raise CatalogSemanticValidationError(
+                "active contributor facets omit current membership"
+            )
+    finally:
+        if previous is not None:
+            previous[1].close()
+
+
+def _validate_active_discovery_projection(
+    connector: SQLConnector,
+    *,
+    revision: int,
+    display_title_policy_id: int,
+    expected_publication_count: int,
+) -> None:
+    """Audit the sealed current discovery projection after transient cleanup.
+
+    Every database query returns at most one mismatch witness or one fixed-size
+    keyset page.  This full READY check may visit the complete current revision;
+    the separate epoch-only readiness probe remains O(1).
+    """
+
+    try:
+        require_search_runtime_policy()
+    except RuntimeError as error:
+        raise CatalogSemanticValidationError(
+            "catalog search runtime policy differs from the sealed index policy"
+        ) from error
+
+    seal = _one(
+        connector,
+        "SELECT policy_id FROM catalog_discovery_seals WHERE revision = %s LIMIT 2",
+        (revision,),
+        detail="active discovery seal",
+    )
+    assert seal is not None
+    if _as_int(seal[0], field="active discovery policy", positive=True) != (
+        SEARCH_POLICY_ID
+    ):
+        raise CatalogSemanticValidationError(
+            "active discovery seal uses an unexpected search policy"
+        )
+
+    missing_document = connector.fetch_all(
+        "SELECT publication.publication_key "
+        "FROM catalog_publications AS publication "
+        "LEFT JOIN catalog_search_documents AS document "
+        "ON document.revision = publication.revision "
+        "AND document.publication_key = publication.publication_key "
+        "WHERE publication.revision = %s AND document.publication_key IS NULL "
+        "LIMIT 1",
+        (revision,),
+    )
+    extra_document = connector.fetch_all(
+        "SELECT document.publication_key "
+        "FROM catalog_search_documents AS document "
+        "LEFT JOIN catalog_publications AS publication "
+        "ON publication.revision = document.revision "
+        "AND publication.publication_key = document.publication_key "
+        "WHERE document.revision = %s AND publication.publication_key IS NULL "
+        "LIMIT 1",
+        (revision,),
+    )
+    if missing_document or extra_document:
+        raise CatalogSemanticValidationError(
+            "active search documents do not exactly cover current publications"
+        )
+
+    expected = sqlite3.connect("")
+    try:
+        expected.executescript("""
+            PRAGMA temp_store = FILE;
+            CREATE TABLE expected_postings (
+                publication_key BLOB NOT NULL,
+                value_sha256 BLOB NOT NULL,
+                PRIMARY KEY (publication_key, value_sha256)
+            ) WITHOUT ROWID;
+            CREATE TABLE validated_lexemes (
+                value_sha256 BLOB PRIMARY KEY
+            ) WITHOUT ROWID;
+            CREATE TABLE expected_documents (
+                publication_key BLOB PRIMARY KEY,
+                row_count INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE expected_languages (
+                language_sha256 BLOB PRIMARY KEY,
+                occurrence_count INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE expected_subjects (
+                tag_id INTEGER PRIMARY KEY,
+                occurrence_count INTEGER NOT NULL
+            );
+            CREATE TABLE expected_contributors (
+                contributor_name_sha256 BLOB NOT NULL,
+                role BLOB NOT NULL,
+                occurrence_count INTEGER NOT NULL,
+                PRIMARY KEY (contributor_name_sha256, role)
+            ) WITHOUT ROWID;
+            """)
+        after_publication = b""
+        publication_count = 0
+        while True:
+            publications = connector.fetch_all(
+                "SELECT publication.publication_key, publication.language_sha256, "
+                "title.source_title_sha256, title.source_gallery_name, "
+                "display.title_sha256 "
+                "FROM catalog_publications AS publication "
+                "JOIN catalog_publication_titles AS title "
+                "ON title.revision = publication.revision "
+                "AND title.publication_key = publication.publication_key "
+                "JOIN catalog_display_title_choices AS display "
+                "ON display.display_title_policy_id = %s "
+                "AND display.source_title_sha256 = title.source_title_sha256 "
+                "AND display.source_gallery_name = title.source_gallery_name "
+                "WHERE publication.revision = %s "
+                "AND publication.publication_key > %s "
+                "ORDER BY publication.publication_key LIMIT %s",
+                (
+                    display_title_policy_id,
+                    revision,
+                    after_publication,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            if not publications:
+                break
+            for publication in publications:
+                if len(publication) != 5:
+                    raise CatalogSemanticValidationError(
+                        "active search source publication is malformed"
+                    )
+                publication_key = _as_bytes(
+                    publication[0], field="active search source publication_key"
+                )
+                language_sha256 = _as_bytes(
+                    publication[1], field="active search source language digest"
+                )
+                source_title_sha256 = _as_bytes(
+                    publication[2], field="active search source title digest"
+                )
+                source_gallery_name = _as_bytes(
+                    publication[3], field="active search source gallery name"
+                )
+                display_title_sha256 = _as_bytes(
+                    publication[4], field="active search display title digest"
+                )
+                try:
+                    require_digest32(
+                        publication_key,
+                        field="active search source publication_key",
+                    )
+                    require_digest32(
+                        language_sha256,
+                        field="active search source language digest",
+                    )
+                    require_digest32(
+                        source_title_sha256,
+                        field="active search source title digest",
+                    )
+                    require_digest32(
+                        display_title_sha256,
+                        field="active search display title digest",
+                    )
+                    if not 1 <= len(source_gallery_name) <= 255:
+                        raise ValueError("source gallery name is outside 1..255 bytes")
+                    source_gallery_name.decode("utf-8", errors="strict")
+                except (TypeError, ValueError, UnicodeError) as error:
+                    raise CatalogSemanticValidationError(
+                        "active search source publication violates bounded domains"
+                    ) from error
+                _validate_one_publication_search_projection(
+                    connector,
+                    expected,
+                    revision=revision,
+                    publication_key=publication_key,
+                    language_sha256=language_sha256,
+                    source_title_sha256=source_title_sha256,
+                    display_title_sha256=display_title_sha256,
+                    source_gallery_name=source_gallery_name,
+                )
+                publication_count += 1
+                if publication_count > (1 << 63) - 1:
+                    raise CatalogSemanticValidationError(
+                        "active search source count exceeds signed-int63"
+                    )
+                after_publication = publication_key
+        if publication_count != expected_publication_count:
+            raise CatalogSemanticValidationError(
+                "active search source count differs from catalog revision"
+            )
+        _validate_language_facet_order(connector, expected, revision=revision)
+        _validate_subject_facet_order(connector, expected, revision=revision)
+        _validate_contributor_facet_order(connector, expected, revision=revision)
+    finally:
+        expected.close()
+
+    orphan_posting = connector.fetch_all(
+        "SELECT posting.publication_key "
+        "FROM catalog_search_postings AS posting "
+        "LEFT JOIN catalog_search_documents AS document "
+        "ON document.revision = posting.revision "
+        "AND document.publication_key = posting.publication_key "
+        "LEFT JOIN catalog_search_lexemes AS lexeme "
+        "ON lexeme.value_sha256 = posting.value_sha256 "
+        "WHERE posting.revision = %s "
+        "AND (document.publication_key IS NULL OR lexeme.value_sha256 IS NULL) "
+        "LIMIT 1",
+        (revision,),
+    )
+    if orphan_posting:
+        raise CatalogSemanticValidationError(
+            "active search posting lacks document or lexeme authority"
+        )
+
+
+def _prepared_storage_objects(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+) -> dict[bytes, StorageObjectDescriptor]:
+    rows = connector.fetch_all(
+        "SELECT prepared.resource_kind, prepared.storage_object_key_sha256, "
+        "prepared.storage_generation, prepared.protection_token, prepared.state, "
+        "binding.storage_object_sha256, stored.storage_object_sha256, "
+        "stored.size_bytes, stored.modified_at, blob.size_bytes "
+        "FROM catalog_prepared_artifacts AS prepared "
+        "LEFT JOIN catalog_prepared_resource_blob AS binding "
+        "ON binding.candidate_id = prepared.candidate_id "
+        "AND binding.publication_key = prepared.publication_key "
+        "AND binding.resource_kind = prepared.resource_kind "
+        "LEFT JOIN catalog_prepared_storage_objects AS stored "
+        "ON stored.candidate_id = prepared.candidate_id "
+        "AND stored.publication_key = prepared.publication_key "
+        "AND stored.resource_kind = prepared.resource_kind "
+        "LEFT JOIN catalog_artifact_blobs AS blob "
+        "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+        "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s "
+        "ORDER BY prepared.resource_kind LIMIT 3",
+        (candidate_id, publication_key),
+    )
+    resources: dict[bytes, StorageObjectDescriptor] = {}
+    for row in rows:
+        if len(row) != 10 or any(value is None for value in row):
+            raise CatalogSemanticValidationError(
+                "prepared resource lacks its complete storage/blob authority"
+            )
+        kind = _as_bytes(row[0], field="prepared resource_kind")
+        if kind not in {b"acquisition", b"thumbnail"} or kind in resources:
+            raise CatalogSemanticValidationError(
+                "prepared resource has an unknown or duplicate resource kind"
+            )
+        key_digest = _as_bytes(row[1], field="prepared storage key digest")
+        generation = _as_int(row[2], field="prepared storage generation")
+        token = _as_bytes(row[3], field="prepared protection token")
+        if row[4] != "COMMITTED":
+            raise CatalogSemanticValidationError(
+                "published candidate contains a non-COMMITTED prepared resource"
+            )
+        binding_digest = _as_bytes(row[5], field="prepared resource blob digest")
+        stored_digest = _as_bytes(row[6], field="prepared storage object digest")
+        try:
+            require_digest32(key_digest, field="prepared storage key digest")
+            require_digest32(token, field="prepared protection token")
+            require_digest32(binding_digest, field="prepared resource blob digest")
+            require_digest32(stored_digest, field="prepared storage object digest")
+            if binding_digest != stored_digest:
+                raise CatalogSemanticValidationError(
+                    "prepared storage object differs from its pre-protection binding"
+                )
+            expected_token = identity.encode_artifact_protection_token(
+                candidate_id,
+                publication_key,
+                kind.decode("ascii"),
+                key_digest,
+                generation,
+            )
+            if token != expected_token:
+                raise CatalogSemanticValidationError(
+                    "prepared protection token disagrees with durable resource facts"
+                )
+            size_bytes = _as_int(
+                row[7], field="prepared storage object size", positive=True
+            )
+            if (
+                _as_int(row[9], field="prepared resource blob size", positive=True)
+                != size_bytes
+            ):
+                raise CatalogSemanticValidationError(
+                    "prepared storage object size differs from its verified blob"
+                )
+            resources[kind] = StorageObjectDescriptor(
+                key=_catalog_storage_key(connector, key_digest),
+                size_bytes=size_bytes,
+                sha256=stored_digest.hex(),
+                modified_at=_catalog_datetime(
+                    row[8], field="prepared storage object modified_at"
+                ),
+            )
+        except (TypeError, ValueError, UnicodeError) as error:
+            if isinstance(error, CatalogSemanticValidationError):
+                raise
+            raise CatalogSemanticValidationError(
+                "prepared resource violates its public bounded domain"
+            ) from error
+    return resources
+
+
+def _validate_prepared_resource_families(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+    expected_publication_count: int,
+) -> None:
+    orphan = connector.fetch_all(
+        "SELECT prepared.publication_key "
+        "FROM catalog_prepared_artifacts AS prepared "
+        "LEFT JOIN catalog_prepared_artifact_descriptors AS descriptor "
+        "ON descriptor.candidate_id = prepared.candidate_id "
+        "AND descriptor.publication_key = prepared.publication_key "
+        "WHERE prepared.candidate_id = %s "
+        "AND descriptor.publication_key IS NULL LIMIT 1",
+        (candidate_id,),
+    )
+    if orphan:
+        raise CatalogSemanticValidationError(
+            "prepared resource lacks its publication descriptor"
+        )
+
+    after = b""
+    publication_count = 0
+    while True:
+        rows = connector.fetch_all(
+            "SELECT descriptor.publication_key, identity_row.gid, "
+            "descriptor.artifact_sha256, descriptor.artifact_name, "
+            "descriptor.media_type, descriptor.page_count, blob.size_bytes "
+            "FROM catalog_prepared_artifact_descriptors AS descriptor "
+            "LEFT JOIN catalog_publication_identities AS identity_row "
+            "ON identity_row.publication_key = descriptor.publication_key "
+            "LEFT JOIN catalog_artifact_blobs AS blob "
+            "ON blob.artifact_sha256 = descriptor.artifact_sha256 "
+            "WHERE descriptor.candidate_id = %s "
+            "AND descriptor.publication_key > %s "
+            "ORDER BY descriptor.publication_key LIMIT %s",
+            (candidate_id, after, _CATALOG_RESOURCE_PAGE_LIMIT),
+        )
+        if not rows:
+            break
+        for row in rows:
+            if len(row) != 7 or any(value is None for value in row):
+                raise CatalogSemanticValidationError(
+                    "prepared artifact lacks its complete identity/blob authority"
+                )
+            publication_key = _as_bytes(
+                row[0], field="prepared artifact publication_key"
+            )
+            try:
+                require_digest32(
+                    publication_key, field="prepared artifact publication_key"
+                )
+                gid = _as_int(row[1], field="prepared artifact gid", positive=True)
+                if identity.publication_key(gid) != publication_key:
+                    raise CatalogSemanticValidationError(
+                        "prepared artifact publication key disagrees with its GID"
+                    )
+                artifact_digest = _as_bytes(row[2], field="prepared artifact digest")
+                require_digest32(artifact_digest, field="prepared artifact digest")
+                artifact_name = _as_bytes(
+                    row[3], field="prepared artifact name"
+                ).decode("utf-8", errors="strict")
+                media_type = _as_bytes(
+                    row[4], field="prepared artifact media_type"
+                ).decode("ascii", errors="strict")
+                page_count = _as_int(row[5], field="prepared artifact page_count")
+                if page_count > 4096:
+                    raise CatalogSemanticValidationError(
+                        "prepared artifact exceeds the generic page-count bound"
+                    )
+                artifact_size = _as_int(
+                    row[6], field="prepared artifact blob size", positive=True
+                )
+                resources = _prepared_storage_objects(
+                    connector,
+                    candidate_id=candidate_id,
+                    publication_key=publication_key,
+                )
+                expected_kinds = (
+                    {b"acquisition", b"thumbnail"} if page_count else {b"acquisition"}
+                )
+                if set(resources) != expected_kinds:
+                    raise CatalogSemanticValidationError(
+                        "prepared artifact resource roles are incomplete or excessive"
+                    )
+                acquisition = resources[b"acquisition"]
+                if (
+                    acquisition.sha256 != artifact_digest.hex()
+                    or acquisition.size_bytes != artifact_size
+                ):
+                    raise CatalogSemanticValidationError(
+                        "prepared acquisition differs from artifact byte authority"
+                    )
+                CatalogArtifact(
+                    artifact_id=identity.artifact_id(gid, artifact_digest).decode(
+                        "ascii"
+                    ),
+                    name=artifact_name,
+                    storage_object=acquisition,
+                    media_type=media_type,
+                )
+            except (TypeError, ValueError, UnicodeError) as error:
+                if isinstance(error, CatalogSemanticValidationError):
+                    raise
+                raise CatalogSemanticValidationError(
+                    "prepared artifact violates its public bounded domain"
+                ) from error
+
+            page_rows = connector.fetch_all(
+                "SELECT resource_kind, page_index, extent_offset, extent_length, "
+                "media_type, image_sha256, width, height "
+                "FROM catalog_prepared_pages WHERE candidate_id = %s "
+                "AND publication_key = %s ORDER BY page_index LIMIT 4097",
+                (candidate_id, publication_key),
+            )
+            if len(page_rows) != page_count:
+                raise CatalogSemanticValidationError(
+                    "prepared page coverage differs from artifact page_count"
+                )
+            for page_index, page_row in enumerate(page_rows):
+                _validate_catalog_image_row(
+                    page_row,
+                    storage_object=acquisition,
+                    expected_kind=b"acquisition",
+                    expected_index=page_index,
+                    detail="prepared page",
+                )
+
+            thumbnail_rows = connector.fetch_all(
+                "SELECT resource_kind, extent_offset, extent_length, media_type, "
+                "image_sha256, width, height FROM catalog_prepared_thumbnails "
+                "WHERE candidate_id = %s AND publication_key = %s LIMIT 2",
+                (candidate_id, publication_key),
+            )
+            if len(thumbnail_rows) != (1 if page_count else 0):
+                raise CatalogSemanticValidationError(
+                    "prepared thumbnail totality differs from artifact page_count"
+                )
+            if thumbnail_rows:
+                thumbnail_object = resources[b"thumbnail"]
+                thumbnail = _validate_catalog_image_row(
+                    thumbnail_rows[0],
+                    storage_object=thumbnail_object,
+                    expected_kind=b"thumbnail",
+                    expected_index=None,
+                    detail="prepared thumbnail",
+                )
+                if (
+                    thumbnail.extent.offset != 0
+                    or thumbnail.extent.length != thumbnail_object.size_bytes
+                    or thumbnail.sha256 != thumbnail_object.sha256
+                ):
+                    raise CatalogSemanticValidationError(
+                        "prepared thumbnail is not its complete sealed object"
+                    )
+            publication_count += 1
+            if publication_count > (1 << 63) - 1:
+                raise CatalogSemanticValidationError(
+                    "prepared artifact count exceeds signed-int63"
+                )
+        after = _as_bytes(rows[-1][0], field="prepared artifact keyset cursor")
+    if publication_count != expected_publication_count:
+        raise CatalogSemanticValidationError(
+            "prepared artifact coverage differs from its terminal publication count"
+        )
+
+
 def _active_publication_contexts(
     connector: SQLConnector,
 ) -> tuple[_PublicationContext, ...]:
@@ -2818,7 +4438,7 @@ def _active_publication_contexts(
         revision_row = _one(
             connector,
             """
-            SELECT publication_count
+            SELECT publication_count, artifact_count
             FROM catalog_revisions
             WHERE revision = %s
             LIMIT 2
@@ -2830,9 +4450,21 @@ def _active_publication_contexts(
         publication_count = _as_int(
             revision_row[0], field="catalog_revision.publication_count"
         )
+        artifact_count = _as_int(
+            revision_row[1], field="catalog_revision.artifact_count"
+        )
+        if artifact_count not in {0, publication_count}:
+            raise CatalogSemanticValidationError(
+                "catalog revision artifact_count is neither zero nor publication_count"
+            )
         _validate_catalog_occurrence_storage(
             connector,
             revision=revision,
+        )
+        _validate_active_catalog_resources(
+            connector,
+            revision=revision,
+            expected_artifact_count=artifact_count,
         )
         receipt_row = _one(
             connector,
@@ -3023,6 +4655,11 @@ def _active_publication_contexts(
             raise CatalogSemanticValidationError(
                 "terminal prepared-artifact count differs from CREATE plus REBUILD"
             )
+        _validate_prepared_resource_families(
+            connector,
+            candidate_id=candidate_id,
+            expected_publication_count=prepared_count,
+        )
         if artifact_input_count != create_count + rebuild_count + unchanged_count:
             raise CatalogSemanticValidationError(
                 "terminal artifact-input count differs from CREATE plus REBUILD "
@@ -3076,19 +4713,10 @@ def _active_publication_contexts(
             detail="permanent artifact finalization checkpoint",
         )
         assert final_checkpoint is not None
-        finalized_count = _as_int(
-            final_checkpoint[0], field="permanent finalization processed_count"
-        )
-        expected_final_state = "COMPLETE"
-        if (
-            final_checkpoint[1] != expected_final_state
-            or finalized_count > prepared_count
-            or (
-                expected_final_state == "COMPLETE" and finalized_count != prepared_count
-            )
-        ):
+        _as_int(final_checkpoint[0], field="permanent finalization processed_count")
+        if final_checkpoint[1] != "COMPLETE":
             raise CatalogSemanticValidationError(
-                "permanent finalization checkpoint disagrees with prepared receipt count"
+                "published commit lacks a COMPLETE resource finalization checkpoint"
             )
         _validate_analysis_seal(connector, analysis_id)
         _validate_publication_candidate_source(
@@ -3525,55 +5153,38 @@ def _validate_identity_codec_vectors() -> None:
 
 
 def _validate_artifact_codec_vectors() -> None:
-    if identity.artifact_policy_digest(1, 2048, bytes((3,)) * 32).hex() != (
-        "055021f55a25bb338b14aa4423b3fee9f8f87ff9ea442e4283ae89db88f47a60"
-    ):
+    if identity.artifact_policy_digest(
+        2, b"fixture-adapter", bytes((3,)) * 32
+    ).hex() != ("7b7f57411c129ea4532155aeca464d45b5c79fc71122c6ceda6fb4cb8e6c57c4"):
         raise CatalogSemanticValidationError("artifact policy codec drifted")
-    producer = identity.artifact_producer_fingerprint_sha256(
-        b"writer", b"cp314", b"pillow", b"libjpeg", b"zlib"
+    storage_key = (
+        "catalog-fixture-v2",
+        ("acquisitions", "aa", "b", "opaque.bin"),
     )
-    if producer.hex() != (
-        "7c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
-    ):
-        raise CatalogSemanticValidationError("artifact producer codec drifted")
-    if identity.artifact_name(7) != b"h2h-7.cbz":
-        raise CatalogSemanticValidationError("artifact name codec drifted")
-    storage_key_components = identity.artifact_storage_key_components(7)
-    if storage_key_components != (
-        "hash-v1",
-        "bd",
-        "2",
-        "h2h-7.cbz",
-    ) or identity.artifact_storage_key_digest(storage_key_components).hex() != (
-        "1b3415259ae661635a171998d34955b9ddc083c740287a5025387e3d9136a2b7"
+    if identity.artifact_storage_key_digest(*storage_key).hex() != (
+        "d5bd0ef1e33e58ce9af8b1cd52dad5083146e27bc404a2d99bc8c9561551b29b"
     ):
         raise CatalogSemanticValidationError("artifact storage-key codec drifted")
     protection = identity.encode_artifact_protection_token(
-        1,
         bytes((0x11,)) * 16,
         bytes((0x22,)) * 32,
-        bytes((0x33,)) * 32,
-        bytes((0x44,)) * 32,
-        7,
+        "acquisition",
+        identity.artifact_storage_key_digest(*storage_key),
         9,
     )
     if (
-        len(protection) != 184
-        or identity.decode_artifact_protection_token(protection).receipt_id.hex()
-        != "be24a65b2ded7965b31c3c317bc61cbf"
+        len(protection) != 32
+        or protection.hex()
+        != ("ee626b6b4d714d41b4507f4fb4fdb9b65dd95957a42d6907a76af8c54fbc0c8b")
+        or identity.decode_artifact_protection_token(protection) != protection
     ):
         raise CatalogSemanticValidationError("artifact protection codec drifted")
     if identity.artifact_semantics_digest(
         *(bytes((value,)) * 32 for value in range(1, 7))
     ).hex() != ("24e1140357d6956ded50b48db8ee90171c7eff0b1179c4cf3636cfaf3dda2047"):
         raise CatalogSemanticValidationError("artifact six-component codec drifted")
-    zip_comment = identity.encode_zip_comment(bytes((1,)) * 32, bytes((3,)) * 32)
-    if sha256(zip_comment).hexdigest() != (
-        "3acf99d73b12b308c807b543d62d43941cf8a530b0fadfc915bf735d614b59d0"
-    ):
-        raise CatalogSemanticValidationError("artifact ZIP-comment envelope drifted")
     member_plan = bytes.fromhex(
-        "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e000000000100000000000000020000000000000000000000000f67616c6c657279696e666f2e747874000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000000007b0000010000001e303030303030303030303030303030305f5f6d657461646174612e7478740000000000000000010000000009494d4147452e474946fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0000000000000000001010001"
+        "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e0000000002000000000000000200000000000000000000000f67616c6c657279696e666f2e74787401010101010101010101010101010101010101010101010101010101010101010000000000000007000000000000000002000000073030312e6a70670202020202020202020202020202020202020202020202020202020202020202000000000000000901"
     )
     entries = identity.decode_artifact_member_plan(member_plan)
     if identity.encode_artifact_member_plan(entries) != member_plan:
@@ -3726,6 +5337,64 @@ def check_publication_atomicity_v1(connector: SQLConnector) -> None:
     _validate_exact_registries(connector)
     _validate_publication_generation_history(connector)
     _active_publication_contexts(connector)
+
+
+def check_discovery_exactness_v1(connector: SQLConnector) -> None:
+    """Recompute the current sealed search and facet projection exactly."""
+
+    _validate_exact_registries(connector)
+    rows = connector.fetch_all("""
+        SELECT registry.channel, head.revision,
+               committed.display_title_policy_id
+        FROM catalog_channel_registry AS registry
+        LEFT JOIN catalog_publication_commit_heads AS head
+          ON head.channel = registry.channel
+        LEFT JOIN catalog_publication_commits AS committed
+          ON committed.receipt_id = head.receipt_id
+        ORDER BY registry.channel
+        LIMIT 2
+        """)
+    if len(rows) != 1:
+        raise CatalogSemanticValidationError(
+            "discovery head exceeds the channel registry"
+        )
+    channel = _as_bytes(rows[0][0], field="discovery channel")
+    if channel != b"default":
+        raise CatalogSemanticValidationError("discovery uses an unknown channel")
+    if rows[0][1] is None:
+        if rows[0][2] is not None:
+            raise CatalogSemanticValidationError(
+                "discovery title policy exists without a current revision"
+            )
+        return
+    revision = _as_int(rows[0][1], field="discovery revision", positive=True)
+    display_title_policy_id = _as_int(
+        rows[0][2],
+        field="discovery display title policy",
+        positive=True,
+    )
+    revision_row = _one(
+        connector,
+        "SELECT publication_count, artifact_count FROM catalog_revisions "
+        "WHERE revision = %s LIMIT 2",
+        (revision,),
+        detail="active discovery revision",
+    )
+    assert revision_row is not None
+    publication_count = _as_int(
+        revision_row[0], field="active discovery publication_count"
+    )
+    artifact_count = _as_int(revision_row[1], field="active discovery artifact_count")
+    if artifact_count not in {0, publication_count}:
+        raise CatalogSemanticValidationError(
+            "catalog revision artifact_count is neither zero nor publication_count"
+        )
+    _validate_active_discovery_projection(
+        connector,
+        revision=revision,
+        display_title_policy_id=display_title_policy_id,
+        expected_publication_count=publication_count,
+    )
 
 
 def check_state_machines_v1(connector: SQLConnector) -> None:
@@ -3941,6 +5610,7 @@ def builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
             "catalog.published-baseline-prune.v1": check_published_baseline_prune_v1,
             "catalog.artifact-semantics.v1": check_artifact_semantics_v1,
             "catalog.publication-atomicity.v1": check_publication_atomicity_v1,
+            "catalog.discovery-exactness.v1": check_discovery_exactness_v1,
             "catalog.state-machines.v1": check_state_machines_v1,
             "catalog.role-derivation.v1": check_role_derivation_v1,
             "catalog.physical-domains.v1": check_physical_domains_v1,

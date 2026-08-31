@@ -1,9 +1,10 @@
 """Public-safe facades for greenfield vNext administration and applications.
 
 The repository layer deliberately accepts an already-open connector or unit of
-work.  These facades are the small application boundary that owns one fresh
-connection and one bounded transaction per call while exposing only domain
-objects to consumers.
+work.  These facades are the small application boundary that owns bounded
+transactions and exposes only domain objects to consumers.  Catalog reads add
+a second fresh transaction that fences the completed snapshot against the
+current publication head.
 """
 
 from __future__ import annotations
@@ -22,13 +23,19 @@ from typing import TypeVar
 
 from .config_loader import CoreConfig
 from .domain import (
+    DEFAULT_CATALOG_DISCOVERY_QUERY,
     CatalogArtifact,
-    CatalogArtifactCursor,
-    CatalogArtifactPage,
-    CatalogPage,
+    CatalogDiscoveryCursor,
+    CatalogDiscoveryPage,
+    CatalogDiscoveryQuery,
+    CatalogFacetCursor,
+    CatalogFacetKind,
+    CatalogFacetPage,
+    CatalogImageResource,
     CatalogPublication,
-    CatalogRecentArtifactWindow,
+    CatalogPublicationPresentation,
     CatalogRecentOrder,
+    CatalogRecentWindow,
     CatalogRevision,
     DownloadCandidateState,
 )
@@ -36,7 +43,10 @@ from .repository import RepositoryContext
 from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
 from .schema_epoch import SchemaEpochReport
 from .sql_connector import SQLConnector
-from .vnext_catalog_reader_repository import VNextCatalogReaderRepository
+from .vnext_catalog_reader_repository import (
+    VNextCatalogReaderRepository,
+    VNextCatalogReadError,
+)
 from .vnext_download_ingest_repository import (
     DownloadHandoff,
     DownloadIngestRepository,
@@ -82,7 +92,7 @@ class VNextDatabaseAdminFacade:
 
 
 class VNextCatalogFacade:
-    """Open a pinned read transaction for each normalized catalog operation."""
+    """Read one pinned snapshot, then fence it against a fresh current head."""
 
     __slots__ = ("__backend", "__context", "__reader")
 
@@ -102,48 +112,52 @@ class VNextCatalogFacade:
             )
         )
 
-    def list_publications(
+    def discover_publications(
         self,
         *,
-        query: str | None = None,
-        offset: int = 0,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogDiscoveryCursor | None = None,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogPage:
+    ) -> CatalogDiscoveryPage:
         return self.__read(
-            lambda connector: self.__reader.list_publications(
+            lambda connector: self.__reader.discover_publications(
                 connector,
                 query=query,
+                after=after,
                 revision=revision,
-                offset=offset,
                 limit=limit,
             )
         )
 
-    def list_artifact_publications(
+    def list_publication_facets(
         self,
         *,
-        after: CatalogArtifactCursor | None = None,
+        facet: CatalogFacetKind,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogFacetCursor | None = None,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogArtifactPage:
+    ) -> CatalogFacetPage:
         return self.__read(
-            lambda connector: self.__reader.list_artifact_publications(
+            lambda connector: self.__reader.list_publication_facets(
                 connector,
+                facet=facet,
+                query=query,
                 after=after,
                 limit=limit,
                 revision=revision,
             )
         )
 
-    def list_recent_artifact_publications(
+    def list_recent_publications(
         self,
         *,
         order: CatalogRecentOrder,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogRecentArtifactWindow:
+    ) -> CatalogRecentWindow:
         return self.__read(
-            lambda connector: self.__reader.list_recent_artifact_publications(
+            lambda connector: self.__reader.list_recent_publications(
                 connector,
                 order=order,
                 revision=revision,
@@ -160,6 +174,36 @@ class VNextCatalogFacade:
             lambda connector: self.__reader.get_publication(
                 connector,
                 publication_id,
+                revision=revision,
+            )
+        )
+
+    def get_publication_presentation(
+        self,
+        publication_id: str,
+        *,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogPublicationPresentation | None:
+        return self.__read(
+            lambda connector: self.__reader.get_publication_presentation(
+                connector,
+                publication_id,
+                revision=revision,
+            )
+        )
+
+    def get_publication_page(
+        self,
+        publication_id: str,
+        page_index: int,
+        *,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogImageResource | None:
+        return self.__read(
+            lambda connector: self.__reader.get_publication_page(
+                connector,
+                publication_id,
+                page_index,
                 revision=revision,
             )
         )
@@ -195,7 +239,16 @@ class VNextCatalogFacade:
     def __read(self, operation: Callable[[SQLConnector], _ResultT]) -> _ResultT:
         with self.__context.SQLConnector() as connector:
             with connector.read_transaction():
-                return operation(connector)
+                pinned = self.__reader.get_catalog_revision(connector)
+                result = operation(connector)
+        with self.__context.SQLConnector() as connector:
+            with connector.read_transaction():
+                current = self.__reader.get_catalog_revision(connector)
+                if current != pinned:
+                    raise VNextCatalogReadError(
+                        "catalog publication head advanced during the read"
+                    )
+        return result
 
 
 class VNextDownloadQueueFacade:

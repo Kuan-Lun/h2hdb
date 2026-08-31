@@ -14,24 +14,18 @@ from .vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
 )
-from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
 from .vnext_canonical_value_family import persist_in_memory_canonical_value
 from .vnext_capacity import RECOMPOSED_REGISTRY_MAXIMUM_ROWS
 from .vnext_catalog_registry_repository import (
     AnalysisPolicyRecord,
+    ArtifactAdapterPolicyRecord,
     ArtifactPolicySemanticsRecord,
-    ArtifactStorageCodecRecord,
-    ArtifactZipWriterPolicyRecord,
-    CatalogRegistryConflictError,
-    CatalogRegistryNotReadyError,
     DisplayTitlePolicyRecord,
     ManifestPolicyRecord,
     TitleSortPolicyRecord,
     load_analysis_policy,
+    load_artifact_adapter_policy,
     load_artifact_policy_semantics,
-    load_artifact_producer_fingerprint,
-    load_artifact_storage_codec,
-    load_artifact_zip_writer_policy,
     load_display_title_policy,
     load_manifest_policy,
     load_title_sort_policy,
@@ -73,20 +67,6 @@ class VNextIngestPolicyRepository:
             raise TypeError("policy must be VNextIngestPolicy")
         policy.__post_init__()
         timestamp = require_int63(now, field="ingest policy registration now")
-        _require_bootstrap_policies(work, policy)
-
-        producer = ArtifactPreparationRepository.register_producer(
-            work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
-            now=timestamp,
-            artifact_algorithm_version=policy.artifact_algorithm_version,
-            writer_id=policy.producer.writer_id,
-            python_abi=policy.producer.python_abi,
-            pillow_build=policy.producer.pillow_build,
-            libjpeg_build=policy.producer.libjpeg_build,
-            zlib_build=policy.producer.zlib_build,
-        )
         artifact_semantics_created = _ensure_artifact_policy(
             work,
             ingest_turn=ingest_turn,
@@ -169,7 +149,6 @@ class VNextIngestPolicyRepository:
 
         created = any(
             (
-                not producer.replayed,
                 artifact_semantics_created,
                 artifact_registry_created,
                 manifest_created,
@@ -184,53 +163,13 @@ class VNextIngestPolicyRepository:
             manifest_policy_id=manifest_id,
             analysis_policy_id=analysis_id,
             artifact_policy_sha256=policy.artifact_policy_sha256,
-            producer_fingerprint_sha256=policy.producer_fingerprint_sha256,
+            artifact_policy_fingerprint_sha256=(
+                policy.artifact_policy_fingerprint_sha256
+            ),
             display_title_policy_id=display_id,
             title_sort_policy_id=title_sort_id,
             operational_policy_id=operational_id,
             replayed=not created,
-        )
-
-
-def _require_bootstrap_policies(
-    work: VNextUnitOfWork,
-    policy: VNextIngestPolicy,
-) -> None:
-    try:
-        writer = load_artifact_zip_writer_policy(
-            work.connector,
-            policy.artifact_algorithm_version,
-        )
-        storage = load_artifact_storage_codec(
-            work.connector,
-            policy.storage.storage_codec_version,
-        )
-    except RuntimeError as error:
-        raise VNextIngestPolicyNotReadyError(
-            "required artifact ZIP/storage bootstrap policy is unavailable"
-        ) from error
-    expected_writer = ArtifactZipWriterPolicyRecord(
-        policy.artifact_algorithm_version,
-        policy.zip.zip_codec_version,
-        policy.zip.compression_method,
-        policy.zip.compression_level,
-        policy.zip.dos_date,
-        policy.zip.dos_time,
-        policy.zip.unix_mode,
-        policy.zip.general_purpose_flags,
-        policy.zip.create_system,
-        policy.zip.archive_name_codec_version,
-        policy.zip.artifact_name_codec_version,
-    )
-    expected_storage = ArtifactStorageCodecRecord(
-        policy.storage.storage_codec_version,
-        policy.storage.adapter_id,
-        policy.storage.storage_key_codec_version,
-        policy.storage.protection_token_codec_version,
-    )
-    if writer != expected_writer or storage != expected_storage:
-        raise VNextIngestPolicyConflictError(
-            "natural ZIP/storage facts differ from generated bootstrap authority"
         )
 
 
@@ -242,57 +181,68 @@ def _ensure_artifact_policy(
     now: int,
 ) -> bool:
     digest = policy.artifact_policy_sha256
-    try:
-        registered_producer = load_artifact_producer_fingerprint(
-            work.connector,
-            policy.producer_fingerprint_sha256,
+    fingerprint = policy.artifact_policy_fingerprint_sha256
+    adapter_id = policy.artifact.adapter_id
+    expected_adapter = ArtifactAdapterPolicyRecord(fingerprint, adapter_id)
+    adapter_row = work.connector.fetch_one(
+        "SELECT policy_fingerprint_sha256, adapter_id "
+        "FROM catalog_artifact_adapter_policy "
+        "WHERE policy_fingerprint_sha256 = %s",
+        (fingerprint,),
+    )
+    adapter_created = False
+    if adapter_row:
+        if adapter_row != (fingerprint, adapter_id) or (
+            load_artifact_adapter_policy(work.connector, fingerprint)
+            != expected_adapter
+        ):
+            raise VNextIngestPolicyConflictError(
+                "artifact adapter policy fingerprint collides with different facts"
+            )
+    else:
+        _require_recomposed_registry_slot(
+            work,
+            count_sql="SELECT COUNT(*) FROM catalog_artifact_adapter_policy",
+            registry="artifact adapter policy",
         )
-    except CatalogRegistryNotReadyError as error:
-        raise VNextIngestPolicyNotReadyError(
-            "artifact policy producer registration is unavailable"
-        ) from error
-    except CatalogRegistryConflictError as error:
-        raise VNextIngestPolicyConflictError(
-            "artifact policy producer registration is corrupt"
-        ) from error
-    if registered_producer.artifact_algorithm_version != (
-        policy.artifact_algorithm_version
-    ):
-        raise VNextIngestPolicyConflictError(
-            "artifact policy algorithm differs from its registered producer"
+        work.connector.execute(
+            "INSERT INTO catalog_artifact_adapter_policy "
+            "(policy_fingerprint_sha256, adapter_id) VALUES (%s, %s)",
+            (fingerprint, adapter_id),
         )
+        adapter_created = True
     expected = ArtifactPolicySemanticsRecord(
         digest,
         policy.artifact_algorithm_version,
-        policy.max_image_short_side,
-        policy.producer_fingerprint_sha256,
+        fingerprint,
+        adapter_id,
     )
     expected_joined_row = (
         digest,
         policy.artifact_algorithm_version,
-        policy.max_image_short_side,
-        policy.producer_fingerprint_sha256,
+        fingerprint,
+        adapter_id,
     )
     expected_stored_row = (
         digest,
-        policy.max_image_short_side,
-        policy.producer_fingerprint_sha256,
+        policy.artifact_algorithm_version,
+        fingerprint,
     )
     by_digest = work.connector.fetch_one(
         "SELECT semantics.policy_component_sha256, "
-        "producer.artifact_algorithm_version, "
-        "semantics.max_image_short_side, "
-        "semantics.producer_fingerprint_sha256 "
+        "semantics.artifact_algorithm_version, "
+        "semantics.policy_fingerprint_sha256, adapter.adapter_id "
         "FROM catalog_artifact_policy_semantics AS semantics "
-        "JOIN catalog_artifact_producer_fingerprints AS producer "
-        "ON producer.producer_fingerprint_sha256 = "
-        "semantics.producer_fingerprint_sha256 "
+        "JOIN catalog_artifact_adapter_policy AS adapter "
+        "ON adapter.policy_fingerprint_sha256 = "
+        "semantics.policy_fingerprint_sha256 "
         "WHERE semantics.policy_component_sha256 = %s",
         (digest,),
     )
     by_natural = work.connector.fetch_one(
         "SELECT policy_component_sha256 FROM catalog_artifact_policy_semantics "
-        "WHERE max_image_short_side = %s AND producer_fingerprint_sha256 = %s",
+        "WHERE artifact_algorithm_version = %s "
+        "AND policy_fingerprint_sha256 = %s",
         expected_stored_row[1:],
     )
     if by_digest:
@@ -304,7 +254,7 @@ def _ensure_artifact_policy(
             raise VNextIngestPolicyConflictError(
                 "artifact policy digest collides with different facts"
             )
-        return False
+        return adapter_created
     if by_natural:
         raise VNextIngestPolicyConflictError(
             "artifact policy natural identity maps to another digest"
@@ -321,8 +271,8 @@ def _ensure_artifact_policy(
         digest_domain=identity.ARTIFACT_POLICY_DIGEST_DOMAIN,
         payload=identity.encode_artifact_policy(
             policy.artifact_algorithm_version,
-            policy.max_image_short_side,
-            policy.producer_fingerprint_sha256,
+            adapter_id,
+            fingerprint,
         ),
         now=now,
         retain_claim=False,
@@ -333,8 +283,8 @@ def _ensure_artifact_policy(
         )
     work.connector.execute(
         "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, max_image_short_side, "
-        "producer_fingerprint_sha256) VALUES (%s, %s, %s)",
+        "(policy_component_sha256, artifact_algorithm_version, "
+        "policy_fingerprint_sha256) VALUES (%s, %s, %s)",
         expected_stored_row,
     )
     return True

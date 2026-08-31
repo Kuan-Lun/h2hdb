@@ -281,9 +281,10 @@ def test_recomposed_b1_relations_are_atomic_base_tables() -> None:
     recomposed_tables = {
         "catalog_manifest_policies",
         "catalog_analysis_policies",
-        "catalog_artifact_zip_writer_policies",
-        "catalog_artifact_storage_codecs",
+        "catalog_artifact_adapter_policy",
         "catalog_artifact_policy_semantics",
+        "catalog_search_policies",
+        "catalog_resource_kinds",
         "catalog_title_sort_policy",
         "catalog_display_title_policies",
         "catalog_source_scopes",

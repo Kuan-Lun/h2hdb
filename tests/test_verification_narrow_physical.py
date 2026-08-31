@@ -53,7 +53,7 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
 
     assert report.is_policy_clean
     assert not report.is_fully_narrow
-    assert len(report.relations) == 152
+    assert len(report.relations) == 170
     assert tuple(relation.table for relation in report.violations) == (
         "catalog_analysis_batch_receipt_stored",
         "catalog_analysis_checkpoints",
@@ -63,12 +63,10 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
         "catalog_analysis_stages",
         "catalog_analysis_state_component_seals",
         "catalog_artifact_policy_semantics",
-        "catalog_artifact_producer_fingerprints",
         "catalog_artifact_semantic_inputs",
-        "catalog_artifact_storage_codecs",
-        "catalog_artifact_zip_writer_policies",
         "catalog_artifacts",
         "catalog_build_manifest_core",
+        "catalog_contributor_facet_order",
         "catalog_display_title_policies",
         "catalog_gallery_identities",
         "catalog_gallery_manifests",
@@ -76,8 +74,14 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
         "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_scans",
         "catalog_gallery_observation_stat",
+        "catalog_language_facet_order",
         "catalog_manifest_policies",
+        "catalog_pages",
+        "catalog_prepared_artifact_descriptors",
         "catalog_prepared_artifacts",
+        "catalog_prepared_pages",
+        "catalog_prepared_storage_objects",
+        "catalog_prepared_thumbnails",
         "catalog_publication_batch_receipt_stored",
         "catalog_publication_candidates",
         "catalog_publication_checkpoints",
@@ -87,24 +91,30 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
         "catalog_publication_stages",
         "catalog_publication_storage",
         "catalog_revision_descriptors",
+        "catalog_search_policies",
         "catalog_source_build_descriptor",
         "catalog_source_build_discoveries",
         "catalog_source_revision_descriptors",
         "catalog_source_scopes",
         "catalog_source_snapshot_manifest_identity",
+        "catalog_storage_object_key_identities",
+        "catalog_storage_objects",
+        "catalog_subject_facet_order",
         "catalog_tag_terms",
+        "catalog_thumbnails",
         "catalog_title_sort_policy",
     )
     assert checker.APPROVED_WIDE_BCNF_RELATIONS[
-        "catalog_artifact_producer_fingerprints"
+        "catalog_artifact_policy_semantics"
     ] == (
         "artifact_algorithm_version",
-        "producer_equivalence_class",
-        "writer_id",
-        "python_abi",
-        "pillow_build",
-        "libjpeg_build",
-        "zlib_build",
+        "policy_fingerprint_sha256",
+    )
+    assert checker.APPROVED_WIDE_BCNF_RELATIONS[
+        "catalog_storage_object_key_identities"
+    ] == (
+        "key_codec",
+        "segment_count",
     )
     assert checker.APPROVED_WIDE_BCNF_RELATIONS["catalog_publication_commits"] == (
         "candidate_id",
@@ -126,7 +136,7 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
     ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=152, narrow=113, wide=39" in rendered
+    assert "relations=170, narrow=122, wide=48" in rendered
     assert "Approved wide relations (complete):" in rendered
     assert "catalog_gallery_identities" in rendered
 

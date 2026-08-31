@@ -46,7 +46,7 @@ def test_data_bootstrap_cells_are_exact_typed_scalars() -> None:
         document = tomllib.load(stream)
 
     seeds = document["bootstrap_seed"]
-    assert len(seeds) == 65
+    assert len(seeds) == 67
     for seed in seeds:
         assert seed["version"] == 1
         assert seed["value"]
@@ -74,7 +74,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 86
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 92
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -406,8 +406,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 198
-    assert len(physical_spec.implemented_relations) == 185
+    assert len(logical.relations) == 216
+    assert len(physical_spec.implemented_relations) == 203
     assert set(physical_spec.inline_projections) == {
         "canonical_value_page",
         "canonical_value_page_descriptor",
@@ -578,7 +578,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     expected_shapes = {
         "metadata_fingerprint": "BINARY(40)",
         "cursor": "VARBINARY(2048)",
-        "protection_token": "BINARY(184)",
+        "protection_token": "BINARY(32)",
     }
     direct_occurrences: dict[str, int] = {name: 0 for name in direct_payloads}
     for relation in physical_spec.implemented_relations:
@@ -754,8 +754,8 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
     assert artifact_policy is not None
     assert artifact_policy.unique_keys == (
         (
-            "max_image_short_side",
-            "producer_fingerprint_sha256",
+            "artifact_algorithm_version",
+            "policy_fingerprint_sha256",
         ),
     )
     semantic_input = physical_spec.relation("artifact_semantic_input")
@@ -771,14 +771,12 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
         ),
     )
     assert refinement.maximum_mariadb_index_width(physical_spec) == (
-        640,
-        "artifact_producer_fingerprint",
+        592,
+        "publication_batch_receipt_stored",
         (
-            "writer_id",
-            "python_abi",
-            "pillow_build",
-            "libjpeg_build",
-            "zlib_build",
+            "candidate_id",
+            "stage",
+            "batch_key",
         ),
     )
 
@@ -1209,7 +1207,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 185
+    assert len(report.checked_relations) == 203
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -1642,40 +1640,6 @@ def test_secondary_sealed_projection_metadata_drift_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="canonical page read shapes"):
         refinement._validate_physical_schema(broken, logical)
-
-
-def test_recomposed_artifact_producer_table_is_atomic_and_uniquely_keyed() -> None:
-    logical = refinement.load_logical_schema(CATALOG)
-    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    digest = b"d" * 32
-    producer_fields = (b"writer", b"python", b"pillow", b"jpeg", b"zlib")
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_artifact_producer_fingerprints "
-                "(producer_fingerprint_sha256, artifact_algorithm_version) "
-                "VALUES (?, ?)",
-                (digest, 1),
-            )
-        connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprints "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (digest, 1, b"equivalent", *producer_fields),
-        )
-        assert connection.execute(
-            "SELECT * FROM catalog_artifact_producer_fingerprints"
-        ).fetchone() == (digest, 1, b"equivalent", *producer_fields)
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_artifact_producer_fingerprints "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (b"e" * 32, 1, b"equivalent", *producer_fields),
-            )
-    finally:
-        connection.close()
 
 
 def test_generation_projections_derive_one_commit_mapping_without_extra_objects() -> (
@@ -2325,7 +2289,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
     assert "octet_length(metadata_fingerprint) = 40" in ddl
     assert "`cursor` VARBINARY(2048) NOT NULL" in ddl
     assert "octet_length(`cursor`) <= 2048" in ddl
-    assert "octet_length(protection_token) = 184" in ddl
+    assert "octet_length(protection_token) = 32" in ddl
     assert "`summary_sha256` BINARY(32) NOT NULL" in ddl
     assert "`language_sha256` BINARY(32) NOT NULL" in ddl
     assert "`artifact_storage_key_sha256` BINARY(32) NOT NULL" not in ddl
@@ -2419,7 +2383,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
             assert f"CONSTRAINT `{expected_name}` UNIQUE" in ddl
     with pytest.raises(ValueError, match="portable 63-byte identifier domain"):
         refinement._validate_identifier("x" * 64, "test identifier")
-    assert refinement.maximum_mariadb_index_width(physical_spec)[0] == 640
+    assert refinement.maximum_mariadb_index_width(physical_spec)[0] == 592
     idempotent = refinement.render_mariadb_ddl(
         physical_spec,
         idempotent=True,

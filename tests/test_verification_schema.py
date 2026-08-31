@@ -220,7 +220,8 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         for target in contract.retention_targets
         if target.target == "CANONICAL_VALUE"
     )
-    assert canonical_retention.child_phases[0][:2] == (
+    assert canonical_retention.child_phases[0][:3] == (
+        "search_lexeme",
         "display_title_choice",
         "title_sort",
     )
@@ -370,45 +371,55 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "owner_component_sha256",
         "policy_component_sha256",
     )
-    byte_producer = contract.artifact_byte_producer_contract
+    adapter_policy = contract.artifact_adapter_policy_contract
     member_plan = contract.artifact_member_plan_contract
-    assert byte_producer is not None
+    assert adapter_policy is not None
     assert member_plan is not None
-    assert byte_producer.independent_parameters == (
-        "max_image_short_side",
-        "producer_fingerprint_sha256",
+    assert adapter_policy.independent_parameters == (
+        "adapter_id",
+        "policy_fingerprint_sha256",
     )
-    assert "DEFLATE compression level 9" in byte_producer.algorithm_bundle
-    assert any(
-        "exact producer fingerprint" in value
-        for value in byte_producer.algorithm_bundle
+    assert "core-owned neutral plan protocol version" in (
+        adapter_policy.runtime_obligation
     )
-    assert byte_producer.producer_equivalence_class_framing == (
-        "ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0') || "
-        "raw32(producer_fingerprint_sha256)"
+    assert "complete policy fingerprint" in adapter_policy.runtime_obligation
+    assert "never inspect or persist concrete rendering, container, compression" in (
+        adapter_policy.runtime_obligation
     )
-    assert byte_producer.producer_equivalence_class_golden_hex == (
-        "68326864622d766e6578742d61727469666163742d70726f64756365722d657861"
-        "63742d6571756976616c656e63652d7631007c12521923b06e72b031807d2d2d82"
-        "b5bee38afafd408595b5d29ed31cfe892c"
-    )
-    artifact_policy = relation_by_name[byte_producer.policy_relation]
+    artifact_policy = relation_by_name[adapter_policy.policy_relation]
     assert artifact_policy.attributes == (
         "policy_component_sha256",
-        "max_image_short_side",
-        "producer_fingerprint_sha256",
+        "artifact_algorithm_version",
+        "policy_fingerprint_sha256",
     )
     assert set(artifact_policy.declared_keys) == {
         frozenset({"policy_component_sha256"}),
-        frozenset({"max_image_short_side", "producer_fingerprint_sha256"}),
+        frozenset({"artifact_algorithm_version", "policy_fingerprint_sha256"}),
     }
-    producer_relation = relation_by_name[byte_producer.producer_relation]
-    assert byte_producer.algorithm_attribute in producer_relation.attributes
-    assert byte_producer.algorithm_attribute not in artifact_policy.attributes
+    adapter_relation = relation_by_name[adapter_policy.adapter_relation]
+    assert adapter_relation.attributes == (
+        "policy_fingerprint_sha256",
+        "adapter_id",
+    )
+    assert adapter_policy.algorithm_attribute in artifact_policy.attributes
     assert member_plan.component_kind == "member_plan"
-    assert "excluded_flag" in member_plan.entry_fields
-    assert "source_size_bytes" in member_plan.entry_fields
-    assert "ZIP comment envelope" in member_plan.ready_obligation
+    assert member_plan.plan_version == 2
+    assert member_plan.entry_fields == (
+        "source_position",
+        "exact_source_name_bytes",
+        "source_file_sha256",
+        "source_size_bytes",
+        "source_role",
+    )
+    assert "OTHER and excluded PAGE observations remain covered" in (
+        member_plan.runtime_obligation
+    )
+    assert "no archive name, transform, image, suffix, or container semantics" in (
+        member_plan.runtime_obligation
+    )
+    assert "unique METADATA plus all and only nonexcluded PAGE" in (
+        member_plan.ready_obligation
+    )
 
     assert contract.scope == "catalog_data_plane"
     assert contract.excluded_operational_components
@@ -497,7 +508,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.selected_catalog_family_count,
         plan.selected_catalog_physical_relations_before,
         plan.selected_catalog_physical_relations_after,
-    ) == (30, 190, 36)
+    ) == (30, 190, 54)
     assert (
         plan.catalog_physical_table_count_before,
         plan.catalog_physical_table_count_after,
@@ -505,7 +516,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 152, 75, 66, 381, 218)
+    ) == (306, 170, 75, 66, 381, 236)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -513,8 +524,10 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         "analysis_policy",
         "title_sort_policy",
         "display_title_policy",
-        "artifact_producer_fingerprint",
+        "artifact_adapter_policy",
         "artifact_policy_semantics",
+        "search_policy",
+        "catalog_resource_kind",
     )
     assert (
         plan.bounded_registry_maximum_rows == RECOMPOSED_REGISTRY_MAXIMUM_ROWS == 50_000
@@ -638,7 +651,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
     assert (
         plan.cleanup_job_conservative_peak_bytes
         == (plan.cleanup_job_peak_rows * plan.cleanup_job_accounted_bytes_per_row)
-        == 46_137_344
+        == 48_234_496
     )
     assert (
         plan.cleanup_cycle_root_conservative_peak_bytes
@@ -688,8 +701,8 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         ),
         (
             "catalog_physical_table_count_after",
-            153,
-            "catalog_physical_table_count_after must be 152",
+            171,
+            "catalog_physical_table_count_after must be 170",
         ),
         (
             "affected_operational_relations",
@@ -765,31 +778,31 @@ def test_vertical_family_rejects_a_redundant_one_member_anchor_wrapper() -> None
         checker.validate_contract(invalid)
 
 
-def test_recomposed_artifact_producer_rejects_a_nonkey_determinant() -> None:
+def test_recomposed_artifact_adapter_rejects_an_undeclared_reverse_identity() -> None:
     contract = checker.load_contract(CATALOG)
-    producer = next(
+    adapter = next(
         relation
         for relation in contract.relations
-        if relation.name == "artifact_producer_fingerprint"
+        if relation.name == "artifact_adapter_policy"
     )
-    invalid_producer = replace(
-        producer,
+    invalid_adapter = replace(
+        adapter,
         functional_dependencies=(
-            *producer.functional_dependencies,
-            _fd({"artifact_algorithm_version"}, {"writer_id"}),
+            *adapter.functional_dependencies,
+            _fd({"adapter_id"}, {"policy_fingerprint_sha256"}),
         ),
     )
     invalid = replace(
         contract,
         relations=tuple(
-            invalid_producer if relation is producer else relation
+            invalid_adapter if relation is adapter else relation
             for relation in contract.relations
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="artifact_producer_fingerprint.*not BCNF",
+        match="artifact_adapter_policy.*omits candidate keys",
     ):
         checker.validate_contract(invalid)
 
@@ -799,19 +812,19 @@ def test_decomposition_projection_fds_match_relation_closed_world() -> None:
     decomposition = next(
         value
         for value in contract.decompositions
-        if value.name == "artifact_policy_and_registered_producer"
+        if value.name == "artifact_policy_and_registered_adapter"
     )
     invalid_decomposition = replace(
         decomposition,
         functional_dependencies=(
             *decomposition.functional_dependencies,
-            _fd({"producer_fingerprint_sha256"}, {"max_image_short_side"}),
+            _fd({"adapter_id"}, {"policy_fingerprint_sha256"}),
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="artifact_policy_semantics.*projection semantic dependency missing",
+        match="artifact_adapter_policy.*projection semantic dependency missing",
     ):
         checker.validate_contract(
             replace(
@@ -956,6 +969,7 @@ def test_catalog_identities_are_bcnf_bases_and_observation_file_family_remains()
         "file_no",
         "file_key",
         "file_sha256",
+        "artifact_role",
     )
     assert relation_by_name["gallery_observation_file_file_no"].declared_keys == (
         frozenset({"gallery_id", "observation_id", "file_key"}),
@@ -1131,7 +1145,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     )
     assert publication_graph & inline_publication_graph == inline_publication_graph
     assert inline_publication_graph.isdisjoint(physical_domains.relations)
-    assert len(physical_domains.relations) == 128
+    assert len(physical_domains.relations) == 146
 
     invalid_domains = replace(
         physical_domains,
@@ -1159,8 +1173,8 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 128" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 106" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 146" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 124" in catalog_lean
     assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
@@ -1513,94 +1527,61 @@ def test_referential_unique_key_cannot_be_declared_as_a_candidate_key() -> None:
         )
 
 
-def test_recomposed_producer_registry_requires_collision_checked_registration() -> None:
+def test_recomposed_adapter_registry_requires_collision_checked_registration() -> None:
     contract = checker.load_contract(CATALOG)
-    producer = contract.artifact_byte_producer_contract
-    assert producer is not None
-    invalid_producer = replace(
-        producer,
-        runtime_obligation=producer.runtime_obligation.replace(
-            "recompute the raw producer fingerprint frame and equivalence codec",
+    adapter = contract.artifact_adapter_policy_contract
+    assert adapter is not None
+    invalid_adapter = replace(
+        adapter,
+        runtime_obligation=adapter.runtime_obligation.replace(
+            "adapter-issued identifier",
             "trust the supplied digest",
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="artifact byte-producer contract runtime obligation is incomplete",
+        match="artifact adapter-policy contract runtime obligation is incomplete",
     ):
         checker.validate_contract(
             replace(
                 contract,
-                artifact_byte_producer_contract=invalid_producer,
+                artifact_adapter_policy_contract=invalid_adapter,
             )
         )
 
 
-def test_producer_equivalence_class_requires_exact_reversible_codec() -> None:
+def test_adapter_policy_and_storage_key_require_exact_neutral_codecs() -> None:
     contract = checker.load_contract(CATALOG)
-    producer = contract.artifact_byte_producer_contract
-    assert producer is not None
-    equivalence_domain = next(
-        domain
-        for domain in contract.byte_domains
-        if domain.attribute == "producer_equivalence_class"
-    )
-    equivalence_relation = next(
-        relation
-        for relation in contract.relations
-        if relation.name == "artifact_producer_fingerprint"
-    )
+    adapter = contract.artifact_adapter_policy_contract
+    storage_key = contract.artifact_storage_key_contract
+    assert adapter is not None
+    assert storage_key is not None
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="producer equivalence-class framing drifted",
+        match="artifact adapter-policy contract framing drifted",
     ):
         checker.validate_contract(
             replace(
                 contract,
-                artifact_byte_producer_contract=replace(
-                    producer,
-                    producer_equivalence_class_framing="caller supplied bytes",
+                artifact_adapter_policy_contract=replace(
+                    adapter,
+                    policy_framing="caller supplied bytes",
                 ),
             )
         )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="byte domain 'producer_equivalence_class' lacks its exact codec",
+        match="artifact storage-key contract is not neutral v2",
     ):
         checker.validate_contract(
             replace(
                 contract,
-                byte_domains=tuple(
-                    (
-                        replace(domain, runtime_obligation="accept bounded bytes")
-                        if domain is equivalence_domain
-                        else domain
-                    )
-                    for domain in contract.byte_domains
-                ),
-            )
-        )
-
-    with pytest.raises(
-        checker.ContractValidationError,
-        match="producer registry keys are incomplete|omits candidate keys",
-    ):
-        checker.validate_contract(
-            replace(
-                contract,
-                relations=tuple(
-                    (
-                        replace(
-                            relation,
-                            declared_keys=(frozenset({"producer_fingerprint_sha256"}),),
-                        )
-                        if relation is equivalence_relation
-                        else relation
-                    )
-                    for relation in contract.relations
+                artifact_storage_key_contract=replace(
+                    storage_key,
+                    framing="caller supplied bytes",
                 ),
             )
         )
@@ -1728,7 +1709,7 @@ def test_high_cardinality_canonical_codecs_require_bounded_streaming_paths() -> 
             replace(
                 member_plan,
                 runtime_obligation=member_plan.runtime_obligation.replace(
-                    "artifact_member_plan_digest_ordered", ""
+                    "unique adapter-issued METADATA observation first", ""
                 ),
             ),
             "artifact member-plan contract runtime construction obligation is incomplete",
@@ -2173,13 +2154,13 @@ def test_unbounded_publication_values_require_canonical_fks(
         checker.validate_contract(invalid)
 
 
-def test_publication_locator_requires_bounded_exact_streaming_codec() -> None:
+def test_publication_storage_key_requires_bounded_exact_streaming_codec() -> None:
     contract = checker.load_contract(CATALOG)
     publication = contract.publication_atomic_contract
     assert publication is not None
     for term in (
         "at most 4096 bytes",
-        "iter_artifact_storage_key_payload",
+        "storage-object-key v2 framing",
         "exact EOF",
     ):
         invalid = replace(
@@ -2612,7 +2593,7 @@ def test_publication_requires_bcnf_contiguous_order_projection() -> None:
         ("metadata_fingerprint", 41),
         ("cursor", 2049),
         ("protection_token", 513),
-        ("producer_equivalence_class", 84),
+        ("artifact_name", 256),
     ),
 )
 def test_direct_payload_bounds_are_closed_world(
@@ -3095,10 +3076,22 @@ def test_candidate_retention_requires_exact_uncommitted_projection_fold() -> Non
             "publication_candidate_projection_seal",
             "publication_batch_receipt_stored",
             "artifact_operation",
+            "search_posting",
             "catalog_publication_storage",
             "catalog_publication_download_time",
+            "prepared_page",
+            "prepared_thumbnail",
+            "catalog_page",
+            "catalog_thumbnail",
         ),
-        ("prepared_artifact", "catalog_contributor"),
+        ("prepared_storage_object", "catalog_storage_object"),
+        ("prepared_resource_blob",),
+        (
+            "prepared_artifact",
+            "prepared_artifact_descriptor",
+            "catalog_contributor",
+            "search_document",
+        ),
         ("artifact_input",),
         ("publication_checkpoint",),
         ("publication_selection_storage", "catalog_publication_order"),
@@ -3334,15 +3327,19 @@ def test_artifact_delta_contract_rejects_wrong_truth_table() -> None:
         checker.validate_contract(invalid)
 
 
-def test_artifact_name_is_normalized_identity_not_delta_state() -> None:
+def test_artifact_presentation_identity_is_adapter_issued_not_delta_state() -> None:
     contract = checker.load_contract(CATALOG)
     delta = contract.artifact_delta_contract
     assert delta is not None
+    assert contract.artifact_name_contract is None
     assert "artifact_semantics_sha256 is exactly equal" in delta.unchanged_rule
-    assert "artifact names are not delta state" in delta.unchanged_rule
-    assert "globally derived from immutable positive GID" in delta.rename_rule
-    assert "absent from artifact input, delta, operation, prepared" in delta.rename_rule
-    assert "never an artifact rename" in delta.rename_rule
+    assert "presentation and storage facts" in delta.unchanged_rule
+    assert "CREATE or REBUILD" in delta.unchanged_rule
+    assert "adapter-issued download names and storage keys" in delta.rebuild_rule
+    assert "never artifact-delta authority" in delta.rebuild_rule
+    assert "bounded adapter-issued leaves" in delta.rename_rule
+    assert "core never derives a name" in delta.rename_rule
+    assert "storage layout from GID" in delta.rename_rule
 
     with pytest.raises(
         checker.ContractValidationError,
@@ -3363,26 +3360,20 @@ def test_artifact_name_is_normalized_identity_not_delta_state() -> None:
     ("contract_attribute", "field", "replacement", "message"),
     (
         (
-            "artifact_name_contract",
-            "golden_name_hex",
-            "6832682d30372e63627a",
-            "artifact name contract drifts",
-        ),
-        (
             "artifact_storage_key_contract",
-            "golden_payload_hex",
-            "00",
-            "artifact storage-key golden is not GID-derived",
+            "key_codec",
+            "layout-derived-v1",
+            "artifact storage-key contract is not neutral v2",
         ),
         (
             "artifact_protection_token_contract",
-            "golden_receipt_id",
-            "00" * 16,
-            "artifact storage-receipt golden does not hash",
+            "exact_bytes",
+            184,
+            "artifact protection-token contract drifts from neutral v2",
         ),
     ),
 )
-def test_artifact_derived_identity_contract_rejects_corrupt_goldens(
+def test_artifact_neutral_identity_contracts_reject_legacy_drift(
     contract_attribute: str,
     field: str,
     replacement: object,
@@ -3502,14 +3493,14 @@ def test_artifact_delta_contract_rejects_incomplete_semantic_input() -> None:
         checker.validate_contract(invalid)
 
 
-def test_artifact_policy_rejects_missing_resize_parameter() -> None:
+def test_artifact_policy_rejects_missing_policy_fingerprint() -> None:
     contract = checker.load_contract(CATALOG)
-    producer = contract.artifact_byte_producer_contract
-    assert producer is not None
+    adapter = contract.artifact_adapter_policy_contract
+    assert adapter is not None
     policy = next(
         relation
         for relation in contract.relations
-        if relation.name == producer.policy_relation
+        if relation.name == adapter.policy_relation
     )
     invalid_policy = replace(
         policy,
@@ -3526,7 +3517,7 @@ def test_artifact_policy_rejects_missing_resize_parameter() -> None:
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="artifact byte-producer contract policy relation has redundant or missing columns",
+        match="artifact adapter-policy contract policy relation has wrong columns",
     ):
         checker.validate_contract(
             replace(
@@ -3539,7 +3530,7 @@ def test_artifact_policy_rejects_missing_resize_parameter() -> None:
         )
 
 
-def test_artifact_member_plan_rejects_exclusion_blind_plan() -> None:
+def test_artifact_member_plan_rejects_role_blind_plan() -> None:
     contract = checker.load_contract(CATALOG)
     member_plan = contract.artifact_member_plan_contract
     assert member_plan is not None
@@ -3556,7 +3547,7 @@ def test_artifact_member_plan_rejects_exclusion_blind_plan() -> None:
                     entry_fields=tuple(
                         field
                         for field in member_plan.entry_fields
-                        if field != "excluded_flag"
+                        if field != "source_role"
                     ),
                 ),
             )
@@ -3587,24 +3578,23 @@ def test_artifact_member_plan_rejects_missing_payload_size() -> None:
         )
 
 
-def test_artifact_policy_rejects_unfingerprinted_encoder_bundle() -> None:
+def test_artifact_policy_rejects_incomplete_adapter_fingerprint() -> None:
     contract = checker.load_contract(CATALOG)
-    producer = contract.artifact_byte_producer_contract
-    assert producer is not None
+    adapter = contract.artifact_adapter_policy_contract
+    assert adapter is not None
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="implementation bundle is incomplete",
+        match="artifact adapter-policy contract runtime obligation is incomplete",
     ):
         checker.validate_contract(
             replace(
                 contract,
-                artifact_byte_producer_contract=replace(
-                    producer,
-                    algorithm_bundle=tuple(
-                        value
-                        for value in producer.algorithm_bundle
-                        if "exact producer fingerprint" not in value
+                artifact_adapter_policy_contract=replace(
+                    adapter,
+                    runtime_obligation=adapter.runtime_obligation.replace(
+                        "complete policy fingerprint",
+                        "partial policy fingerprint",
                     ),
                 ),
             )
@@ -4035,7 +4025,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "152 BCNF base relations" in valid.stdout
+    assert "170 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (

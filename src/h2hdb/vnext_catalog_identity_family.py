@@ -57,6 +57,7 @@ _FILE_NAME_IDENTITY = "catalog_file_name_identities"
 _OBSERVATION_FILE_ANCHOR = "catalog_gallery_observation_file_anchors"
 _OBSERVATION_FILE_NO = "catalog_gallery_observation_file_file_nos"
 _OBSERVATION_FILE_SHA256 = "catalog_gallery_observation_file_file_sha256s"
+_OBSERVATION_FILE_ARTIFACT_ROLE = "catalog_gallery_observation_file_artifact_role"
 _OBSERVATION_FILE_SEAL = "catalog_gallery_observation_file_seals"
 
 _TAG_TERM = "catalog_tag_terms"
@@ -128,6 +129,7 @@ class GalleryObservationFile:
     file_no: int
     file_key: bytes
     file_sha256: bytes
+    artifact_role: bytes
 
     def __post_init__(self) -> None:
         require_positive_int63(self.gallery_id, field="gallery_id")
@@ -135,6 +137,14 @@ class GalleryObservationFile:
         require_int63(self.file_no, field="file_no")
         require_digest32(self.file_key, field="file_key")
         require_digest32(self.file_sha256, field="file_sha256")
+        role = require_bounded_bytes(
+            self.artifact_role,
+            field="artifact_role",
+            minimum=4,
+            maximum=8,
+        )
+        if role not in {b"metadata", b"page", b"other"}:
+            raise ValueError("artifact_role is not registered")
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +434,7 @@ def load_gallery_observation_files(
             _OBSERVATION_FILE_ANCHOR,
             _OBSERVATION_FILE_NO,
             _OBSERVATION_FILE_SHA256,
+            _OBSERVATION_FILE_ARTIFACT_ROLE,
             _OBSERVATION_FILE_SEAL,
         ):
             branches.append(
@@ -445,6 +456,7 @@ def load_gallery_observation_files(
         "a.gallery_id, a.observation_id, a.file_key, "
         "n.gallery_id, n.observation_id, n.file_key, n.file_no, "
         "h.gallery_id, h.observation_id, h.file_key, h.file_sha256, "
+        "r.gallery_id, r.observation_id, r.file_key, r.artifact_role, "
         "s.gallery_id, s.observation_id, s.file_key FROM candidate_keys AS k "
         f"LEFT JOIN {_OBSERVATION_FILE_ANCHOR} AS a "
         "ON a.gallery_id = k.gallery_id AND a.observation_id = k.observation_id "
@@ -455,6 +467,9 @@ def load_gallery_observation_files(
         f"LEFT JOIN {_OBSERVATION_FILE_SHA256} AS h "
         "ON h.gallery_id = k.gallery_id AND h.observation_id = k.observation_id "
         "AND h.file_key = k.file_key "
+        f"LEFT JOIN {_OBSERVATION_FILE_ARTIFACT_ROLE} AS r "
+        "ON r.gallery_id = k.gallery_id AND r.observation_id = k.observation_id "
+        "AND r.file_key = k.file_key "
         f"LEFT JOIN {_OBSERVATION_FILE_SEAL} AS s "
         "ON s.gallery_id = k.gallery_id AND s.observation_id = k.observation_id "
         "AND s.file_key = k.file_key ORDER BY k.file_key",
@@ -463,21 +478,21 @@ def load_gallery_observation_files(
     result: dict[bytes, GalleryObservationFile] = {}
     expected_key_prefix = (gallery, observation)
     for row in rows:
-        if len(row) != 17:
+        if len(row) != 21:
             raise CatalogIdentityPartialFamilyError(
                 "gallery observation file family has an invalid physical shape"
             )
         key = require_digest32(row[2], field="file_key")
         expected = (*expected_key_prefix, key)
         if any(
-            tuple(row[index : index + 3]) != expected for index in (0, 3, 6, 10, 14)
+            tuple(row[index : index + 3]) != expected for index in (0, 3, 6, 10, 14, 18)
         ):
             raise CatalogIdentityPartialFamilyError(
                 "gallery observation file has an incomplete sealed family"
             )
         try:
             identity = GalleryObservationFile(
-                gallery, observation, row[9], key, row[13]
+                gallery, observation, row[9], key, row[13], row[17]
             )
         except (TypeError, ValueError) as error:
             raise CatalogIdentityCollisionError(
@@ -551,6 +566,12 @@ def ensure_gallery_observation_files(
             "(gallery_id, observation_id, file_key, file_sha256) "
             "VALUES (%s, %s, %s, %s)",
             (*key, identity.file_sha256),
+        )
+        connector.execute(
+            f"INSERT INTO {_OBSERVATION_FILE_ARTIFACT_ROLE} "
+            "(gallery_id, observation_id, file_key, artifact_role) "
+            "VALUES (%s, %s, %s, %s)",
+            (*key, identity.artifact_role),
         )
         connector.execute(
             f"INSERT INTO {_OBSERVATION_FILE_SEAL} "

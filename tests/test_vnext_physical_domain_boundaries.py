@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.domain import ArtifactSourceRole
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -97,13 +98,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "source_snapshot_manifest_identity_seal",
         "source_snapshot_manifest_identity",
         "publication_identity",
-        "artifact_producer_fingerprint_anchor",
-        "artifact_producer_fingerprint_algorithm_version",
-        "artifact_producer_fingerprint_equivalence_class",
-        "artifact_producer_fingerprint_identity",
-        "artifact_producer_fingerprint_seal",
-        "artifact_producer_fingerprint",
-        "artifact_storage_codec",
         "gallery_observation_page",
         "gallery_observation_allocation_page",
         "gallery_observation_page_descriptor_anchor",
@@ -222,31 +216,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "publication_finalization_batch_receipt_seal",
         "publication_finalization_batch_receipt_stored",
         "publication_finalization_batch_receipt",
-        "artifact_zip_writer_policy_anchor",
-        "artifact_zip_writer_policy_zip_codec_version",
-        "artifact_zip_writer_policy_compression_method",
-        "artifact_zip_writer_policy_compression_level",
-        "artifact_zip_writer_policy_dos_date",
-        "artifact_zip_writer_policy_dos_time",
-        "artifact_zip_writer_policy_unix_mode",
-        "artifact_zip_writer_policy_general_purpose_flags",
-        "artifact_zip_writer_policy_create_system",
-        "artifact_zip_writer_policy_archive_name_codec_version",
-        "artifact_zip_writer_policy_artifact_name_codec_version",
-        "artifact_zip_writer_policy_identity",
-        "artifact_zip_writer_policy_seal",
-        "artifact_zip_writer_policy",
-        "artifact_storage_codec_anchor",
-        "artifact_storage_codec_adapter_id",
-        "artifact_storage_codec_storage_key_codec_version",
-        "artifact_storage_codec_protection_token_codec_version",
-        "artifact_storage_codec_seal",
-        "artifact_policy_semantics_anchor",
-        "artifact_policy_semantics_artifact_algorithm_version",
-        "artifact_policy_semantics_max_image_short_side",
-        "artifact_policy_semantics_producer_fingerprint_sha256",
-        "artifact_policy_semantics_identity",
-        "artifact_policy_semantics_seal",
         "artifact_policy_semantics",
         "artifact_policy",
         "artifact_input",
@@ -323,8 +292,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "source_build",
         "build_manifest",
         "source_snapshot_manifest_identity",
-        "artifact_producer_fingerprint",
-        "artifact_storage_codec",
         "gallery_observation_page_descriptor",
         "gallery_observation_page_key_bounds",
         "analysis_run",
@@ -350,7 +317,6 @@ _LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "publication_finalization_checkpoint",
         "publication_finalization_batch_receipt_stored",
         "publication_finalization_batch_receipt",
-        "artifact_zip_writer_policy",
         "artifact_policy_semantics",
         "artifact_delta_old",
         "artifact_delta_new",
@@ -416,8 +382,8 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         "publication_commit_candidate_id",
         "source_build_scope_key",
     }.isdisjoint(CATALOG_PHYSICAL_DOMAIN_RELATIONS)
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 128
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 106
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 146
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 124
     assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 22
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
@@ -515,7 +481,15 @@ def test_forged_locator_command_is_revalidated_before_sql() -> None:
 
 def test_forged_gallery_batch_entry_is_rejected_before_sql() -> None:
     content = FileContentReceipt.from_parts((b"payload",))
-    entry = FileObservation(b"001.jpg", content, 1, 2, 3, 4)
+    entry = FileObservation(
+        b"001.jpg",
+        content,
+        ArtifactSourceRole.PAGE,
+        1,
+        2,
+        3,
+        4,
+    )
     command = FileBatchCommand(
         (entry,),
         False,
@@ -576,4 +550,4 @@ def test_forged_operational_effect_is_rejected_before_event_derivation() -> None
     effect = RemovedGid(7, b"r" * 16)
     object.__setattr__(effect, "gid", True)
     with pytest.raises(DomainValidationError, match="removed gid"):
-        _require_effects((effect,))
+        _require_effects((effect,), max_rows=128)

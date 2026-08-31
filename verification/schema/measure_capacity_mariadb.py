@@ -37,8 +37,8 @@ INSERTION_ORDER = (
     "full_churn_fill_delete_different_domain_refill_five_then_sixth_append_v2"
 )
 EXECUTION_MODE = "testcontainers"
-REGISTRY_ROW_GENERATOR = "maximum_width_artifact_producer_v1"
-REGISTRY_KEY_DISTRIBUTION = "sha256_counter_stream_fingerprint_v1"
+REGISTRY_ROW_GENERATOR = "maximum_width_analysis_policy_v1"
+REGISTRY_KEY_DISTRIBUTION = "bit_reversed_u63_policy_id_v1"
 STAGING_ROW_GENERATOR = "different_domain_churn_then_five_then_sixth_requests_v2"
 STAGING_KEY_DISTRIBUTION = (
     "independent_sha256_coordinate_request_and_staging_uuid_domains_v2"
@@ -51,7 +51,7 @@ ACCEPTED_REQUESTS_PER_STAGING = 5
 OVER_CAPACITY_REQUESTS_PER_STAGING = 6
 SOURCE_SCOPE_ROW_COUNT = 300_019
 
-_REGISTRY_TABLE = "capacity_artifact_producer_fingerprints"
+_REGISTRY_TABLE = "capacity_analysis_policies"
 _STAGING_TABLE = "capacity_gallery_observation_staging_requests"
 _SOURCE_SCOPE_TABLE = "capacity_source_scopes"
 
@@ -141,7 +141,7 @@ def _shape_sha256(relation: Mapping[str, Any]) -> str:
 def _assert_measured_shapes() -> None:
     physical = _load(PHYSICAL_PATH)
     operational = _load(OPERATIONAL_PHYSICAL_PATH)
-    registry = _relation(physical, "artifact_producer_fingerprint")
+    registry = _relation(physical, "analysis_policy")
     source_scope = _relation(physical, "source_scope")
     staging = _relation(operational, "gallery_observation_staging_request")
     registry_columns = [
@@ -150,39 +150,31 @@ def _assert_measured_shapes() -> None:
     ]
     if registry_columns != [
         (
-            "producer_fingerprint_sha256",
-            {"type": "BINARY(32)", "nullable": False, "collation": "NONE"},
+            "policy_id",
+            {"type": "BIGINT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
         (
-            "artifact_algorithm_version",
+            "algorithm_version",
             {"type": "INT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
         (
-            "producer_equivalence_class",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
+            "spam_artist_threshold",
+            {"type": "BIGINT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
         (
-            "writer_id",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
+            "spam_occurrence_threshold",
+            {"type": "BIGINT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
         (
-            "python_abi",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
+            "content_owner_rule_version",
+            {"type": "INT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
         (
-            "pillow_build",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
-        ),
-        (
-            "libjpeg_build",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
-        ),
-        (
-            "zlib_build",
-            {"type": "VARBINARY(128)", "nullable": False, "collation": "NONE"},
+            "gid_winner_rule_version",
+            {"type": "INT UNSIGNED", "nullable": False, "collation": "NONE"},
         ),
     ]:
-        raise RuntimeError("artifact producer physical measurement shape drifted")
+        raise RuntimeError("analysis policy physical measurement shape drifted")
     staging_columns = [
         (column.get("attribute"), column.get("mariadb"))
         for column in staging.get("column", [])
@@ -231,21 +223,26 @@ def _assert_measured_shapes() -> None:
         ],
     )
     if registry_keys != (
-        ["producer_fingerprint_sha256"],
+        ["policy_id"],
         [
-            ["producer_equivalence_class"],
             [
-                "writer_id",
-                "python_abi",
-                "pillow_build",
-                "libjpeg_build",
-                "zlib_build",
+                "algorithm_version",
+                "spam_artist_threshold",
+                "spam_occurrence_threshold",
+                "content_owner_rule_version",
+                "gid_winner_rule_version",
             ],
         ],
+        [
+            ["policy_id", "algorithm_version"],
+            ["policy_id", "spam_artist_threshold"],
+            ["policy_id", "spam_occurrence_threshold"],
+            ["policy_id", "content_owner_rule_version"],
+            ["policy_id", "gid_winner_rule_version"],
+        ],
         [],
-        [(["artifact_algorithm_version"], False)],
     ):
-        raise RuntimeError("artifact producer physical indexes drifted")
+        raise RuntimeError("analysis policy physical indexes drifted")
     staging_keys = (
         staging.get("primary_key"),
         staging.get("unique_keys"),
@@ -284,28 +281,6 @@ def _assert_measured_shapes() -> None:
         raise RuntimeError("source_scope physical indexes drifted")
 
 
-class _CounterByteStream:
-    """Version-stable bytes from SHA-256(seed, domain, counter) blocks."""
-
-    def __init__(self, domain: bytes) -> None:
-        self._domain = domain
-        self._counter = 0
-
-    def take(self, length: int) -> bytes:
-        payload = bytearray()
-        while len(payload) < length:
-            frame = (
-                b"h2hdb-capacity-measurement-counter-v1\0"
-                + MEASUREMENT_SEED.to_bytes(32, "big")
-                + len(self._domain).to_bytes(4, "big")
-                + self._domain
-                + self._counter.to_bytes(8, "big")
-            )
-            payload.extend(hashlib.sha256(frame).digest())
-            self._counter += 1
-        return bytes(payload[:length])
-
-
 def _coordinate_bytes(domain: bytes, coordinates: Sequence[int], length: int) -> bytes:
     payload = bytearray()
     block = 0
@@ -334,19 +309,17 @@ def _coordinate_uuid_v4(domain: bytes, coordinates: Sequence[int]) -> bytes:
 def _registry_rows(
     *,
     row_count: int,
-) -> Iterator[tuple[bytes, int, bytes, bytes, bytes, bytes, bytes, bytes]]:
-    stream = _CounterByteStream(b"artifact-producer")
-    for _ in range(row_count):
-        fingerprint = stream.take(32)
+) -> Iterator[tuple[int, int, int, int, int, int]]:
+    for row_index in range(row_count):
+        ordinal = row_index + 1
+        policy_id = int(f"{ordinal:063b}"[::-1], 2)
         yield (
-            fingerprint,
-            1,
-            fingerprint + stream.take(96),
-            stream.take(128),
-            stream.take(128),
-            stream.take(128),
-            stream.take(128),
-            stream.take(128),
+            policy_id,
+            ordinal,
+            (1 << 63) - ordinal,
+            (1 << 62) + ordinal,
+            (1 << 32) - 1,
+            (1 << 32) - 1,
         )
 
 
@@ -399,19 +372,23 @@ def _create_tables(connection: _Connection) -> None:
         cursor.execute(f"DROP TABLE IF EXISTS {_SOURCE_SCOPE_TABLE}")
         cursor.execute(
             f"CREATE TABLE {_REGISTRY_TABLE} ("
-            "producer_fingerprint_sha256 BINARY(32) NOT NULL, "
-            "artifact_algorithm_version INT UNSIGNED NOT NULL, "
-            "producer_equivalence_class VARBINARY(128) NOT NULL, "
-            "writer_id VARBINARY(128) NOT NULL, "
-            "python_abi VARBINARY(128) NOT NULL, "
-            "pillow_build VARBINARY(128) NOT NULL, "
-            "libjpeg_build VARBINARY(128) NOT NULL, "
-            "zlib_build VARBINARY(128) NOT NULL, "
-            "PRIMARY KEY (producer_fingerprint_sha256), "
-            "UNIQUE KEY uq_equivalence (producer_equivalence_class), "
-            "UNIQUE KEY uq_natural (writer_id, python_abi, pillow_build, "
-            "libjpeg_build, zlib_build), "
-            "KEY ix_algorithm (artifact_algorithm_version)"
+            "policy_id BIGINT UNSIGNED NOT NULL, "
+            "algorithm_version INT UNSIGNED NOT NULL, "
+            "spam_artist_threshold BIGINT UNSIGNED NOT NULL, "
+            "spam_occurrence_threshold BIGINT UNSIGNED NOT NULL, "
+            "content_owner_rule_version INT UNSIGNED NOT NULL, "
+            "gid_winner_rule_version INT UNSIGNED NOT NULL, "
+            "PRIMARY KEY (policy_id), "
+            "UNIQUE KEY uq_natural (algorithm_version, spam_artist_threshold, "
+            "spam_occurrence_threshold, content_owner_rule_version, "
+            "gid_winner_rule_version), "
+            "UNIQUE KEY uq_policy_algorithm (policy_id, algorithm_version), "
+            "UNIQUE KEY uq_policy_spam_artist (policy_id, spam_artist_threshold), "
+            "UNIQUE KEY uq_policy_spam_occurrence "
+            "(policy_id, spam_occurrence_threshold), "
+            "UNIQUE KEY uq_policy_content_owner "
+            "(policy_id, content_owner_rule_version), "
+            "UNIQUE KEY uq_policy_gid_winner (policy_id, gid_winner_rule_version)"
             ") ENGINE=InnoDB ROW_FORMAT=DYNAMIC "
             "DEFAULT CHARACTER SET utf8mb4 COLLATE=utf8mb4_nopad_bin"
         )
@@ -454,9 +431,9 @@ def _insert_registry_rows(
     try:
         registry_sql = (
             f"INSERT INTO {_REGISTRY_TABLE} ("
-            "producer_fingerprint_sha256, artifact_algorithm_version, "
-            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-            "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            "policy_id, algorithm_version, spam_artist_threshold, "
+            "spam_occurrence_threshold, content_owner_rule_version, "
+            "gid_winner_rule_version) VALUES (%s, %s, %s, %s, %s, %s)"
         )
         for batch in _batched(_registry_rows(row_count=row_count), INSERT_BATCH_SIZE):
             cursor.executemany(registry_sql, batch)
@@ -679,9 +656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _assert_measured_shapes()
     physical = _load(PHYSICAL_PATH)
     operational_physical = _load(OPERATIONAL_PHYSICAL_PATH)
-    registry_shape_sha256 = _shape_sha256(
-        _relation(physical, "artifact_producer_fingerprint")
-    )
+    registry_shape_sha256 = _shape_sha256(_relation(physical, "analysis_policy"))
     source_scope_shape_sha256 = _shape_sha256(_relation(physical, "source_scope"))
     staging_shape_sha256 = _shape_sha256(
         _relation(operational_physical, "gallery_observation_staging_request")
@@ -758,7 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "insert_batch_size": INSERT_BATCH_SIZE,
         "insertion_order": INSERTION_ORDER,
         "registry": {
-            "relation": "artifact_producer_fingerprint",
+            "relation": "analysis_policy",
             "row_generator": REGISTRY_ROW_GENERATOR,
             "key_distribution": REGISTRY_KEY_DISTRIBUTION,
             "physical_shape_sha256": registry_shape_sha256,

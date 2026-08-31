@@ -23,26 +23,26 @@ planning_average_files_per_gallery = 50
 stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
-selected_catalog_physical_relations_after = 36
+selected_catalog_physical_relations_after = 54
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 152
+catalog_physical_table_count_after = 170
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 66
 total_physical_table_count_before = 381
-total_physical_table_count_after = 218
+total_physical_table_count_after = 236
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
   "analysis_stage",
   "publication_stage",
-  "artifact_storage_codec",
-  "artifact_zip_writer_policy",
   "manifest_policy",
   "analysis_policy",
   "title_sort_policy",
   "display_title_policy",
-  "artifact_producer_fingerprint",
+  "artifact_adapter_policy",
   "artifact_policy_semantics",
+  "search_policy",
+  "catalog_resource_kind",
   "analysis_batch_receipt_stored",
   "analysis_checkpoint",
   "analysis_run_descriptor",
@@ -63,8 +63,8 @@ affected_catalog_relations = [
 ]
 capacity_neutral_catalog_authority_substitutions = ["file_name_identity", "tag_term", "catalog_contributor"]
 affected_operational_relations = ["download_generation_owner", "ingest_generation_owner", "gallery_observation_staging", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
-fixed_bootstrap_relations = ["analysis_stage", "publication_stage", "artifact_storage_codec", "artifact_zip_writer_policy"]
-bounded_registry_relations = ["manifest_policy", "analysis_policy", "title_sort_policy", "display_title_policy", "artifact_producer_fingerprint", "artifact_policy_semantics"]
+fixed_bootstrap_relations = ["analysis_stage", "publication_stage"]
+bounded_registry_relations = ["manifest_policy", "analysis_policy", "title_sort_policy", "display_title_policy", "artifact_adapter_policy", "artifact_policy_semantics", "search_policy", "catalog_resource_kind"]
 lineage_current_only_relations = [
   "analysis_batch_receipt_stored",
   "analysis_checkpoint",
@@ -90,8 +90,6 @@ staging_capacity_relations = ["gallery_observation_staging", "gallery_observatio
 bounded_registry_maximum_rows = 50000
 fixed_analysis_stage_rows = 15
 fixed_publication_stage_rows = 17
-fixed_artifact_storage_codec_rows = 1
-fixed_artifact_zip_writer_policy_rows = 1
 analysis_overlay_max_depth = 16
 analysis_current_chain_peak_rows = 17
 analysis_latest_abandoned_peak_rows = 1
@@ -112,9 +110,9 @@ publication_checkpoint_peak_rows = 32
 publication_receipt_peak_rows = 32
 finalization_receipt_peak_rows = 18
 singleton_owner_peak_rows = 1
-cleanup_job_peak_rows = 5632
+cleanup_job_peak_rows = 5888
 cleanup_job_accounted_bytes_per_row = 8192
-cleanup_job_conservative_peak_bytes = 46137344
+cleanup_job_conservative_peak_bytes = 48234496
 cleanup_cycle_root_peak_rows = 256
 cleanup_frozen_root_key_maximum_bytes = 260
 cleanup_cycle_root_accounted_bytes_per_row = 1280
@@ -132,12 +130,12 @@ source_scope_measurement_safety_numerator = 5
 source_scope_measurement_safety_denominator = 4
 published_baseline_prune_obligation_id = "catalog.published-baseline-prune.v1"
 published_baseline_prune_writer_hook = "catalog_writer.prune_published_analysis_baseline"
-registry_measurement_relation = "artifact_producer_fingerprint"
+registry_measurement_relation = "analysis_policy"
 registry_measurement_row_count = 50000
 registry_measurement_safety_numerator = 2
 registry_measurement_safety_denominator = 1
-registry_measurement_row_generator = "maximum_width_artifact_producer_v1"
-registry_measurement_key_distribution = "sha256_counter_stream_fingerprint_v1"
+registry_measurement_row_generator = "maximum_width_analysis_policy_v1"
+registry_measurement_key_distribution = "bit_reversed_u63_policy_id_v1"
 staging_budget_relation = "gallery_observation_staging_request_budget"
 staging_budget_bootstrap_rows = 1
 staging_budget_maximum_rows = 1500000
@@ -431,10 +429,11 @@ visibility = "sealed_total"
 members = [
   { relation = "gallery_observation_file_file_no", key_attributes = ["gallery_id", "observation_id", "file_key"], value_attribute = "file_no", join = { source_relation = "gallery_observation_file_seal", source_attributes = ["gallery_id", "observation_id", "file_key"], member_attributes = ["gallery_id", "observation_id", "file_key"] }, project = true },
   { relation = "gallery_observation_file_file_sha256", key_attributes = ["gallery_id", "observation_id", "file_key"], value_attribute = "file_sha256", join = { source_relation = "gallery_observation_file_seal", source_attributes = ["gallery_id", "observation_id", "file_key"], member_attributes = ["gallery_id", "observation_id", "file_key"] }, project = true },
+  { relation = "gallery_observation_file_artifact_role", key_attributes = ["gallery_id", "observation_id", "file_key"], value_attribute = "artifact_role", join = { source_relation = "gallery_observation_file_seal", source_attributes = ["gallery_id", "observation_id", "file_key"], member_attributes = ["gallery_id", "observation_id", "file_key"] }, project = true },
 ]
 semantic_fds = [
-  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
-  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
+  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256", "artifact_role"] },
+  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256", "artifact_role"] },
 ]
 rationale = "Use the compact observation/file-name coordinate as the family key, keep ordinal and payload digest in separate hot facts, and enforce the alternate observation/file-number key directly on the ordinal fact."
 write_obligation = "under the locked gallery staging checkpoint, derive every file_no as the exact zero-based contiguous 0..n-1 FILE-component ordinal, require the authoritative file_name_identity row, derive file_role exactly from its name_bytes, and require the exact content blob; insert or exact-compare the observation-file anchor, unique file-number fact, and file-digest fact, then insert the PK-only observation-file seal last before filesystem facts, hash occurrences, manifests, or semantic readers may reference the file"
@@ -642,6 +641,10 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = []
 child_phases = [
+  ["search_posting"],
+  ["search_document"],
+  ["catalog_page", "catalog_thumbnail"],
+  ["catalog_storage_object"],
   ["catalog_publication_storage"],
   ["catalog_publication_download_time"],
   ["catalog_contributor"],
@@ -691,6 +694,8 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = []
 child_phases = [
+  ["discovery_seal"],
+  ["language_facet_order", "subject_facet_order", "contributor_facet_order"],
   ["catalog_revision_descriptor"],
 ]
 
@@ -742,8 +747,10 @@ machine_gates = [
 ]
 derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
-  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"],
-  ["prepared_artifact", "catalog_contributor"],
+  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "search_posting", "catalog_publication_storage", "catalog_publication_download_time", "prepared_page", "prepared_thumbnail", "catalog_page", "catalog_thumbnail"],
+  ["prepared_storage_object", "catalog_storage_object"],
+  ["prepared_resource_blob"],
+  ["prepared_artifact", "prepared_artifact_descriptor", "catalog_contributor", "search_document"],
   ["artifact_input"],
   ["publication_checkpoint"],
   ["publication_selection_storage", "catalog_publication_order"],
@@ -824,7 +831,7 @@ child_phases = [
   ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"],
   ["gallery_observation_file_filesystem_anchor"],
   ["gallery_observation_file_seal"],
-  ["gallery_observation_file_file_sha256", "gallery_observation_file_file_no"],
+  ["gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_file_no"],
   ["gallery_observation_file_anchor"],
   ["gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"],
   ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"],
@@ -835,13 +842,31 @@ target = "ARTIFACT_BLOB"
 root_relation = "artifact_blob"
 root_key = ["artifact_sha256"]
 external_blockers = [
-  { relation = "prepared_artifact", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { relation = "prepared_resource_blob", attributes = ["storage_object_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { relation = "prepared_artifact_descriptor", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
   { relation = "catalog_artifact", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { relation = "catalog_storage_object", attributes = ["storage_object_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
 ]
 retained_outliving = []
 semantic_blockers = []
 derived_views = ["artifact_delta_old"]
 child_phases = []
+
+[[retention_target]]
+target = "STORAGE_OBJECT_KEY"
+root_relation = "storage_object_key_identity"
+root_key = ["storage_object_key_sha256"]
+external_blockers = [
+  { relation = "prepared_artifact", attributes = ["storage_object_key_sha256"], referenced_relation = "storage_object_key_identity", referenced_attributes = ["storage_object_key_sha256"] },
+  { relation = "catalog_storage_object", attributes = ["storage_object_key_sha256"], referenced_relation = "storage_object_key_identity", referenced_attributes = ["storage_object_key_sha256"] },
+]
+retained_outliving = []
+semantic_blockers = []
+derived_views = []
+child_phases = [
+  ["storage_object_key_segment"],
+  ["storage_object_key_identity"],
+]
 
 [[retention_target]]
 target = "CANONICAL_VALUE"
@@ -877,6 +902,10 @@ retained_outliving = [
   { relation = "catalog_publication_storage", attributes = ["language_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["source_title_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "catalog_contributor", attributes = ["contributor_name_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "language_facet_order", attributes = ["language_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "contributor_facet_order", attributes = ["contributor_name_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "subject_facet_order", attributes = ["tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
+  { relation = "search_posting", attributes = ["value_sha256"], referenced_relation = "search_lexeme", referenced_attributes = ["value_sha256"] },
 ]
 semantic_blockers = []
 machine_gates = [
@@ -888,7 +917,7 @@ machine_gates = [
 ]
 derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "artifact_delta_old", "artifact_delta_new", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor"]
 child_phases = [
-  ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"],
+  ["search_lexeme", "display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"],
   ["artifact_policy_semantics"],
   ["canonical_value_identity"],
   ["canonical_value_page_parent", "canonical_value_page_seal"],
@@ -1122,7 +1151,7 @@ direct_payload_attributes = [
   "next_cursor",
 ]
 selection_rule = "use a canonical digest reference with its bounded owner-scoped chunk tree whenever exact bytes are unbounded, cross-relation stable, participate in a candidate key, or participate in equality/grouping identity; a closed explicit opaque audit coordinate may retain only the digest after every live semantic pin releases and carries no payload foreign key; otherwise store dependent scalar bytes directly only under an exact executable maximum-byte protocol"
-rationale = "Arbitrary canonical payloads, including publication summary/language, are streamed through deterministic bounded chunks rather than monolithic database values. Artifact storage keys are deterministic bounded values derived from GID and are not retained in this canonical payload store. The two source-snapshot audit coordinates deliberately retain only compact historical digests and never authorize payload reads; every remaining direct payload has an explicit cross-backend bound; protection_token is the sole separately framed fixed-184-byte identity with an explicit alternate key."
+rationale = "Arbitrary canonical payloads, including publication summary/language, are streamed through deterministic bounded chunks rather than monolithic database values. Adapter-issued storage keys are bounded opaque identities stored in normalized header/segment relations rather than this canonical payload store. The two source-snapshot audit coordinates deliberately retain only compact historical digests and never authorize payload reads; every remaining direct payload has an explicit cross-backend bound; protection_token is a separately framed fixed 32-byte identity with an explicit alternate key."
 
 [[byte_domain]]
 attribute = "source_gallery_name"
@@ -1141,58 +1170,44 @@ runtime_obligation = "persist the exact dirent bytes and reject empty values, se
 [[byte_domain]]
 attribute = "artifact_name"
 maximum_bytes = 255
-encoding = "ascii"
-source = "positive_gid_artifact_name_v1"
-runtime_obligation = "derive only ascii('h2h-') || canonical positive signed-int63 decimal GID without leading zeros || ascii('.cbz'); reject caller-supplied names, decode with exact EOF, require canonical encode/decode round-trip against publication_identity.gid, and cap each artifact-name page at 128"
+encoding = "utf8"
+source = "artifact_adapter_download_leaf_v2"
+runtime_obligation = "accept only the adapter-issued strict UTF-8 safe leaf whose encoded length is 1..255; reject dot components, slash, backslash, NUL, controls, invalid UTF-8, or any alternate value on replay"
 
 [[byte_domain]]
 attribute = "adapter_id"
 maximum_bytes = 64
 encoding = "ascii"
-source = "artifact_storage_adapter_registry_v1"
-runtime_obligation = "accept only exact nonempty ASCII adapter identifiers from artifact_storage_codec and reject encoded length above 64"
+source = "artifact_adapter_policy_v2"
+runtime_obligation = "accept only exact nonempty ASCII adapter identifiers from artifact_adapter_policy and reject encoded length above 64"
 
 [[byte_domain]]
-attribute = "producer_equivalence_class"
-maximum_bytes = 83
-encoding = "opaque_bytes"
-source = "artifact_producer_exact_equivalence_v1"
-runtime_obligation = "derive exactly ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0') || raw32(producer_fingerprint_sha256), require exactly 83 bytes, and reject every caller-supplied equivalence class"
+attribute = "key_codec"
+maximum_bytes = 64
+encoding = "ascii"
+source = "adapter_storage_object_key_v2"
+runtime_obligation = "accept only a 1..64 byte safe ASCII token beginning with an alphanumeric byte and continuing with alphanumeric, dot, underscore, plus, or hyphen; exact-compare on replay"
 
 [[byte_domain]]
-attribute = "writer_id"
-maximum_bytes = 128
-encoding = "opaque_bytes"
-source = "artifact_producer_fingerprint_v1"
-runtime_obligation = "accept only exact nonempty writer identity bytes included in the registered producer fingerprint frame"
+attribute = "key_segment"
+maximum_bytes = 255
+encoding = "utf8"
+source = "adapter_storage_object_key_v2"
+runtime_obligation = "accept only a strict UTF-8 safe leaf of 1..255 bytes; reject dot components, slash, backslash, NUL, every Unicode category-C scalar, invalid UTF-8, and alternate replay bytes"
 
 [[byte_domain]]
-attribute = "python_abi"
-maximum_bytes = 128
-encoding = "opaque_bytes"
-source = "artifact_producer_fingerprint_v1"
-runtime_obligation = "accept only exact nonempty Python ABI/build bytes included in the registered producer fingerprint frame"
+attribute = "media_type"
+maximum_bytes = 127
+encoding = "ascii"
+source = "adapter_media_type_v2"
+runtime_obligation = "accept only exact ASCII RFC media type type/subtype token grammar without parameters, whitespace, controls, quotes, or header separators; exact-compare on replay"
 
 [[byte_domain]]
-attribute = "pillow_build"
-maximum_bytes = 128
-encoding = "opaque_bytes"
-source = "artifact_producer_fingerprint_v1"
-runtime_obligation = "accept only exact nonempty Pillow build bytes included in the registered producer fingerprint frame"
-
-[[byte_domain]]
-attribute = "libjpeg_build"
-maximum_bytes = 128
-encoding = "opaque_bytes"
-source = "artifact_producer_fingerprint_v1"
-runtime_obligation = "accept only exact nonempty libjpeg build bytes included in the registered producer fingerprint frame"
-
-[[byte_domain]]
-attribute = "zlib_build"
-maximum_bytes = 128
-encoding = "opaque_bytes"
-source = "artifact_producer_fingerprint_v1"
-runtime_obligation = "accept only exact nonempty zlib build bytes included in the registered producer fingerprint frame"
+attribute = "resource_kind"
+maximum_bytes = 11
+encoding = "ascii"
+source = "catalog_resource_kind_v2"
+runtime_obligation = "accept only exact provider-seeded acquisition or thumbnail bytes and reject every alternate spelling or unregistered role"
 
 [[byte_domain]]
 attribute = "publication_id"
@@ -1272,6 +1287,13 @@ source = "file_role_protocol_v1"
 runtime_obligation = "accept exactly the ASCII bytes CONTENT or METADATA and reject every other encoding"
 
 [[byte_domain]]
+attribute = "artifact_role"
+maximum_bytes = 8
+encoding = "ascii"
+source = "artifact_source_role_protocol_v2"
+runtime_obligation = "accept exactly the adapter-issued ASCII role metadata, page, or other; core must not infer this role from a name, suffix, media type, or payload"
+
+[[byte_domain]]
 attribute = "role"
 maximum_bytes = 64
 encoding = "ascii"
@@ -1315,46 +1337,23 @@ runtime_obligation = "persist only the exact post-batch server-derived stage cur
 
 [[byte_domain]]
 attribute = "protection_token"
-maximum_bytes = 184
+maximum_bytes = 32
 encoding = "opaque_bytes"
-source = "artifact_projection_protection_token_v1"
-runtime_obligation = "construct and decode exactly the fixed 184-byte artifact-protection v1 frame, require exact EOF and derived receipt equality, resolve the embedded storage codec through artifact_storage_codec, and compare candidate, publication, blob digest, GID-derived stable storage key, storage generation, and blob size against joined authority; caller token bytes are never authority"
-
-[artifact_name_contract]
-relation = "publication_identity"
-gid_attribute = "gid"
-name_attribute = "artifact_name"
-codec_version = 1
-framing = "ascii('h2h-') || canonical_positive_signed_int63_decimal_without_leading_zero || ascii('.cbz')"
-golden_gid = 7
-golden_name_hex = "6832682d372e63627a"
-runtime_obligation = "derive artifact_name only from the exact positive GID with artifact_name(gid); reject caller bytes, plus signs, zero, leading zeros, whitespace, alternate extensions, Unicode decimal digits, and names above the signed-int63 domain; require canonical positive GID encode/decode round-trip with exact EOF, and clamp every artifact-name encode or decode page to a server batch cap of 128"
+source = "artifact_projection_protection_token_v2"
+runtime_obligation = "construct exactly the fixed 32-byte domain-separated artifact-protection v2 digest from locked generic intent facts and compare every field plus recomputed token on replay; caller token bytes are never authority"
 
 [artifact_storage_key_contract]
-publication_relation = "publication_identity"
-gid_attribute = "gid"
-storage_codec_version = 1
-key_codec = "gid-sha256-12-v1"
-key_codec_version = 1
-components = ["hash-v1", "domain_separated_gid_sha256_hex_0_2", "domain_separated_gid_sha256_hex_2", "canonical_artifact_name"]
-shard_derivation = "lowerhex(SHA256(ascii('h2hdb-media-gid-shard-v1\\0') || u64be(positive gid)))[0:3]"
-derivation = "artifact_storage_key_components(gid) = ('hash-v1', shard[0:2], shard[2], artifact_name(gid))"
-golden_gid = 7
-golden_components = ["hash-v1", "bd", "2", "h2h-7.cbz"]
-golden_payload_hex = "000000010000000400000007686173682d76310000000262640000000132000000096832682d372e63627a"
-golden_storage_key_sha256 = "1b3415259ae661635a171998d34955b9ddc083c740287a5025387e3d9136a2b7"
-runtime_obligation = "derive the exact four-segment neutral storage key only from the collision-checked positive GID; use the domain-separated SHA-256 first 12 bits for fixed hash-v1 sharding and the canonical h2h-GID.cbz leaf; stream and validate the complete artifact_storage_key_bytes_v1 frame, reject caller components, uppercase hex, traversal and alternate codecs, and recompute the key digest embedded in every artifact protection token"
+key_codec = "opaque-adapter-key-v2"
+key_codec_version = 2
+framing = "ascii('h2hdb-storage-object-key\\0') || u32be(key_codec_version=2) || lp32(ascii codec) || u32be(segment_count) || repeated(lp32(strict_utf8_segment))"
+runtime_obligation = "obtain every key only from adapter.storage_key(gid, resource_kind); core validates generic bounded codec and path-safe segments, recomputes the complete framed digest, persists and full-compares every segment on collision/replay, and never derives or interprets a provider, container, shard, extension, or storage layout"
 
 [artifact_protection_token_contract]
 relation = "prepared_artifact"
-storage_codec_relation = "artifact_storage_codec"
-codec_version = 1
-exact_bytes = 184
-receipt_framing = "SHA256(ascii('h2hdb-vnext-artifact-storage-receipt\\0') || raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || raw32(artifact_storage_key_sha256) || u64be(storage_generation) || u64be(size_bytes))[0:16]"
-token_framing = "ascii('h2hdb-vnext-artifact-protection\\0') || u32be(codec_version=1) || u32be(storage_codec_version) || raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || raw32(artifact_storage_key_sha256) || raw16(receipt_id) || u64be(storage_generation) || u64be(size_bytes)"
-golden_receipt_id = "be24a65b2ded7965b31c3c317bc61cbf"
-golden_token_hex = "68326864622d766e6578742d61727469666163742d70726f74656374696f6e00000000010000000111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444be24a65b2ded7965b31c3c317bc61cbf00000000000000070000000000000009"
-runtime_obligation = "the repository accepts no caller receipt or token authority; construct receipt and token from joined exact fields, decode exact EOF, recompute receipt, require storage_codec_version in the closed registry, derive the embedded storage-key digest from the publication identity GID, require embedded size to equal artifact_blob.size_bytes, and compare every field on replay"
+codec_version = 2
+exact_bytes = 32
+token_framing = "SHA256(ascii('h2hdb-vnext-artifact-protection-v2\\0') || u32be(codec_version=2) || raw16(candidate_id) || raw32(publication_key) || u8(resource_kind) || raw32(storage_object_key_sha256) || u64be(storage_generation))"
+runtime_obligation = "the repository accepts no caller token authority; derive the fixed digest token from locked candidate/publication/resource/key/generation facts, persist one alternate key, and require exact equality on every replay; no storage layout, artifact digest, object size, or adapter codec is decoded from the token"
 
 [artifact_delta_contract]
 classification = "exact_old_new_presence_and_semantic_equality"
@@ -1366,9 +1365,9 @@ semantic_components = ["source_manifest", "member_plan", "effective_content", "s
 operations = ["CREATE", "REBUILD", "DELETE", "UNCHANGED"]
 old_state_operations = ["REBUILD", "DELETE", "UNCHANGED"]
 new_state_operations = ["CREATE", "REBUILD", "UNCHANGED"]
-rebuild_rule = "REBUILD iff both old and new rows exist and artifact_semantics_sha256 differs; the GID-derived artifact name is normalized outside delta state"
-unchanged_rule = "UNCHANGED iff both old and new rows exist and artifact_semantics_sha256 is exactly equal; artifact names are not delta state because publication_identity derives them only from immutable positive GID"
-rename_rule = "artifact_name is globally derived from immutable positive GID in publication_identity and is absent from artifact input, delta, operation, prepared, and catalog occurrence relations; a GID change is a different publication identity, never an artifact rename"
+rebuild_rule = "REBUILD iff both old and new rows exist and artifact_semantics_sha256 differs; adapter-issued download names and storage keys are preparation evidence and never artifact-delta authority"
+unchanged_rule = "UNCHANGED iff both old and new rows exist and artifact_semantics_sha256 is exactly equal; adapter-issued presentation and storage facts are replay-checked only for CREATE or REBUILD"
+rename_rule = "download names are bounded adapter-issued leaves persisted with prepared and catalog artifact descriptors; core never derives a name, path, extension, container format, or storage layout from GID"
 
 [transition_authority_contract]
 version = 1
@@ -1379,31 +1378,13 @@ batch_key_attribute = "batch_key"
 runtime_obligation = "never authorize a component completion, checkpoint, batch replay, READY revision, or head transition from an audit digest or checksum; for every bounded batch derive input from the immutable snapshot and server-owned cursor, recompute the exact row projection, compare every field, and in one fenced transaction insert the immutable wide current receipt, generation-CAS the wide checkpoint, and delete only a safely acknowledged predecessor; batch_key is only an opaque current idempotency token and a pruned key is stale/not-found; insert an immutable component completion row only after component-specific full-evaluator equality; before catalog head CAS compare the exact immutable revision child projection and count rather than trusting a digest"
 ready_obligation = "full SchemaAdmin.check scans only the retained current/reachable publication window to prove exact node, successor-edge and wide-commit equality, successor equals predecessor plus one, no fork/orphan/gap after the compacted floor, every active baseline/protection reference resolves, and the common head is the unique maximum tip; it never scans the high-cardinality content corpus or requires deleted history; quick check_readiness remains an epoch-only O(1) probe and fresh publication/replay remain tip-local O(1)"
 
-[artifact_byte_producer_contract]
+[artifact_adapter_policy_contract]
 policy_relation = "artifact_policy_semantics"
 algorithm_attribute = "artifact_algorithm_version"
-producer_relation = "artifact_producer_fingerprint"
-zip_writer_policy_relation = "artifact_zip_writer_policy"
-storage_codec_relation = "artifact_storage_codec"
-independent_parameters = ["max_image_short_side", "producer_fingerprint_sha256"]
-algorithm_bundle = [
-  "CBZ manifest serialization version",
-  "streaming archive member naming and collision rules",
-  "per-file exclusion-plan encoding",
-  "ZIP and ZIP64 writer format",
-  "DEFLATE compression level 9",
-  "fixed DOS member timestamp, Unix mode, and UTF-8 flags",
-  "eligible image suffix set",
-  "EXIF transpose, LANCZOS resampling, and no-upscale rule",
-  "GIF and JPEG encoding with quality 90, optimize, and alpha background",
-  "exact producer fingerprint covering writer/schema plus Python, Pillow, libjpeg, and zlib versions and builds, or a certified byte-equivalence class",
-]
-producer_fingerprint_framing = "ascii('h2hdb-vnext-artifact-producer\\0') || u32be(codec_version=1) || lp32(writer_id) || lp32(python_abi) || lp32(pillow_build) || lp32(libjpeg_build) || lp32(zlib_build)"
-producer_fingerprint_golden_payload_hex = "68326864622d766e6578742d61727469666163742d70726f64756365720000000001000000067772697465720000000563703331340000000670696c6c6f77000000076c69626a706567000000047a6c6962"
-producer_fingerprint_golden_sha256 = "7c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
-producer_equivalence_class_framing = "ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0') || raw32(producer_fingerprint_sha256)"
-producer_equivalence_class_golden_hex = "68326864622d766e6578742d61727469666163742d70726f64756365722d65786163742d6571756976616c656e63652d7631007c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
-runtime_obligation = "construct the policy-v2 component from the closed ZIP writer policy, registered exact producer fingerprint, producer-derived artifact_algorithm_version, derived exact producer equivalence class, and max_image_short_side; never store artifact_algorithm_version redundantly in artifact_policy_semantics; recompute the raw producer fingerprint frame and equivalence codec, fail closed when the requested algorithm differs from the registered producer algorithm, reject every caller-supplied equivalence class, reject unsupported or nonpositive resize bounds, bump artifact_algorithm_version for every possible bit change unless certified byte-equivalent, and never reuse an artifact input across an algorithm/resize/producer tuple change"
+adapter_relation = "artifact_adapter_policy"
+independent_parameters = ["adapter_id", "policy_fingerprint_sha256"]
+policy_framing = "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version=3) || u32be(artifact_algorithm_version) || lp32(adapter_id) || raw32(policy_fingerprint_sha256)"
+runtime_obligation = "construct the policy-v3 component from the core-owned neutral plan protocol version plus the adapter-issued identifier and complete policy fingerprint; exact-compare the registered pair and adapter runtime facts, and never inspect or persist concrete rendering, container, compression, rendition, provider, or storage-layout policy"
 
 [artifact_member_plan_contract]
 semantic_relation = "artifact_semantic_input"
@@ -1411,31 +1392,22 @@ component_attribute = "member_plan_component_sha256"
 component_kind = "member_plan"
 canonical_value_relation = "canonical_value_identity"
 canonical_digest_attribute = "value_sha256"
-plan_version = 1
-framing = "ascii('h2hdb-vnext-artifact-member-plan\\0') || u32be(plan_version) || u64be(entry_count) || repeated(u64be(entry_position) || u8(entry_kind) || u32be(source_name_length) || source_name_bytes || raw32(payload_sha256) || u64be(payload_size) || u8(source_role) || u8(excluded_flag) || u8(archive_name_presence) || if_present(u32be(archive_name_length) || archive_name_bytes) || u8(transform_kind))"
+plan_version = 2
+framing = "ascii('h2hdb-vnext-artifact-member-plan\\0') || u32be(plan_version) || u64be(entry_count) || repeated(u64be(source_position) || u32be(source_name_length) || source_name_bytes || raw32(source_file_sha256) || u64be(source_size_bytes) || u8(source_role))"
 entry_fields = [
-  "entry_position",
-  "entry_kind_source_file",
+  "source_position",
   "exact_source_name_bytes",
   "source_file_sha256",
   "source_size_bytes",
   "source_role",
-  "excluded_flag",
-  "optional_exact_archive_member_name_bytes_absent_when_excluded",
-  "transform_kind",
 ]
-archive_member_name_rule = "excluded entries have no archive name; otherwise lowerhex16(entry_position) || ascii('__') || leaf, where METADATA requires RAW_COPY and leaf metadata.txt, CONTENT/RAW_COPY leaf content.bin, CONTENT/GIF_NORMALIZE leaf content.gif, and CONTENT/JPEG_NORMALIZE leaf content.jpg"
-runtime_obligation = "construct exactly one member_plan component for every artifact input; entry_position starts at zero and is contiguous across every source entry including excluded entries; protocol version one admits no generated archive member and the ZIP comment is not a member; entry_kind is SOURCE_FILE=0; source_role is METADATA=0 or CONTENT=1 and is derived exactly from file_name_identity; excluded_flag and archive_name_presence are exactly 0 or 1; excluded entries have presence zero; derive archive_member_name_bytes only from entry_position/source_role/transform_kind/excluded_flag with artifact_archive_member_name and reject caller names or mismatched encoded proof bytes; transform_kind is RAW_COPY=0, GIF_NORMALIZE=1, or JPEG_NORMALIZE=2 and is derived from the exact case-insensitive ASCII suffix; every source_file_sha256 is collision-checked stored payload identity whose exact size and full bytes are rehashed, compared, and rejected on mismatch before immutable preparation seals; reject every unknown tag, impossible role/transform/presence combination, noncontiguous position, or trailing byte; first persist a bounded preflight/spool receipt proving entry_count, payload_byte_count and ordered projection, then replay through iter_artifact_member_plan_payload and artifact_member_plan_digest_ordered into canonical_value_digest_parts; build effective_content from an unsigned-bytewise keyset projection through iter_artifact_effective_content_payload_ordered and artifact_effective_content_digest_ordered; never materialize either full high-cardinality payload; recompute the canonical plan payload digest and require byte-for-byte equality on collision"
-ready_obligation = "before candidate seal and catalog publication, decode member_plan with the closed enum registry and prove exact equality with the ordered source snapshot, source sizes and rehashed payload identities, resolved per-file exclusion decisions, archive naming, and transform decisions; prove that no generated member exists and that the ZIP comment is not a member; separately reconstruct the unique ZIP comment envelope from the source_manifest and effective_content component digests; effective_content digest alone is never equality authority"
+runtime_obligation = "construct one version-2 plan with the unique adapter-issued METADATA observation first and every nonexcluded adapter-issued PAGE in increasing original file_no; OTHER and excluded PAGE observations remain covered by the sealed source manifest but are absent from render input and are never opened; persist exact position/name/digest/size/role only, with no archive name, transform, image, suffix, or container semantics; reject missing or duplicate metadata, unknown roles, duplicate/nonincreasing PAGE positions, more than 4096 pages, malformed/trailing bytes, or any mismatch with immutable observation and exclusion authority"
+ready_obligation = "before candidate seal and catalog publication, decode the complete plan and prove exact equality to the unique METADATA plus all and only nonexcluded PAGE observation positions; prove every OTHER position is covered but absent, every rendered page source_position equals the complete PAGE set exactly once with dense page_index, and core never opens OTHER bytes"
 
 [artifact_member_plan_enum]
-entry_kind = { SOURCE_FILE = 0 }
-source_role = { METADATA = 0, CONTENT = 1 }
-transform_kind = { RAW_COPY = 0, GIF_NORMALIZE = 1, JPEG_NORMALIZE = 2 }
-boolean_tags = { FALSE = 0, TRUE = 1 }
-position_rule = "entry_position equals zero-based array index without gaps"
-source_rule = "every v1 entry is a source file; exact nonempty source_name_bytes, raw32 source_file_sha256, and u64 source_size_bytes are always present; no generated identity or generated payload fields exist"
-transform_rule = "GIF_NORMALIZE iff exact source suffix casefolds to .gif; JPEG_NORMALIZE iff it casefolds to .avif/.bmp/.jpeg/.jpg/.png/.webp; RAW_COPY otherwise"
+source_role = { METADATA = 0, PAGE = 1 }
+position_rule = "the unique METADATA record is encoded first; PAGE source_position values retain original file_no and are strictly increasing without requiring adjacency"
+source_rule = "every v2 entry is an adapter-classified render source with exact nonempty source_name_bytes, raw32 source_file_sha256, and u64 source_size_bytes; OTHER has sealed observation coverage but no plan entry or opened stream"
 
 [[artifact_component_codec]]
 kind = "source_manifest"
@@ -1450,12 +1422,12 @@ golden_sha256 = "ba10d8d66e6eae463d8a23bf1547d16de02cedecdf03b3e76e4334cb736cf96
 [[artifact_component_codec]]
 kind = "member_plan"
 attribute = "member_plan_component_sha256"
-digest_domain = "artifact_member_plan_v1"
-codec_version = 1
+digest_domain = "artifact_member_plan_v2"
+codec_version = 2
 framing = "artifact_member_plan_contract.framing"
-canonical_order = "entry_position ascending over every source entry, including excluded entries; version one has no generated member"
-golden_payload_hex = "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e000000000100000000000000020000000000000000000000000f67616c6c657279696e666f2e747874000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000000007b0000010000001e303030303030303030303030303030305f5f6d657461646174612e7478740000000000000000010000000009494d4147452e474946fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0000000000000000001010001"
-golden_sha256 = "783a1b7b319bedd73edf61afa00cc9cd419ae34e9b85fe8f4c39bfae7c13f690"
+canonical_order = "the unique METADATA entry first, followed by PAGE entries in strictly increasing original source_position"
+golden_payload_hex = "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e0000000002000000000000000200000000000000000000000f67616c6c657279696e666f2e74787401010101010101010101010101010101010101010101010101010101010101010000000000000007000000000000000002000000073030312e6a70670202020202020202020202020202020202020202020202020202020202020202000000000000000901"
+golden_sha256 = "4954dca8f9c87765919ea922ec02c2ab364623d233600d32ec36556834e60f58"
 
 [[artifact_component_codec]]
 kind = "effective_content"
@@ -1490,12 +1462,12 @@ golden_sha256 = "32d8d54e00e421fd40af6c8ff6e5849dcefabe8bcfaa067dd16ba337677dd90
 [[artifact_component_codec]]
 kind = "policy"
 attribute = "policy_component_sha256"
-digest_domain = "artifact_policy_v2"
-codec_version = 2
-framing = "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version=2) || u32be(artifact_algorithm_version) || u32be(max_image_short_side) || raw32(producer_fingerprint_sha256)"
+digest_domain = "artifact_policy_v3"
+codec_version = 3
+framing = "artifact_adapter_policy_contract.policy_framing"
 canonical_order = "single fixed field order"
-golden_payload_hex = "68326864622d766e6578742d61727469666163742d706f6c696379000000000200000001000008000303030303030303030303030303030303030303030303030303030303030303"
-golden_sha256 = "055021f55a25bb338b14aa4423b3fee9f8f87ff9ea442e4283ae89db88f47a60"
+golden_payload_hex = "68326864622d766e6578742d61727469666163742d706f6c6963790000000003000000020000000f666978747572652d616461707465720303030303030303030303030303030303030303030303030303030303030303"
+golden_sha256 = "7b7f57411c129ea4532155aeca464d45b5c79fc71122c6ceda6fb4cb8e6c57c4"
 
 [artifact_semantics_codec]
 digest_domain = "artifact_semantics_v1"
@@ -1503,13 +1475,6 @@ codec_version = 1
 framing = "ascii('h2hdb-vnext-artifact-semantics\\0') || u32be(codec_version) || raw32(source_manifest_component_sha256) || raw32(member_plan_component_sha256) || raw32(effective_content_component_sha256) || raw32(selected_component_sha256) || raw32(owner_component_sha256) || raw32(policy_component_sha256)"
 golden_payload_hex = "68326864622d766e6578742d61727469666163742d73656d616e746963730000000001010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020303030303030303030303030303030303030303030303030303030303030303040404040404040404040404040404040404040404040404040404040404040405050505050505050505050505050505050505050505050505050505050505050606060606060606060606060606060606060606060606060606060606060606"
 golden_sha256 = "24e1140357d6956ded50b48db8ee90171c7eff0b1179c4cf3636cfaf3dda2047"
-
-[zip_comment_contract]
-codec_version = 1
-framing = "ascii('H2HDB-ZIP-COMMENT\\0') || u32be(codec_version) || raw32(source_manifest_component_sha256) || raw32(effective_content_component_sha256)"
-write_obligation = "write exactly one composite ZIP comment envelope; source_manifest and effective_content remain distinct canonical component payloads and neither is claimed to equal the whole envelope"
-golden_payload_hex = "48324844422d5a49502d434f4d4d454e54000000000101010101010101010101010101010101010101010101010101010101010101010303030303030303030303030303030303030303030303030303030303030303"
-golden_payload_sha256 = "3acf99d73b12b308c807b543d62d43941cf8a530b0fadfc915bf735d614b59d0"
 
 [publication_atomic_contract]
 candidate_relation = "publication_candidate"
@@ -1527,11 +1492,11 @@ revision_relation = "catalog_revision"
 head_relation = "publication_head"
 finalization_stage = "FINALIZE_ARTIFACTS"
 selection_rule = "BUILD_SELECTION streams every immutable source_build_gallery member of candidate.analysis_id in unsigned positive gallery_id keyset order and inserts a row if and only if the gallery is its analysis_content_owner_resolved owner for its nonexcluded effective CONTENT digest, treating a gallery with no nonexcluded CONTENT digest as its own owner, and the same gallery is the analysis_gid_winner_resolved winner for its exact metadata GID; derive publication_key only with publication-key.v1 from that positive GID; publication_selection stores no audit digest; VALIDATE_SELECTION independently streams the same predicate, exact merge-compares candidate_id, gallery_id, and publication_key against the materialization, and only its empty terminal receipt owns publication_count"
-cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6,DOWNLOAD_TIME=7) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact/download-time and u64be(position) for order/contributor/subject; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
+cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_resource_v2 is empty at genesis or exact raw32(publication_key) || u8(registered resource-kind tag, acquisition=0 and thumbnail=1), ordered by publication_key then resource_kind and round-tripped through the public typed cursor; publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6,DOWNLOAD_TIME=7) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact/download-time and u64be(position) for order/contributor/subject; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
 batch_rule = "the registry remains exactly seventeen ordered stages, with candidate-owned wide checkpoints only for the first sixteen; FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint. Every maximum-128 candidate batch locks one wide checkpoint, derives the next exact server-side keyset page, inserts one immutable wide current receipt under both generation and batch candidate keys, generation-CASes the complete wide checkpoint, and deletes the safely acknowledged predecessor receipt in the same bounded transaction. The read-only current receipt projection derives committed_generation, next_processed_count, terminal and next_state; exact retained batch-key or generation replay compares every field with zero DML. Once an exact successor or terminal projection handoff is durable, the superseded receipt is pruned and an older retry returns stale/not-found with zero DML; no time-based replay window or lifetime history is retained. Terminal is exactly an empty page with unchanged cursor/count and COMPLETE next state; every nonterminal page has positive row_count and OPEN next state; caller values never authorize mutation"
 projection_seal_rule = "after VALIDATE_DUPLICATE_LOSER becomes COMPLETE, one short certification transaction locks the candidate definition seal and terminal checkpoints for VALIDATE_SELECTION, VALIDATE_CATALOG_PROJECTION, VALIDATE_ARTIFACT_INPUT_DELTA, VALIDATE_PREPARED_ARTIFACT, VALIDATE_CREATE, VALIDATE_REBUILD, VALIDATE_DELETE, VALIDATE_UNCHANGED, VALIDATE_NEW_GALLERY, VALIDATE_CHANGED_GALLERY, VALIDATE_REMOVED_GALLERY, and VALIDATE_DUPLICATE_LOSER; require VALIDATE_CATALOG_PROJECTION terminal COMPLETE after its independent exact child merge but never compare its child processed_count with publication count; take publication_count only from terminal VALIDATE_SELECTION, require prepared_artifact_count equals create_count plus rebuild_count, and require artifact_input_count equals create_count plus rebuild_count plus unchanged_count; insert only the PK-only publication_candidate_projection_seal certification marker after all equations hold, so graph-derived candidate lifecycle becomes SEALED; the logical projection derives only create_count, rebuild_count, delete_count, new_galleries, and changed_galleries by fixed O(1) terminal-receipt joins, while every other receipt-owned count remains derived at its authority; never copy terminal validation scalars; never SUM receipts or child relations, trust an audit digest, or seal from a BUILD stage"
-finalization_rule = "after the initial pointer transaction inserts a reader-invisible DB_COMMITTED successor without changing the common head, the external library adapter activates stable GID storage-key pages in batches of at most 128 and reconciles at most 128 installs or removals per call until its durable checkpoint reports READY. Only then FINALIZE_ARTIFACTS uses the permanent receipt-owned wide checkpoint: issue reads one exact generation and bounded PREPARED page without mutation; external token release is idempotent; commit exact-revalidates acknowledgements, advances only acknowledged rows, inserts one immutable wide current finalization receipt, generation-CASes the complete wide checkpoint, and deletes its safely acknowledged predecessor in one bounded transaction. Retained batch-key or start-generation replay returns the exact derived response with zero DML; pruned retries return stale/not-found. The empty terminal transaction writes the COMPLETE checkpoint and PUBLISHED marker, CASes the common head, and exact-deletes both working roots atomically, retaining that terminal current receipt so its committed_at remains finalized_at authority; the subsequent adapter COMPLETE call is idempotent and response loss resumes cleanup without republishing; no arbitrary historical receipt, MAX, marker timestamp or transient candidate state is accepted"
-runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; publish the selected observation download_time as one immutable occurrence-key child for every selected publication and independently exact-compare it before sealing; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes, artifact old/new delta classification, prepared artifact byte digest/size/member plan/exact ZIP comment and bounded protection token; derive every exact four-segment stable storage key from the positive GID, validate the complete artifact_storage_key_bytes_v1 frame is at most 4096 bytes, stream it through iter_artifact_storage_key_payload exactly as u32be(codec_version=1) || u32be(segment_count) || repeated(u32be(segment_utf8_length) || strict_utf8_segment), and reject caller components, empty/dot/NUL/separator segments, alternate codecs, or noncanonical shards; readers validate exact EOF within the same 4096-byte cap before exposing a segment; the monolithic digest helpers are bounded convenience oracles and never the production write path for arbitrary summary/language bytes; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, the terminal finalization transaction compares the candidate-pinned base head and CASes the PUBLISHED revision while deleting the exact working roots; compare every immutable revision child field and digest/count before sealing the projection; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
+finalization_rule = "after the initial pointer transaction inserts a reader-invisible DB_COMMITTED successor without changing the common head, the external library adapter activates adapter-issued opaque storage-object pages in batches of at most 128 and reconciles at most 128 installs or removals per call until its durable checkpoint reports READY. Only then FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint and typed publication_resource_v2 cursor: issue exact-loads the sealed immutable prepared-resource set in (publication_key, resource_kind) order with LIMIT 129, returns at most 128 resources without mutation, and proves every returned token, key, digest, size and generation from durable authority; external token release is idempotent; commit exact-revalidates acknowledgements, compare-and-swaps each acknowledged resource, advances the typed cursor, inserts one immutable current finalization receipt, generation-CASes the checkpoint, and deletes its safely acknowledged predecessor in one bounded transaction. No publication-count scalar is reinterpreted as a resource count. Terminal is authorized only when the locked cursor suffix contains zero resources after all prior pages completed their per-resource atomic CAS; that empty transaction writes the COMPLETE checkpoint and PUBLISHED marker, CASes the common head, and exact-deletes both working roots atomically. Retained batch-key or start-generation replay returns the exact derived response with zero DML; pruned retries return stale/not-found; the retained terminal receipt owns finalized_at and response loss resumes cleanup without republishing."
+runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; publish the selected observation download_time as one immutable occurrence-key child for every selected publication and independently exact-compare it before sealing; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes plus artifact old/new delta classification; consume only adapter-issued neutral render evidence, establish the core-recomputed resource byte digest/size from a bounded core-owned destination, persist prepared_resource_blob authority before external protection, and exact-validate each acquisition plus optional thumbnail bundle, dense page_index sequence, and every extent end within its sealed storage object; derive each bounded protection token from locked resource facts; obtain every adapter-issued storage key through the storage-object-key v2 framing, require the complete frame to be at most 4096 bytes, encode u32be(segment_count) plus length-prefixed strict_utf8_segment values, and reject unsafe segments, malformed framing, trailing bytes, or any non-exact EOF; confirm each protected resource only after its exact object digest/size matches the pre-protection blob authority; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, typed resource-cursor finalization exact-compares every immutable resource, compares the candidate-pinned base head, CASes the PUBLISHED revision, and deletes the exact working roots; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
 
 [[publication_atomic_contract.batch_stage]]
 name = "BUILD_SELECTION"
@@ -1648,9 +1613,9 @@ sealed_scalar = "duplicate_losers"
 [[publication_atomic_contract.batch_stage]]
 name = "FINALIZE_ARTIFACTS"
 stage_order = 17
-cursor_codec = "publication_key_v1"
+cursor_codec = "publication_resource_v2"
 prerequisite = "publication_receipt_DB_COMMITTED"
-sealed_scalar = "finalized_artifact_count"
+sealed_scalar = "NONE"
 
 [title_sort_contract]
 policy_relation = "title_sort_policy"
@@ -1953,21 +1918,20 @@ ready_check = "catalog_refinement.check_artifact_semantics_v1"
 writer_hook = "catalog_writer.validate_artifact_semantics"
 writer_hook_version = 1
 scope = "catalog.artifact-semantics"
-relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_blob", "prepared_artifact", "publication_identity"]
+relations = ["artifact_adapter_policy", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_blob", "catalog_resource_kind", "storage_object_key_identity", "storage_object_key_segment", "prepared_artifact", "prepared_resource_blob", "prepared_storage_object", "prepared_artifact_descriptor", "prepared_page", "prepared_thumbnail", "catalog_artifact", "catalog_storage_object", "catalog_page", "catalog_thumbnail", "publication_identity"]
 covers = [
   "machine_contract.artifact-semantics",
   "artifact_delta_contract.rebuild_rule",
   "artifact_delta_contract.unchanged_rule",
   "artifact_delta_contract.rename_rule",
-  "artifact_byte_producer_contract.runtime_obligation",
+  "artifact_adapter_policy_contract.runtime_obligation",
   "artifact_member_plan_contract.runtime_obligation",
   "artifact_member_plan_contract.ready_obligation",
   "byte_domain.artifact_name.runtime_obligation",
-  "artifact_name_contract.runtime_obligation",
   "artifact_storage_key_contract.runtime_obligation",
   "artifact_protection_token_contract.runtime_obligation",
 ]
-description = "Validate all six exact component codecs, policy-v2 producer semantics, the collision-checked stored producer and six-tuple semantic identities, GID-derived names and stable storage keys, fixed protection tokens, old/new classification, archive member naming/plan, artifact bytes, and the single composite ZIP comment envelope."
+description = "Validate all six exact component codecs, neutral policy-v3 adapter identity, opaque storage keys, fixed generic protection tokens, old/new classification, adapter-issued source roles, complete render coverage, and independently hashed artifact bytes without interpreting container or image semantics."
 
 [[semantic_obligation]]
 id = "catalog.publication-atomicity.v1"
@@ -1978,7 +1942,7 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication_download_time", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "prepared_resource_blob", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication_download_time", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
 covers = [
   "machine_contract.publication-atomicity",
   "publication_atomic_contract.selection_rule",
@@ -1997,6 +1961,29 @@ covers = [
   "byte_domain.batch_key.runtime_obligation",
 ]
 description = "Recompute publication and artifact identities, validate the exact selected/artifact/revision projections and policy/channel pins, then atomically insert the catalog generation seal, advance the split head from revision-only bases, and persist a receipt keyed by its published catalog and source revisions."
+
+[[semantic_obligation]]
+id = "catalog.discovery-exactness.v1"
+version = 1
+class = "projection_exactness"
+lifecycle = "ready_and_runtime"
+ready_check = "catalog_refinement.check_discovery_exactness_v1"
+writer_hook = "catalog_writer.validate_discovery_projection"
+writer_hook_version = 1
+scope = "catalog.discovery-exactness"
+relations = ["channel_registry", "publication_commit_head", "catalog_revision_descriptor", "catalog_revision", "catalog_publication", "catalog_publication_title", "catalog_contributor", "catalog_subject", "tag_term", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "search_policy", "search_lexeme", "search_document", "search_posting", "discovery_seal", "language_facet_order", "subject_facet_order", "contributor_facet_order"]
+covers = [
+  "machine_contract.discovery-exactness",
+  "search_policy.rationale",
+  "search_lexeme.materialization",
+  "search_document.materialization",
+  "search_posting.materialization",
+  "discovery_seal.materialization",
+  "language_facet_order.materialization",
+  "subject_facet_order.materialization",
+  "contributor_facet_order.materialization",
+]
+description = "Before accepting READY, independently stream-validate the active revision's exact canonical title, contributor, subject, language and lexeme bytes; rerun the pinned Unicode tokenizer into a disk-backed bounded plan; compare every document and posting by keyset page; and prove all three facet identities, counts, dense positions and canonical byte orders have no omission or excess even after transient candidate state is reclaimed."
 
 [[semantic_obligation]]
 id = "catalog.state-machines.v1"
@@ -2025,12 +2012,13 @@ ready_check = "catalog_refinement.check_role_derivation_v1"
 writer_hook = "catalog_writer.validate_file_role"
 writer_hook_version = 1
 scope = "catalog.role-derivation"
-relations = ["file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation_file_hash_occurrence"]
+relations = ["file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation_file_hash_occurrence"]
 covers = [
   "machine_contract.role-derivation",
   "file_identity_contract.write_obligation",
   "file_identity_contract.read_obligation",
   "byte_domain.file_role.runtime_obligation",
+  "byte_domain.artifact_role.runtime_obligation",
 ]
 description = "Derive METADATA iff the exact file-name bytes equal galleryinfo.txt, classify all other valid names CONTENT, and join that authority before hash-occurrence and artist-contribution derivation."
 
@@ -2068,16 +2056,35 @@ relations = [
   "gallery_observation_file_anchor",
   "gallery_observation_file_file_no",
   "gallery_observation_file_file_sha256",
+  "gallery_observation_file_artifact_role",
   "gallery_observation_file_seal",
   "gallery_manifest",
   "tag_term",
   "source_snapshot_manifest_identity",
   "publication_identity",
-  "artifact_producer_fingerprint",
-  "artifact_storage_codec",
+  "artifact_adapter_policy",
   "artifact_semantic_input",
+  "catalog_resource_kind",
+  "storage_object_key_identity",
+  "storage_object_key_segment",
   "prepared_artifact",
+  "prepared_resource_blob",
+  "prepared_storage_object",
+  "prepared_artifact_descriptor",
+  "prepared_page",
+  "prepared_thumbnail",
   "catalog_artifact",
+  "catalog_storage_object",
+  "catalog_page",
+  "catalog_thumbnail",
+  "search_policy",
+  "search_lexeme",
+  "search_document",
+  "search_posting",
+  "discovery_seal",
+  "language_facet_order",
+  "subject_facet_order",
+  "contributor_facet_order",
   "gallery_observation_page",
   "gallery_observation_allocation_page",
   "gallery_observation_page_descriptor_anchor",
@@ -2141,7 +2148,6 @@ relations = [
   "publication_finalization_checkpoint",
   "publication_finalization_batch_receipt_stored",
   "publication_finalization_batch_receipt",
-  "artifact_zip_writer_policy",
   "artifact_policy_semantics",
   "artifact_policy",
   "artifact_input",
@@ -2186,14 +2192,12 @@ covers = [
   "byte_domain.next_cursor.runtime_obligation",
   "byte_domain.protection_token.runtime_obligation",
   "byte_domain.adapter_id.runtime_obligation",
-  "byte_domain.producer_equivalence_class.runtime_obligation",
-  "byte_domain.writer_id.runtime_obligation",
-  "byte_domain.python_abi.runtime_obligation",
-  "byte_domain.pillow_build.runtime_obligation",
-  "byte_domain.libjpeg_build.runtime_obligation",
-  "byte_domain.zlib_build.runtime_obligation",
+  "byte_domain.key_codec.runtime_obligation",
+  "byte_domain.key_segment.runtime_obligation",
+  "byte_domain.media_type.runtime_obligation",
+  "byte_domain.resource_kind.runtime_obligation",
 ]
-description = "Validate exact storage classes, fixed binary widths, bounded key bytes, the exact 40-byte discovery fingerprint, stage-specific cursors capped at 2048 bytes, artifact protection tokens fixed at 184 bytes, closed producer/storage/contributor-role registry fields, unsigned logical counters, zero-based file ordinals, and the shared 0..2^63-1 Unix-microsecond timestamp domain on both backends; every canonical/page/gallery/file/tag/analysis-run/component/delta/shadow/impacted-key and complete publication-graph relation from candidate definition through the retained current terminal finalization receipt, catalog publication/title/content/contributor/subject/artifact occurrence, immutable commit and derived head names its physical members plus read-only views, so no B8 writer, reader, finalizer or cleanup mutation escapes the closed authority set, while strict publication/artifact codecs derive external identifiers and arbitrary locator bytes appear only through canonical references."
+description = "Validate exact storage classes, fixed binary widths, bounded opaque storage keys, the exact 40-byte discovery fingerprint, stage-specific cursors capped at 2048 bytes, neutral protection digests fixed at 32 bytes, safe MIME/download leaves, closed resource/contributor-role registries, int63 counters and timestamps on both backends; the complete publication and presentation graph names every physical member and read-only view so no writer, reader, finalizer, or cleanup mutation escapes the closed authority set."
 
 [[semantic_obligation]]
 id = "catalog.bootstrap.v1"
@@ -2204,7 +2208,7 @@ ready_check = "catalog_refinement.check_bootstrap_v1"
 writer_hook = "schema_epoch.write_catalog_bootstrap"
 writer_hook_version = 1
 scope = "catalog.bootstrap"
-relations = ["canonical_digest_policy", "channel_registry", "source_provider_registry"]
+relations = ["canonical_digest_policy", "channel_registry", "source_provider_registry", "search_policy"]
 covers = ["machine_contract.bootstrap"]
 description = "During BUILDING only, insert and exact-validate the schema-owned canonical digest domains, the single default channel, and the single filesystem source provider; after READY these rows are ordinary immutable schema-version registry state, not recurring genesis assertions."
 
@@ -2217,7 +2221,7 @@ ready_check = "catalog_refinement.check_retention_contract_v2"
 writer_hook = "catalog_writer.validate_retention_transition"
 writer_hook_version = 2
 scope = "catalog.retention"
-relations = ["source_head", "publication_head", "publication_commit_head_receipt", "publication_commit_anchor", "publication_commit", "publication_generation_node", "publication_generation_successor", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_commit_finalization", "catalog_revision_descriptor", "source_revision_descriptor", "publication_candidate", "publication_receipt", "source_build_descriptor", "source_build", "analysis_run_descriptor", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term", "catalog_revision"]
+relations = ["source_head", "publication_head", "publication_commit_head_receipt", "publication_commit_anchor", "publication_commit", "publication_generation_node", "publication_generation_successor", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_commit_finalization", "catalog_revision_descriptor", "source_revision_descriptor", "publication_candidate", "publication_receipt", "source_build_descriptor", "source_build", "analysis_run_descriptor", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term", "catalog_revision"]
 covers = ["machine_contract.retention", "canonical_value_page_contract.cleanup_rule", "gallery_observation_page_contract.cleanup_rule"]
 description = "Validate current-head, active-working, pending-effect, protection, receipt and overlay-descendant blockers; enforce state-based receipt pruning and every exported child-first phase DAG; compact unreachable publication commits, descriptors and generation prefixes after replacement finalization; and retain no time-based or lifetime history."
 
@@ -2237,7 +2241,7 @@ relations = ["analysis_content_owner_candidate_resolved", "analysis_content_owne
 [[canonical_reference_role]]
 attribute = "contributor_name_sha256"
 digest_domain = "contributor_name_utf8_v1"
-relations = ["catalog_contributor"]
+relations = ["catalog_contributor", "contributor_facet_order"]
 
 [[canonical_reference_role]]
 attribute = "effective_content_component_sha256"
@@ -2252,11 +2256,11 @@ relations = ["gallery_identity", "source_locator_identity"]
 [[canonical_reference_role]]
 attribute = "language_sha256"
 digest_domain = "catalog_language_utf8_v1"
-relations = ["catalog_publication_storage"]
+relations = ["catalog_publication_storage", "language_facet_order"]
 
 [[canonical_reference_role]]
 attribute = "member_plan_component_sha256"
-digest_domain = "artifact_member_plan_v1"
+digest_domain = "artifact_member_plan_v2"
 relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
@@ -2271,7 +2275,7 @@ relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "policy_component_sha256"
-digest_domain = "artifact_policy_v2"
+digest_domain = "artifact_policy_v3"
 relations = ["artifact_policy", "artifact_policy_semantics", "artifact_semantic_input"]
 
 [[canonical_reference_role]]
@@ -2366,18 +2370,6 @@ id = "catalog.contributor-role.uploader.v1"
 relation = "contributor_role_registry"
 columns = ["role"]
 values = ["uploader"]
-
-[[bootstrap_seed]]
-id = "catalog.artifact-zip-writer-policy.v1"
-relation = "artifact_zip_writer_policy"
-columns = ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
-values = ["1", "1", "8", "9", "33", "0", "33188", "2048", "3", "1", "1"]
-
-[[bootstrap_seed]]
-id = "catalog.artifact-storage-codec.managed-filesystem.v1"
-relation = "artifact_storage_codec"
-columns = ["storage_codec_version", "adapter_id", "storage_key_codec_version", "protection_token_codec_version"]
-values = ["1", "managed-filesystem", "1", "1"]
 
 [[bootstrap_seed]]
 id = "catalog.analysis-stage.changed-gallery.v1"
@@ -2569,7 +2561,7 @@ values = ["VALIDATE_DUPLICATE_LOSER", "16", "publication_gallery_v1"]
 id = "catalog.publication-stage.finalize-artifacts.v1"
 relation = "publication_stage"
 columns = ["stage", "stage_order", "cursor_codec"]
-values = ["FINALIZE_ARTIFACTS", "17", "publication_key_v1"]
+values = ["FINALIZE_ARTIFACTS", "17", "publication_resource_v2"]
 
 [[bootstrap_seed]]
 id = "catalog.publication-generation.genesis.v1"
@@ -2578,22 +2570,34 @@ columns = ["generation"]
 values = ["0"]
 
 [[bootstrap_seed]]
+id = "catalog.resource-kind.acquisition.v2"
+relation = "catalog_resource_kind"
+columns = ["resource_kind"]
+values = ["acquisition"]
+
+[[bootstrap_seed]]
+id = "catalog.resource-kind.thumbnail.v2"
+relation = "catalog_resource_kind"
+columns = ["resource_kind"]
+values = ["thumbnail"]
+
+[[bootstrap_seed]]
 id = "catalog.digest-domain.artifact-effective-content.v1"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
 values = ["artifact_effective_content_v1"]
 
 [[bootstrap_seed]]
-id = "catalog.digest-domain.artifact-storage-key.v1"
+id = "catalog.digest-domain.storage-object-key.v2"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
-values = ["artifact_storage_key_bytes_v1"]
+values = ["storage_object_key_v2"]
 
 [[bootstrap_seed]]
-id = "catalog.digest-domain.artifact-member-plan.v1"
+id = "catalog.digest-domain.artifact-member-plan.v2"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
-values = ["artifact_member_plan_v1"]
+values = ["artifact_member_plan_v2"]
 
 [[bootstrap_seed]]
 id = "catalog.digest-domain.artifact-owner.v1"
@@ -2602,10 +2606,10 @@ columns = ["digest_domain"]
 values = ["artifact_owner_v1"]
 
 [[bootstrap_seed]]
-id = "catalog.digest-domain.artifact-policy.v2"
+id = "catalog.digest-domain.artifact-policy.v3"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
-values = ["artifact_policy_v2"]
+values = ["artifact_policy_v3"]
 
 [[bootstrap_seed]]
 id = "catalog.digest-domain.artifact-selected.v1"
@@ -2709,6 +2713,18 @@ relation = "canonical_digest_policy"
 columns = ["digest_domain"]
 values = ["title_sort_utf8_v1"]
 
+[[bootstrap_seed]]
+id = "catalog.digest-domain.search-lexeme.v1"
+relation = "canonical_digest_policy"
+columns = ["digest_domain"]
+values = ["search_lexeme_utf8_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.search-policy.discovery.v1"
+relation = "search_policy"
+columns = ["policy_id", "algorithm_version", "unicode_data_version", "maximum_field_nfd_bytes", "maximum_query_nfd_bytes", "maximum_lexeme_bytes", "maximum_query_lexemes"]
+values = ["1", "2", "16.0.0", "65536", "1024", "64", "16"]
+
 # FD-sensitive names are classified explicitly.  In particular, an audit or
 # The observational digest has no identity authority and therefore implies no FD.
 # Only canonical_identity_digest and payload_digest carry identity semantics.
@@ -2743,24 +2759,34 @@ classification = "payload_digest"
 rationale = "Domain-separated digest of immutable artifact bytes; artifact_blob is the sole digest-to-size authority."
 
 [[attribute_semantic]]
-name = "producer_fingerprint_sha256"
+name = "storage_object_key_sha256"
+classification = "canonical_identity_digest"
+rationale = "Core-recomputed canonical digest of the complete bounded adapter-issued storage-key v2 frame; collisions require full header and ordered-segment comparison."
+
+[[attribute_semantic]]
+name = "storage_object_sha256"
+classification = "comparator_digest"
+rationale = "Exact SHA-256 integrity comparator for one immutable protected storage object; the owning resource occurrence and opaque key remain its durable identity."
+
+[[attribute_semantic]]
+name = "image_sha256"
+classification = "comparator_digest"
+rationale = "Exact SHA-256 integrity comparator for the logical image bytes identified by one bounded extent; it is never treated as a global image identity."
+
+[[attribute_semantic]]
+name = "segment_count"
+classification = "aggregate_count"
+rationale = "Exact bounded number of opaque storage-key segments; runtime proves positions 0..count-1 before use."
+
+[[attribute_semantic]]
+name = "policy_fingerprint_sha256"
 classification = "payload_digest"
-rationale = "Raw SHA-256 identity of the exact versioned five-field producer/build frame; its collision-checked registry row supplies algorithm and certified-equivalence metadata."
+rationale = "Adapter-issued complete opaque identity of all concrete rendering, archive, derivative, and storage behavior; core validates only the exact 32-byte digest and its registered adapter binding."
 
 [[attribute_semantic]]
 name = "adapter_id"
 classification = "natural_key"
-rationale = "Exact closed artifact-storage adapter identifier equivalent to storage_codec_version."
-
-[[attribute_semantic]]
-name = "producer_equivalence_class"
-classification = "domain_discriminator"
-rationale = "Registered byte-equivalence certification class scoped by artifact algorithm and exact producer build tuple."
-
-[[attribute_semantic]]
-name = "writer_id"
-classification = "natural_key"
-rationale = "Exact artifact writer implementation identifier included in the collision-checked producer fingerprint frame."
+rationale = "Exact bounded identifier for a consumer-owned artifact adapter; one adapter may register multiple immutable policy fingerprints."
 
 [[attribute_semantic]]
 name = "artifact_semantics_sha256"
@@ -2775,7 +2801,7 @@ rationale = "Canonical exact-byte identity of the versioned artifact source-mani
 [[attribute_semantic]]
 name = "member_plan_component_sha256"
 classification = "payload_reference_digest"
-rationale = "Canonical exact-byte identity of the complete ordered artifact member plan, including excluded entries."
+rationale = "Canonical exact-byte identity of the unique METADATA plus ordered nonexcluded PAGE render plan; OTHER remains covered only by the source observation."
 
 [[attribute_semantic]]
 name = "effective_content_component_sha256"
@@ -2785,12 +2811,12 @@ rationale = "Canonical exact-byte identity of the ordered repeated effective-con
 [[attribute_semantic]]
 name = "artifact_policy_id"
 classification = "surrogate_identifier"
-rationale = "Opaque artifact-policy identifier mapped one-to-one to the policy-v2 component whose BCNF natural key is max_image_short_side plus producer_fingerprint_sha256; artifact_algorithm_version is derived from that registered producer and remains part of the canonical policy-v2 frame without being stored twice."
+rationale = "Opaque artifact-policy identifier mapped one-to-one to the policy-v3 component whose BCNF natural key is the neutral core protocol version plus adapter policy fingerprint."
 
 [[attribute_semantic]]
 name = "artifact_name"
 classification = "natural_key"
-rationale = "Strict derived h2h-<positive canonical-decimal GID>.cbz representation; it round-trips to the stored publication identity GID but is never stored and is not declared as a relational candidate key."
+rationale = "Adapter-issued bounded safe UTF-8 download leaf, stored and exact-compared as immutable catalog artifact metadata; core does not derive an extension or container name."
 
 [[attribute_semantic]]
 name = "artifact_input_count"
@@ -3206,6 +3232,26 @@ rationale = "Exact immutable number of UNCHANGED artifact decisions independentl
 name = "winner_gallery_id"
 classification = "domain_identifier"
 rationale = "Reference to the selected GID winner, unique only under the decision relation key."
+
+[[attribute_semantic]]
+name = "maximum_field_nfd_bytes"
+classification = "aggregate_count"
+rationale = "Provider-seeded canonical-NFD UTF-8 budget for one complete indexed field; an over-budget field is omitted as a whole."
+
+[[attribute_semantic]]
+name = "maximum_query_nfd_bytes"
+classification = "aggregate_count"
+rationale = "Provider-seeded canonical-NFD UTF-8 query budget preserving canonical equivalence."
+
+[[attribute_semantic]]
+name = "maximum_lexeme_bytes"
+classification = "aggregate_count"
+rationale = "Provider-seeded hard maximum for every normalized search lexeme."
+
+[[attribute_semantic]]
+name = "maximum_query_lexemes"
+classification = "aggregate_count"
+rationale = "Provider-seeded hard maximum of unique normalized lexemes in one discovery query."
 
 [[relation]]
 name = "canonical_digest_policy"
@@ -4001,6 +4047,17 @@ foreign_keys = [
 rationale = "Store the immutable collision-checked content digest as the sole fact beside its observation/file-name key."
 
 [[relation]]
+name = "gallery_observation_file_artifact_role"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "file_key", "artifact_role"]
+declared_keys = [["gallery_id", "observation_id", "file_key"]]
+fds = [{ determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["artifact_role"] }]
+foreign_keys = [
+  { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_anchor", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
+]
+rationale = "Persist the consumer adapter's immutable observation-v2 interpretation separately from filename identity; PAGE eligibility and OTHER exclusion are not core filename or image semantics."
+
+[[relation]]
 name = "gallery_observation_file_seal"
 kind = "source_of_truth"
 attributes = ["gallery_id", "observation_id", "file_key"]
@@ -4010,22 +4067,23 @@ foreign_keys = [
   { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_anchor", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
   { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_file_no", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
   { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_file_sha256", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
+  { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_artifact_role", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
 ]
-rationale = "PK-only completion seal inserted after the unique ordinal and content digest facts exist."
+rationale = "PK-only completion seal inserted after the unique ordinal, content digest, and adapter-issued artifact role facts exist."
 
 [[relation]]
 name = "gallery_observation_file"
 kind = "controlled_materialization"
-attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"]
+attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256", "artifact_role"]
 declared_keys = [["gallery_id", "observation_id", "file_key"], ["gallery_id", "observation_id", "file_no"]]
 fds = [
-  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
-  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
+  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256", "artifact_role"] },
+  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256", "artifact_role"] },
 ]
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_seal", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
 ]
-materialization = { authoritative = false, storage = "inline_projection", rationale = "Preserve the historical observation-file read shape while hiding every incomplete ordinal or digest family.", derived_from = ["gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal"], refresh_strategy = "read-only inline sealed vertical join" }
+materialization = { authoritative = false, storage = "inline_projection", rationale = "Expose only complete observation files whose ordinal, digest, and adapter-issued artifact role were sealed together.", derived_from = ["gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_seal"], refresh_strategy = "read-only inline sealed vertical join" }
 
 [[relation]]
 name = "gallery_observation_file_filesystem_anchor"
@@ -5127,40 +5185,21 @@ foreign_keys = [{ attributes = ["receipt_id", "start_generation"], relation = "p
 materialization = { authoritative = false, storage = "logical_view", view_pattern = "batch_receipt_derived", rationale = "Project the retained current FINALIZE_ARTIFACTS response from one wide immutable commit-owned row; the terminal current row remains finalization authority.", derived_from = ["publication_finalization_batch_receipt_stored"], refresh_strategy = "read-only non-materialized projection with checked int63 addition and terminal CASE" }
 
 [[relation]]
-name = "artifact_zip_writer_policy"
+name = "artifact_adapter_policy"
 kind = "source_of_truth"
-attributes = ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
-declared_keys = [["artifact_algorithm_version"], ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]]
-referential_unique_keys = [["artifact_algorithm_version", "zip_codec_version"], ["artifact_algorithm_version", "compression_method"], ["artifact_algorithm_version", "compression_level"], ["artifact_algorithm_version", "dos_date"], ["artifact_algorithm_version", "dos_time"], ["artifact_algorithm_version", "unix_mode"], ["artifact_algorithm_version", "general_purpose_flags"], ["artifact_algorithm_version", "create_system"], ["artifact_algorithm_version", "archive_name_codec_version"], ["artifact_algorithm_version", "artifact_name_codec_version"]]
-fds = [{ determinant = ["artifact_algorithm_version"], dependent = ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] }, { determinant = ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent = ["artifact_algorithm_version"] }]
-rationale = "Store the complete artifact_zip_writer_policy tuple atomically. Every declared nontrivial determinant is a candidate key, so recomposition removes partial-family states while preserving BCNF."
-
-[[relation]]
-name = "artifact_producer_fingerprint"
-kind = "source_of_truth"
-attributes = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
-declared_keys = [["producer_fingerprint_sha256"], ["producer_equivalence_class"], ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]]
-fds = [{ determinant = ["producer_fingerprint_sha256"], dependent = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] }, { determinant = ["producer_equivalence_class"], dependent = ["producer_fingerprint_sha256", "artifact_algorithm_version", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] }, { determinant = ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class"] }]
-foreign_keys = [{ attributes = ["artifact_algorithm_version"], relation = "artifact_zip_writer_policy", referenced_attributes = ["artifact_algorithm_version"] }]
-rationale = "Store the complete artifact_producer_fingerprint tuple atomically. Every declared nontrivial determinant is a candidate key, so recomposition removes partial-family states while preserving BCNF."
-
-[[relation]]
-name = "artifact_storage_codec"
-kind = "source_of_truth"
-attributes = ["storage_codec_version", "adapter_id", "storage_key_codec_version", "protection_token_codec_version"]
-declared_keys = [["storage_codec_version"], ["adapter_id"]]
-fds = [{ determinant = ["storage_codec_version"], dependent = ["adapter_id", "storage_key_codec_version", "protection_token_codec_version"] }, { determinant = ["adapter_id"], dependent = ["storage_codec_version", "storage_key_codec_version", "protection_token_codec_version"] }]
-rationale = "Store the complete artifact_storage_codec tuple atomically. Every declared nontrivial determinant is a candidate key, so recomposition removes partial-family states while preserving BCNF."
+attributes = ["policy_fingerprint_sha256", "adapter_id"]
+declared_keys = [["policy_fingerprint_sha256"]]
+fds = [{ determinant = ["policy_fingerprint_sha256"], dependent = ["adapter_id"] }]
+rationale = "Register the consumer adapter's complete opaque artifact-policy fingerprint and bounded identifier. Multiple immutable fingerprints may belong to one adapter ID; core never decomposes the policy into image, archive, or storage-layout facts."
 
 [[relation]]
 name = "artifact_policy_semantics"
 kind = "source_of_truth"
-attributes = ["policy_component_sha256", "max_image_short_side", "producer_fingerprint_sha256"]
-declared_keys = [["policy_component_sha256"], ["max_image_short_side", "producer_fingerprint_sha256"]]
-referential_unique_keys = [["policy_component_sha256", "max_image_short_side"], ["policy_component_sha256", "producer_fingerprint_sha256"]]
-fds = [{ determinant = ["policy_component_sha256"], dependent = ["max_image_short_side", "producer_fingerprint_sha256"] }, { determinant = ["max_image_short_side", "producer_fingerprint_sha256"], dependent = ["policy_component_sha256"] }]
-foreign_keys = [{ attributes = ["policy_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }, { attributes = ["producer_fingerprint_sha256"], relation = "artifact_producer_fingerprint", referenced_attributes = ["producer_fingerprint_sha256"] }]
-rationale = "Store the irreducible artifact-policy semantic tuple atomically. producer_fingerprint_sha256 determines artifact_algorithm_version in artifact_producer_fingerprint, so repeating that value here would create a non-key determinant and violate BCNF. The policy digest still commits to the joined algorithm, maximum image side and producer fingerprint; both declared local determinants are candidate keys."
+attributes = ["policy_component_sha256", "artifact_algorithm_version", "policy_fingerprint_sha256"]
+declared_keys = [["policy_component_sha256"], ["artifact_algorithm_version", "policy_fingerprint_sha256"]]
+fds = [{ determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "policy_fingerprint_sha256"] }, { determinant = ["artifact_algorithm_version", "policy_fingerprint_sha256"], dependent = ["policy_component_sha256"] }]
+foreign_keys = [{ attributes = ["policy_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }, { attributes = ["policy_fingerprint_sha256"], relation = "artifact_adapter_policy", referenced_attributes = ["policy_fingerprint_sha256"] }]
+rationale = "Bind one core-owned neutral artifact protocol version to one adapter-owned opaque policy fingerprint. The canonical component and the exact pair are reciprocal keys without storing any concrete rendering or storage parameter."
 
 [[relation]]
 name = "artifact_policy"
@@ -5274,23 +5313,99 @@ declared_keys = [["artifact_sha256"]]
 fds = [
   { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
 ]
-rationale = "Store immutable artifact byte identity and size only. Stable storage keys are derived from immutable publication GIDs, never from content digests and never repeated in blob authority."
+rationale = "Store immutable core-verified rendered resource byte identity and size. Acquisition and thumbnail bindings share this neutral digest-to-size authority; adapter-owned storage keys and user-facing metadata remain separate occurrence facts."
+
+[[relation]]
+name = "catalog_resource_kind"
+kind = "source_of_truth"
+attributes = ["resource_kind"]
+declared_keys = [["resource_kind"]]
+fds = []
+rationale = "Closed neutral logical-resource registry. ACQUISITION and THUMBNAIL are generic catalog roles; no container, image codec, or filesystem layout is encoded."
+
+[[relation]]
+name = "storage_object_key_identity"
+kind = "source_of_truth"
+attributes = ["storage_object_key_sha256", "key_codec", "segment_count"]
+declared_keys = [["storage_object_key_sha256"]]
+fds = [{ determinant = ["storage_object_key_sha256"], dependent = ["key_codec", "segment_count"] }]
+rationale = "Store the core-recomputed digest and bounded opaque adapter key header. Runtime exact-compares the complete ordered segment family on every replay and collision; core never interprets provider layout."
+
+[[relation]]
+name = "storage_object_key_segment"
+kind = "source_of_truth"
+attributes = ["storage_object_key_sha256", "segment_position", "key_segment"]
+declared_keys = [["storage_object_key_sha256", "segment_position"]]
+fds = [{ determinant = ["storage_object_key_sha256", "segment_position"], dependent = ["key_segment"] }]
+foreign_keys = [{ attributes = ["storage_object_key_sha256"], relation = "storage_object_key_identity", referenced_attributes = ["storage_object_key_sha256"] }]
+rationale = "Store every safe UTF-8 key segment at one zero-based position. Runtime requires exact positions 0..segment_count-1 and validates the complete framed key before exposing it."
 
 [[relation]]
 name = "prepared_artifact"
 kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"]
-declared_keys = [["candidate_id", "publication_key"], ["protection_token"]]
+attributes = ["candidate_id", "publication_key", "resource_kind", "storage_object_key_sha256", "storage_generation", "protection_token", "state"]
+declared_keys = [["candidate_id", "publication_key", "resource_kind"], ["protection_token"]]
 fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
-  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] },
+  { determinant = ["candidate_id", "publication_key", "resource_kind"], dependent = ["storage_object_key_sha256", "storage_generation", "protection_token", "state"] },
+  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "resource_kind", "storage_object_key_sha256", "storage_generation", "state"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "publication_selection_occurrence_identity", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-  { attributes = ["storage_codec_version"], relation = "artifact_storage_codec", referenced_attributes = ["storage_codec_version"] },
+  { attributes = ["resource_kind"], relation = "catalog_resource_kind", referenced_attributes = ["resource_kind"] },
+  { attributes = ["storage_object_key_sha256"], relation = "storage_object_key_identity", referenced_attributes = ["storage_object_key_sha256"] },
 ]
-rationale = "Persist each complete storage intent in one BCNF relation. Candidate/publication and the repository-derived protection token are alternate keys; immutable intent facts and mutable lifecycle state remain functionally determined by both. Candidate and publication existence are FK-enforced separately, while preparation exact-joins the collision-checked selection occurrence before any insert or replay."
+rationale = "Persist each generic protected-resource intent. Candidate/publication/kind and the repository-derived v2 token are alternate keys; acquisition and optional thumbnail advance independently without exposing adapter layout."
+
+[[relation]]
+name = "prepared_resource_blob"
+kind = "source_of_truth"
+attributes = ["candidate_id", "publication_key", "resource_kind", "storage_object_sha256"]
+declared_keys = [["candidate_id", "publication_key", "resource_kind"]]
+fds = [{ determinant = ["candidate_id", "publication_key", "resource_kind"], dependent = ["storage_object_sha256"] }]
+foreign_keys = [
+  { attributes = ["candidate_id", "publication_key", "resource_kind"], relation = "prepared_artifact", referenced_attributes = ["candidate_id", "publication_key", "resource_kind"] },
+  { attributes = ["storage_object_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+]
+rationale = "Bind every PENDING acquisition or thumbnail resource to the core-recomputed immutable byte digest and size authority before external protection. Release and retry load this durable binding instead of trusting a token, adapter response, or caller digest."
+
+[[relation]]
+name = "prepared_storage_object"
+kind = "source_of_truth"
+attributes = ["candidate_id", "publication_key", "resource_kind", "storage_object_sha256", "size_bytes", "modified_at"]
+declared_keys = [["candidate_id", "publication_key", "resource_kind"]]
+fds = [{ determinant = ["candidate_id", "publication_key", "resource_kind"], dependent = ["storage_object_sha256", "size_bytes", "modified_at"] }]
+foreign_keys = [{ attributes = ["candidate_id", "publication_key", "resource_kind"], relation = "prepared_resource_blob", referenced_attributes = ["candidate_id", "publication_key", "resource_kind"] }]
+rationale = "Seal exact immutable enclosing-object digest, size, and modification time only after adapter protection succeeds. Runtime exact-compares storage_object_sha256 and size_bytes with the pre-protection prepared_resource_blob and artifact_blob authority before insert or replay."
+
+[[relation]]
+name = "prepared_artifact_descriptor"
+kind = "source_of_truth"
+attributes = ["candidate_id", "publication_key", "artifact_sha256", "artifact_name", "media_type", "page_count"]
+declared_keys = [["candidate_id", "publication_key"]]
+fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "artifact_name", "media_type", "page_count"] }]
+foreign_keys = [
+  { attributes = ["candidate_id", "publication_key"], relation = "publication_selection_occurrence_identity", referenced_attributes = ["candidate_id", "publication_key"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+]
+rationale = "Store adapter render evidence as generic acquisition metadata. The artifact URN is derived canonically from publication GID and artifact digest; name and MIME are strict injection-safe values."
+
+[[relation]]
+name = "prepared_page"
+kind = "source_of_truth"
+attributes = ["candidate_id", "publication_key", "resource_kind", "page_index", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"]
+declared_keys = [["candidate_id", "publication_key", "page_index"]]
+fds = [{ determinant = ["candidate_id", "publication_key", "page_index"], dependent = ["resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"] }]
+foreign_keys = [{ attributes = ["candidate_id", "publication_key", "resource_kind"], relation = "prepared_storage_object", referenced_attributes = ["candidate_id", "publication_key", "resource_kind"] }]
+rationale = "Store dense generic page locators and verified scalar image facts. Runtime pins resource_kind to ACQUISITION, proves page indices 0..page_count-1, extent end within the sealed object, and exact adapter evidence coverage."
+
+[[relation]]
+name = "prepared_thumbnail"
+kind = "source_of_truth"
+attributes = ["candidate_id", "publication_key", "resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"]
+declared_keys = [["candidate_id", "publication_key"]]
+fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"] }]
+foreign_keys = [{ attributes = ["candidate_id", "publication_key", "resource_kind"], relation = "prepared_storage_object", referenced_attributes = ["candidate_id", "publication_key", "resource_kind"] }]
+rationale = "Store one optional generic thumbnail locator. Runtime pins resource_kind to THUMBNAIL and requires this row exactly when page_count is positive."
 
 [[relation]]
 name = "catalog_revision_descriptor"
@@ -5563,15 +5678,146 @@ rationale = "Catalog subjects retain the immutable exact tag identity and a dete
 [[relation]]
 name = "catalog_artifact"
 kind = "source_of_truth"
-attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"]
+attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256", "artifact_name", "media_type", "page_count"]
 declared_keys = [["revision", "publication_key"]]
-fds = [{ determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256"] }]
+fds = [{ determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256", "artifact_name", "media_type", "page_count"] }]
 foreign_keys = [
   { attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] },
   { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
   { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
-rationale = "Store each complete catalog artifact occurrence in one BCNF relation at its true revision/publication key; strict-codec artifact IDs and publication-derived modified time remain derived."
+rationale = "Store each complete generic acquisition occurrence. Strict artifact IDs derive from GID plus digest; bounded safe download name and MIME are immutable adapter evidence, while object location is normalized separately."
+
+[[relation]]
+name = "catalog_storage_object"
+kind = "source_of_truth"
+attributes = ["revision", "publication_key", "resource_kind", "storage_object_key_sha256", "storage_object_sha256", "size_bytes", "modified_at"]
+declared_keys = [["revision", "publication_key", "resource_kind"]]
+fds = [{ determinant = ["revision", "publication_key", "resource_kind"], dependent = ["storage_object_key_sha256", "storage_object_sha256", "size_bytes", "modified_at"] }]
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["resource_kind"], relation = "catalog_resource_kind", referenced_attributes = ["resource_kind"] },
+  { attributes = ["storage_object_key_sha256"], relation = "storage_object_key_identity", referenced_attributes = ["storage_object_key_sha256"] },
+  { attributes = ["storage_object_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+]
+rationale = "Copy each sealed acquisition or thumbnail storage descriptor into the immutable revision. The object digest is retained by the neutral core-verified resource byte authority; runtime exact-compares its size with artifact_blob while treating adapter key layout and media policy as opaque."
+
+[[relation]]
+name = "catalog_page"
+kind = "source_of_truth"
+attributes = ["revision", "publication_key", "resource_kind", "page_index", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"]
+declared_keys = [["revision", "publication_key", "page_index"]]
+fds = [{ determinant = ["revision", "publication_key", "page_index"], dependent = ["resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"] }]
+foreign_keys = [{ attributes = ["revision", "publication_key", "resource_kind"], relation = "catalog_storage_object", referenced_attributes = ["revision", "publication_key", "resource_kind"] }]
+rationale = "Publish immutable dense page locators and generic verified image facts; runtime pins resource_kind to ACQUISITION and validates every extent against its sealed object."
+
+[[relation]]
+name = "catalog_thumbnail"
+kind = "source_of_truth"
+attributes = ["revision", "publication_key", "resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"]
+declared_keys = [["revision", "publication_key"]]
+fds = [{ determinant = ["revision", "publication_key"], dependent = ["resource_kind", "extent_offset", "extent_length", "media_type", "image_sha256", "width", "height"] }]
+foreign_keys = [{ attributes = ["revision", "publication_key", "resource_kind"], relation = "catalog_storage_object", referenced_attributes = ["revision", "publication_key", "resource_kind"] }]
+rationale = "Publish one immutable generic thumbnail locator exactly when the publication has pages; runtime pins resource_kind to THUMBNAIL."
+
+[[relation]]
+name = "search_policy"
+kind = "source_of_truth"
+attributes = ["policy_id", "algorithm_version", "unicode_data_version", "maximum_field_nfd_bytes", "maximum_query_nfd_bytes", "maximum_lexeme_bytes", "maximum_query_lexemes"]
+declared_keys = [["policy_id"], ["algorithm_version", "unicode_data_version", "maximum_field_nfd_bytes", "maximum_query_nfd_bytes", "maximum_lexeme_bytes", "maximum_query_lexemes"]]
+fds = [
+  { determinant = ["policy_id"], dependent = ["algorithm_version", "unicode_data_version", "maximum_field_nfd_bytes", "maximum_query_nfd_bytes", "maximum_lexeme_bytes", "maximum_query_lexemes"] },
+  { determinant = ["algorithm_version", "unicode_data_version", "maximum_field_nfd_bytes", "maximum_query_nfd_bytes", "maximum_lexeme_bytes", "maximum_query_lexemes"], dependent = ["policy_id"] },
+]
+rationale = "Provider-seeded complete search semantics: every strict-UTF-8 field is first bounded by pinned-UCD per-scalar NFD bytes, omitted whole when over budget, then NFC-normalized and Unicode-casefolded to bounded word/CJK lexemes; queries use the corresponding NFD budget and at most sixteen unique lexemes. The complete natural policy tuple and opaque identifier are reciprocal keys, so this reviewed wide registry remains BCNF."
+
+[[relation]]
+name = "search_lexeme"
+kind = "controlled_materialization"
+attributes = ["value_sha256"]
+declared_keys = [["value_sha256"]]
+fds = []
+foreign_keys = [{ attributes = ["value_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }]
+materialization = { authoritative = false, rationale = "Mark only exact canonical values whose complete sealed payload validates under search_lexeme_utf8_v1 and the pinned search policy; a digest is never decoded without the canonical page tree.", derived_from = ["canonical_value_identity", "search_policy"], refresh_strategy = "writer inserts or exact-compares each bounded normalized lexeme before any posting; cleanup removes unreferenced lexemes child-first" }
+
+[[relation]]
+name = "search_document"
+kind = "controlled_materialization"
+attributes = ["revision", "publication_key", "row_count"]
+declared_keys = [["revision", "publication_key"]]
+fds = [{ determinant = ["revision", "publication_key"], dependent = ["row_count"] }]
+foreign_keys = [{ attributes = ["revision", "publication_key"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["revision", "publication_key"] }]
+materialization = { authoritative = false, rationale = "Record the exact unique lexeme cardinality of the policy-derived title, source-title, contributor-name, and subject-value document for every published occurrence.", derived_from = ["catalog_publication_title", "catalog_contributor", "catalog_subject", "search_policy", "search_lexeme"], refresh_strategy = "candidate disk projection derives each document once, publication copies its receipted count, READY recomputes exact posting coverage" }
+
+[[relation]]
+name = "search_posting"
+kind = "controlled_materialization"
+attributes = ["revision", "value_sha256", "publication_key"]
+declared_keys = [["revision", "value_sha256", "publication_key"]]
+fds = []
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "search_document", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["value_sha256"], relation = "search_lexeme", referenced_attributes = ["value_sha256"] },
+]
+materialization = { authoritative = false, rationale = "Persist exact revision-scoped inverted membership under reciprocal lexeme-first and document-first keys; no backend FTS, FULLTEXT, LIKE scan, relevance score, stemming, or fuzzy match is semantic authority.", derived_from = ["search_document", "search_lexeme"], refresh_strategy = "externally sorted candidate postings are copied in bounded batches and exact-covered before discovery seal" }
+
+[[relation]]
+name = "discovery_seal"
+kind = "controlled_materialization"
+attributes = ["revision", "policy_id"]
+declared_keys = [["revision"]]
+fds = [{ determinant = ["revision"], dependent = ["policy_id"] }]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
+  { attributes = ["policy_id"], relation = "search_policy", referenced_attributes = ["policy_id"] },
+]
+materialization = { authoritative = false, rationale = "Expose discovery only after every publication has exactly one document, its document count equals exact reverse posting coverage, every posting points to a validated lexeme, and all three facet orders are exact contiguous enumerations of current membership values.", derived_from = ["search_document", "search_posting", "language_facet_order", "subject_facet_order", "contributor_facet_order"], refresh_strategy = "insert last in the fenced publication transaction after independent plan/database comparison; readers require it and READY repeats the checks" }
+
+[[relation]]
+name = "language_facet_order"
+kind = "controlled_materialization"
+attributes = ["revision", "position", "language_sha256", "occurrence_count"]
+declared_keys = [["revision", "position"], ["revision", "language_sha256"]]
+fds = [
+  { determinant = ["revision", "position"], dependent = ["language_sha256", "occurrence_count"] },
+  { determinant = ["revision", "language_sha256"], dependent = ["position", "occurrence_count"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
+  { attributes = ["language_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+]
+materialization = { authoritative = false, rationale = "Enumerate each exact current language once in unsigned canonical UTF-8 order with its exact publication membership count.", derived_from = ["catalog_publication"], refresh_strategy = "candidate disk projection groups exact language identities, sorts decoded bytes, assigns contiguous positions, and publication exact-copies the receipted rows" }
+
+[[relation]]
+name = "subject_facet_order"
+kind = "controlled_materialization"
+attributes = ["revision", "position", "tag_id", "occurrence_count"]
+declared_keys = [["revision", "position"], ["revision", "tag_id"]]
+fds = [
+  { determinant = ["revision", "position"], dependent = ["tag_id", "occurrence_count"] },
+  { determinant = ["revision", "tag_id"], dependent = ["position", "occurrence_count"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+materialization = { authoritative = false, rationale = "Enumerate each exact general-subject tag once by namespace bytes then value bytes then tag_id, with its exact distinct-publication count. Language and the registered artist/author/cosplayer/group/illustrator/uploader contributor namespaces are excluded because those identities belong exclusively to their dedicated facet families; search postings still include their values.", derived_from = ["catalog_subject", "tag_term", "contributor_role_registry"], refresh_strategy = "candidate disk projection excludes the closed specialized-namespace registry, groups exact remaining subject membership, and assigns contiguous deterministic positions" }
+
+[[relation]]
+name = "contributor_facet_order"
+kind = "controlled_materialization"
+attributes = ["revision", "position", "contributor_name_sha256", "role", "occurrence_count"]
+declared_keys = [["revision", "position"], ["revision", "contributor_name_sha256", "role"]]
+fds = [
+  { determinant = ["revision", "position"], dependent = ["contributor_name_sha256", "role", "occurrence_count"] },
+  { determinant = ["revision", "contributor_name_sha256", "role"], dependent = ["position", "occurrence_count"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
+  { attributes = ["contributor_name_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["role"], relation = "contributor_role_registry", referenced_attributes = ["role"] },
+]
+materialization = { authoritative = false, rationale = "Enumerate every exact contributor role/name pair once in role bytes then canonical name bytes order, with its exact distinct-publication count. The complete identity pair is an alternate revision-scoped key; no packed scalar or EAV encoding is used.", derived_from = ["catalog_contributor"], refresh_strategy = "candidate disk projection groups exact membership and assigns contiguous deterministic positions" }
 
 [[relation]]
 name = "publication_commit_anchor"
@@ -5850,16 +6096,17 @@ universal_attributes = [
   "observation_id",
   "file_no",
   "file_sha256",
+  "artifact_role",
 ]
 fds = [
   { determinant = ["file_key"], dependent = ["name_bytes"] },
   { determinant = ["name_bytes"], dependent = ["file_key"] },
-  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
-  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
+  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256", "artifact_role"] },
+  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256", "artifact_role"] },
 ]
 projections = [
   { relation = "file_name_identity", attributes = ["file_key", "name_bytes"] },
-  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"] },
+  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256", "artifact_role"] },
 ]
 rationale = "Separate the complete deterministic filename identity from immutable observation occurrences. file_key and name_bytes are reciprocal identity keys; file_role remains a protocol-derived classifier rather than stored data, while observation-scoped file_no and file_key are alternate semantic keys."
 
@@ -5871,16 +6118,17 @@ universal_attributes = [
   "file_no",
   "file_key",
   "file_sha256",
+  "artifact_role",
   "size_bytes",
 ]
 fds = [
   { determinant = ["file_sha256"], dependent = ["size_bytes"] },
-  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
-  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
+  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256", "artifact_role"] },
+  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256", "artifact_role"] },
 ]
 projections = [
   { relation = "content_blob", attributes = ["file_sha256", "size_bytes"] },
-  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"] },
+  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256", "artifact_role"] },
 ]
 rationale = "Separate immutable payload size from file occurrence facts. file_sha256 determines only content_blob; the checksum is never assumed to identify filenames, galleries, or observations."
 
@@ -5892,18 +6140,19 @@ universal_attributes = [
   "file_no",
   "file_key",
   "file_sha256",
+  "artifact_role",
   "device",
   "inode",
   "modified_ns",
   "changed_ns",
 ]
 fds = [
-  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256"] },
-  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256"] },
+  { determinant = ["gallery_id", "observation_id", "file_no"], dependent = ["file_key", "file_sha256", "artifact_role"] },
+  { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["file_no", "file_sha256", "artifact_role"] },
   { determinant = ["gallery_id", "observation_id", "file_key"], dependent = ["device", "inode", "modified_ns", "changed_ns"] },
 ]
 projections = [
-  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256"] },
+  { relation = "gallery_observation_file", attributes = ["gallery_id", "observation_id", "file_no", "file_key", "file_sha256", "artifact_role"] },
   { relation = "gallery_observation_file_filesystem", attributes = ["gallery_id", "observation_id", "file_key", "device", "inode", "modified_ns", "changed_ns"] },
 ]
 rationale = "Separate portable file/content membership from the complete stat signature. The direct-child vNext scanner derives paths from the canonical source root, gallery leaf, and file-name bytes; storing a second locator would duplicate file identity and introduce an omitted FD. No partial nullable stat tuple is representable."
@@ -5937,37 +6186,33 @@ universal_attributes = [
   "publication_key",
   "artifact_sha256",
   "size_bytes",
-  "storage_codec_version",
-  "storage_generation",
-  "protection_token",
-  "state",
+  "artifact_name",
+  "media_type",
+  "page_count",
 ]
 fds = [
   { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
-  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "artifact_name", "media_type", "page_count"] },
 ]
 projections = [
   { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
-  { relation = "prepared_artifact", attributes = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
+  { relation = "prepared_artifact_descriptor", attributes = ["candidate_id", "publication_key", "artifact_sha256", "artifact_name", "media_type", "page_count"] },
 ]
-rationale = "Separate immutable artifact byte facts from durable provider intent state; candidate/publication and the fixed self-describing protection token are alternate preparation keys, while storage generation is an explicit exact-decoded fact."
+rationale = "Separate immutable artifact byte size from candidate-scoped generic render metadata; the shared artifact digest makes the decomposition lossless without placing storage lifecycle state in payload authority."
 
 [[decomposition]]
-name = "artifact_policy_and_registered_producer"
-universal_attributes = ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+name = "artifact_policy_and_registered_adapter"
+universal_attributes = ["policy_component_sha256", "artifact_algorithm_version", "policy_fingerprint_sha256", "adapter_id"]
 fds = [
-  { determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-  { determinant = ["max_image_short_side", "producer_fingerprint_sha256"], dependent = ["policy_component_sha256"] },
-  { determinant = ["producer_fingerprint_sha256"], dependent = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-  { determinant = ["producer_equivalence_class"], dependent = ["producer_fingerprint_sha256", "artifact_algorithm_version", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-  { determinant = ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class"] },
+  { determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "policy_fingerprint_sha256", "adapter_id"] },
+  { determinant = ["artifact_algorithm_version", "policy_fingerprint_sha256"], dependent = ["policy_component_sha256", "adapter_id"] },
+  { determinant = ["policy_fingerprint_sha256"], dependent = ["adapter_id"] },
 ]
 projections = [
-  { relation = "artifact_policy_semantics", attributes = ["policy_component_sha256", "max_image_short_side", "producer_fingerprint_sha256"] },
-  { relation = "artifact_producer_fingerprint", attributes = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+  { relation = "artifact_policy_semantics", attributes = ["policy_component_sha256", "artifact_algorithm_version", "policy_fingerprint_sha256"] },
+  { relation = "artifact_adapter_policy", attributes = ["policy_fingerprint_sha256", "adapter_id"] },
 ]
-rationale = "Separate the policy occurrence of a producer fingerprint from its registered build tuple. The producer fingerprint losslessly joins the projections and alone determines artifact_algorithm_version; omitting that redundant algorithm column from the policy projection preserves BCNF while the joined producer still reconstructs the canonical policy-v2 frame."
+rationale = "Separate the neutral core protocol binding from the adapter-owned opaque policy registry. The fingerprint losslessly joins the projections and alone determines adapter_id; no concrete producer, image, archive, or storage parameter enters core schema."
 
 [[decomposition]]
 name = "artifact_payload_and_catalog_occurrence"
@@ -5977,14 +6222,17 @@ universal_attributes = [
   "artifact_sha256",
   "size_bytes",
   "artifact_semantics_sha256",
+  "artifact_name",
+  "media_type",
+  "page_count",
 ]
 fds = [
   { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
-  { determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256", "artifact_name", "media_type", "page_count"] },
 ]
 projections = [
   { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
-  { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"] },
+  { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256", "artifact_name", "media_type", "page_count"] },
 ]
 rationale = "Separate immutable byte facts from each catalog occurrence. The occurrence carries the shared artifact digest, making the join lossless; stable storage placement is independently derived from the publication GID."
 
@@ -6001,15 +6249,18 @@ universal_attributes = [
   "selected_component_sha256",
   "owner_component_sha256",
   "policy_component_sha256",
+  "artifact_name",
+  "media_type",
+  "page_count",
 ]
 fds = [
-  { determinant = ["revision", "publication_key"], dependent = ["artifact_semantics_sha256", "artifact_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["artifact_semantics_sha256", "artifact_sha256", "artifact_name", "media_type", "page_count"] },
   { determinant = ["artifact_semantics_sha256"], dependent = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"] },
   { determinant = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], dependent = ["artifact_semantics_sha256"] },
 ]
 projections = [
   { relation = "artifact_semantic_input", attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"] },
-  { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"] },
+  { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256", "artifact_name", "media_type", "page_count"] },
 ]
 rationale = "Separate the global exact six-component semantic identity from revision occurrence facts. artifact_semantics_sha256 determines the semantic projection and is carried once by each sealed occurrence, making the join lossless."
 

@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from .domain import (
+    ArtifactSourceRole,
     DirectoryObservation,
     FileObservation,
     TagObservation,
@@ -57,8 +58,8 @@ from .vnext_source_build_repository import (
 )
 
 _CONSTRUCTOR_TOKEN = object()
-_PAGE_MAGIC = b"h2hdb-vnext-frozen-source-observation-page-v1\0"
-_PAGE_CODEC_VERSION = 1
+_PAGE_MAGIC = b"h2hdb-vnext-frozen-source-observation-page-v2\0"
+_PAGE_CODEC_VERSION = 2
 _METADATA_CHUNK_BYTES = 32_768
 _LOCATOR_DOMAIN = "source_relative_locator_v1"
 _COMPONENT_CAPACITY = {
@@ -66,6 +67,11 @@ _COMPONENT_CAPACITY = {
     GalleryObservationComponent.DIRECTORY: 192,
     GalleryObservationComponent.TAG: 256,
     GalleryObservationComponent.METADATA: 1,
+}
+_ARTIFACT_ROLE_TAG = {
+    ArtifactSourceRole.METADATA: 0,
+    ArtifactSourceRole.PAGE: 1,
+    ArtifactSourceRole.OTHER: 2,
 }
 
 
@@ -988,6 +994,7 @@ def _encode_page_item(
         _append_bytes(payload, item.name_bytes)
         payload.extend(item.content.file_sha256)
         payload.extend(item.content.size_bytes.to_bytes(8, "big"))
+        payload.extend(_ARTIFACT_ROLE_TAG[item.artifact_role].to_bytes(1, "big"))
         payload.extend(item.device.to_bytes(8, "big"))
         payload.extend(item.inode.to_bytes(8, "big"))
         payload.extend(item.modified_ns.to_bytes(8, "big", signed=True))
@@ -1096,9 +1103,20 @@ def _decode_page_item(
         name = reader.bytes_field(maximum=255)
         digest = reader.take(32)
         size = reader.uint(8)
+        try:
+            artifact_role = (
+                ArtifactSourceRole.METADATA,
+                ArtifactSourceRole.PAGE,
+                ArtifactSourceRole.OTHER,
+            )[reader.uint(1)]
+        except IndexError as error:
+            raise FrozenSourceObservationError(
+                "frozen FILE artifact role is unknown"
+            ) from error
         return FileObservation(
             name,
             _file_content_receipt_from_frozen_facts(digest, size),
+            artifact_role,
             reader.uint(8),
             reader.uint(8),
             reader.sint64(),

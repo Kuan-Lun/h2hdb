@@ -163,17 +163,8 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "sealed_at",
     ),
     "catalog_artifact_policy_semantics": (
-        "max_image_short_side",
-        "producer_fingerprint_sha256",
-    ),
-    "catalog_artifact_producer_fingerprints": (
         "artifact_algorithm_version",
-        "producer_equivalence_class",
-        "writer_id",
-        "python_abi",
-        "pillow_build",
-        "libjpeg_build",
-        "zlib_build",
+        "policy_fingerprint_sha256",
     ),
     "catalog_artifact_semantic_inputs": (
         "source_manifest_component_sha256",
@@ -183,26 +174,12 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "owner_component_sha256",
         "policy_component_sha256",
     ),
-    "catalog_artifact_storage_codecs": (
-        "adapter_id",
-        "storage_key_codec_version",
-        "protection_token_codec_version",
-    ),
-    "catalog_artifact_zip_writer_policies": (
-        "zip_codec_version",
-        "compression_method",
-        "compression_level",
-        "dos_date",
-        "dos_time",
-        "unix_mode",
-        "general_purpose_flags",
-        "create_system",
-        "archive_name_codec_version",
-        "artifact_name_codec_version",
-    ),
     "catalog_artifacts": (
         "artifact_sha256",
         "artifact_semantics_sha256",
+        "artifact_name",
+        "media_type",
+        "page_count",
     ),
     "catalog_build_manifest_core": (
         "manifest_sha256",
@@ -239,16 +216,48 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "file_count",
         "byte_count",
     ),
+    "catalog_language_facet_order": (
+        "language_sha256",
+        "occurrence_count",
+    ),
     "catalog_manifest_policies": (
         "manifest_algorithm_version",
         "file_order_version",
     ),
     "catalog_prepared_artifacts": (
-        "artifact_sha256",
-        "storage_codec_version",
+        "storage_object_key_sha256",
         "storage_generation",
         "protection_token",
         "state",
+    ),
+    "catalog_prepared_artifact_descriptors": (
+        "artifact_sha256",
+        "artifact_name",
+        "media_type",
+        "page_count",
+    ),
+    "catalog_prepared_pages": (
+        "resource_kind",
+        "extent_offset",
+        "extent_length",
+        "media_type",
+        "image_sha256",
+        "width",
+        "height",
+    ),
+    "catalog_prepared_storage_objects": (
+        "storage_object_sha256",
+        "size_bytes",
+        "modified_at",
+    ),
+    "catalog_prepared_thumbnails": (
+        "resource_kind",
+        "extent_offset",
+        "extent_length",
+        "media_type",
+        "image_sha256",
+        "width",
+        "height",
     ),
     "catalog_publication_batch_receipt_stored": (
         "batch_key",
@@ -318,6 +327,14 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "publication_count",
         "artifact_count",
     ),
+    "catalog_search_policies": (
+        "algorithm_version",
+        "unicode_data_version",
+        "maximum_field_nfd_bytes",
+        "maximum_query_nfd_bytes",
+        "maximum_lexeme_bytes",
+        "maximum_query_lexemes",
+    ),
     "catalog_source_build_descriptor": (
         "scope_key",
         "manifest_policy_id",
@@ -343,9 +360,46 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "file_count",
         "byte_count",
     ),
+    "catalog_storage_object_key_identities": (
+        "key_codec",
+        "segment_count",
+    ),
+    "catalog_storage_objects": (
+        "storage_object_key_sha256",
+        "storage_object_sha256",
+        "size_bytes",
+        "modified_at",
+    ),
+    "catalog_subject_facet_order": (
+        "tag_id",
+        "occurrence_count",
+    ),
     "catalog_tag_terms": (
         "namespace",
         "tag_value_sha256",
+    ),
+    "catalog_contributor_facet_order": (
+        "contributor_name_sha256",
+        "role",
+        "occurrence_count",
+    ),
+    "catalog_pages": (
+        "resource_kind",
+        "extent_offset",
+        "extent_length",
+        "media_type",
+        "image_sha256",
+        "width",
+        "height",
+    ),
+    "catalog_thumbnails": (
+        "resource_kind",
+        "extent_offset",
+        "extent_length",
+        "media_type",
+        "image_sha256",
+        "width",
+        "height",
     ),
     "catalog_title_sort_policy": (
         "title_sort_algorithm_version",
@@ -631,6 +685,18 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("catalog_occurrence_sha256",),
         semantic_value=("download_time",),
     ),
+    "catalog_artifact_adapter_policy": NarrowLayoutDeclaration(
+        semantic_key=("policy_fingerprint_sha256",),
+        semantic_value=("adapter_id",),
+    ),
+    "catalog_resource_kinds": NarrowLayoutDeclaration(
+        semantic_key=("resource_kind",),
+        semantic_value=(),
+    ),
+    "catalog_storage_object_key_segments": NarrowLayoutDeclaration(
+        semantic_key=("storage_object_key_sha256", "segment_position"),
+        semantic_value=("key_segment",),
+    ),
     "catalog_artifact_policies": NarrowLayoutDeclaration(
         semantic_key=("artifact_policy_id",),
         semantic_value=("policy_component_sha256",),
@@ -642,6 +708,26 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_artifact_operations": NarrowLayoutDeclaration(
         semantic_key=("candidate_id", "publication_key"),
         semantic_value=("operation",),
+    ),
+    "catalog_prepared_resource_blob": NarrowLayoutDeclaration(
+        semantic_key=("candidate_id", "publication_key", "resource_kind"),
+        semantic_value=("storage_object_sha256",),
+    ),
+    "catalog_search_lexemes": NarrowLayoutDeclaration(
+        semantic_key=("value_sha256",),
+        semantic_value=(),
+    ),
+    "catalog_search_documents": NarrowLayoutDeclaration(
+        semantic_key=("revision", "publication_key"),
+        semantic_value=("row_count",),
+    ),
+    "catalog_search_postings": NarrowLayoutDeclaration(
+        semantic_key=("revision", "value_sha256", "publication_key"),
+        semantic_value=(),
+    ),
+    "catalog_discovery_seals": NarrowLayoutDeclaration(
+        semantic_key=("revision",),
+        semantic_value=("policy_id",),
     ),
     "catalog_display_title_choices": NarrowLayoutDeclaration(
         semantic_key=(

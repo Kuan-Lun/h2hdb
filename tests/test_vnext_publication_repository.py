@@ -12,7 +12,6 @@ from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_registry_fixtures import (
     seed_analysis_policy,
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -59,14 +58,8 @@ _ANALYSIS = b"a" * 16
 _PREPARATION = b"o" * 16
 _CHANNEL = b"default"
 _EMPTY_EVENT_CHAIN = sha256(b"h2hdb-operational-event-chain-v1\0").digest()
-_PRODUCER_FIELDS = (
-    b"h2hdb-test-writer",
-    b"cpython-test-abi",
-    b"pillow-test-build",
-    b"libjpeg-test-build",
-    b"zlib-test-build",
-)
-_PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
+_ADAPTER_ID = b"publication-test-adapter"
+_POLICY_FINGERPRINT = sha256(b"publication-test-artifact-policy").digest()
 _SOURCE_ROOT = b"r" * 32
 _SCOPE_KEY = identity.source_scope_key("filesystem", _SOURCE_ROOT, 1)
 
@@ -99,9 +92,9 @@ def _seed_static_catalog(connector: SQLiteConnector) -> tuple[bytes, bytes]:
     source_root = _SOURCE_ROOT
     snapshot = b"m" * 32
     policy_component = identity.artifact_policy_digest(
-        1,
-        2048,
-        _PRODUCER_FINGERPRINT,
+        2,
+        _ADAPTER_ID,
+        _POLICY_FINGERPRINT,
     )
     _canonical_identity(
         connector,
@@ -118,26 +111,18 @@ def _seed_static_catalog(connector: SQLiteConnector) -> tuple[bytes, bytes]:
     _canonical_identity(
         connector,
         policy_component,
-        domain=b"artifact_policy_v2",
+        domain=b"artifact_policy_v3",
         serial=3,
     )
     scope = seed_source_scope(connector, source_root_sha256=source_root)
     assert scope.scope_key == _SCOPE_KEY
     seed_manifest_policy(connector)
     seed_analysis_policy(connector)
-    producer = seed_artifact_producer_fingerprint(
-        connector,
-        artifact_algorithm_version=1,
-        writer_id=_PRODUCER_FIELDS[0],
-        python_abi=_PRODUCER_FIELDS[1],
-        pillow_build=_PRODUCER_FIELDS[2],
-        libjpeg_build=_PRODUCER_FIELDS[3],
-        zlib_build=_PRODUCER_FIELDS[4],
-    )
-    assert producer.producer_fingerprint_sha256 == _PRODUCER_FINGERPRINT
     semantics = seed_artifact_policy_semantics(
         connector,
-        producer_fingerprint_sha256=_PRODUCER_FINGERPRINT,
+        policy_fingerprint_sha256=_POLICY_FINGERPRINT,
+        adapter_id=_ADAPTER_ID,
+        artifact_algorithm_version=2,
     )
     assert semantics.policy_component_sha256 == policy_component
     connector.execute(

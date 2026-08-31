@@ -9,7 +9,6 @@ derived and independently checked by this module.
 from __future__ import annotations
 
 __all__ = [
-    "ArtifactProducerRegistration",
     "ArtifactPreparationAuthority",
     "ArtifactPreparationConflictError",
     "ArtifactPreparationContractUnavailableError",
@@ -29,17 +28,24 @@ __all__ = [
 
 import os
 import sqlite3
-import stat
-import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO
 
 from . import vnext_identity as identity
-from .domain import ArtifactStorageEvidence, ArtifactStorageKey, artifact_storage_key
+from .domain import (
+    ArtifactArchiveRenderEvidence,
+    ArtifactSourceRole,
+    ArtifactStorageEvidence,
+    CatalogResourceKind,
+    PreparedPublicationPresentation,
+    StorageObjectDescriptor,
+    StorageObjectKey,
+)
 from .ports import ArtifactStorageAdapter
 from .sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from .vnext_analysis_family import (
@@ -52,13 +58,25 @@ from .vnext_artifact_family import (
     ArtifactSemanticInputFamily,
     CatalogArtifactFamily,
     PreparedArtifactFamily,
+    PreparedStorageObjectFamily,
     cas_prepared_artifact_state,
     ensure_artifact_semantic_input_family,
     ensure_catalog_artifact_family,
     ensure_prepared_artifact_family,
+    ensure_prepared_storage_object_family,
     load_artifact_semantic_input_family,
     load_catalog_artifact_family,
+    load_prepared_artifact_families,
     load_prepared_artifact_family,
+    load_prepared_storage_object_family,
+)
+from .vnext_artifact_presentation import (
+    PreparedPresentationArtifact,
+    prepare_presentation,
+)
+from .vnext_artifact_render import (
+    ArtifactSourceReference,
+    render_artifact,
 )
 from .vnext_canonical_value_family import (
     load_sealed_value_identities,
@@ -69,27 +87,21 @@ from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
 )
-from .vnext_capacity import RECOMPOSED_REGISTRY_MAXIMUM_ROWS
 from .vnext_catalog_registry_repository import (
-    ArtifactPolicySemanticsRecord,
-    ArtifactProducerFingerprintRecord,
     CatalogRegistryError,
     CatalogRegistryNotReadyError,
     load_analysis_policy,
     load_artifact_policy_semantics,
-    load_artifact_producer_fingerprint,
-    load_artifact_storage_codec,
-    load_artifact_zip_writer_policy,
     load_manifest_policy,
     load_source_scope,
 )
 from .vnext_domains import (
     INT63_MAX,
+    microseconds_from_datetime,
     require_bounded_bytes,
     require_digest32,
     require_int63,
     require_positive_int63,
-    require_uint32,
     require_uuid16,
 )
 from .vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
@@ -116,13 +128,10 @@ from .vnext_transaction import VNextUnitOfWork
 
 _AUTHORITY_TOKEN = object()
 _AUDIT_TOKEN = object()
-_MEMBER_PLAN_PREFIX = b"h2hdb-vnext-artifact-member-plan\0"
 _MAX_READ_BYTES = 64 * 1024
 _MAX_SOURCE_PAGE = 128
-_ZIP_MEMBER_NAME_MAXIMUM_BYTES = (1 << 16) - 1
-
-_ZIP_WRITER_POLICY_V1 = (1, 8, 9, 33, 0, 33188, 2048, 3, 1, 1)
-_STORAGE_CODEC_V1 = (1, b"managed-filesystem", 1, 1)
+_MAX_MEMBER_PLAN_BYTES = 2 * 1024 * 1024
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _PREPARATION_RECEIPT_TOKEN = object()
 _PROTECTION_INTENT_TOKEN = object()
 _PROTECTION_EVIDENCE_TOKEN = object()
@@ -134,7 +143,7 @@ _CHECKPOINT_TABLE = "catalog_publication_checkpoints"
 
 _SOURCE_FILE_FAMILY_SQL = (
     "FROM (SELECT file_no.gallery_id, file_no.observation_id, file_no.file_key, "
-    "file_no.file_no, file_sha.file_sha256 "
+    "file_no.file_no, file_sha.file_sha256, artifact_role.artifact_role "
     "FROM catalog_gallery_observation_file_seals AS file_seal "
     "JOIN catalog_gallery_observation_file_file_nos AS file_no "
     "ON file_no.gallery_id = file_seal.gallery_id "
@@ -143,11 +152,12 @@ _SOURCE_FILE_FAMILY_SQL = (
     "JOIN catalog_gallery_observation_file_file_sha256s AS file_sha "
     "ON file_sha.gallery_id = file_seal.gallery_id "
     "AND file_sha.observation_id = file_seal.observation_id "
-    "AND file_sha.file_key = file_seal.file_key) AS source "
-    "JOIN (SELECT file_key, name_bytes, "
-    "CASE WHEN name_bytes = X'67616C6C657279696E666F2E747874' "
-    "THEN X'4D45544144415441' ELSE X'434F4E54454E54' END AS file_role "
-    "FROM catalog_file_name_identities) AS name "
+    "AND file_sha.file_key = file_seal.file_key "
+    "JOIN catalog_gallery_observation_file_artifact_role AS artifact_role "
+    "ON artifact_role.gallery_id = file_seal.gallery_id "
+    "AND artifact_role.observation_id = file_seal.observation_id "
+    "AND artifact_role.file_key = file_seal.file_key) AS source "
+    "JOIN catalog_file_name_identities AS name "
     "ON name.file_key = source.file_key "
 )
 
@@ -178,64 +188,6 @@ def _registry_record[T](label: str, loader: Callable[[], T]) -> T:
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactProducerRegistration:
-    """One exact immutable artifact byte-producer identity."""
-
-    producer_fingerprint_sha256: bytes
-    artifact_algorithm_version: int
-    producer_equivalence_class: bytes
-    writer_id: bytes
-    python_abi: bytes
-    pillow_build: bytes
-    libjpeg_build: bytes
-    zlib_build: bytes
-    replayed: bool
-
-    def __post_init__(self) -> None:
-        fingerprint = require_digest32(
-            self.producer_fingerprint_sha256,
-            field="artifact producer fingerprint",
-        )
-        algorithm_version = require_uint32(
-            self.artifact_algorithm_version,
-            field="artifact producer algorithm version",
-        )
-        if algorithm_version == 0:
-            raise ValueError("artifact producer algorithm version must be positive")
-        equivalence_class = require_bounded_bytes(
-            self.producer_equivalence_class,
-            field="artifact producer equivalence class",
-            minimum=1,
-            maximum=128,
-        )
-        fields = tuple(
-            require_bounded_bytes(
-                value,
-                field=f"artifact producer {field}",
-                minimum=1,
-                maximum=128,
-            )
-            for field, value in (
-                ("writer_id", self.writer_id),
-                ("python_abi", self.python_abi),
-                ("pillow_build", self.pillow_build),
-                ("libjpeg_build", self.libjpeg_build),
-                ("zlib_build", self.zlib_build),
-            )
-        )
-        if identity.artifact_producer_fingerprint_sha256(*fields) != fingerprint:
-            raise ValueError("artifact producer fingerprint does not match its frame")
-        if equivalence_class != identity.artifact_producer_equivalence_class(
-            fingerprint
-        ):
-            raise ValueError(
-                "artifact producer equivalence class is not repository-derived"
-            )
-        if not isinstance(self.replayed, bool):
-            raise TypeError("artifact producer replayed must be bool")
-
-
-@dataclass(frozen=True, slots=True)
 class ArtifactPreparationAuthority:
     """Repository-issued immutable authority for one CREATE/REBUILD input."""
 
@@ -260,11 +212,8 @@ class ArtifactPreparationAuthority:
     manifest_algorithm_version: int
     file_order_version: int
     artifact_algorithm_version: int
-    max_image_short_side: int
-    producer_fingerprint_sha256: bytes
-    producer_fields: tuple[bytes, bytes, bytes, bytes, bytes]
-    writer_policy: tuple[int, int, int, int, int, int, int, int, int, int]
-    storage_codec: tuple[int, bytes, int, int]
+    adapter_id: bytes
+    policy_fingerprint_sha256: bytes
     spam_artist_threshold: int
     spam_occurrence_threshold: int
     validation_checkpoint: tuple[int, bytes, int, str, int]
@@ -291,7 +240,6 @@ class ArtifactPreparationAuthority:
             ("manifest_algorithm_version", self.manifest_algorithm_version),
             ("file_order_version", self.file_order_version),
             ("artifact_algorithm_version", self.artifact_algorithm_version),
-            ("max_image_short_side", self.max_image_short_side),
         ):
             require_positive_int63(
                 version_value,
@@ -305,23 +253,16 @@ class ArtifactPreparationAuthority:
                 threshold_value,
                 field=f"artifact {threshold_label}",
             )
-        require_digest32(
-            self.producer_fingerprint_sha256,
-            field="artifact producer_fingerprint_sha256",
+        require_bounded_bytes(
+            self.adapter_id,
+            field="artifact adapter_id",
+            minimum=1,
+            maximum=64,
         )
-        if len(self.producer_fields) != 5:
-            raise ValueError("artifact authority requires five producer fields")
-        for index, value in enumerate(self.producer_fields):
-            require_bounded_bytes(
-                value,
-                field=f"artifact producer field {index}",
-                minimum=1,
-                maximum=128,
-            )
-        if self.writer_policy != _ZIP_WRITER_POLICY_V1:
-            raise ValueError("artifact authority has an unsupported ZIP policy")
-        if self.storage_codec != _STORAGE_CODEC_V1:
-            raise ValueError("artifact authority has an unsupported storage codec")
+        require_digest32(
+            self.policy_fingerprint_sha256,
+            field="artifact policy_fingerprint_sha256",
+        )
         if self.operation not in {"CREATE", "REBUILD"}:
             raise ValueError("artifact preparation operation must create bytes")
         _validate_checkpoint(self.validation_checkpoint)
@@ -341,10 +282,6 @@ class ArtifactPreparationAuthority:
     @property
     def build_id(self) -> bytes:
         return self.projection.build_id
-
-    @property
-    def artifact_name(self) -> bytes:
-        return identity.artifact_name(self.gid)
 
     @property
     def component_tuple(self) -> tuple[tuple[str, bytes], ...]:
@@ -374,7 +311,7 @@ class ArtifactPreparationInputAudit:
 
     This is deliberately not a storage or prepared-artifact authority by
     itself.  The storage boundary separately requires the exact registered
-    adapter ID and producer fingerprint before it consumes this receipt.
+    adapter ID and opaque policy fingerprint before it consumes this receipt.
     """
 
     authority: ArtifactPreparationAuthority
@@ -382,7 +319,9 @@ class ArtifactPreparationInputAudit:
     emitted_member_count: int
     source_byte_count: int
     effective_content_file_count: int
-    zip_comment: bytes
+    source_root_components: tuple[str, ...]
+    gallery_locator_components: tuple[str, ...]
+    references: tuple[ArtifactSourceReference, ...]
     _capability: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -397,25 +336,30 @@ class ArtifactPreparationInputAudit:
             ("effective_content_file_count", self.effective_content_file_count),
         ):
             require_int63(value, field=f"artifact audit {label}")
-        require_bounded_bytes(
-            self.zip_comment,
-            field="artifact audit zip_comment",
-            minimum=1,
-            maximum=512,
+        object.__setattr__(
+            self, "source_root_components", tuple(self.source_root_components)
         )
+        object.__setattr__(
+            self,
+            "gallery_locator_components",
+            tuple(self.gallery_locator_components),
+        )
+        object.__setattr__(self, "references", tuple(self.references))
+        if len(self.references) != self.emitted_member_count:
+            raise ValueError("artifact audit references disagree with emitted count")
+        if not self.source_root_components or not self.gallery_locator_components:
+            raise ValueError("artifact audit requires source root and gallery locator")
 
 
 @dataclass(frozen=True, slots=True)
 class ArtifactProtectionIntent:
-    """Opaque durable PENDING intent issued only after its family is sealed."""
+    """Repository-issued durable intent for one generic immutable resource."""
 
     candidate_id: bytes
     publication_key: bytes
-    artifact_sha256: bytes
-    size_bytes: int
-    storage_key: ArtifactStorageKey
-    artifact_storage_key_sha256: bytes
-    storage_codec_version: int
+    resource_kind: CatalogResourceKind
+    storage_object: StorageObjectDescriptor
+    storage_object_key_sha256: bytes
     storage_generation: int
     protection_token: bytes
     state: str
@@ -430,47 +374,38 @@ class ArtifactProtectionIntent:
             self.publication_key,
             field="intent publication_key",
         )
-        artifact = require_digest32(
-            self.artifact_sha256,
-            field="intent artifact_sha256",
-        )
-        size = require_int63(self.size_bytes, field="intent size_bytes")
-        if not isinstance(self.storage_key, ArtifactStorageKey):
-            raise TypeError("artifact intent storage_key is not registered")
-        storage_key_sha256 = require_digest32(
-            self.artifact_storage_key_sha256,
-            field="intent artifact_storage_key_sha256",
+        if type(self.resource_kind) is not CatalogResourceKind:
+            raise TypeError("intent resource_kind is not registered")
+        if not isinstance(self.storage_object, StorageObjectDescriptor):
+            raise TypeError("intent storage_object is not registered")
+        key_digest = require_digest32(
+            self.storage_object_key_sha256,
+            field="intent storage_object_key_sha256",
         )
         if (
-            identity.artifact_storage_key_digest(self.storage_key.segments)
-            != storage_key_sha256
+            identity.artifact_storage_key_digest(
+                self.storage_object.key.codec,
+                self.storage_object.key.segments,
+            )
+            != key_digest
         ):
-            raise ValueError("artifact intent storage-key digest disagrees")
-        codec = require_positive_int63(
-            self.storage_codec_version,
-            field="intent storage_codec_version",
-        )
+            raise ValueError("intent storage-key digest disagrees")
         generation = require_int63(
             self.storage_generation,
             field="intent storage_generation",
         )
-        token_bytes = require_bounded_bytes(
+        token = require_digest32(
             self.protection_token,
             field="intent protection_token",
-            minimum=184,
-            maximum=184,
         )
-        token = identity.decode_artifact_protection_token(token_bytes)
-        if (
-            token.candidate_id != candidate
-            or token.publication_key != publication
-            or token.artifact_sha256 != artifact
-            or token.artifact_storage_key_sha256 != storage_key_sha256
-            or token.storage_codec_version != codec
-            or token.storage_generation != generation
-            or token.size_bytes != size
+        if token != identity.encode_artifact_protection_token(
+            candidate,
+            publication,
+            self.resource_kind.value,
+            key_digest,
+            generation,
         ):
-            raise ValueError("artifact intent token disagrees with durable facts")
+            raise ValueError("intent token disagrees with durable facts")
         if self.state not in {"PENDING", "PREPARED", "COMMITTED"}:
             raise ValueError("artifact protection intent state is not registered")
         if type(self.replayed) is not bool:
@@ -479,11 +414,12 @@ class ArtifactProtectionIntent:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactProtectionEvidence:
-    """Repository-issued exact acknowledgement of one durable intent."""
+    """Core-verified acknowledgement of one exact protected resource."""
 
     intent: ArtifactProtectionIntent
     adapter_id: bytes
-    producer_fingerprint_sha256: bytes
+    policy_fingerprint_sha256: bytes
+    storage_object: StorageObjectDescriptor
     _capability: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -491,6 +427,7 @@ class ArtifactProtectionEvidence:
             raise TypeError("artifact protection evidence is repository-issued")
         if not isinstance(self.intent, ArtifactProtectionIntent):
             raise TypeError("artifact protection evidence lacks its durable intent")
+        self.intent.__post_init__()
         require_bounded_bytes(
             self.adapter_id,
             field="protection evidence adapter_id",
@@ -498,40 +435,36 @@ class ArtifactProtectionEvidence:
             maximum=64,
         )
         require_digest32(
-            self.producer_fingerprint_sha256,
-            field="protection evidence producer fingerprint",
+            self.policy_fingerprint_sha256,
+            field="protection evidence policy fingerprint",
         )
+        if self.storage_object != self.intent.storage_object:
+            raise ValueError(
+                "protected storage descriptor differs from core-verified bytes"
+            )
 
 
 class ArtifactPreparationReceipt:
-    """Opaque verified archive plus its GID-derived neutral storage key.
-
-    No external storage protection has happened when this value is returned.
-    The owned archive remains open until the receipt is closed so protection
-    can occur only after the database has durably sealed a PENDING intent.
-    """
+    """Owned verified acquisition and optional thumbnail resource bundle."""
 
     __slots__ = (
         "audit",
         "_archive",
         "_artifact_storage_key_sha256",
-        "_artifact_sha256",
         "_capability",
         "_closed",
-        "_storage_key",
-        "_size_bytes",
-        "_storage_codec_version",
+        "_presentation_artifact",
+        "_render_evidence",
+        "_storage_object",
     )
 
     def __init__(
         self,
         *,
         audit: ArtifactPreparationInputAudit,
-        artifact_sha256: bytes,
-        size_bytes: int,
-        storage_key: ArtifactStorageKey,
-        artifact_storage_key_sha256: bytes,
-        storage_codec_version: int,
+        acquisition: StorageObjectDescriptor,
+        render_evidence: ArtifactArchiveRenderEvidence,
+        presentation_artifact: PreparedPresentationArtifact,
         archive: BinaryIO,
         _capability: object,
     ) -> None:
@@ -539,27 +472,31 @@ class ArtifactPreparationReceipt:
             raise TypeError("artifact preparation receipts are repository-issued")
         if audit._capability is not _AUDIT_TOKEN:
             raise TypeError("artifact preparation receipt lacks an input audit")
-        self.audit = audit
-        self._artifact_sha256 = require_digest32(
-            artifact_sha256, field="prepared artifact_sha256"
-        )
-        self._size_bytes = require_int63(size_bytes, field="prepared size_bytes")
-        if storage_key != artifact_storage_key(audit.authority.gid):
-            raise ValueError("prepared storage key disagrees with authority GID")
-        self._storage_key = storage_key
-        self._artifact_storage_key_sha256 = require_digest32(
-            artifact_storage_key_sha256,
-            field="prepared artifact_storage_key_sha256",
-        )
-        if identity.artifact_storage_key_digest(self._storage_key.segments) != (
-            self._artifact_storage_key_sha256
+        if not isinstance(acquisition, StorageObjectDescriptor):
+            raise TypeError("prepared acquisition descriptor is invalid")
+        if not isinstance(render_evidence, ArtifactArchiveRenderEvidence):
+            raise TypeError("prepared render evidence is invalid")
+        render_evidence.__post_init__()
+        if (
+            acquisition.sha256 != render_evidence.artifact_sha256.hex()
+            or acquisition.size_bytes != render_evidence.size_bytes
         ):
-            raise ValueError("prepared storage-key digest disagrees")
-        self._storage_codec_version = require_positive_int63(
-            storage_codec_version, field="prepared storage_codec_version"
-        )
+            raise ValueError("render evidence disagrees with acquisition descriptor")
+        if not isinstance(presentation_artifact, PreparedPresentationArtifact):
+            raise TypeError("prepared presentation ownership is invalid")
+        for page in presentation_artifact.presentation.pages:
+            if page.storage_object != acquisition:
+                raise ValueError("prepared page references another acquisition object")
         if not hasattr(archive, "read") or not hasattr(archive, "seek"):
-            raise TypeError("prepared archive must be one seekable binary stream")
+            raise TypeError("prepared archive must be seekable")
+        self.audit = audit
+        self._storage_object = acquisition
+        self._artifact_storage_key_sha256 = identity.artifact_storage_key_digest(
+            acquisition.key.codec,
+            acquisition.key.segments,
+        )
+        self._render_evidence = render_evidence
+        self._presentation_artifact = presentation_artifact
         self._archive = archive
         self._capability = _capability
         self._closed = False
@@ -567,7 +504,10 @@ class ArtifactPreparationReceipt:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._archive.close()
+            try:
+                self._archive.close()
+            finally:
+                self._presentation_artifact.close()
 
     def __enter__(self) -> ArtifactPreparationReceipt:
         if self._closed:
@@ -579,23 +519,71 @@ class ArtifactPreparationReceipt:
 
     @property
     def artifact_sha256(self) -> bytes:
-        return self._artifact_sha256
+        return bytes.fromhex(self._storage_object.sha256)
 
     @property
     def size_bytes(self) -> int:
-        return self._size_bytes
+        return self._storage_object.size_bytes
 
     @property
-    def storage_key(self) -> ArtifactStorageKey:
-        return self._storage_key
+    def storage_key(self) -> StorageObjectKey:
+        return self._storage_object.key
+
+    @property
+    def storage_object(self) -> StorageObjectDescriptor:
+        return self._storage_object
 
     @property
     def artifact_storage_key_sha256(self) -> bytes:
         return self._artifact_storage_key_sha256
 
     @property
-    def storage_codec_version(self) -> int:
-        return self._storage_codec_version
+    def render_evidence(self) -> ArtifactArchiveRenderEvidence:
+        return self._render_evidence
+
+    @property
+    def presentation(self) -> PreparedPublicationPresentation:
+        return self._presentation_artifact.presentation
+
+    @property
+    def resource_kinds(self) -> tuple[CatalogResourceKind, ...]:
+        if self.presentation.thumbnail is None:
+            return (CatalogResourceKind.ACQUISITION,)
+        return (
+            CatalogResourceKind.ACQUISITION,
+            CatalogResourceKind.THUMBNAIL,
+        )
+
+    def resource_descriptor(
+        self,
+        resource_kind: CatalogResourceKind,
+    ) -> StorageObjectDescriptor:
+        self._require_open()
+        if resource_kind is CatalogResourceKind.ACQUISITION:
+            return self._storage_object
+        if resource_kind is CatalogResourceKind.THUMBNAIL:
+            thumbnail = self.presentation.thumbnail
+            if thumbnail is None:
+                raise KeyError("prepared artifact has no thumbnail resource")
+            return thumbnail.storage_object
+        raise TypeError("resource_kind is not registered")
+
+    def resource_stream(self, resource_kind: CatalogResourceKind) -> BinaryIO:
+        self._require_open()
+        if resource_kind is CatalogResourceKind.ACQUISITION:
+            stream = self._archive
+        elif resource_kind is CatalogResourceKind.THUMBNAIL:
+            if self.presentation.thumbnail is None:
+                raise KeyError("prepared artifact has no thumbnail resource")
+            stream = self._presentation_artifact.thumbnail
+        else:
+            raise TypeError("resource_kind is not registered")
+        stream.seek(0)
+        return stream
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise TypeError("artifact preparation receipt is closed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,27 +591,24 @@ class ArtifactPersistenceReceipt:
     candidate_id: bytes
     publication_key: bytes
     artifact_sha256: bytes
-    artifact_storage_key_sha256: bytes
-    protection_token: bytes
-    state: str
+    resources: tuple[tuple[CatalogResourceKind, bytes, str], ...]
     replayed: bool
 
     def __post_init__(self) -> None:
         require_uuid16(self.candidate_id, field="persisted artifact candidate_id")
         require_digest32(self.publication_key, field="persisted publication_key")
         require_digest32(self.artifact_sha256, field="persisted artifact_sha256")
-        require_digest32(
-            self.artifact_storage_key_sha256,
-            field="persisted artifact_storage_key_sha256",
-        )
-        require_bounded_bytes(
-            self.protection_token,
-            field="persisted protection_token",
-            minimum=184,
-            maximum=184,
-        )
-        if self.state not in {"PREPARED", "COMMITTED"}:
-            raise ValueError("persisted artifact state is not registered")
+        object.__setattr__(self, "resources", tuple(self.resources))
+        kinds: list[str] = []
+        for kind, token, state in self.resources:
+            if type(kind) is not CatalogResourceKind:
+                raise TypeError("persisted artifact resource_kind is not registered")
+            require_digest32(token, field="persisted protection_token")
+            if state not in {"PREPARED", "COMMITTED"}:
+                raise ValueError("persisted artifact state is not registered")
+            kinds.append(kind.value)
+        if tuple(kinds) != tuple(sorted(set(kinds))):
+            raise ValueError("persisted artifact resources are not strictly ordered")
         if type(self.replayed) is not bool:
             raise TypeError("persisted artifact replayed must be bool")
 
@@ -743,35 +728,6 @@ class ArtifactInputProjectionPlan:
             )
 
 
-class _ArchiveSourcePlan:
-    def __init__(
-        self,
-        *,
-        database: sqlite3.Connection,
-        temporary_directory: TemporaryDirectory[str],
-        source_directory: Path,
-        member_count: int,
-    ) -> None:
-        self.database = database
-        self.temporary_directory = temporary_directory
-        self.source_directory = source_directory
-        self.member_count = member_count
-        self.closed = False
-
-    def close(self) -> None:
-        if not self.closed:
-            self.closed = True
-            self.database.close()
-            self.temporary_directory.cleanup()
-
-
-class _CanonicalZipInfo(zipfile.ZipInfo):
-    """Force the registered UTF-8 flag even for ASCII-only canonical names."""
-
-    def _encodeFilenameFlags(self) -> tuple[bytes, int]:  # noqa: N802
-        return self.filename.encode("ascii", errors="strict"), self.flag_bits | 2048
-
-
 @dataclass(frozen=True, slots=True)
 class _AuthorityFacts:
     publication_key: bytes
@@ -794,11 +750,8 @@ class _AuthorityFacts:
     manifest_algorithm_version: int
     file_order_version: int
     artifact_algorithm_version: int
-    max_image_short_side: int
-    producer_fingerprint_sha256: bytes
-    producer_fields: tuple[bytes, bytes, bytes, bytes, bytes]
-    writer_policy: tuple[int, int, int, int, int, int, int, int, int, int]
-    storage_codec: tuple[int, bytes, int, int]
+    adapter_id: bytes
+    policy_fingerprint_sha256: bytes
     spam_artist_threshold: int
     spam_occurrence_threshold: int
     validation_checkpoint: tuple[int, bytes, int, str, int]
@@ -820,163 +773,12 @@ class _ArtifactContractFacts:
     gid_winner_rule_version: int
     policy_component_sha256: bytes
     artifact_algorithm_version: int
-    max_image_short_side: int
-    producer_fingerprint_sha256: bytes
-    producer_fields: tuple[bytes, bytes, bytes, bytes, bytes]
-    writer_policy: tuple[int, int, int, int, int, int, int, int, int, int]
-    storage_codec: tuple[int, bytes, int, int]
+    adapter_id: bytes
+    policy_fingerprint_sha256: bytes
 
 
 class ArtifactPreparationRepository:
     """Issue exact input authority and audit the canonical member projection."""
-
-    @staticmethod
-    def register_producer(
-        work: VNextUnitOfWork,
-        *,
-        gate_lease: GateLease,
-        ingest_turn: IngestTurn,
-        now: int,
-        artifact_algorithm_version: int,
-        writer_id: bytes,
-        python_abi: bytes,
-        pillow_build: bytes,
-        libjpeg_build: bytes,
-        zlib_build: bytes,
-    ) -> ArtifactProducerRegistration:
-        """Derive, collision-check, and insert one byte-producer registration.
-
-        The caller owns the write transaction.  The digest is never accepted
-        from the caller: it is derived from the exact five-field producer
-        frame, checked through all candidate keys, and inserted as one atomic
-        authoritative row.
-        """
-
-        algorithm_version = require_uint32(
-            artifact_algorithm_version,
-            field="artifact producer algorithm version",
-        )
-        if algorithm_version == 0:
-            raise ValueError("artifact producer algorithm version must be positive")
-        producer_fields = cast(
-            tuple[bytes, bytes, bytes, bytes, bytes],
-            tuple(
-                require_bounded_bytes(
-                    value,
-                    field=f"artifact producer {field}",
-                    minimum=1,
-                    maximum=128,
-                )
-                for field, value in (
-                    ("writer_id", writer_id),
-                    ("python_abi", python_abi),
-                    ("pillow_build", pillow_build),
-                    ("libjpeg_build", libjpeg_build),
-                    ("zlib_build", zlib_build),
-                )
-            ),
-        )
-        fingerprint = identity.artifact_producer_fingerprint_sha256(*producer_fields)
-        equivalence_class = identity.artifact_producer_equivalence_class(fingerprint)
-        _authorize_artifact_mutation(
-            work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
-            now=now,
-        )
-        if work.connector.fetch_one(
-            "SELECT artifact_algorithm_version "
-            "FROM catalog_artifact_zip_writer_policies "
-            "WHERE artifact_algorithm_version = %s",
-            (algorithm_version,),
-        ) != (algorithm_version,):
-            raise ArtifactPreparationNotReadyError(
-                "artifact producer algorithm version is not registered"
-            )
-
-        # The maintenance gate and ingest fence above are the mutable
-        # serialization authorities.  Immutable registry rows are plain reads.
-        digest_row = work.connector.fetch_one(
-            "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
-            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-            "libjpeg_build, zlib_build FROM catalog_artifact_producer_fingerprints "
-            "WHERE producer_fingerprint_sha256 = %s",
-            (fingerprint,),
-        )
-        natural_row = work.connector.fetch_one(
-            "SELECT producer_fingerprint_sha256 "
-            "FROM catalog_artifact_producer_fingerprints "
-            "WHERE writer_id = %s AND python_abi = %s AND pillow_build = %s "
-            "AND libjpeg_build = %s AND zlib_build = %s",
-            producer_fields,
-        )
-        equivalence_row = work.connector.fetch_one(
-            "SELECT producer_fingerprint_sha256 "
-            "FROM catalog_artifact_producer_fingerprints "
-            "WHERE producer_equivalence_class = %s",
-            (equivalence_class,),
-        )
-
-        expected = (
-            fingerprint,
-            algorithm_version,
-            equivalence_class,
-            *producer_fields,
-        )
-        if digest_row:
-            if (
-                digest_row != expected
-                or natural_row != (fingerprint,)
-                or equivalence_row != (fingerprint,)
-            ):
-                raise ArtifactPreparationConflictError(
-                    "artifact producer digest collides with another exact registration"
-                )
-            return ArtifactProducerRegistration(
-                fingerprint,
-                algorithm_version,
-                equivalence_class,
-                *producer_fields,
-                True,
-            )
-        if natural_row or equivalence_row:
-            raise ArtifactPreparationConflictError(
-                "artifact producer candidate key is already registered differently"
-            )
-
-        count_row = work.connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_artifact_producer_fingerprints"
-        )
-        if len(count_row) != 1:
-            raise ArtifactPreparationConflictError(
-                "artifact producer registry count has an invalid shape"
-            )
-        producer_count = require_int63(
-            count_row[0], field="artifact producer registry row count"
-        )
-        if producer_count < 0:
-            raise ArtifactPreparationConflictError(
-                "artifact producer registry row count is negative"
-            )
-        if producer_count >= RECOMPOSED_REGISTRY_MAXIMUM_ROWS:
-            raise ArtifactPreparationNotReadyError(
-                "artifact producer registry reached its recomposition capacity"
-            )
-
-        work.connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprints "
-            "(producer_fingerprint_sha256, artifact_algorithm_version, "
-            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-            "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            expected,
-        )
-        return ArtifactProducerRegistration(
-            fingerprint,
-            algorithm_version,
-            equivalence_class,
-            *producer_fields,
-            False,
-        )
 
     @staticmethod
     def issue_input_projection_authority(
@@ -1217,9 +1019,14 @@ class ArtifactPreparationRepository:
         actual_rows = work.connector.fetch_all(
             "SELECT publication_key FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key > %s "
+            "AND resource_kind = %s "
             "AND state IN ('PREPARED', 'COMMITTED') "
             "ORDER BY publication_key LIMIT 128",
-            (mutation.candidate.candidate_id, checkpoint.cursor),
+            (
+                mutation.candidate.candidate_id,
+                checkpoint.cursor,
+                CatalogResourceKind.ACQUISITION.value.encode("ascii"),
+            ),
         )
         actual = tuple(
             require_digest32(row[0], field="prepared publication")
@@ -1229,20 +1036,11 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationConflictError(
                 "prepared artifact coverage differs from CREATE/REBUILD"
             )
-        storage_codec = (
-            None if not expected else _load_storage_codec(work, _STORAGE_CODEC_V1[0])
-        )
-        if storage_codec is not None and storage_codec != _STORAGE_CODEC_V1:
-            raise ArtifactPreparationContractUnavailableError(
-                "prepared artifact storage codec is unsupported"
-            )
         for publication in expected:
-            assert storage_codec is not None
             _validate_prepared_row(
                 work,
                 mutation,
                 publication,
-                storage_codec=storage_codec,
             )
         next_cursor = checkpoint.cursor if not expected else expected[-1]
         return _commit_candidate_batch(
@@ -1444,7 +1242,7 @@ class ArtifactPreparationRepository:
         audit: ArtifactPreparationInputAudit,
         adapter: ArtifactStorageAdapter,
     ) -> ArtifactPreparationReceipt:
-        """Render and verify deterministic ZIP bytes without external protection."""
+        """Render and core-verify one acquisition plus optional thumbnail."""
 
         if not isinstance(audit, ArtifactPreparationInputAudit):
             raise TypeError("audit must be ArtifactPreparationInputAudit")
@@ -1452,67 +1250,83 @@ class ArtifactPreparationRepository:
         _require_authority(audit.authority)
         if audit._capability is not _AUDIT_TOKEN:
             raise TypeError("artifact input audit is not repository-issued")
-        if not hasattr(adapter, "render_member") or not hasattr(adapter, "protect"):
+        if not isinstance(adapter, ArtifactStorageAdapter):
             raise TypeError("adapter must implement ArtifactStorageAdapter")
         authority = audit.authority
-        if (
-            require_bounded_bytes(
-                adapter.adapter_id,
-                field="artifact adapter_id",
-                minimum=1,
-                maximum=64,
+        _require_matching_adapter(authority, adapter)
+        with connector.read_transaction():
+            row = connector.fetch_one(
+                "SELECT modified_at FROM catalog_publications "
+                "WHERE revision = %s AND publication_key = %s",
+                (
+                    authority.projection.reserved_revision,
+                    authority.publication_key,
+                ),
             )
-            != authority.storage_codec[1]
-        ):
-            raise ArtifactPreparationContractUnavailableError(
-                "artifact adapter does not match the registered storage codec"
+        if len(row) != 1:
+            raise ArtifactPreparationConflictError(
+                "prepared artifact lacks its immutable publication timestamp"
             )
-        if (
-            require_digest32(
-                adapter.producer_fingerprint_sha256,
-                field="artifact adapter producer fingerprint",
-            )
-            != authority.producer_fingerprint_sha256
-        ):
-            raise ArtifactPreparationContractUnavailableError(
-                "artifact adapter does not match the policy producer fingerprint"
-            )
-        archive_plan = _prepare_archive_source_plan(
-            connector,
-            backend=backend,
-            audit=audit,
+        modified_at = _datetime_from_microseconds(
+            row[0],
+            field="prepared storage object modified_at",
         )
-        archive = TemporaryFile(mode="w+b")
-        archive_owned = True
+        rendered = render_artifact(
+            adapter,
+            gid=authority.gid,
+            source_root_components=audit.source_root_components,
+            gallery_locator_components=audit.gallery_locator_components,
+            references=audit.references,
+        )
+        archive: BinaryIO | None = None
+        presentation_artifact: PreparedPresentationArtifact | None = None
         try:
-            _write_canonical_archive(archive_plan, archive, audit, adapter)
-            artifact_sha256, size_bytes = _hash_stream(archive)
-            _validate_canonical_archive(
-                archive_plan,
-                archive,
-                audit,
-                expected_size=size_bytes,
+            acquisition_key = _adapter_storage_key(
+                adapter,
+                gid=authority.gid,
+                resource_kind=CatalogResourceKind.ACQUISITION,
             )
-            storage_key = artifact_storage_key(authority.gid)
-            storage_key_sha256 = identity.artifact_storage_key_digest(
-                storage_key.segments
+            acquisition = StorageObjectDescriptor(
+                acquisition_key,
+                rendered.evidence.size_bytes,
+                rendered.evidence.artifact_sha256.hex(),
+                modified_at,
+            )
+            thumbnail_key = (
+                None
+                if not rendered.evidence.pages
+                else _adapter_storage_key(
+                    adapter,
+                    gid=authority.gid,
+                    resource_kind=CatalogResourceKind.THUMBNAIL,
+                )
+            )
+            archive = rendered.detach_archive()
+            presentation_artifact = prepare_presentation(
+                adapter,
+                archive=archive,
+                acquisition=acquisition,
+                rendered_pages=rendered.evidence.pages,
+                thumbnail_key=thumbnail_key,
+                modified_at=modified_at,
             )
             receipt = ArtifactPreparationReceipt(
                 audit=audit,
-                artifact_sha256=artifact_sha256,
-                size_bytes=size_bytes,
-                storage_key=storage_key,
-                artifact_storage_key_sha256=storage_key_sha256,
-                storage_codec_version=authority.storage_codec[0],
+                acquisition=acquisition,
+                render_evidence=rendered.evidence,
+                presentation_artifact=presentation_artifact,
                 archive=archive,
                 _capability=_PREPARATION_RECEIPT_TOKEN,
             )
-            archive_owned = False
+            archive = None
+            presentation_artifact = None
             return receipt
         finally:
-            if archive_owned:
+            rendered.close()
+            if archive is not None:
                 archive.close()
-            archive_plan.close()
+            if presentation_artifact is not None:
+                presentation_artifact.close()
 
     @staticmethod
     def protect_prepared_artifact(
@@ -1523,108 +1337,77 @@ class ArtifactPreparationRepository:
         intent: ArtifactProtectionIntent,
         adapter: ArtifactStorageAdapter,
     ) -> ArtifactProtectionEvidence:
-        """Idempotently protect bytes for one already-durable PENDING intent."""
+        """Protect one durable PENDING resource and reverify its exact bytes."""
 
         _require_preparation_receipt(receipt)
         if not isinstance(intent, ArtifactProtectionIntent):
             raise TypeError("intent must be ArtifactProtectionIntent")
         intent.__post_init__()
         authority = receipt.audit.authority
+        _require_matching_adapter(authority, adapter)
         with connector.read_transaction():
-            durable_family = _load_prepared_family_or_conflict(
+            family = _load_prepared_family_or_conflict(
                 connector,
                 candidate_id=authority.candidate_id,
                 publication_key=authority.publication_key,
+                resource_kind=intent.resource_kind,
                 backend=backend,
             )
-            if durable_family is None:
+            if family is None:
                 raise ArtifactPreparationNotReadyError(
-                    "artifact protection intent is not committed and visible"
+                    "resource protection intent is not durably visible"
                 )
-            durable_intent = _protection_intent_from_family(
-                VNextUnitOfWork(connector, backend=backend),
+            durable = _protection_intent_from_family(
+                connector,
                 receipt,
-                durable_family,
+                family,
                 replayed=True,
             )
-        if durable_family.state != "PENDING":
+            _validate_prepared_resource_blob(connector, receipt, family)
+        if family.state != "PENDING":
             raise ArtifactPreparationNotReadyError(
-                "artifact protection is only valid for a durable PENDING intent"
+                "resource protection requires a durable PENDING intent"
             )
-        if _intent_facts(durable_intent) != _intent_facts(intent):
+        if _intent_facts(durable) != _intent_facts(intent):
             raise ArtifactPreparationConflictError(
-                "artifact protection request differs from committed durable intent"
+                "resource protection request differs from durable intent"
             )
+        stream = receipt.resource_stream(intent.resource_kind)
         expected = (
-            authority.candidate_id,
-            authority.publication_key,
-            receipt.artifact_sha256,
-            receipt.size_bytes,
-            receipt.storage_key,
-            receipt.artifact_storage_key_sha256,
-            receipt.storage_codec_version,
+            bytes.fromhex(intent.storage_object.sha256),
+            intent.storage_object.size_bytes,
         )
-        actual = (
-            intent.candidate_id,
-            intent.publication_key,
-            intent.artifact_sha256,
-            intent.size_bytes,
-            intent.storage_key,
-            intent.artifact_storage_key_sha256,
-            intent.storage_codec_version,
-        )
-        if actual != expected or intent.state != "PENDING":
+        if _hash_stream(stream) != expected:
             raise ArtifactPreparationConflictError(
-                "artifact protection intent differs from the verified receipt"
+                "prepared resource bytes changed before protection"
             )
-        adapter_id = require_bounded_bytes(
-            adapter.adapter_id,
-            field="artifact adapter_id",
-            minimum=1,
-            maximum=64,
-        )
-        producer = require_digest32(
-            adapter.producer_fingerprint_sha256,
-            field="artifact adapter producer fingerprint",
-        )
-        if adapter_id != authority.storage_codec[1]:
-            raise ArtifactPreparationContractUnavailableError(
-                "artifact adapter does not match the registered storage codec"
-            )
-        if producer != authority.producer_fingerprint_sha256:
-            raise ArtifactPreparationContractUnavailableError(
-                "artifact adapter does not match the policy producer fingerprint"
-            )
-        if _hash_stream(receipt._archive) != (
-            receipt.artifact_sha256,
-            receipt.size_bytes,
-        ):
-            raise ArtifactPreparationConflictError(
-                "verified artifact archive changed before external protection"
-            )
-        receipt._archive.seek(0)
+        stream.seek(0)
         raw = adapter.protect(
-            receipt._archive,
-            intent.storage_key,
-            intent.artifact_sha256,
-            intent.size_bytes,
+            stream,
+            intent.storage_object.key,
+            expected[0],
+            expected[1],
+            intent.storage_object.modified_at,
             intent.protection_token,
         )
-        if not isinstance(raw, ArtifactStorageEvidence) or not raw.stored:
-            raise ArtifactPreparationNotReadyError(
-                "artifact storage adapter did not acknowledge exact protection"
-            )
-        if _hash_stream(receipt._archive) != (
-            receipt.artifact_sha256,
-            receipt.size_bytes,
+        if (
+            not isinstance(raw, ArtifactStorageEvidence)
+            or not raw.stored
+            or raw.storage_object != intent.storage_object
         ):
+            raise ArtifactPreparationNotReadyError(
+                "storage adapter did not acknowledge the exact verified resource"
+            )
+        raw.__post_init__()
+        if _hash_stream(stream) != expected:
             raise ArtifactPreparationConflictError(
-                "artifact storage adapter changed the verified archive bytes"
+                "storage adapter changed the verified resource"
             )
         return ArtifactProtectionEvidence(
             intent,
-            adapter_id,
-            producer,
+            authority.adapter_id,
+            authority.policy_fingerprint_sha256,
+            intent.storage_object,
             _capability=_PROTECTION_EVIDENCE_TOKEN,
         )
 
@@ -1636,8 +1419,8 @@ class ArtifactPreparationRepository:
         ingest_turn: IngestTurn,
         receipt: ArtifactPreparationReceipt,
         now: int,
-    ) -> ArtifactProtectionIntent:
-        """Seal one PENDING storage intent before any external protection call."""
+    ) -> tuple[ArtifactProtectionIntent, ...]:
+        """Atomically seal every acquisition/thumbnail PENDING intent."""
 
         _require_preparation_receipt(receipt)
         timestamp = require_int63(now, field="prepared artifact persisted_at")
@@ -1659,53 +1442,85 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationConflictError(
                 "prepared artifact input authority changed"
             )
-        existing = _load_prepared_family_or_conflict(
+        families = _load_prepared_families_or_conflict(
             work.connector,
             candidate_id=authority.candidate_id,
             publication_key=authority.publication_key,
             backend=work.backend,
         )
-        if existing is not None:
-            return _protection_intent_from_family(
-                work,
-                receipt,
-                existing,
-                replayed=True,
+        expected_kinds = receipt.resource_kinds
+        if families:
+            if tuple(family.resource_kind for family in families) != expected_kinds:
+                raise ArtifactPreparationConflictError(
+                    "durable resource family does not exactly cover prepared bundle"
+                )
+            _validate_artifact_render_facts(work, receipt)
+            for family in families:
+                descriptor = receipt.resource_descriptor(family.resource_kind)
+                _validate_storage_key(
+                    work,
+                    descriptor.key,
+                    key_digest=family.storage_object_key_sha256,
+                )
+                _validate_prepared_resource_blob(work.connector, receipt, family)
+            return tuple(
+                _protection_intent_from_family(
+                    work.connector,
+                    receipt,
+                    family,
+                    replayed=True,
+                )
+                for family in families
             )
         if live_generation != authority.projection.generation:
             raise ArtifactPreparationNotReadyError(
-                "new artifact storage intent requires the live projection generation"
+                "new resource intents require the live projection generation"
             )
-        protection_token = identity.encode_artifact_protection_token(
-            receipt.storage_codec_version,
-            authority.candidate_id,
-            authority.publication_key,
-            receipt.artifact_sha256,
-            receipt.artifact_storage_key_sha256,
-            live_generation,
-            receipt.size_bytes,
-        )
-        _persist_artifact_byte_identities(
-            work,
-            receipt,
-            storage_generation=live_generation,
-            protection_token=protection_token,
-        )
-        persisted = _load_prepared_family_or_conflict(
-            work.connector,
-            candidate_id=authority.candidate_id,
-            publication_key=authority.publication_key,
-            backend=work.backend,
-        )
-        if persisted is None:  # pragma: no cover - seal insert proves this
-            raise ArtifactPreparationConflictError(
-                "prepared artifact intent vanished after persistence"
+        _persist_artifact_render_facts(work, receipt)
+        persisted: list[PreparedArtifactFamily] = []
+        for kind in expected_kinds:
+            descriptor = receipt.resource_descriptor(kind)
+            key_digest = identity.artifact_storage_key_digest(
+                descriptor.key.codec,
+                descriptor.key.segments,
             )
-        return _protection_intent_from_family(
-            work,
-            receipt,
-            persisted,
-            replayed=False,
+            _persist_storage_key(work, descriptor.key, key_digest=key_digest)
+            token = identity.encode_artifact_protection_token(
+                authority.candidate_id,
+                authority.publication_key,
+                kind.value,
+                key_digest,
+                live_generation,
+            )
+            family = PreparedArtifactFamily(
+                authority.candidate_id,
+                authority.publication_key,
+                kind,
+                key_digest,
+                live_generation,
+                token,
+                "PENDING",
+            )
+            try:
+                stored, _created = ensure_prepared_artifact_family(
+                    work.connector,
+                    family,
+                    backend=work.backend,
+                )
+            except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+                raise ArtifactPreparationConflictError(
+                    "prepared resource intent collides with durable facts"
+                ) from error
+            _persist_prepared_resource_blob(work, receipt, stored)
+            persisted.append(stored)
+        return tuple(
+            _protection_intent_from_family(
+                work.connector,
+                receipt,
+                family,
+                replayed=False,
+            )
+            for family in persisted
         )
 
     @staticmethod
@@ -1715,12 +1530,12 @@ class ArtifactPreparationRepository:
         gate_lease: GateLease,
         ingest_turn: IngestTurn,
         receipt: ArtifactPreparationReceipt,
-        intent: ArtifactProtectionIntent,
-        evidence: ArtifactProtectionEvidence | None,
+        intents: tuple[ArtifactProtectionIntent, ...],
+        evidence: tuple[ArtifactProtectionEvidence, ...],
         effect_seal: OperationalEffectSeal,
         now: int,
     ) -> ArtifactPersistenceReceipt:
-        """Acknowledge external protection and publish one prepared occurrence."""
+        """Atomically confirm the complete resource bundle and publish its facts."""
 
         _require_preparation_receipt(receipt)
         timestamp = require_int63(now, field="prepared artifact confirmed_at")
@@ -1730,123 +1545,127 @@ class ArtifactPreparationRepository:
             ingest_turn=ingest_turn,
             now=timestamp,
         )
-        if not isinstance(intent, ArtifactProtectionIntent):
-            raise TypeError("intent must be ArtifactProtectionIntent")
-        intent.__post_init__()
+        exact_intents = tuple(intents)
+        exact_evidence = tuple(evidence)
+        if tuple(intent.resource_kind for intent in exact_intents) != (
+            receipt.resource_kinds
+        ):
+            raise ArtifactPreparationConflictError(
+                "confirmation intents do not exactly cover prepared resources"
+            )
         authority = receipt.audit.authority
         mutation = _load_projection_authority(work, authority.projection)
-        current_facts = _load_authority_facts(
+        if _load_authority_facts(
             work,
             authority.projection,
             authority.publication_key,
             now=timestamp,
-        )
-        if current_facts != _facts_from_authority(authority):
+        ) != _facts_from_authority(authority):
             raise ArtifactPreparationConflictError(
                 "prepared artifact input authority changed before confirmation"
             )
-        family = _load_prepared_family_or_conflict(
+        families = _load_prepared_families_or_conflict(
             work.connector,
             candidate_id=authority.candidate_id,
             publication_key=authority.publication_key,
             backend=work.backend,
         )
-        if family is None:
+        if tuple(family.resource_kind for family in families) != receipt.resource_kinds:
             raise ArtifactPreparationNotReadyError(
-                "artifact confirmation lacks a durable PENDING intent"
+                "confirmation lacks its exact durable resource family"
             )
-        durable_intent = _protection_intent_from_family(
-            work,
-            receipt,
-            family,
-            replayed=True,
+        for family in families:
+            _validate_prepared_resource_blob(work.connector, receipt, family)
+        durable_intents = tuple(
+            _protection_intent_from_family(
+                work.connector,
+                receipt,
+                family,
+                replayed=True,
+            )
+            for family in families
         )
-        if _intent_facts(durable_intent) != _intent_facts(intent):
-            raise ArtifactPreparationConflictError(
-                "artifact confirmation intent differs from durable facts"
-            )
-        was_pending = family.state == "PENDING"
-        if was_pending:
-            if (
-                not isinstance(evidence, ArtifactProtectionEvidence)
-                or evidence._capability is not _PROTECTION_EVIDENCE_TOKEN
-                or _intent_facts(evidence.intent) != _intent_facts(durable_intent)
-                or evidence.adapter_id != authority.storage_codec[1]
-                or evidence.producer_fingerprint_sha256
-                != authority.producer_fingerprint_sha256
-            ):
-                raise ArtifactPreparationNotReadyError(
-                    "PENDING artifact lacks exact repository-issued protection evidence"
-                )
-            try:
-                family = cas_prepared_artifact_state(
-                    work,
-                    candidate_id=authority.candidate_id,
-                    publication_key=authority.publication_key,
-                    expected_state="PENDING",
-                    next_state="PREPARED",
-                )
-            except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
-                raise ArtifactPreparationConflictError(
-                    "prepared artifact state changed during confirmation"
-                ) from error
-        elif evidence is not None and (
-            evidence._capability is not _PROTECTION_EVIDENCE_TOKEN
-            or _intent_facts(evidence.intent) != _intent_facts(durable_intent)
+        if tuple(map(_intent_facts, durable_intents)) != tuple(
+            map(_intent_facts, exact_intents)
         ):
             raise ArtifactPreparationConflictError(
-                "replayed protection evidence differs from durable intent"
+                "confirmation intents differ from durable facts"
             )
-        if family.state not in {"PREPARED", "COMMITTED"}:
-            raise ArtifactPreparationConflictError(
-                "confirmed artifact has an invalid durable state"
-            )
-        if was_pending:
-            _insert_catalog_artifact_occurrence(
+        states = {family.state for family in families}
+        if states == {"PENDING"}:
+            if len(exact_evidence) != len(durable_intents):
+                raise ArtifactPreparationNotReadyError(
+                    "PENDING resource bundle lacks complete protection evidence"
+                )
+            for intent, item in zip(durable_intents, exact_evidence, strict=True):
+                if (
+                    not isinstance(item, ArtifactProtectionEvidence)
+                    or item._capability is not _PROTECTION_EVIDENCE_TOKEN
+                    or _intent_facts(item.intent) != _intent_facts(intent)
+                    or item.adapter_id != authority.adapter_id
+                    or item.policy_fingerprint_sha256
+                    != authority.policy_fingerprint_sha256
+                    or item.storage_object != intent.storage_object
+                ):
+                    raise ArtifactPreparationNotReadyError(
+                        "resource protection evidence is incomplete or noncongruent"
+                    )
+            _persist_confirmed_presentation(
                 work,
                 mutation,
-                publication_key=authority.publication_key,
-                artifact_sha256=receipt.artifact_sha256,
-                artifact_semantics_sha256=authority.artifact_semantics_sha256,
+                receipt=receipt,
+                evidence=exact_evidence,
             )
+            updated: list[PreparedArtifactFamily] = []
+            for family in families:
+                try:
+                    updated.append(
+                        cas_prepared_artifact_state(
+                            work,
+                            candidate_id=authority.candidate_id,
+                            publication_key=authority.publication_key,
+                            resource_kind=family.resource_kind,
+                            expected_state="PENDING",
+                            next_state="PREPARED",
+                        )
+                    )
+                except (
+                    ArtifactFamilyCollisionError,
+                    ArtifactFamilyPartialError,
+                ) as error:
+                    raise ArtifactPreparationConflictError(
+                        "prepared resource state changed during confirmation"
+                    ) from error
+            families = tuple(updated)
+            replayed = False
+        elif states <= {"PREPARED", "COMMITTED"} and len(states) == 1:
+            _validate_confirmed_presentation(
+                work,
+                mutation,
+                receipt=receipt,
+            )
+            replayed = True
         else:
-            try:
-                occurrence = load_catalog_artifact_family(
-                    work.connector,
-                    revision=mutation.candidate.reserved_revision,
-                    publication_key=authority.publication_key,
-                    backend=work.backend,
-                )
-            except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
-                raise ArtifactPreparationConflictError(
-                    "replayed catalog artifact occurrence is incomplete"
-                ) from error
-            expected_occurrence = CatalogArtifactFamily(
-                mutation.candidate.reserved_revision,
-                authority.publication_key,
-                receipt.artifact_sha256,
-                authority.artifact_semantics_sha256,
+            raise ArtifactPreparationConflictError(
+                "prepared resource bundle has mixed or invalid states"
             )
-            if occurrence != expected_occurrence:
-                raise ArtifactPreparationConflictError(
-                    "replayed catalog artifact occurrence differs from durable intent"
-                )
         _bind_operational_effect_seal(
             work,
             candidate_id=authority.candidate_id,
             build_id=authority.build_id,
             effect_seal=effect_seal,
             now=timestamp,
-            allow_insert=was_pending,
+            allow_insert=not replayed,
         )
         return ArtifactPersistenceReceipt(
             authority.candidate_id,
             authority.publication_key,
             receipt.artifact_sha256,
-            receipt.artifact_storage_key_sha256,
-            family.protection_token,
-            family.state,
-            not was_pending,
+            tuple(
+                (family.resource_kind, family.protection_token, family.state)
+                for family in families
+            ),
+            replayed,
         )
 
     @staticmethod
@@ -1923,11 +1742,8 @@ def _artifact_authority(
         facts.manifest_algorithm_version,
         facts.file_order_version,
         facts.artifact_algorithm_version,
-        facts.max_image_short_side,
-        facts.producer_fingerprint_sha256,
-        facts.producer_fields,
-        facts.writer_policy,
-        facts.storage_codec,
+        facts.adapter_id,
+        facts.policy_fingerprint_sha256,
         facts.spam_artist_threshold,
         facts.spam_occurrence_threshold,
         facts.validation_checkpoint,
@@ -2009,107 +1825,10 @@ def _prepare_artifact_input_plan(
         raise
 
 
-def _prepare_archive_source_plan(
-    connector: SQLConnector,
-    *,
-    backend: str,
-    audit: ArtifactPreparationInputAudit,
-) -> _ArchiveSourcePlan:
-    temporary = TemporaryDirectory(prefix="h2hdb-artifact-archive-")
-    database = sqlite3.connect(Path(temporary.name) / "archive.sqlite3")
-    try:
-        database.executescript(
-            "CREATE TABLE members ("
-            "entry_position INTEGER PRIMARY KEY, source_name_bytes BLOB NOT NULL, "
-            "source_file_sha256 BLOB NOT NULL, source_size_bytes INTEGER NOT NULL, "
-            "excluded_flag INTEGER NOT NULL, archive_name BLOB, "
-            "transform_kind INTEGER NOT NULL, device BLOB NOT NULL, "
-            "inode BLOB NOT NULL, modified_ns BLOB NOT NULL, changed_ns BLOB NOT NULL);"
-        )
-        with connector.read_transaction():
-            work = VNextUnitOfWork(connector, backend=backend)
-            authority = audit.authority
-            _load_projection_authority(work, authority.projection)
-            contract = _load_projection_contract(work, authority.projection)
-            current = _load_authority_facts(
-                work,
-                authority.projection,
-                authority.publication_key,
-                now=None,
-                contract=contract,
-            )
-            if current != _facts_from_authority(authority):
-                raise ArtifactPreparationConflictError(
-                    "artifact authority changed before archive preparation"
-                )
-            _validate_fixed_components(work, authority)
-            source_directory = _load_source_directory(
-                work,
-                authority,
-                contract=contract,
-            )
-            member_payload = TemporaryFile(mode="w+b")
-            try:
-                receipt = CanonicalValueRepository.stream_and_validate(
-                    work,
-                    value_sha256=authority.member_plan_component_sha256,
-                    consume_provisional=lambda part: _write_all(member_payload, part),
-                )
-                if receipt.digest_domain != b"artifact_member_plan_v1":
-                    raise ArtifactPreparationConflictError(
-                        "archive member plan has the wrong canonical domain"
-                    )
-                member_payload.seek(0)
-                if _read_exact(member_payload, len(_MEMBER_PLAN_PREFIX)) != (
-                    _MEMBER_PLAN_PREFIX
-                ):
-                    raise ArtifactPreparationConflictError(
-                        "archive member plan prefix differs"
-                    )
-                if int.from_bytes(_read_exact(member_payload, 4), "big") != 1:
-                    raise ArtifactPreparationConflictError(
-                        "archive member plan version is not registered"
-                    )
-                member_count = require_int63(
-                    int.from_bytes(_read_exact(member_payload, 8), "big"),
-                    field="archive member count",
-                )
-                _spool_archive_source_rows(
-                    work,
-                    authority,
-                    member_payload,
-                    database,
-                    member_count=member_count,
-                )
-                if member_payload.read(1):
-                    raise ArtifactPreparationConflictError(
-                        "archive member plan has trailing bytes"
-                    )
-            finally:
-                member_payload.close()
-        database.commit()
-        if member_count != audit.source_entry_count:
-            raise ArtifactPreparationConflictError(
-                "archive source plan differs from its input audit"
-            )
-        return _ArchiveSourcePlan(
-            database=database,
-            temporary_directory=temporary,
-            source_directory=source_directory,
-            member_count=member_count,
-        )
-    except BaseException:
-        database.close()
-        temporary.cleanup()
-        raise
-
-
-def _load_source_directory(
+def _load_source_locator_components(
     work: VNextUnitOfWork,
     authority: ArtifactPreparationAuthority,
-    *,
-    contract: _ArtifactContractFacts,
-) -> Path:
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     row = work.connector.fetch_one(
         "SELECT gallery.scope_key, gallery.locator_sha256 "
         "FROM catalog_gallery_identities AS gallery "
@@ -2118,16 +1837,14 @@ def _load_source_directory(
     )
     if len(row) != 2:
         raise ArtifactPreparationContractUnavailableError(
-            "artifact archive source has no exact gallery identity"
+            "artifact source lacks one exact gallery locator"
         )
-    gallery_scope = require_digest32(row[0], field="artifact gallery scope_key")
-    if gallery_scope != contract.scope_key:
+    contract = _load_projection_contract(work, authority.projection)
+    if require_digest32(row[0], field="artifact gallery scope_key") != (
+        contract.scope_key
+    ):
         raise ArtifactPreparationConflictError(
-            "artifact archive gallery belongs to another source scope"
-        )
-    if contract.source_provider != b"filesystem":
-        raise ArtifactPreparationContractUnavailableError(
-            "artifact archive source requires the filesystem provider"
+            "artifact gallery locator belongs to another source scope"
         )
     root_payload = bytearray()
     locator_payload = bytearray()
@@ -2149,8 +1866,10 @@ def _load_source_directory(
             raise ArtifactPreparationConflictError(
                 "artifact source root or locator has the wrong canonical domain"
             )
-        root = identity.decode_source_root(bytes(root_payload))
-        locator = identity.decode_source_relative_locator(bytes(locator_payload))
+        return (
+            identity.decode_source_root(bytes(root_payload)),
+            identity.decode_source_relative_locator(bytes(locator_payload)),
+        )
     except (
         CanonicalValueCollisionError,
         CanonicalValueNotReadyError,
@@ -2159,366 +1878,28 @@ def _load_source_directory(
         raise ArtifactPreparationConflictError(
             "artifact source root or locator is incomplete or malformed"
         ) from error
-    path = Path("/")
-    for component in (*root, *locator):
-        path /= component
-    return path
-
-
-def _spool_archive_source_rows(
-    work: VNextUnitOfWork,
-    authority: ArtifactPreparationAuthority,
-    payload: BinaryIO,
-    database: sqlite3.Connection,
-    *,
-    member_count: int,
-) -> None:
-    after = -1
-    position = 0
-    while True:
-        rows = work.connector.fetch_all(
-            "SELECT source.file_no, name.name_bytes, name.file_role, "
-            "source.file_sha256, content_blob.size_bytes, decision.occurrence_count, "
-            "decision.artist_count, decision.maximum_gallery_artist_count, "
-            "filesystem.device, filesystem.inode, filesystem.modified_ns, "
-            "filesystem.changed_ns "
-            + _SOURCE_FILE_FAMILY_SQL
-            + "JOIN catalog_content_blobs AS content_blob "
-            "ON content_blob.file_sha256 = source.file_sha256 "
-            "JOIN catalog_gallery_observation_file_filesystem filesystem "
-            "ON filesystem.gallery_id = source.gallery_id "
-            "AND filesystem.observation_id = source.observation_id "
-            "AND filesystem.file_key = source.file_key "
-            "LEFT JOIN catalog_analysis_file_hash_decision_resolved decision "
-            "ON decision.analysis_id = %s AND decision.file_sha256 = source.file_sha256 "
-            "WHERE source.gallery_id = %s AND source.observation_id = %s "
-            "AND source.file_no > %s ORDER BY source.file_no LIMIT 128",
-            (
-                authority.analysis_id,
-                authority.gallery_id,
-                authority.observation_id,
-                after,
-            ),
-        )
-        if not rows:
-            break
-        for row in rows:
-            if position >= member_count:
-                raise ArtifactPreparationConflictError(
-                    "archive member plan omits a source row"
-                )
-            file_no = require_int63(row[0], field="archive source file_no")
-            if file_no != position:
-                raise ArtifactPreparationConflictError(
-                    "archive source positions are not zero-based contiguous"
-                )
-            entry = _read_member_entry(payload, expected_position=position)
-            name = require_bounded_bytes(
-                row[1], field="archive source name", minimum=1, maximum=255
-            )
-            role = require_bounded_bytes(
-                row[2], field="archive source role", minimum=7, maximum=8
-            )
-            digest = require_digest32(row[3], field="archive source digest")
-            size = require_int63(row[4], field="archive source size")
-            excluded = _source_file_excluded(row, authority, role=role)
-            if (
-                entry.source_name_bytes != name
-                or entry.source_file_sha256 != digest
-                or entry.source_size_bytes != size
-                or entry.excluded_flag is not excluded
-            ):
-                raise ArtifactPreparationConflictError(
-                    "archive member plan differs from immutable source facts"
-                )
-            filesystem = tuple(
-                require_bounded_bytes(
-                    value,
-                    field="archive filesystem scalar",
-                    minimum=8,
-                    maximum=8,
-                )
-                for value in row[8:12]
-            )
-            database.execute(
-                "INSERT INTO members VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    position,
-                    sqlite3.Binary(name),
-                    sqlite3.Binary(digest),
-                    size,
-                    int(excluded),
-                    (
-                        None
-                        if entry.archive_member_name_bytes is None
-                        else sqlite3.Binary(entry.archive_member_name_bytes)
-                    ),
-                    int(entry.transform_kind),
-                    *(sqlite3.Binary(value) for value in filesystem),
-                ),
-            )
-            after = file_no
-            position += 1
-        if len(rows) < _MAX_SOURCE_PAGE:
-            break
-    if position != member_count:
-        raise ArtifactPreparationConflictError(
-            "archive member plan has rows outside the source snapshot"
-        )
-
-
-def _write_canonical_archive(
-    plan: _ArchiveSourcePlan,
-    archive_stream: BinaryIO,
-    audit: ArtifactPreparationInputAudit,
-    adapter: ArtifactStorageAdapter,
-) -> None:
-    archive_stream.seek(0)
-    archive_stream.truncate(0)
-    with zipfile.ZipFile(
-        archive_stream,
-        mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
-        allowZip64=True,
-        strict_timestamps=True,
-    ) as archive:
-        cursor = plan.database.execute(
-            "SELECT entry_position, source_name_bytes, source_file_sha256, "
-            "source_size_bytes, excluded_flag, archive_name, transform_kind, "
-            "device, inode, modified_ns, changed_ns "
-            "FROM members ORDER BY entry_position"
-        )
-        while rows := cursor.fetchmany(_MAX_SOURCE_PAGE):
-            for row in rows:
-                if bool(row[4]):
-                    if row[5] is not None:
-                        raise ArtifactPreparationConflictError(
-                            "excluded archive source unexpectedly has a member name"
-                        )
-                    continue
-                archive_name = require_bounded_bytes(
-                    row[5],
-                    field="archive member name",
-                    minimum=1,
-                    maximum=_ZIP_MEMBER_NAME_MAXIMUM_BYTES,
-                )
-                try:
-                    member_name = archive_name.decode("ascii", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ArtifactPreparationConflictError(
-                        "derived archive member name is not ASCII"
-                    ) from error
-                source_name = require_bounded_bytes(
-                    row[1], field="archive source name", minimum=1, maximum=255
-                )
-                source_path = plan.source_directory / os.fsdecode(source_name)
-                source = _open_verified_source(source_path, row)
-                try:
-                    info = _CanonicalZipInfo(
-                        member_name, date_time=(1980, 1, 1, 0, 0, 0)
-                    )
-                    info.compress_type = zipfile.ZIP_DEFLATED
-                    info.create_system = 3
-                    info.external_attr = 33188 << 16
-                    info.flag_bits = 2048
-                    transform = identity.ArtifactTransformKind(
-                        require_int63(row[6], field="archive transform kind")
-                    )
-                    with archive.open(info, mode="w", force_zip64=False) as destination:
-                        if transform is identity.ArtifactTransformKind.RAW_COPY:
-                            _copy_and_verify_source(
-                                source,
-                                cast(BinaryIO, destination),
-                                expected_sha256=require_digest32(
-                                    row[2], field="archive raw source digest"
-                                ),
-                                expected_size=require_int63(
-                                    row[3], field="archive raw source size"
-                                ),
-                            )
-                        else:
-                            before = _hash_open_stream(source)
-                            if before != (
-                                require_digest32(row[2], field="archive source digest"),
-                                require_int63(row[3], field="archive source size"),
-                            ):
-                                raise ArtifactPreparationConflictError(
-                                    "archive transform source bytes changed"
-                                )
-                            source.seek(0)
-                            adapter.render_member(
-                                source, transform, cast(BinaryIO, destination)
-                            )
-                            after = _hash_open_stream(source)
-                            if after != before:
-                                raise ArtifactPreparationConflictError(
-                                    "archive transform source changed while rendering"
-                                )
-                    _require_open_source_stat(source, row)
-                finally:
-                    source.close()
-        archive.comment = audit.zip_comment
-    archive_stream.flush()
-
-
-def _open_verified_source(path: Path, row: tuple[Any, ...]) -> BinaryIO:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise ArtifactPreparationNotReadyError(
-            f"artifact source file is unavailable: {path}"
-        ) from error
-    source = os.fdopen(descriptor, "rb", closefd=True)
-    try:
-        _require_open_source_stat(source, row)
-    except BaseException:
-        source.close()
-        raise
-    return source
-
-
-def _require_open_source_stat(source: BinaryIO, row: tuple[Any, ...]) -> None:
-    value = os.fstat(source.fileno())
-    if not stat.S_ISREG(value.st_mode):
-        raise ArtifactPreparationConflictError("artifact source is not a regular file")
-    expected = (
-        int.from_bytes(bytes(row[7]), "big"),
-        int.from_bytes(bytes(row[8]), "big"),
-        require_int63(row[3], field="artifact source stat size"),
-        int.from_bytes(bytes(row[9]), "big", signed=True),
-        int.from_bytes(bytes(row[10]), "big", signed=True),
-    )
-    actual = (
-        value.st_dev,
-        value.st_ino,
-        value.st_size,
-        value.st_mtime_ns,
-        value.st_ctime_ns,
-    )
-    if actual != expected:
-        raise ArtifactPreparationConflictError(
-            "artifact source filesystem identity changed after observation"
-        )
-
-
-def _hash_open_stream(source: BinaryIO) -> tuple[bytes, int]:
-    source.seek(0)
-    digest = sha256()
-    count = 0
-    while part := source.read(_MAX_READ_BYTES):
-        digest.update(part)
-        count += len(part)
-        if count > INT63_MAX:
-            raise ArtifactPreparationNotReadyError(
-                "artifact source byte count is exhausted"
-            )
-    return digest.digest(), count
-
-
-def _copy_and_verify_source(
-    source: BinaryIO,
-    destination: BinaryIO,
-    *,
-    expected_sha256: bytes,
-    expected_size: int,
-) -> None:
-    source.seek(0)
-    digest = sha256()
-    count = 0
-    while part := source.read(_MAX_READ_BYTES):
-        digest.update(part)
-        count += len(part)
-        if destination.write(part) != len(part):
-            raise OSError("ZIP member writer accepted a partial source chunk")
-    if digest.digest() != expected_sha256 or count != expected_size:
-        raise ArtifactPreparationConflictError(
-            "artifact source bytes differ from their immutable observation"
-        )
 
 
 def _hash_stream(stream: BinaryIO) -> tuple[bytes, int]:
     stream.seek(0)
     digest = sha256()
-    count = 0
-    while part := stream.read(_MAX_READ_BYTES):
-        digest.update(part)
-        count += len(part)
-        if count > INT63_MAX:
-            raise ArtifactPreparationNotReadyError(
-                "artifact archive byte count is exhausted"
+    byte_count = 0
+    while True:
+        part = stream.read(_MAX_READ_BYTES)
+        if not isinstance(part, bytes):
+            raise ArtifactPreparationConflictError(
+                "artifact stream returned non-bytes data"
             )
-    return digest.digest(), count
-
-
-def _validate_canonical_archive(
-    plan: _ArchiveSourcePlan,
-    archive_stream: BinaryIO,
-    audit: ArtifactPreparationInputAudit,
-    *,
-    expected_size: int,
-) -> None:
-    archive_stream.seek(0, os.SEEK_END)
-    if archive_stream.tell() != expected_size:
-        raise ArtifactPreparationConflictError(
-            "artifact archive size changed after hashing"
-        )
-    archive_stream.seek(0)
-    try:
-        with zipfile.ZipFile(archive_stream, mode="r") as archive:
-            if archive.comment != audit.zip_comment:
-                raise ArtifactPreparationConflictError(
-                    "artifact archive comment differs from canonical semantics"
-                )
-            infos = archive.infolist()
-            expected_rows = plan.database.execute(
-                "SELECT archive_name, transform_kind, source_file_sha256 "
-                "FROM members WHERE excluded_flag = 0 ORDER BY entry_position"
-            ).fetchall()
-            if len(infos) != len(expected_rows) or len(infos) != (
-                audit.emitted_member_count
-            ):
-                raise ArtifactPreparationConflictError(
-                    "artifact archive member count differs from its plan"
-                )
-            for info, expected in zip(infos, expected_rows, strict=True):
-                name = require_bounded_bytes(
-                    expected[0], field="validated archive name", minimum=1, maximum=255
-                ).decode("ascii", errors="strict")
-                if (
-                    info.filename != name
-                    or info.compress_type != 8
-                    or info.flag_bits != 2048
-                    or info.date_time != (1980, 1, 1, 0, 0, 0)
-                    or info.create_system != 3
-                    or info.external_attr >> 16 != 33188
-                    or info.extra
-                    or info.comment
-                ):
-                    raise ArtifactPreparationConflictError(
-                        "artifact ZIP member metadata differs from writer policy"
-                    )
-                digest = sha256()
-                with archive.open(info, mode="r") as member:
-                    while part := member.read(_MAX_READ_BYTES):
-                        digest.update(part)
-                if int(expected[1]) == int(
-                    identity.ArtifactTransformKind.RAW_COPY
-                ) and digest.digest() != bytes(expected[2]):
-                    raise ArtifactPreparationConflictError(
-                        "artifact raw ZIP member differs from source bytes"
-                    )
-            if archive.testzip() is not None:
-                raise ArtifactPreparationConflictError(
-                    "artifact ZIP member CRC validation failed"
-                )
-    except (OSError, zipfile.BadZipFile, UnicodeError) as error:
-        raise ArtifactPreparationConflictError(
-            "artifact archive is not one exact canonical ZIP"
-        ) from error
+        if not part:
+            break
+        digest.update(part)
+        byte_count += len(part)
+        if byte_count > INT63_MAX:
+            raise ArtifactPreparationNotReadyError(
+                "artifact stream exceeds the core byte bound"
+            )
+    stream.seek(0)
+    return digest.digest(), byte_count
 
 
 def _create_input_plan_schema(database: sqlite3.Connection) -> None:
@@ -2537,12 +1918,12 @@ def _create_input_plan_schema(database: sqlite3.Connection) -> None:
         "owner_component_sha256 BLOB NOT NULL, "
         "policy_component_sha256 BLOB NOT NULL) WITHOUT ROWID;"
         "CREATE TABLE members ("
-        "publication_key BLOB NOT NULL, entry_position INTEGER NOT NULL, "
+        "publication_key BLOB NOT NULL, source_position INTEGER NOT NULL, "
         "source_name_bytes BLOB NOT NULL, source_file_sha256 BLOB NOT NULL, "
-        "source_size_bytes INTEGER NOT NULL, excluded_flag INTEGER NOT NULL, "
-        "PRIMARY KEY (publication_key, entry_position)) WITHOUT ROWID;"
+        "source_size_bytes INTEGER NOT NULL, source_role INTEGER NOT NULL, "
+        "PRIMARY KEY (publication_key, source_position)) WITHOUT ROWID;"
         "CREATE INDEX effective_members ON members "
-        "(publication_key, source_file_sha256, entry_position);"
+        "(publication_key, source_role, source_file_sha256, source_position);"
     )
 
 
@@ -2601,7 +1982,7 @@ def _load_source_scope(
 def _load_artifact_policy_semantics(
     work: VNextUnitOfWork,
     policy_component_sha256: bytes,
-) -> tuple[int, int, bytes]:
+) -> tuple[int, bytes, bytes]:
     policy = require_digest32(
         policy_component_sha256,
         field="artifact policy_component_sha256",
@@ -2612,161 +1993,18 @@ def _load_artifact_policy_semantics(
     )
     return (
         record.artifact_algorithm_version,
-        record.max_image_short_side,
-        record.producer_fingerprint_sha256,
-    )
-
-
-def _load_zip_writer_policy(
-    work: VNextUnitOfWork,
-    artifact_algorithm_version: int,
-) -> tuple[int, int, int, int, int, int, int, int, int, int]:
-    algorithm_version = require_uint32(
-        artifact_algorithm_version,
-        field="artifact ZIP algorithm_version",
-    )
-    if algorithm_version == 0:
-        raise ArtifactPreparationConflictError("artifact ZIP algorithm version is zero")
-    record = _registry_record(
-        "artifact ZIP writer policy",
-        lambda: load_artifact_zip_writer_policy(work.connector, algorithm_version),
-    )
-    return (
-        record.zip_codec_version,
-        record.compression_method,
-        record.compression_level,
-        record.dos_date,
-        record.dos_time,
-        record.unix_mode,
-        record.general_purpose_flags,
-        record.create_system,
-        record.archive_name_codec_version,
-        record.artifact_name_codec_version,
-    )
-
-
-def _load_storage_codec(
-    work: VNextUnitOfWork,
-    storage_codec_version: int,
-) -> tuple[int, bytes, int, int]:
-    version = require_positive_int63(
-        storage_codec_version,
-        field="artifact storage_codec_version",
-    )
-    record = _registry_record(
-        "artifact storage codec",
-        lambda: load_artifact_storage_codec(work.connector, version),
-    )
-    return (
-        record.storage_codec_version,
         record.adapter_id,
-        record.storage_key_codec_version,
-        record.protection_token_codec_version,
+        record.policy_fingerprint_sha256,
     )
-
-
-def _load_producer_fingerprint(
-    work: VNextUnitOfWork,
-    producer_fingerprint_sha256: bytes,
-) -> tuple[tuple[bytes, bytes, bytes, bytes, bytes], int, bytes]:
-    fingerprint = require_digest32(
-        producer_fingerprint_sha256,
-        field="artifact producer_fingerprint_sha256",
-    )
-    record = _registry_record(
-        "artifact producer fingerprint",
-        lambda: load_artifact_producer_fingerprint(work.connector, fingerprint),
-    )
-    fields = (
-        record.writer_id,
-        record.python_abi,
-        record.pillow_build,
-        record.libjpeg_build,
-        record.zlib_build,
-    )
-    return fields, record.artifact_algorithm_version, record.producer_equivalence_class
 
 
 def _load_artifact_policy_contract(
     work: VNextUnitOfWork,
     policy_component_sha256: bytes,
-) -> tuple[
-    tuple[int, int, bytes],
-    tuple[tuple[bytes, bytes, bytes, bytes, bytes], int, bytes],
-]:
-    """Load and cross-check one BCNF policy/producer registry join exactly once."""
+) -> tuple[int, bytes, bytes]:
+    """Load the exact neutral protocol and adapter-owned policy identity."""
 
-    policy = require_digest32(
-        policy_component_sha256,
-        field="artifact policy_component_sha256",
-    )
-    row = work.connector.fetch_one(
-        "SELECT semantics.policy_component_sha256, "
-        "producer.artifact_algorithm_version, "
-        "semantics.max_image_short_side, "
-        "semantics.producer_fingerprint_sha256, "
-        "producer.producer_equivalence_class, producer.writer_id, "
-        "producer.python_abi, producer.pillow_build, producer.libjpeg_build, "
-        "producer.zlib_build "
-        "FROM catalog_artifact_policy_semantics AS semantics "
-        "JOIN catalog_artifact_producer_fingerprints AS producer "
-        "ON producer.producer_fingerprint_sha256 = "
-        "semantics.producer_fingerprint_sha256 "
-        "WHERE semantics.policy_component_sha256 = %s",
-        (policy,),
-    )
-    if not row:
-        raise ArtifactPreparationNotReadyError(
-            "artifact policy/producer contract is missing"
-        )
-    if len(row) != 10:
-        raise ArtifactPreparationConflictError(
-            "artifact policy/producer contract has an invalid row shape"
-        )
-    try:
-        semantics = ArtifactPolicySemanticsRecord(
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-        )
-        producer = ArtifactProducerFingerprintRecord(
-            row[3],
-            row[1],
-            row[4],
-            row[5],
-            row[6],
-            row[7],
-            row[8],
-            row[9],
-        )
-    except (TypeError, ValueError, identity.VNextIdentityError) as error:
-        raise ArtifactPreparationConflictError(
-            "artifact policy/producer contract is invalid"
-        ) from error
-    if semantics.policy_component_sha256 != policy:
-        raise ArtifactPreparationConflictError(
-            "artifact policy/producer contract returned the wrong policy"
-        )
-    producer_fields = (
-        producer.writer_id,
-        producer.python_abi,
-        producer.pillow_build,
-        producer.libjpeg_build,
-        producer.zlib_build,
-    )
-    return (
-        (
-            semantics.artifact_algorithm_version,
-            semantics.max_image_short_side,
-            semantics.producer_fingerprint_sha256,
-        ),
-        (
-            producer_fields,
-            producer.artifact_algorithm_version,
-            producer.producer_equivalence_class,
-        ),
-    )
+    return _load_artifact_policy_semantics(work, policy_component_sha256)
 
 
 def _load_projection_contract(
@@ -2819,32 +2057,17 @@ def _load_projection_contract(
     policy_component = require_digest32(
         root[2], field="artifact policy_component_sha256"
     )
-    semantics, producer_contract = _load_artifact_policy_contract(
+    semantics = _load_artifact_policy_contract(
         work,
         policy_component,
     )
-    producer_fields, producer_algorithm, _equivalence = producer_contract
-    if producer_algorithm != semantics[0]:
-        raise ArtifactPreparationConflictError(
-            "artifact producer algorithm differs from policy semantics"
-        )
-    writer_policy = _load_zip_writer_policy(work, semantics[0])
-    storage_codec = _load_storage_codec(work, _STORAGE_CODEC_V1[0])
-    if writer_policy != _ZIP_WRITER_POLICY_V1:
-        raise ArtifactPreparationContractUnavailableError(
-            "artifact ZIP writer policy is unsupported"
-        )
-    if storage_codec != _STORAGE_CODEC_V1:
-        raise ArtifactPreparationContractUnavailableError(
-            "artifact storage codec is unsupported"
-        )
     if validate_policy_canonical:
         _require_policy_canonical_value(
             work,
             policy_component=policy_component,
             algorithm_version=semantics[0],
-            max_short_side=semantics[1],
-            producer_fingerprint_sha256=semantics[2],
+            adapter_id=semantics[1],
+            policy_fingerprint_sha256=semantics[2],
         )
     return _ArtifactContractFacts(
         scope_key,
@@ -2862,9 +2085,6 @@ def _load_projection_contract(
         semantics[0],
         semantics[1],
         semantics[2],
-        producer_fields,
-        writer_policy,
-        storage_codec,
     )
 
 
@@ -2873,19 +2093,19 @@ def _require_policy_canonical_value(
     *,
     policy_component: bytes,
     algorithm_version: int,
-    max_short_side: int,
-    producer_fingerprint_sha256: bytes,
+    adapter_id: bytes,
+    policy_fingerprint_sha256: bytes,
 ) -> None:
     expected_payload = identity.encode_artifact_policy(
         algorithm_version,
-        max_short_side,
-        producer_fingerprint_sha256,
+        adapter_id,
+        policy_fingerprint_sha256,
     )
     if (
         identity.artifact_policy_digest(
             algorithm_version,
-            max_short_side,
-            producer_fingerprint_sha256,
+            adapter_id,
+            policy_fingerprint_sha256,
         )
         != policy_component
     ):
@@ -2992,8 +2212,8 @@ def _build_one_input(
     manifest_version = contract.manifest_algorithm_version
     file_order_version = contract.file_order_version
     artifact_algorithm = contract.artifact_algorithm_version
-    max_short_side = contract.max_image_short_side
-    producer = contract.producer_fingerprint_sha256
+    adapter_id = contract.adapter_id
+    policy_fingerprint = contract.policy_fingerprint_sha256
     spam_artist = contract.spam_artist_threshold
     spam_occurrence = contract.spam_occurrence_threshold
     policy = contract.policy_component_sha256
@@ -3026,7 +2246,7 @@ def _build_one_input(
         )
 
     member_digest = identity.canonical_value_digest_parts(
-        "artifact_member_plan_v1",
+        "artifact_member_plan_v2",
         _parts_size(member_parts()),
         member_parts(),
     )
@@ -3035,9 +2255,8 @@ def _build_one_input(
         return _iter_planned_effective_digests(database, publication)
 
     effective_count_row = database.execute(
-        "SELECT COUNT(*) FROM members WHERE publication_key = ? "
-        "AND excluded_flag = 0 AND source_name_bytes != ?",
-        (sqlite3.Binary(publication), sqlite3.Binary(b"galleryinfo.txt")),
+        "SELECT COUNT(*) FROM members WHERE publication_key = ? AND source_role = ?",
+        (sqlite3.Binary(publication), int(identity.ArtifactMemberSourceRole.PAGE)),
     ).fetchone()
     effective_count = require_int63(
         effective_count_row[0], field="planned effective count"
@@ -3083,7 +2302,7 @@ def _build_one_input(
                 )
             ),
         ),
-        (member_digest, b"artifact_member_plan_v1", member_parts()),
+        (member_digest, b"artifact_member_plan_v2", member_parts()),
         (
             effective_digest,
             b"artifact_effective_content_v1",
@@ -3101,11 +2320,13 @@ def _build_one_input(
         ),
         (
             policy,
-            b"artifact_policy_v2",
+            b"artifact_policy_v3",
             iter(
                 (
                     identity.encode_artifact_policy(
-                        artifact_algorithm, max_short_side, producer
+                        artifact_algorithm,
+                        adapter_id,
+                        policy_fingerprint,
                     ),
                 )
             ),
@@ -3164,10 +2385,13 @@ def _spool_planned_members(
 ) -> None:
     after = -1
     position = 0
+    metadata_count = 0
+    page_count = 0
     while True:
         rows = work.connector.fetch_all(
             "SELECT source.file_no, name.name_bytes, source.file_sha256, "
-            "content_blob.size_bytes, decision.occurrence_count, decision.artist_count, "
+            "content_blob.size_bytes, source.artifact_role, "
+            "decision.occurrence_count, decision.artist_count, "
             "decision.maximum_gallery_artist_count "
             + _SOURCE_FILE_FAMILY_SQL
             + "JOIN catalog_content_blobs AS content_blob "
@@ -3189,50 +2413,76 @@ def _spool_planned_members(
             name = require_bounded_bytes(
                 row[1], field="planned source name", minimum=1, maximum=255
             )
-            role = identity.file_role(name)
-            excluded = _excluded_from_scalars(
-                role,
-                row[4:7],
-                spam_artist_threshold=spam_artist_threshold,
-                spam_occurrence_threshold=spam_occurrence_threshold,
+            role = require_bounded_bytes(
+                row[4],
+                field="planned adapter-issued source role",
+                minimum=4,
+                maximum=8,
             )
+            if role == b"metadata":
+                if any(value is not None for value in row[5:8]):
+                    raise ArtifactPreparationConflictError(
+                        "metadata unexpectedly participates in spam decisions"
+                    )
+                member_role = identity.ArtifactMemberSourceRole.METADATA
+                metadata_count += 1
+            elif role == b"page":
+                member_role = identity.ArtifactMemberSourceRole.PAGE
+                if _excluded_from_scalars(
+                    row[5:8],
+                    spam_artist_threshold=spam_artist_threshold,
+                    spam_occurrence_threshold=spam_occurrence_threshold,
+                ):
+                    position += 1
+                    after = file_no
+                    continue
+                page_count += 1
+                if page_count > 4096:
+                    raise ArtifactPreparationNotReadyError(
+                        "artifact render plan exceeds 4096 PAGE members"
+                    )
+            elif role == b"other":
+                position += 1
+                after = file_no
+                continue
+            else:
+                raise ArtifactPreparationConflictError(
+                    "adapter-issued source role is not registered"
+                )
             entry = identity.ArtifactMemberPlanEntry(
-                position,
+                file_no,
                 name,
                 require_digest32(row[2], field="planned source digest"),
                 require_int63(row[3], field="planned source size"),
-                excluded,
+                member_role,
             )
             database.execute(
                 "INSERT INTO members VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     sqlite3.Binary(publication_key),
-                    position,
+                    entry.source_position,
                     sqlite3.Binary(entry.source_name_bytes),
                     sqlite3.Binary(entry.source_file_sha256),
                     entry.source_size_bytes,
-                    int(entry.excluded_flag),
+                    int(entry.source_role),
                 ),
             )
             position += 1
             after = file_no
         if len(rows) < _MAX_SOURCE_PAGE:
             break
+    if metadata_count != 1:
+        raise ArtifactPreparationConflictError(
+            "artifact render plan requires exactly one METADATA source"
+        )
 
 
 def _excluded_from_scalars(
-    role: bytes,
     decision: tuple[Any, ...],
     *,
     spam_artist_threshold: int,
     spam_occurrence_threshold: int,
 ) -> bool:
-    if role == b"METADATA":
-        if any(value is not None for value in decision):
-            raise ArtifactPreparationConflictError(
-                "metadata unexpectedly participates in spam decisions"
-            )
-        return False
     if all(value is None for value in decision):
         return False
     if any(value is None for value in decision):
@@ -3252,9 +2502,9 @@ def _iter_planned_member_entries(
     publication_key: bytes,
 ) -> Iterator[identity.ArtifactMemberPlanEntry]:
     cursor = database.execute(
-        "SELECT entry_position, source_name_bytes, source_file_sha256, "
-        "source_size_bytes, excluded_flag FROM members "
-        "WHERE publication_key = ? ORDER BY entry_position",
+        "SELECT source_position, source_name_bytes, source_file_sha256, "
+        "source_size_bytes, source_role FROM members "
+        "WHERE publication_key = ? ORDER BY source_position",
         (sqlite3.Binary(publication_key),),
     )
     while rows := cursor.fetchmany(_MAX_SOURCE_PAGE):
@@ -3264,7 +2514,9 @@ def _iter_planned_member_entries(
                 bytes(row[1]),
                 bytes(row[2]),
                 require_int63(row[3], field="planned member size"),
-                bool(row[4]),
+                identity.ArtifactMemberSourceRole(
+                    require_int63(row[4], field="planned member source_role")
+                ),
             )
 
 
@@ -3274,9 +2526,11 @@ def _iter_planned_effective_digests(
 ) -> Iterator[bytes]:
     cursor = database.execute(
         "SELECT source_file_sha256 FROM members WHERE publication_key = ? "
-        "AND excluded_flag = 0 AND source_name_bytes != ? "
-        "ORDER BY source_file_sha256, entry_position",
-        (sqlite3.Binary(publication_key), sqlite3.Binary(b"galleryinfo.txt")),
+        "AND source_role = ? ORDER BY source_file_sha256, source_position",
+        (
+            sqlite3.Binary(publication_key),
+            int(identity.ArtifactMemberSourceRole.PAGE),
+        ),
     )
     while rows := cursor.fetchmany(_MAX_SOURCE_PAGE):
         for row in rows:
@@ -3694,23 +2948,46 @@ def _insert_catalog_artifact_occurrence(
     artifact_sha256: bytes,
     artifact_semantics_sha256: bytes,
 ) -> None:
+    revision = mutation.candidate.reserved_revision
     publication = work.connector.fetch_one(
         "SELECT publication_key FROM catalog_publications "
         "WHERE revision = %s AND publication_key = %s",
-        (mutation.candidate.reserved_revision, publication_key),
+        (revision, publication_key),
     )
     if publication != (publication_key,):
         raise ArtifactPreparationNotReadyError(
             "artifact occurrence lacks its reserved catalog publication"
         )
+    if mutation.base_catalog is None:
+        raise ArtifactPreparationConflictError(
+            "unchanged artifact has no base catalog authority"
+        )
+    base_revision = mutation.base_catalog.revision
+    artifact = work.connector.fetch_one(
+        "SELECT artifact_sha256, artifact_semantics_sha256, artifact_name, "
+        "media_type, page_count FROM catalog_artifacts "
+        "WHERE revision = %s AND publication_key = %s",
+        (base_revision, publication_key),
+    )
+    if (
+        len(artifact) != 5
+        or artifact[0] != artifact_sha256
+        or artifact[1] != artifact_semantics_sha256
+    ):
+        raise ArtifactPreparationConflictError(
+            "base artifact occurrence differs from unchanged delta authority"
+        )
     try:
         ensure_catalog_artifact_family(
             work.connector,
             CatalogArtifactFamily(
-                mutation.candidate.reserved_revision,
+                revision,
                 publication_key,
                 artifact_sha256,
                 artifact_semantics_sha256,
+                artifact[2],
+                artifact[3],
+                artifact[4],
             ),
             backend=work.backend,
         )
@@ -3718,6 +2995,88 @@ def _insert_catalog_artifact_occurrence(
         raise ArtifactPreparationConflictError(
             "catalog artifact occurrence collides with different exact facts"
         ) from error
+
+    objects = work.connector.fetch_all(
+        "SELECT resource_kind, storage_object_key_sha256, storage_object_sha256, "
+        "size_bytes, modified_at FROM catalog_storage_objects "
+        "WHERE revision = %s AND publication_key = %s ORDER BY resource_kind",
+        (base_revision, publication_key),
+    )
+    for row in objects:
+        _insert_or_compare(
+            work,
+            "catalog_storage_objects",
+            (
+                "revision",
+                "publication_key",
+                "resource_kind",
+                "storage_object_key_sha256",
+                "storage_object_sha256",
+                "size_bytes",
+                "modified_at",
+            ),
+            (revision, publication_key, *row),
+            key_where=("revision = %s AND publication_key = %s AND resource_kind = %s"),
+            key_parameters=(revision, publication_key, row[0]),
+            conflict_label="unchanged catalog storage object",
+        )
+    pages = work.connector.fetch_all(
+        "SELECT resource_kind, page_index, extent_offset, extent_length, "
+        "media_type, image_sha256, width, height FROM catalog_pages "
+        "WHERE revision = %s AND publication_key = %s ORDER BY page_index",
+        (base_revision, publication_key),
+    )
+    for row in pages:
+        _insert_or_compare(
+            work,
+            "catalog_pages",
+            (
+                "revision",
+                "publication_key",
+                "resource_kind",
+                "page_index",
+                "extent_offset",
+                "extent_length",
+                "media_type",
+                "image_sha256",
+                "width",
+                "height",
+            ),
+            (revision, publication_key, *row),
+            key_where=("revision = %s AND publication_key = %s AND page_index = %s"),
+            key_parameters=(revision, publication_key, row[1]),
+            conflict_label="unchanged catalog page",
+        )
+    thumbnails = work.connector.fetch_all(
+        "SELECT resource_kind, extent_offset, extent_length, media_type, "
+        "image_sha256, width, height FROM catalog_thumbnails "
+        "WHERE revision = %s AND publication_key = %s LIMIT 2",
+        (base_revision, publication_key),
+    )
+    if len(thumbnails) > 1:
+        raise ArtifactPreparationConflictError(
+            "base artifact contains duplicate thumbnail facts"
+        )
+    if thumbnails:
+        _insert_or_compare(
+            work,
+            "catalog_thumbnails",
+            (
+                "revision",
+                "publication_key",
+                "resource_kind",
+                "extent_offset",
+                "extent_length",
+                "media_type",
+                "image_sha256",
+                "width",
+                "height",
+            ),
+            (revision, publication_key, *thumbnails[0]),
+            key_where="revision = %s AND publication_key = %s",
+            key_parameters=(revision, publication_key),
+            conflict_label="unchanged catalog thumbnail",
+        )
 
 
 def _compare_delta_for_input(
@@ -4253,19 +3612,19 @@ def _validate_prepared_row(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
     publication_key: bytes,
-    *,
-    storage_codec: tuple[int, bytes, int, int],
 ) -> None:
+    candidate = mutation.candidate.candidate_id
+    revision = mutation.candidate.reserved_revision
     try:
-        prepared = load_prepared_artifact_family(
+        families = load_prepared_artifact_families(
             work.connector,
-            candidate_id=mutation.candidate.candidate_id,
+            candidate_id=candidate,
             publication_key=publication_key,
             backend=work.backend,
         )
         occurrence = load_catalog_artifact_family(
             work.connector,
-            revision=mutation.candidate.reserved_revision,
+            revision=revision,
             publication_key=publication_key,
             backend=work.backend,
         )
@@ -4273,18 +3632,25 @@ def _validate_prepared_row(
         raise ArtifactPreparationConflictError(
             "prepared artifact has an invalid narrow family"
         ) from error
-    if prepared is None or occurrence is None:
+    if occurrence is None:
         raise ArtifactPreparationConflictError(
-            "prepared artifact lacks one exact family or catalog occurrence"
+            "prepared artifact lacks its catalog occurrence"
         )
-    if prepared.state != "PREPARED":
+    expected_kinds = (
+        (
+            CatalogResourceKind.ACQUISITION,
+            CatalogResourceKind.THUMBNAIL,
+        )
+        if occurrence.page_count
+        else (CatalogResourceKind.ACQUISITION,)
+    )
+    if tuple(family.resource_kind for family in families) != expected_kinds or any(
+        family.state != "PREPARED" for family in families
+    ):
         raise ArtifactPreparationConflictError(
-            "candidate seal requires PREPARED artifact state"
+            "candidate seal requires one exact PREPARED resource bundle"
         )
-    if occurrence.artifact_sha256 != prepared.artifact_sha256:
-        raise ArtifactPreparationConflictError(
-            "prepared occurrence byte digest differs from prepared family"
-        )
+
     operation = work.connector.fetch_one(
         "SELECT input.artifact_semantics_sha256, operation.operation, pub.gid "
         "FROM catalog_candidate_artifact_inputs input "
@@ -4294,7 +3660,7 @@ def _validate_prepared_row(
         "JOIN catalog_publication_identities pub "
         "ON pub.publication_key = input.publication_key "
         "WHERE input.candidate_id = %s AND input.publication_key = %s",
-        (mutation.candidate.candidate_id, publication_key),
+        (candidate, publication_key),
     )
     if len(operation) != 3 or operation[1] not in {"CREATE", "REBUILD"}:
         raise ArtifactPreparationConflictError(
@@ -4304,57 +3670,178 @@ def _validate_prepared_row(
         raise ArtifactPreparationConflictError(
             "prepared catalog occurrence differs from its semantic input"
         )
-    try:
-        token = identity.decode_artifact_protection_token(prepared.protection_token)
-    except identity.VNextIdentityError as error:
-        raise ArtifactPreparationConflictError(
-            "prepared artifact protection token is malformed"
-        ) from error
-    expected_token = (
-        prepared.storage_codec_version,
-        mutation.candidate.candidate_id,
-        publication_key,
-        prepared.artifact_sha256,
-        token.artifact_storage_key_sha256,
-        token.size_bytes,
-    )
-    actual_token = (
-        token.storage_codec_version,
-        token.candidate_id,
-        token.publication_key,
-        token.artifact_sha256,
-        token.artifact_storage_key_sha256,
-        token.size_bytes,
-    )
-    if actual_token != expected_token:
-        raise ArtifactPreparationConflictError(
-            "prepared protection token differs from joined authority"
-        )
-    mapping = work.connector.fetch_one(
-        "SELECT build_id FROM operational_source_build_generations "
-        "WHERE generation = %s",
-        (token.storage_generation,),
-    )
-    if mapping != (mutation.begin.build_id,):
-        raise ArtifactPreparationConflictError(
-            "prepared storage generation is not mapped to the candidate build"
-        )
-    if (
-        prepared.storage_codec_version != storage_codec[0]
-        or storage_codec != _STORAGE_CODEC_V1
-    ):
-        raise ArtifactPreparationConflictError(
-            "prepared artifact storage codec is not registered"
-        )
     gid = require_positive_int63(operation[2], field="prepared artifact GID")
-    storage_key = artifact_storage_key(gid)
-    if (
-        identity.publication_key(gid) != publication_key
-        or identity.artifact_storage_key_digest(storage_key.segments)
-        != token.artifact_storage_key_sha256
+    if identity.publication_key(gid) != publication_key:
+        raise ArtifactPreparationConflictError(
+            "prepared artifact publication key differs from its GID"
+        )
+
+    descriptor = work.connector.fetch_one(
+        "SELECT artifact_sha256, artifact_name, media_type, page_count "
+        "FROM catalog_prepared_artifact_descriptors "
+        "WHERE candidate_id = %s AND publication_key = %s",
+        (candidate, publication_key),
+    )
+    if descriptor != (
+        occurrence.artifact_sha256,
+        occurrence.artifact_name,
+        occurrence.media_type,
+        occurrence.page_count,
     ):
         raise ArtifactPreparationConflictError(
-            "prepared artifact storage key differs from its publication GID"
+            "prepared descriptor differs from catalog artifact occurrence"
+        )
+    blob = work.connector.fetch_one(
+        "SELECT size_bytes FROM catalog_artifact_blobs WHERE artifact_sha256 = %s",
+        (occurrence.artifact_sha256,),
+    )
+
+    objects: dict[CatalogResourceKind, PreparedStorageObjectFamily] = {}
+    for family in families:
+        expected_token = identity.encode_artifact_protection_token(
+            candidate,
+            publication_key,
+            family.resource_kind.value,
+            family.storage_object_key_sha256,
+            family.storage_generation,
+        )
+        if expected_token != family.protection_token:
+            raise ArtifactPreparationConflictError(
+                "prepared protection token differs from locked resource facts"
+            )
+        mapping = work.connector.fetch_one(
+            "SELECT build_id FROM operational_source_build_generations "
+            "WHERE generation = %s",
+            (family.storage_generation,),
+        )
+        if mapping != (mutation.begin.build_id,):
+            raise ArtifactPreparationConflictError(
+                "prepared storage generation is not mapped to the candidate build"
+            )
+        _load_storage_key(work, family.storage_object_key_sha256)
+        stored = load_prepared_storage_object_family(
+            work.connector,
+            candidate_id=candidate,
+            publication_key=publication_key,
+            resource_kind=family.resource_kind,
+            backend=work.backend,
+        )
+        if stored is None:
+            raise ArtifactPreparationConflictError(
+                "prepared resource lacks its sealed storage object"
+            )
+        resource_blob = work.connector.fetch_all(
+            "SELECT binding.storage_object_sha256, blob.size_bytes "
+            "FROM catalog_prepared_resource_blob AS binding "
+            "JOIN catalog_artifact_blobs AS blob "
+            "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+            "WHERE binding.candidate_id = %s AND binding.publication_key = %s "
+            "AND binding.resource_kind = %s LIMIT 2",
+            (
+                candidate,
+                publication_key,
+                family.resource_kind.value.encode("ascii"),
+            ),
+        )
+        if tuple(resource_blob) != ((stored.storage_object_sha256, stored.size_bytes),):
+            raise ArtifactPreparationConflictError(
+                "prepared resource differs from its durable byte authority"
+            )
+        objects[family.resource_kind] = stored
+        catalog_object = work.connector.fetch_one(
+            "SELECT storage_object_key_sha256, storage_object_sha256, "
+            "size_bytes, modified_at FROM catalog_storage_objects "
+            "WHERE revision = %s AND publication_key = %s AND resource_kind = %s",
+            (
+                revision,
+                publication_key,
+                family.resource_kind.value.encode("ascii"),
+            ),
+        )
+        if catalog_object != (
+            family.storage_object_key_sha256,
+            stored.storage_object_sha256,
+            stored.size_bytes,
+            stored.modified_at,
+        ):
+            raise ArtifactPreparationConflictError(
+                "catalog storage object differs from prepared resource"
+            )
+
+    acquisition = objects[CatalogResourceKind.ACQUISITION]
+    if acquisition.storage_object_sha256 != occurrence.artifact_sha256 or blob != (
+        acquisition.size_bytes,
+    ):
+        raise ArtifactPreparationConflictError(
+            "acquisition object differs from artifact blob authority"
+        )
+
+    prepared_pages = work.connector.fetch_all(
+        "SELECT resource_kind, page_index, extent_offset, extent_length, "
+        "media_type, image_sha256, width, height FROM catalog_prepared_pages "
+        "WHERE candidate_id = %s AND publication_key = %s ORDER BY page_index",
+        (candidate, publication_key),
+    )
+    catalog_pages = work.connector.fetch_all(
+        "SELECT resource_kind, page_index, extent_offset, extent_length, "
+        "media_type, image_sha256, width, height FROM catalog_pages "
+        "WHERE revision = %s AND publication_key = %s ORDER BY page_index",
+        (revision, publication_key),
+    )
+    if (
+        tuple(prepared_pages) != tuple(catalog_pages)
+        or len(prepared_pages) != occurrence.page_count
+        or tuple(row[1] for row in prepared_pages)
+        != tuple(range(occurrence.page_count))
+    ):
+        raise ArtifactPreparationConflictError(
+            "prepared page coverage is not exact and dense"
+        )
+    acquisition_kind = CatalogResourceKind.ACQUISITION.value.encode("ascii")
+    for row in prepared_pages:
+        offset = require_int63(row[2], field="prepared page extent offset")
+        length = require_positive_int63(row[3], field="prepared page extent length")
+        if row[0] != acquisition_kind or offset + length > acquisition.size_bytes:
+            raise ArtifactPreparationConflictError(
+                "prepared page extent differs from acquisition authority"
+            )
+        require_digest32(row[5], field="prepared page image_sha256")
+        require_positive_int63(row[6], field="prepared page width")
+        require_positive_int63(row[7], field="prepared page height")
+
+    prepared_thumbnail = work.connector.fetch_all(
+        "SELECT resource_kind, extent_offset, extent_length, media_type, "
+        "image_sha256, width, height FROM catalog_prepared_thumbnails "
+        "WHERE candidate_id = %s AND publication_key = %s LIMIT 2",
+        (candidate, publication_key),
+    )
+    catalog_thumbnail = work.connector.fetch_all(
+        "SELECT resource_kind, extent_offset, extent_length, media_type, "
+        "image_sha256, width, height FROM catalog_thumbnails "
+        "WHERE revision = %s AND publication_key = %s LIMIT 2",
+        (revision, publication_key),
+    )
+    if tuple(prepared_thumbnail) != tuple(catalog_thumbnail):
+        raise ArtifactPreparationConflictError(
+            "prepared thumbnail differs from catalog occurrence"
+        )
+    if not occurrence.page_count:
+        if prepared_thumbnail:
+            raise ArtifactPreparationConflictError(
+                "pageless acquisition has a thumbnail resource"
+            )
+        return
+    thumbnail = objects[CatalogResourceKind.THUMBNAIL]
+    thumbnail_kind = CatalogResourceKind.THUMBNAIL.value.encode("ascii")
+    if (
+        len(prepared_thumbnail) != 1
+        or prepared_thumbnail[0][0] != thumbnail_kind
+        or prepared_thumbnail[0][1] != 0
+        or prepared_thumbnail[0][2] != thumbnail.size_bytes
+        or prepared_thumbnail[0][4] != thumbnail.storage_object_sha256
+    ):
+        raise ArtifactPreparationConflictError(
+            "thumbnail is not the exact complete auxiliary object"
         )
 
 
@@ -4467,6 +3954,65 @@ def _seal_projection(
     )
 
 
+def _datetime_from_microseconds(value: object, *, field: str) -> datetime:
+    microseconds = require_int63(value, field=field)
+    try:
+        return _EPOCH + timedelta(microseconds=microseconds)
+    except OverflowError as error:
+        raise ArtifactPreparationConflictError(
+            f"{field} is outside the supported datetime range"
+        ) from error
+
+
+def _require_matching_adapter(
+    authority: ArtifactPreparationAuthority,
+    adapter: ArtifactStorageAdapter,
+) -> None:
+    if not isinstance(adapter, ArtifactStorageAdapter):
+        raise TypeError("adapter must implement ArtifactStorageAdapter")
+    adapter_id = require_bounded_bytes(
+        adapter.adapter_id,
+        field="artifact adapter_id",
+        minimum=1,
+        maximum=64,
+    )
+    fingerprint = require_digest32(
+        adapter.policy_fingerprint_sha256,
+        field="artifact adapter policy fingerprint",
+    )
+    if (
+        adapter_id != authority.adapter_id
+        or fingerprint != authority.policy_fingerprint_sha256
+    ):
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact adapter differs from the registered policy authority"
+        )
+
+
+def _adapter_storage_key(
+    adapter: ArtifactStorageAdapter,
+    *,
+    gid: int,
+    resource_kind: CatalogResourceKind,
+) -> StorageObjectKey:
+    exact_gid = require_positive_int63(gid, field="artifact storage-key GID")
+    if type(resource_kind) is not CatalogResourceKind:
+        raise TypeError("artifact resource kind is not registered")
+    try:
+        first = adapter.storage_key(exact_gid, resource_kind)
+        second = adapter.storage_key(exact_gid, resource_kind)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact adapter cannot issue its deterministic storage key"
+        ) from error
+    if not isinstance(first, StorageObjectKey) or second != first:
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact adapter returned an invalid or nondeterministic storage key"
+        )
+    first.__post_init__()
+    return first
+
+
 def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
     if not isinstance(receipt, ArtifactPreparationReceipt):
         raise TypeError("receipt must be ArtifactPreparationReceipt")
@@ -4475,34 +4021,71 @@ def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
             "artifact preparation receipt is not live and repository-issued"
         )
     receipt.audit.__post_init__()
-    authority = receipt.audit.authority
-    _require_authority(authority)
-    require_digest32(receipt.artifact_sha256, field="prepared artifact_sha256")
-    require_int63(receipt.size_bytes, field="prepared artifact size_bytes")
-    require_digest32(
-        receipt.artifact_storage_key_sha256,
-        field="prepared artifact_storage_key_sha256",
-    )
-    require_positive_int63(
-        receipt.storage_codec_version,
-        field="prepared storage_codec_version",
-    )
-    if _hash_stream(receipt._archive) != (
+    _require_authority(receipt.audit.authority)
+    receipt.render_evidence.__post_init__()
+    receipt.presentation.__post_init__()
+    artifact_digest = require_digest32(
         receipt.artifact_sha256,
+        field="prepared artifact_sha256",
+    )
+    artifact_size = require_positive_int63(
         receipt.size_bytes,
-    ):
-        raise ArtifactPreparationConflictError(
-            "verified artifact archive bytes changed before durable persistence"
-        )
-    expected_key = artifact_storage_key(authority.gid)
+        field="prepared artifact size_bytes",
+    )
     if (
-        receipt.storage_key != expected_key
-        or identity.artifact_storage_key_digest(expected_key.segments)
-        != receipt.artifact_storage_key_sha256
-        or receipt.storage_codec_version != authority.storage_codec[0]
+        receipt.render_evidence.artifact_sha256 != artifact_digest
+        or receipt.render_evidence.size_bytes != artifact_size
+        or len(receipt.render_evidence.pages) != len(receipt.presentation.pages)
     ):
         raise ArtifactPreparationConflictError(
-            "verified artifact receipt differs from derived storage key or codec"
+            "prepared render evidence differs from verified resource facts"
+        )
+    if _hash_stream(receipt._archive) != (artifact_digest, artifact_size):
+        raise ArtifactPreparationConflictError(
+            "verified acquisition bytes changed before durable persistence"
+        )
+    acquisition = receipt.storage_object
+    acquisition.__post_init__()
+    if (
+        bytes.fromhex(acquisition.sha256) != artifact_digest
+        or acquisition.size_bytes != artifact_size
+        or identity.artifact_storage_key_digest(
+            acquisition.key.codec,
+            acquisition.key.segments,
+        )
+        != receipt.artifact_storage_key_sha256
+    ):
+        raise ArtifactPreparationConflictError(
+            "verified acquisition descriptor differs from its exact bytes"
+        )
+    for page in receipt.presentation.pages:
+        page.__post_init__()
+        if page.storage_object != acquisition:
+            raise ArtifactPreparationConflictError(
+                "prepared page references another acquisition object"
+            )
+    thumbnail = receipt.presentation.thumbnail
+    if thumbnail is None:
+        if receipt.resource_kinds != (CatalogResourceKind.ACQUISITION,):
+            raise ArtifactPreparationConflictError(
+                "empty presentation exposes an unexpected resource"
+            )
+        return
+    thumbnail.__post_init__()
+    if (
+        thumbnail.extent.offset != 0
+        or thumbnail.extent.length != thumbnail.storage_object.size_bytes
+        or thumbnail.sha256 != thumbnail.storage_object.sha256
+    ):
+        raise ArtifactPreparationConflictError(
+            "thumbnail is not the exact complete auxiliary storage object"
+        )
+    if _hash_stream(receipt._presentation_artifact.thumbnail) != (
+        bytes.fromhex(thumbnail.storage_object.sha256),
+        thumbnail.storage_object.size_bytes,
+    ):
+        raise ArtifactPreparationConflictError(
+            "verified thumbnail bytes changed before durable persistence"
         )
 
 
@@ -4523,16 +4106,16 @@ def _authorize_artifact_mutation(
 
 
 def _intent_facts(intent: ArtifactProtectionIntent) -> tuple[Any, ...]:
+    intent.__post_init__()
     return (
         intent.candidate_id,
         intent.publication_key,
-        intent.artifact_sha256,
-        intent.size_bytes,
-        intent.storage_key,
-        intent.artifact_storage_key_sha256,
-        intent.storage_codec_version,
+        intent.resource_kind,
+        intent.storage_object,
+        intent.storage_object_key_sha256,
         intent.storage_generation,
         intent.protection_token,
+        intent.state,
     )
 
 
@@ -4541,6 +4124,7 @@ def _load_prepared_family_or_conflict(
     *,
     candidate_id: bytes,
     publication_key: bytes,
+    resource_kind: CatalogResourceKind,
     backend: str,
 ) -> PreparedArtifactFamily | None:
     try:
@@ -4548,60 +4132,146 @@ def _load_prepared_family_or_conflict(
             connector,
             candidate_id=candidate_id,
             publication_key=publication_key,
+            resource_kind=resource_kind,
             backend=backend,
         )
     except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
         raise ArtifactPreparationConflictError(
-            "prepared artifact family is partial or internally inconsistent"
+            "prepared resource family is partial or internally inconsistent"
         ) from error
 
 
-def _protection_intent_from_family(
+def _load_prepared_families_or_conflict(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+    backend: str,
+) -> tuple[PreparedArtifactFamily, ...]:
+    try:
+        return load_prepared_artifact_families(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            backend=backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "prepared resource bundle is partial or internally inconsistent"
+        ) from error
+
+
+def _resource_blob_facts(
+    receipt: ArtifactPreparationReceipt,
+    resource_kind: CatalogResourceKind,
+) -> tuple[bytes, int]:
+    descriptor = receipt.resource_descriptor(resource_kind)
+    descriptor.__post_init__()
+    expected = (
+        bytes.fromhex(descriptor.sha256),
+        descriptor.size_bytes,
+    )
+    actual = _hash_stream(receipt.resource_stream(resource_kind))
+    if actual != expected:
+        raise ArtifactPreparationConflictError(
+            "prepared resource bytes differ from their verified descriptor"
+        )
+    return expected
+
+
+def _persist_prepared_resource_blob(
     work: VNextUnitOfWork,
+    receipt: ArtifactPreparationReceipt,
+    family: PreparedArtifactFamily,
+) -> None:
+    family.__post_init__()
+    digest, size_bytes = _resource_blob_facts(receipt, family.resource_kind)
+    _insert_or_compare(
+        work,
+        "catalog_artifact_blobs",
+        ("artifact_sha256", "size_bytes"),
+        (digest, size_bytes),
+        key_where="artifact_sha256 = %s",
+        key_parameters=(digest,),
+        conflict_label="prepared resource blob",
+    )
+    _insert_or_compare(
+        work,
+        "catalog_prepared_resource_blob",
+        (
+            "candidate_id",
+            "publication_key",
+            "resource_kind",
+            "storage_object_sha256",
+        ),
+        (
+            family.candidate_id,
+            family.publication_key,
+            family.resource_kind.value.encode("ascii"),
+            digest,
+        ),
+        key_where=("candidate_id = %s AND publication_key = %s AND resource_kind = %s"),
+        key_parameters=(
+            family.candidate_id,
+            family.publication_key,
+            family.resource_kind.value.encode("ascii"),
+        ),
+        conflict_label="prepared resource blob binding",
+    )
+
+
+def _validate_prepared_resource_blob(
+    connector: SQLConnector,
+    receipt: ArtifactPreparationReceipt,
+    family: PreparedArtifactFamily,
+) -> None:
+    family.__post_init__()
+    digest, size_bytes = _resource_blob_facts(receipt, family.resource_kind)
+    rows = connector.fetch_all(
+        "SELECT binding.storage_object_sha256, blob.size_bytes "
+        "FROM catalog_prepared_resource_blob AS binding "
+        "JOIN catalog_artifact_blobs AS blob "
+        "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+        "WHERE binding.candidate_id = %s AND binding.publication_key = %s "
+        "AND binding.resource_kind = %s LIMIT 2",
+        (
+            family.candidate_id,
+            family.publication_key,
+            family.resource_kind.value.encode("ascii"),
+        ),
+    )
+    if tuple(rows) != ((digest, size_bytes),):
+        raise ArtifactPreparationConflictError(
+            "durable resource blob binding differs from core-verified bytes"
+        )
+
+
+def _protection_intent_from_family(
+    connector: SQLConnector,
     receipt: ArtifactPreparationReceipt,
     family: PreparedArtifactFamily,
     *,
     replayed: bool,
 ) -> ArtifactProtectionIntent:
     authority = receipt.audit.authority
+    family.__post_init__()
     if (
         family.candidate_id != authority.candidate_id
         or family.publication_key != authority.publication_key
-        or family.artifact_sha256 != receipt.artifact_sha256
-        or family.storage_codec_version != receipt.storage_codec_version
     ):
         raise ArtifactPreparationConflictError(
-            "durable prepared artifact differs from verified archive facts"
+            "durable prepared resource belongs to another authority"
         )
-    try:
-        token = identity.decode_artifact_protection_token(family.protection_token)
-    except identity.VNextIdentityError as error:
-        raise ArtifactPreparationConflictError(
-            "durable prepared artifact token is malformed"
-        ) from error
-    expected_token = (
-        authority.candidate_id,
-        authority.publication_key,
-        receipt.artifact_sha256,
-        receipt.artifact_storage_key_sha256,
-        receipt.storage_codec_version,
-        family.storage_generation,
-        receipt.size_bytes,
+    descriptor = receipt.resource_descriptor(family.resource_kind)
+    key_digest = identity.artifact_storage_key_digest(
+        descriptor.key.codec,
+        descriptor.key.segments,
     )
-    actual_token = (
-        token.candidate_id,
-        token.publication_key,
-        token.artifact_sha256,
-        token.artifact_storage_key_sha256,
-        token.storage_codec_version,
-        token.storage_generation,
-        token.size_bytes,
-    )
-    if actual_token != expected_token:
+    if family.storage_object_key_sha256 != key_digest:
         raise ArtifactPreparationConflictError(
-            "durable prepared artifact token differs from verified archive"
+            "durable prepared resource differs from its adapter-issued storage key"
         )
-    mapping = work.connector.fetch_one(
+    mapping = connector.fetch_one(
         "SELECT build_id FROM operational_source_build_generations "
         "WHERE generation = %s",
         (family.storage_generation,),
@@ -4613,11 +4283,9 @@ def _protection_intent_from_family(
     return ArtifactProtectionIntent(
         authority.candidate_id,
         authority.publication_key,
-        receipt.artifact_sha256,
-        receipt.size_bytes,
-        receipt.storage_key,
-        receipt.artifact_storage_key_sha256,
-        receipt.storage_codec_version,
+        family.resource_kind,
+        descriptor,
+        key_digest,
         family.storage_generation,
         family.protection_token,
         family.state,
@@ -4626,44 +4294,557 @@ def _protection_intent_from_family(
     )
 
 
-def _persist_artifact_byte_identities(
+def _persist_artifact_render_facts(
     work: VNextUnitOfWork,
     receipt: ArtifactPreparationReceipt,
-    *,
-    storage_generation: int,
-    protection_token: bytes,
 ) -> None:
     authority = receipt.audit.authority
+    evidence = receipt.render_evidence
     _insert_or_compare(
         work,
         "catalog_artifact_blobs",
         ("artifact_sha256", "size_bytes"),
-        (
-            receipt.artifact_sha256,
-            receipt.size_bytes,
-        ),
+        (receipt.artifact_sha256, receipt.size_bytes),
         key_where="artifact_sha256 = %s",
         key_parameters=(receipt.artifact_sha256,),
         conflict_label="artifact blob",
     )
-    try:
-        ensure_prepared_artifact_family(
-            work.connector,
-            PreparedArtifactFamily(
-                authority.candidate_id,
-                authority.publication_key,
-                receipt.artifact_sha256,
-                receipt.storage_codec_version,
-                storage_generation,
-                protection_token,
-                "PENDING",
-            ),
-            backend=work.backend,
+    _insert_or_compare(
+        work,
+        "catalog_prepared_artifact_descriptors",
+        (
+            "candidate_id",
+            "publication_key",
+            "artifact_sha256",
+            "artifact_name",
+            "media_type",
+            "page_count",
+        ),
+        (
+            authority.candidate_id,
+            authority.publication_key,
+            receipt.artifact_sha256,
+            evidence.download_name.encode("utf-8", errors="strict"),
+            evidence.media_type.encode("ascii", errors="strict"),
+            len(receipt.presentation.pages),
+        ),
+        key_where="candidate_id = %s AND publication_key = %s",
+        key_parameters=(authority.candidate_id, authority.publication_key),
+        conflict_label="prepared artifact descriptor",
+    )
+
+
+def _validate_artifact_render_facts(
+    work: VNextUnitOfWork,
+    receipt: ArtifactPreparationReceipt,
+) -> None:
+    authority = receipt.audit.authority
+    evidence = receipt.render_evidence
+    expected_blob = (receipt.artifact_sha256, receipt.size_bytes)
+    blob = work.connector.fetch_all(
+        "SELECT artifact_sha256, size_bytes FROM catalog_artifact_blobs "
+        "WHERE artifact_sha256 = %s LIMIT 2",
+        (receipt.artifact_sha256,),
+    )
+    expected_descriptor = (
+        authority.candidate_id,
+        authority.publication_key,
+        receipt.artifact_sha256,
+        evidence.download_name.encode("utf-8", errors="strict"),
+        evidence.media_type.encode("ascii", errors="strict"),
+        len(receipt.presentation.pages),
+    )
+    descriptor = work.connector.fetch_all(
+        "SELECT candidate_id, publication_key, artifact_sha256, artifact_name, "
+        "media_type, page_count FROM catalog_prepared_artifact_descriptors "
+        "WHERE candidate_id = %s AND publication_key = %s LIMIT 2",
+        (authority.candidate_id, authority.publication_key),
+    )
+    if tuple(blob) != (expected_blob,) or tuple(descriptor) != (expected_descriptor,):
+        raise ArtifactPreparationConflictError(
+            "durable prepared artifact descriptor differs from render evidence"
         )
+
+
+def _persist_storage_key(
+    work: VNextUnitOfWork,
+    key: StorageObjectKey,
+    *,
+    key_digest: bytes,
+) -> None:
+    key.__post_init__()
+    digest = require_digest32(key_digest, field="storage object key digest")
+    expected_digest = identity.artifact_storage_key_digest(key.codec, key.segments)
+    if digest != expected_digest:
+        raise ArtifactPreparationConflictError(
+            "storage object key digest differs from its framed key"
+        )
+    _insert_or_compare(
+        work,
+        "catalog_storage_object_key_identities",
+        ("storage_object_key_sha256", "key_codec", "segment_count"),
+        (digest, key.codec.encode("ascii"), len(key.segments)),
+        key_where="storage_object_key_sha256 = %s",
+        key_parameters=(digest,),
+        conflict_label="storage object key identity",
+    )
+    for position, segment in enumerate(key.segments):
+        _insert_or_compare(
+            work,
+            "catalog_storage_object_key_segments",
+            ("storage_object_key_sha256", "segment_position", "key_segment"),
+            (digest, position, segment.encode("utf-8")),
+            key_where=("storage_object_key_sha256 = %s AND segment_position = %s"),
+            key_parameters=(digest, position),
+            conflict_label="storage object key segment",
+        )
+    _validate_storage_key(work, key, key_digest=digest)
+
+
+def _validate_storage_key(
+    work: VNextUnitOfWork,
+    key: StorageObjectKey,
+    *,
+    key_digest: bytes,
+) -> None:
+    key.__post_init__()
+    digest = require_digest32(key_digest, field="storage object key digest")
+    identity_row = work.connector.fetch_all(
+        "SELECT storage_object_key_sha256, key_codec, segment_count "
+        "FROM catalog_storage_object_key_identities "
+        "WHERE storage_object_key_sha256 = %s LIMIT 2",
+        (digest,),
+    )
+    segments = work.connector.fetch_all(
+        "SELECT segment_position, key_segment "
+        "FROM catalog_storage_object_key_segments "
+        "WHERE storage_object_key_sha256 = %s ORDER BY segment_position",
+        (digest,),
+    )
+    expected_segments = tuple(
+        (position, segment.encode("utf-8"))
+        for position, segment in enumerate(key.segments)
+    )
+    if (
+        identity.artifact_storage_key_digest(key.codec, key.segments) != digest
+        or tuple(identity_row)
+        != ((digest, key.codec.encode("ascii"), len(key.segments)),)
+        or tuple(segments) != expected_segments
+    ):
+        raise ArtifactPreparationConflictError(
+            "durable storage object key is incomplete or noncongruent"
+        )
+
+
+def _load_storage_key(
+    work: VNextUnitOfWork,
+    key_digest: bytes,
+) -> StorageObjectKey:
+    digest = require_digest32(key_digest, field="storage object key digest")
+    row = work.connector.fetch_one(
+        "SELECT key_codec, segment_count "
+        "FROM catalog_storage_object_key_identities "
+        "WHERE storage_object_key_sha256 = %s",
+        (digest,),
+    )
+    segments = work.connector.fetch_all(
+        "SELECT segment_position, key_segment "
+        "FROM catalog_storage_object_key_segments "
+        "WHERE storage_object_key_sha256 = %s ORDER BY segment_position",
+        (digest,),
+    )
+    if len(row) != 2 or row[1] != len(segments):
+        raise ArtifactPreparationConflictError("storage object key family is partial")
+    if tuple(item[0] for item in segments) != tuple(range(len(segments))):
+        raise ArtifactPreparationConflictError(
+            "storage object key segments are not dense"
+        )
+    try:
+        key = StorageObjectKey(
+            bytes(row[0]).decode("ascii", errors="strict"),
+            tuple(bytes(item[1]).decode("utf-8", errors="strict") for item in segments),
+        )
+    except (TypeError, ValueError, UnicodeDecodeError) as error:
+        raise ArtifactPreparationConflictError(
+            "storage object key family contains invalid bytes"
+        ) from error
+    _validate_storage_key(work, key, key_digest=digest)
+    return key
+
+
+def _modified_at_microseconds(descriptor: StorageObjectDescriptor) -> int:
+    return microseconds_from_datetime(
+        descriptor.modified_at,
+        field="prepared storage object modified_at",
+    )
+
+
+def _image_row_values(
+    image: Any,
+) -> tuple[int, int, bytes, bytes, int, int]:
+    return (
+        image.extent.offset,
+        image.extent.length,
+        image.media_type.encode("ascii", errors="strict"),
+        bytes.fromhex(image.sha256),
+        image.width,
+        image.height,
+    )
+
+
+def _store_exact_row(
+    work: VNextUnitOfWork,
+    table: str,
+    columns: tuple[str, ...],
+    expected: tuple[Any, ...],
+    *,
+    key_where: str,
+    key_parameters: tuple[Any, ...],
+    conflict_label: str,
+    allow_insert: bool,
+) -> None:
+    if allow_insert:
+        _insert_or_compare(
+            work,
+            table,
+            columns,
+            expected,
+            key_where=key_where,
+            key_parameters=key_parameters,
+            conflict_label=conflict_label,
+        )
+        return
+    rows = work.connector.fetch_all(
+        f"SELECT {', '.join(columns)} FROM {table} WHERE {key_where} LIMIT 2",
+        key_parameters,
+    )
+    if tuple(rows) != (expected,):
+        raise ArtifactPreparationConflictError(
+            f"{conflict_label} is absent or differs from exact prepared facts"
+        )
+
+
+def _persist_confirmed_presentation(
+    work: VNextUnitOfWork,
+    mutation: _MutationAuthority,
+    *,
+    receipt: ArtifactPreparationReceipt,
+    evidence: tuple[ArtifactProtectionEvidence, ...],
+) -> None:
+    expected_descriptors = tuple(
+        receipt.resource_descriptor(kind) for kind in receipt.resource_kinds
+    )
+    if tuple(item.storage_object for item in evidence) != expected_descriptors:
+        raise ArtifactPreparationConflictError(
+            "protection evidence does not exactly cover prepared storage objects"
+        )
+    _write_or_validate_confirmed_presentation(
+        work,
+        mutation,
+        receipt=receipt,
+        allow_insert=True,
+    )
+
+
+def _validate_confirmed_presentation(
+    work: VNextUnitOfWork,
+    mutation: _MutationAuthority,
+    *,
+    receipt: ArtifactPreparationReceipt,
+) -> None:
+    _write_or_validate_confirmed_presentation(
+        work,
+        mutation,
+        receipt=receipt,
+        allow_insert=False,
+    )
+
+
+def _write_or_validate_confirmed_presentation(
+    work: VNextUnitOfWork,
+    mutation: _MutationAuthority,
+    *,
+    receipt: ArtifactPreparationReceipt,
+    allow_insert: bool,
+) -> None:
+    authority = receipt.audit.authority
+    candidate = authority.candidate_id
+    publication = authority.publication_key
+    revision = mutation.candidate.reserved_revision
+    if (
+        mutation.candidate.candidate_id != candidate
+        or revision != authority.projection.reserved_revision
+    ):
+        raise ArtifactPreparationConflictError(
+            "presentation mutation authority differs from prepared receipt"
+        )
+
+    for kind in receipt.resource_kinds:
+        descriptor = receipt.resource_descriptor(kind)
+        key_digest = identity.artifact_storage_key_digest(
+            descriptor.key.codec,
+            descriptor.key.segments,
+        )
+        _validate_storage_key(work, descriptor.key, key_digest=key_digest)
+        family = PreparedStorageObjectFamily(
+            candidate,
+            publication,
+            kind,
+            bytes.fromhex(descriptor.sha256),
+            descriptor.size_bytes,
+            _modified_at_microseconds(descriptor),
+        )
+        try:
+            if allow_insert:
+                ensure_prepared_storage_object_family(
+                    work.connector,
+                    family,
+                    backend=work.backend,
+                )
+            elif (
+                load_prepared_storage_object_family(
+                    work.connector,
+                    candidate_id=candidate,
+                    publication_key=publication,
+                    resource_kind=kind,
+                    backend=work.backend,
+                )
+                != family
+            ):
+                raise ArtifactPreparationConflictError(
+                    "prepared storage object differs from verified bytes"
+                )
+        except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+            raise ArtifactPreparationConflictError(
+                "prepared storage object collides with durable facts"
+            ) from error
+        object_values = (
+            revision,
+            publication,
+            kind.value.encode("ascii"),
+            key_digest,
+            bytes.fromhex(descriptor.sha256),
+            descriptor.size_bytes,
+            _modified_at_microseconds(descriptor),
+        )
+        _store_exact_row(
+            work,
+            "catalog_storage_objects",
+            (
+                "revision",
+                "publication_key",
+                "resource_kind",
+                "storage_object_key_sha256",
+                "storage_object_sha256",
+                "size_bytes",
+                "modified_at",
+            ),
+            object_values,
+            key_where=("revision = %s AND publication_key = %s AND resource_kind = %s"),
+            key_parameters=(
+                revision,
+                publication,
+                kind.value.encode("ascii"),
+            ),
+            conflict_label="catalog storage object",
+            allow_insert=allow_insert,
+        )
+
+    render = receipt.render_evidence
+    artifact_family = CatalogArtifactFamily(
+        revision,
+        publication,
+        receipt.artifact_sha256,
+        authority.artifact_semantics_sha256,
+        render.download_name.encode("utf-8", errors="strict"),
+        render.media_type.encode("ascii", errors="strict"),
+        len(receipt.presentation.pages),
+    )
+    try:
+        if allow_insert:
+            ensure_catalog_artifact_family(
+                work.connector,
+                artifact_family,
+                backend=work.backend,
+            )
+        elif (
+            load_catalog_artifact_family(
+                work.connector,
+                revision=revision,
+                publication_key=publication,
+                backend=work.backend,
+            )
+            != artifact_family
+        ):
+            raise ArtifactPreparationConflictError(
+                "catalog artifact differs from verified render facts"
+            )
     except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
         raise ArtifactPreparationConflictError(
-            "prepared artifact family collides with different exact facts"
+            "catalog artifact collides with durable facts"
         ) from error
+
+    expected_prepared_pages: list[tuple[Any, ...]] = []
+    expected_catalog_pages: list[tuple[Any, ...]] = []
+    acquisition_kind = CatalogResourceKind.ACQUISITION.value.encode("ascii")
+    for page in receipt.presentation.pages:
+        image = _image_row_values(page)
+        prepared_row = (
+            candidate,
+            publication,
+            acquisition_kind,
+            page.page_index,
+            *image,
+        )
+        catalog_row = (
+            revision,
+            publication,
+            acquisition_kind,
+            page.page_index,
+            *image,
+        )
+        expected_prepared_pages.append(prepared_row)
+        expected_catalog_pages.append(catalog_row)
+        _store_exact_row(
+            work,
+            "catalog_prepared_pages",
+            (
+                "candidate_id",
+                "publication_key",
+                "resource_kind",
+                "page_index",
+                "extent_offset",
+                "extent_length",
+                "media_type",
+                "image_sha256",
+                "width",
+                "height",
+            ),
+            prepared_row,
+            key_where=(
+                "candidate_id = %s AND publication_key = %s AND page_index = %s"
+            ),
+            key_parameters=(candidate, publication, page.page_index),
+            conflict_label="prepared page",
+            allow_insert=allow_insert,
+        )
+        _store_exact_row(
+            work,
+            "catalog_pages",
+            (
+                "revision",
+                "publication_key",
+                "resource_kind",
+                "page_index",
+                "extent_offset",
+                "extent_length",
+                "media_type",
+                "image_sha256",
+                "width",
+                "height",
+            ),
+            catalog_row,
+            key_where=("revision = %s AND publication_key = %s AND page_index = %s"),
+            key_parameters=(revision, publication, page.page_index),
+            conflict_label="catalog page",
+            allow_insert=allow_insert,
+        )
+
+    actual_prepared_pages = work.connector.fetch_all(
+        "SELECT candidate_id, publication_key, resource_kind, page_index, "
+        "extent_offset, extent_length, media_type, image_sha256, width, height "
+        "FROM catalog_prepared_pages WHERE candidate_id = %s "
+        "AND publication_key = %s ORDER BY page_index",
+        (candidate, publication),
+    )
+    actual_catalog_pages = work.connector.fetch_all(
+        "SELECT revision, publication_key, resource_kind, page_index, "
+        "extent_offset, extent_length, media_type, image_sha256, width, height "
+        "FROM catalog_pages WHERE revision = %s AND publication_key = %s "
+        "ORDER BY page_index",
+        (revision, publication),
+    )
+    if tuple(actual_prepared_pages) != tuple(expected_prepared_pages) or tuple(
+        actual_catalog_pages
+    ) != tuple(expected_catalog_pages):
+        raise ArtifactPreparationConflictError(
+            "durable page coverage differs from dense presentation evidence"
+        )
+
+    thumbnail = receipt.presentation.thumbnail
+    prepared_thumbnail = work.connector.fetch_all(
+        "SELECT candidate_id, publication_key, resource_kind, extent_offset, "
+        "extent_length, media_type, image_sha256, width, height "
+        "FROM catalog_prepared_thumbnails WHERE candidate_id = %s "
+        "AND publication_key = %s LIMIT 2",
+        (candidate, publication),
+    )
+    catalog_thumbnail = work.connector.fetch_all(
+        "SELECT revision, publication_key, resource_kind, extent_offset, "
+        "extent_length, media_type, image_sha256, width, height "
+        "FROM catalog_thumbnails WHERE revision = %s AND publication_key = %s LIMIT 2",
+        (revision, publication),
+    )
+    if thumbnail is None:
+        if prepared_thumbnail or catalog_thumbnail:
+            raise ArtifactPreparationConflictError(
+                "empty presentation has a durable thumbnail"
+            )
+        return
+    thumbnail_kind = CatalogResourceKind.THUMBNAIL.value.encode("ascii")
+    image = _image_row_values(thumbnail)
+    expected_prepared_thumbnail = (
+        candidate,
+        publication,
+        thumbnail_kind,
+        *image,
+    )
+    expected_catalog_thumbnail = (
+        revision,
+        publication,
+        thumbnail_kind,
+        *image,
+    )
+    _store_exact_row(
+        work,
+        "catalog_prepared_thumbnails",
+        (
+            "candidate_id",
+            "publication_key",
+            "resource_kind",
+            "extent_offset",
+            "extent_length",
+            "media_type",
+            "image_sha256",
+            "width",
+            "height",
+        ),
+        expected_prepared_thumbnail,
+        key_where="candidate_id = %s AND publication_key = %s",
+        key_parameters=(candidate, publication),
+        conflict_label="prepared thumbnail",
+        allow_insert=allow_insert,
+    )
+    _store_exact_row(
+        work,
+        "catalog_thumbnails",
+        (
+            "revision",
+            "publication_key",
+            "resource_kind",
+            "extent_offset",
+            "extent_length",
+            "media_type",
+            "image_sha256",
+            "width",
+            "height",
+        ),
+        expected_catalog_thumbnail,
+        key_where="revision = %s AND publication_key = %s",
+        key_parameters=(revision, publication),
+        conflict_label="catalog thumbnail",
+        allow_insert=allow_insert,
+    )
 
 
 def _bind_operational_effect_seal(
@@ -4832,11 +5013,8 @@ def _load_authority_facts(
         contract.manifest_algorithm_version,
         contract.file_order_version,
         contract.artifact_algorithm_version,
-        contract.max_image_short_side,
-        contract.producer_fingerprint_sha256,
-        contract.producer_fields,
-        contract.writer_policy,
-        contract.storage_codec,
+        contract.adapter_id,
+        contract.policy_fingerprint_sha256,
         contract.spam_artist_threshold,
         contract.spam_occurrence_threshold,
         checkpoint,
@@ -4901,8 +5079,8 @@ def _require_derived_fixed_digests(facts: _AuthorityFacts) -> None:
         ),
         identity.artifact_policy_digest(
             facts.artifact_algorithm_version,
-            facts.max_image_short_side,
-            facts.producer_fingerprint_sha256,
+            facts.adapter_id,
+            facts.policy_fingerprint_sha256,
         ),
     )
     actual = (
@@ -4963,11 +5141,11 @@ def _validate_fixed_components(
         ),
         (
             authority.policy_component_sha256,
-            b"artifact_policy_v2",
+            b"artifact_policy_v3",
             identity.encode_artifact_policy(
                 authority.artifact_algorithm_version,
-                authority.max_image_short_side,
-                authority.producer_fingerprint_sha256,
+                authority.adapter_id,
+                authority.policy_fingerprint_sha256,
             ),
         ),
         (
@@ -5029,88 +5207,77 @@ def _audit_member_and_effective_components(
     work: VNextUnitOfWork,
     authority: ArtifactPreparationAuthority,
 ) -> ArtifactPreparationInputAudit:
-    member_payload = TemporaryFile(mode="w+b")
-    effective_payload = TemporaryFile(mode="w+b")
-    plan = sqlite3.connect(":memory:")
+    member_payload = bytearray()
+
+    def append_member_part(part: bytes) -> None:
+        if len(member_payload) + len(part) > _MAX_MEMBER_PLAN_BYTES:
+            raise ArtifactPreparationNotReadyError(
+                "artifact member plan exceeds the core byte bound"
+            )
+        member_payload.extend(part)
+
     try:
-        plan.executescript(
-            "CREATE TABLE archive_names (name BLOB PRIMARY KEY) WITHOUT ROWID;"
-            "CREATE TABLE effective_files ("
-            "file_sha256 BLOB NOT NULL, entry_position INTEGER NOT NULL, "
-            "PRIMARY KEY (file_sha256, entry_position)) WITHOUT ROWID;"
-        )
         member_receipt = CanonicalValueRepository.stream_and_validate(
             work,
             value_sha256=authority.member_plan_component_sha256,
-            consume_provisional=lambda part: _write_all(member_payload, part),
+            consume_provisional=append_member_part,
         )
-        if member_receipt.digest_domain != b"artifact_member_plan_v1":
+        if member_receipt.digest_domain != b"artifact_member_plan_v2":
             raise ArtifactPreparationConflictError(
                 "member plan has the wrong canonical domain"
             )
-        member_payload.seek(0)
-        header = _read_exact(member_payload, len(_MEMBER_PLAN_PREFIX))
-        if header != _MEMBER_PLAN_PREFIX:
-            raise ArtifactPreparationConflictError("member plan prefix differs")
-        if int.from_bytes(_read_exact(member_payload, 4), "big") != 1:
-            raise ArtifactPreparationConflictError(
-                "member plan version is not registered"
-            )
-        entry_count = int.from_bytes(_read_exact(member_payload, 8), "big")
-        require_int63(entry_count, field="member plan entry_count")
-        source_count, emitted_count, source_bytes = _compare_member_entries(
+        plan_entries = identity.decode_artifact_member_plan(bytes(member_payload))
+        expected_entries, source_count, source_bytes = _expected_render_entries(
             work,
             authority,
-            member_payload,
-            plan,
-            entry_count=entry_count,
         )
-        if member_payload.read(1):
+        if plan_entries != expected_entries:
             raise ArtifactPreparationConflictError(
-                "member plan contains trailing bytes"
+                "member plan differs from sealed adapter-issued source roles"
             )
-        effective_count = _effective_file_count(plan)
-        expected_parts = identity.iter_artifact_effective_content_payload_ordered(
-            effective_count,
-            _iter_effective_file_digests(plan),
+        page_digests = tuple(
+            entry.source_file_sha256
+            for entry in plan_entries
+            if entry.source_role is identity.ArtifactMemberSourceRole.PAGE
         )
-        expected_digest = identity.artifact_effective_content_digest_ordered(
-            effective_count,
-            _iter_effective_file_digests(plan),
-        )
+        expected_digest = identity.artifact_effective_content_digest(page_digests)
         if expected_digest != authority.effective_content_component_sha256:
             raise ArtifactPreparationConflictError(
                 "effective-content digest differs from member/source facts"
             )
-        effective_receipt = CanonicalValueRepository.stream_and_validate(
+        _validate_exact_canonical_payload(
             work,
             value_sha256=authority.effective_content_component_sha256,
-            consume_provisional=lambda part: _write_all(effective_payload, part),
+            expected_domain=b"artifact_effective_content_v1",
+            expected_payload=identity.encode_artifact_effective_content(page_digests),
         )
-        if effective_receipt.digest_domain != b"artifact_effective_content_v1":
-            raise ArtifactPreparationConflictError(
-                "effective content has the wrong canonical domain"
+        source_root, gallery_locator = _load_source_locator_components(
+            work,
+            authority,
+        )
+        references = tuple(
+            ArtifactSourceReference(
+                entry.source_position,
+                (
+                    ArtifactSourceRole.METADATA
+                    if entry.source_role is identity.ArtifactMemberSourceRole.METADATA
+                    else ArtifactSourceRole.PAGE
+                ),
+                entry.source_name_bytes,
+                entry.source_file_sha256,
+                entry.source_size_bytes,
             )
-        effective_payload.seek(0)
-        for part in expected_parts:
-            if _read_exact(effective_payload, len(part)) != part:
-                raise ArtifactPreparationConflictError(
-                    "effective-content canonical bytes differ from source facts"
-                )
-        if effective_payload.read(1):
-            raise ArtifactPreparationConflictError(
-                "effective-content canonical payload has trailing bytes"
-            )
+            for entry in plan_entries
+        )
         return ArtifactPreparationInputAudit(
             authority,
             source_count,
-            emitted_count,
+            len(plan_entries),
             source_bytes,
-            effective_count,
-            identity.encode_zip_comment(
-                authority.source_manifest_component_sha256,
-                authority.effective_content_component_sha256,
-            ),
+            len(page_digests),
+            source_root,
+            gallery_locator,
+            references,
             _AUDIT_TOKEN,
         )
     except (identity.ByteDomainError, ValueError) as error:
@@ -5121,39 +5288,27 @@ def _audit_member_and_effective_components(
         raise ArtifactPreparationConflictError(
             "artifact canonical member/effective input is incomplete or corrupt"
         ) from error
-    finally:
-        plan.close()
-        member_payload.close()
-        effective_payload.close()
 
 
-def _compare_member_entries(
+def _expected_render_entries(
     work: VNextUnitOfWork,
     authority: ArtifactPreparationAuthority,
-    payload: BinaryIO,
-    plan: sqlite3.Connection,
-    *,
-    entry_count: int,
-) -> tuple[int, int, int]:
-    position = 0
-    emitted = 0
-    total_bytes = 0
-    last_file_no = -1
+) -> tuple[tuple[identity.ArtifactMemberPlanEntry, ...], int, int]:
+    entries: list[identity.ArtifactMemberPlanEntry] = []
+    source_count = 0
+    source_bytes = 0
+    metadata_count = 0
+    after = -1
     while True:
-        rows = _source_file_page(work, authority, after_file_no=last_file_no)
+        rows = _source_file_page(work, authority, after_file_no=after)
         if not rows:
             break
         for row in rows:
-            if position >= entry_count:
-                raise ArtifactPreparationConflictError(
-                    "member plan omits immutable source files"
-                )
             file_no = require_int63(row[0], field="artifact source file_no")
-            if file_no != position:
+            if file_no != source_count:
                 raise ArtifactPreparationConflictError(
-                    "artifact source file positions are not zero-based contiguous"
+                    "artifact source positions are not zero-based contiguous"
                 )
-            entry = _read_member_entry(payload, expected_position=position)
             name = require_bounded_bytes(
                 row[1],
                 field="artifact source name",
@@ -5162,55 +5317,70 @@ def _compare_member_entries(
             )
             role = require_bounded_bytes(
                 row[2],
-                field="artifact source role",
-                minimum=7,
+                field="adapter-issued artifact source role",
+                minimum=4,
                 maximum=8,
             )
             digest = require_digest32(row[3], field="artifact source file_sha256")
             size = require_int63(row[4], field="artifact source size")
-            excluded = _source_file_excluded(row, authority, role=role)
-            if (
-                entry.source_name_bytes != name
-                or entry.source_file_sha256 != digest
-                or entry.source_size_bytes != size
-                or bytes(entry.source_role.name, "ascii") != role
-                or entry.excluded_flag is not excluded
-            ):
-                raise ArtifactPreparationConflictError(
-                    "member plan differs from immutable source file facts"
-                )
-            archive_name = entry.archive_member_name_bytes
-            if archive_name is not None:
-                try:
-                    plan.execute(
-                        "INSERT INTO archive_names (name) VALUES (?)",
-                        (sqlite3.Binary(archive_name),),
-                    )
-                except sqlite3.IntegrityError as error:
-                    raise ArtifactPreparationConflictError(
-                        "member plan repeats an exact archive member name"
-                    ) from error
-                emitted += 1
-            if role == b"CONTENT" and not excluded:
-                plan.execute(
-                    "INSERT INTO effective_files (file_sha256, entry_position) "
-                    "VALUES (?, ?)",
-                    (sqlite3.Binary(digest), position),
-                )
-            if total_bytes > INT63_MAX - size:
+            source_bytes += size
+            if source_bytes > INT63_MAX:
                 raise ArtifactPreparationNotReadyError(
-                    "artifact source byte count is exhausted"
+                    "artifact source byte count exceeds int63"
                 )
-            total_bytes += size
-            last_file_no = file_no
-            position += 1
+            if role == b"metadata":
+                if any(value is not None for value in row[5:8]):
+                    raise ArtifactPreparationConflictError(
+                        "metadata unexpectedly participates in spam decisions"
+                    )
+                metadata_count += 1
+                member_role = identity.ArtifactMemberSourceRole.METADATA
+            elif role == b"page":
+                if _excluded_from_scalars(
+                    row[5:8],
+                    spam_artist_threshold=authority.spam_artist_threshold,
+                    spam_occurrence_threshold=authority.spam_occurrence_threshold,
+                ):
+                    after = file_no
+                    source_count += 1
+                    continue
+                member_role = identity.ArtifactMemberSourceRole.PAGE
+            elif role == b"other":
+                after = file_no
+                source_count += 1
+                continue
+            else:
+                raise ArtifactPreparationConflictError(
+                    "adapter-issued artifact source role is not registered"
+                )
+            entries.append(
+                identity.ArtifactMemberPlanEntry(
+                    file_no,
+                    name,
+                    digest,
+                    size,
+                    member_role,
+                )
+            )
+            after = file_no
+            source_count += 1
         if len(rows) < _MAX_SOURCE_PAGE:
             break
-    if position != entry_count:
+    if metadata_count != 1:
         raise ArtifactPreparationConflictError(
-            "member plan contains rows outside the immutable source snapshot"
+            "artifact render input requires exactly one METADATA member"
         )
-    return position, emitted, total_bytes
+    if (
+        sum(
+            entry.source_role is identity.ArtifactMemberSourceRole.PAGE
+            for entry in entries
+        )
+        > 4096
+    ):
+        raise ArtifactPreparationNotReadyError(
+            "artifact render input exceeds 4096 PAGE members"
+        )
+    return tuple(entries), source_count, source_bytes
 
 
 def _source_file_page(
@@ -5220,7 +5390,7 @@ def _source_file_page(
     after_file_no: int,
 ) -> tuple[tuple[Any, ...], ...]:
     rows = work.connector.fetch_all(
-        "SELECT source.file_no, name.name_bytes, name.file_role, "
+        "SELECT source.file_no, name.name_bytes, source.artifact_role, "
         "source.file_sha256, content_blob.size_bytes, decision.occurrence_count, "
         "decision.artist_count, decision.maximum_gallery_artist_count "
         + _SOURCE_FILE_FAMILY_SQL
@@ -5240,122 +5410,6 @@ def _source_file_page(
     if len(rows) > _MAX_SOURCE_PAGE:
         raise ArtifactPreparationConflictError("source file page exceeded hard cap")
     return tuple(rows)
-
-
-def _source_file_excluded(
-    row: tuple[Any, ...],
-    authority: ArtifactPreparationAuthority,
-    *,
-    role: bytes,
-) -> bool:
-    if role == b"METADATA":
-        if any(value is not None for value in row[5:8]):
-            raise ArtifactPreparationConflictError(
-                "metadata file unexpectedly participates in spam decisions"
-            )
-        return False
-    if role != b"CONTENT":
-        raise ArtifactPreparationConflictError("source file role is not registered")
-    if all(value is None for value in row[5:8]):
-        return False
-    if any(value is None for value in row[5:8]):
-        raise ArtifactPreparationConflictError("source file decision is partial")
-    occurrence = require_positive_int63(row[5], field="artifact occurrence_count")
-    artist = require_int63(row[6], field="artifact artist_count")
-    maximum = require_int63(
-        row[7],
-        field="artifact maximum_gallery_artist_count",
-    )
-    return (
-        occurrence >= authority.spam_occurrence_threshold
-        and maximum > 0
-        and artist > authority.spam_artist_threshold * maximum
-    )
-
-
-def _read_member_entry(
-    payload: BinaryIO,
-    *,
-    expected_position: int,
-) -> identity.ArtifactMemberPlanEntry:
-    position = int.from_bytes(_read_exact(payload, 8), "big")
-    if position != expected_position:
-        raise ArtifactPreparationConflictError(
-            "member plan positions are not zero-based contiguous"
-        )
-    if _read_exact(payload, 1) != b"\0":
-        raise ArtifactPreparationConflictError(
-            "member plan entry kind is not SOURCE_FILE"
-        )
-    source_name_length = int.from_bytes(_read_exact(payload, 4), "big")
-    if not 1 <= source_name_length <= 255:
-        raise ArtifactPreparationConflictError(
-            "member plan source name exceeds the closed file-name domain"
-        )
-    source_name = _read_exact(payload, source_name_length)
-    source_digest = _read_exact(payload, 32)
-    source_size = int.from_bytes(_read_exact(payload, 8), "big")
-    require_int63(source_size, field="member plan source_size_bytes")
-    source_role = int.from_bytes(_read_exact(payload, 1), "big")
-    excluded_tag = int.from_bytes(_read_exact(payload, 1), "big")
-    presence = int.from_bytes(_read_exact(payload, 1), "big")
-    if excluded_tag not in {0, 1} or presence not in {0, 1}:
-        raise ArtifactPreparationConflictError(
-            "member plan boolean tag is not registered"
-        )
-    archive_name: bytes | None = None
-    if presence:
-        archive_size = int.from_bytes(_read_exact(payload, 4), "big")
-        if not 1 <= archive_size <= _ZIP_MEMBER_NAME_MAXIMUM_BYTES:
-            raise ArtifactPreparationConflictError(
-                "archive member name exceeds the ZIP filename bound"
-            )
-        archive_name = _read_exact(payload, archive_size)
-    transform = int.from_bytes(_read_exact(payload, 1), "big")
-    try:
-        entry = identity.ArtifactMemberPlanEntry(
-            entry_position=position,
-            source_name_bytes=source_name,
-            source_file_sha256=source_digest,
-            source_size_bytes=source_size,
-            excluded_flag=bool(excluded_tag),
-        )
-    except (identity.ByteDomainError, ValueError) as error:
-        raise ArtifactPreparationConflictError(
-            "member plan entry violates its exact domain"
-        ) from error
-    if int(entry.source_role) != source_role or int(entry.transform_kind) != transform:
-        raise ArtifactPreparationConflictError(
-            "member plan derived role or transform tag disagrees"
-        )
-    if entry.archive_member_name_bytes != archive_name:
-        raise ArtifactPreparationConflictError(
-            "member plan archive name differs from the server derivation"
-        )
-    return entry
-
-
-def _effective_file_count(plan: sqlite3.Connection) -> int:
-    count = 0
-    cursor = plan.execute(
-        "SELECT file_sha256 FROM effective_files ORDER BY file_sha256, entry_position"
-    )
-    while rows := cursor.fetchmany(_MAX_SOURCE_PAGE):
-        count += len(rows)
-        if count > INT63_MAX:
-            raise ArtifactPreparationNotReadyError(
-                "effective-content file count is exhausted"
-            )
-    return count
-
-
-def _iter_effective_file_digests(plan: sqlite3.Connection) -> Iterator[bytes]:
-    cursor = plan.execute(
-        "SELECT file_sha256 FROM effective_files ORDER BY file_sha256, entry_position"
-    )
-    while rows := cursor.fetchmany(_MAX_SOURCE_PAGE):
-        for (value,) in rows:
-            yield require_digest32(value, field="effective-content file_sha256")
 
 
 def _load_validation_checkpoint(
@@ -5624,11 +5678,8 @@ def _facts_from_authority(authority: ArtifactPreparationAuthority) -> _Authority
         authority.manifest_algorithm_version,
         authority.file_order_version,
         authority.artifact_algorithm_version,
-        authority.max_image_short_side,
-        authority.producer_fingerprint_sha256,
-        authority.producer_fields,
-        authority.writer_policy,
-        authority.storage_codec,
+        authority.adapter_id,
+        authority.policy_fingerprint_sha256,
         authority.spam_artist_threshold,
         authority.spam_occurrence_threshold,
         authority.validation_checkpoint,
@@ -5643,18 +5694,6 @@ def _require_authority(authority: ArtifactPreparationAuthority) -> None:
         raise TypeError("artifact preparation authority is not repository-issued")
     authority.__post_init__()
     authority.projection.__post_init__()
-
-
-def _read_exact(stream: BinaryIO, size: int) -> bytes:
-    if not 0 <= size <= _ZIP_MEMBER_NAME_MAXIMUM_BYTES:
-        raise ArtifactPreparationConflictError("artifact input field is oversized")
-    output = bytearray()
-    while len(output) < size:
-        chunk = stream.read(min(size - len(output), _MAX_READ_BYTES))
-        if not chunk:
-            raise ArtifactPreparationConflictError("artifact input is truncated")
-        output.extend(chunk)
-    return bytes(output)
 
 
 def _write_all(stream: BinaryIO, part: bytes) -> None:

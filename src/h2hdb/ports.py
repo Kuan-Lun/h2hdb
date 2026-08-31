@@ -10,56 +10,69 @@ __all__ = [
 ]
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import BinaryIO, Protocol, runtime_checkable
 
 from .domain import (
+    DEFAULT_CATALOG_DISCOVERY_QUERY,
+    ArtifactArchiveRenderEvidence,
+    ArtifactPresentationRenderEvidence,
     ArtifactReleaseStorageEvidence,
+    ArtifactRenderedPage,
+    ArtifactSourceMember,
     ArtifactStorageEvidence,
-    ArtifactStorageKey,
     CatalogArtifact,
-    CatalogArtifactCursor,
-    CatalogArtifactPage,
-    CatalogPage,
+    CatalogDiscoveryCursor,
+    CatalogDiscoveryPage,
+    CatalogDiscoveryQuery,
+    CatalogFacetCursor,
+    CatalogFacetKind,
+    CatalogFacetPage,
+    CatalogImageResource,
     CatalogPublication,
-    CatalogRecentArtifactWindow,
+    CatalogPublicationPresentation,
     CatalogRecentOrder,
+    CatalogRecentWindow,
+    CatalogResourceKind,
     CatalogRevision,
     DirectoryObservation,
     FileObservation,
+    StorageObjectKey,
     TagObservation,
     VNextIngestGalleryObservation,
     VNextIngestPage,
 )
-from .vnext_identity import ArtifactTransformKind
 
 
 @runtime_checkable
 class CatalogReader(Protocol):
     def get_catalog_revision(self, revision: int | None = None) -> CatalogRevision: ...
 
-    def list_publications(
+    def discover_publications(
         self,
         *,
-        query: str | None = None,
-        offset: int = 0,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogDiscoveryCursor | None = None,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogPage: ...
+    ) -> CatalogDiscoveryPage: ...
 
-    def list_artifact_publications(
+    def list_publication_facets(
         self,
         *,
-        after: CatalogArtifactCursor | None = None,
+        facet: CatalogFacetKind,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogFacetCursor | None = None,
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogArtifactPage: ...
+    ) -> CatalogFacetPage: ...
 
-    def list_recent_artifact_publications(
+    def list_recent_publications(
         self,
         *,
         order: CatalogRecentOrder,
         revision: CatalogRevision | int | None = None,
-    ) -> CatalogRecentArtifactWindow: ...
+    ) -> CatalogRecentWindow: ...
 
     def get_publication(
         self,
@@ -67,6 +80,21 @@ class CatalogReader(Protocol):
         *,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogPublication | None: ...
+
+    def get_publication_presentation(
+        self,
+        publication_id: str,
+        *,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogPublicationPresentation | None: ...
+
+    def get_publication_page(
+        self,
+        publication_id: str,
+        page_index: int,
+        *,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogImageResource | None: ...
 
     def get_publications_by_artifact_names(
         self,
@@ -137,23 +165,51 @@ class ArtifactStorageAdapter(Protocol):
     """Consumer-owned deterministic renderer and monotone protection store."""
 
     adapter_id: bytes
-    producer_fingerprint_sha256: bytes
+    policy_fingerprint_sha256: bytes
 
-    def render_member(
+    def storage_key(
         self,
-        source: BinaryIO,
-        transform_kind: ArtifactTransformKind,
+        gid: int,
+        resource_kind: CatalogResourceKind,
+    ) -> StorageObjectKey:
+        """Return the deterministic adapter-owned key for one logical resource."""
+        ...
+
+    def open_source(
+        self,
+        *,
+        source_root_components: tuple[str, ...],
+        gallery_locator_components: tuple[str, ...],
+        source_name: bytes,
+    ) -> BinaryIO:
+        """Open one adapter-observed source leaf without exposing path semantics."""
+        ...
+
+    def render_archive(
+        self,
+        members: tuple[ArtifactSourceMember, ...],
         destination: BinaryIO,
-    ) -> None: ...
+        *,
+        gid: int,
+    ) -> ArtifactArchiveRenderEvidence: ...
 
     def protect(
         self,
         archive: BinaryIO,
-        storage_key: ArtifactStorageKey,
-        expected_artifact_sha256: bytes,
+        storage_key: StorageObjectKey,
+        expected_sha256: bytes,
         expected_size_bytes: int,
+        modified_at: datetime,
         protection_token: bytes,
     ) -> ArtifactStorageEvidence: ...
+
+    def render_presentation(
+        self,
+        archive: BinaryIO,
+        thumbnail_destination: BinaryIO,
+        *,
+        rendered_pages: tuple[ArtifactRenderedPage, ...],
+    ) -> ArtifactPresentationRenderEvidence: ...
 
 
 @runtime_checkable
@@ -164,8 +220,8 @@ class ArtifactReleaseAdapter(Protocol):
 
     def release(
         self,
-        storage_key: ArtifactStorageKey,
-        expected_artifact_sha256: bytes,
+        storage_key: StorageObjectKey,
+        expected_sha256: bytes,
         expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactReleaseStorageEvidence: ...

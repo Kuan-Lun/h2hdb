@@ -443,7 +443,7 @@ def _physical_shapes() -> dict[str, str]:
     physical = _load(PHYSICAL_PATH)
     operational = _load(OPERATIONAL_PHYSICAL_PATH)
     return {
-        "registry": _shape_sha256(_relation(physical, "artifact_producer_fingerprint")),
+        "registry": _shape_sha256(_relation(physical, "analysis_policy")),
         "source_scope": _shape_sha256(_relation(physical, "source_scope")),
         "staging_request": _shape_sha256(
             _relation(operational, "gallery_observation_staging_request")
@@ -657,7 +657,7 @@ def _measurement_peaks(
     )
     staging = _section(measurement, "staging_accepted", "capacity measurement")
     return {
-        "artifact_producer_fingerprint": _ceil_ratio(
+        "analysis_policy": _ceil_ratio(
             _require_int(registry, "total_bytes", "capacity measurement.registry"),
             _require_int(
                 plan,

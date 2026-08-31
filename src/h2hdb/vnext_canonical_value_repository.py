@@ -23,6 +23,7 @@ __all__ = [
     "CanonicalValueTreeReceipt",
     "CanonicalValueUploadPlan",
     "PreparedCanonicalPage",
+    "stream_and_validate_canonical_value",
 ]
 
 from collections.abc import Callable, Generator, Iterable, Iterator
@@ -30,6 +31,7 @@ from dataclasses import dataclass, field
 from tempfile import TemporaryFile
 from typing import Any, BinaryIO
 
+from .sql_connector import SQLConnector
 from .vnext_canonical_value_family import (
     CanonicalValueAllocation,
     CanonicalValueCollisionError,
@@ -676,48 +678,68 @@ class CanonicalValueRepository:
         each page has at most 256 children.
         """
 
-        value = require_digest32(value_sha256, field="value_sha256")
-        identity = load_sealed_value_identity(
+        return stream_and_validate_canonical_value(
             work.connector,
-            value_sha256=value,
+            value_sha256=value_sha256,
+            consume_provisional=consume_provisional,
         )
-        if identity is None:
-            raise CanonicalValueNotReadyError("canonical identity is not sealed")
-        domain = identity.digest_domain
-        byte_count = identity.byte_count
-        root = identity.root_page_sha256
-        root_level = _expected_root_level(byte_count)
-        consumed = 0
 
-        def payload_parts() -> Iterator[bytes]:
-            nonlocal consumed
-            for chunk in _iter_tree_payload(
-                work,
-                owner=value,
-                page_sha256=root,
-                expected_level=root_level,
-                expected_position=0,
-                expected_byte_offset=0,
-                total_byte_count=byte_count,
-            ):
-                consumed += len(chunk)
-                if consumed > byte_count:
-                    raise CanonicalValueCollisionError(
-                        "canonical page tree exceeds allocation byte_count"
-                    )
-                consume_provisional(chunk)
-                yield chunk
 
-        recomputed = canonical_value_digest_parts(
-            domain.decode("ascii"),
-            byte_count,
-            payload_parts(),
+def stream_and_validate_canonical_value(
+    connector: SQLConnector,
+    *,
+    value_sha256: bytes,
+    consume_provisional: Callable[[bytes], None],
+) -> CanonicalValueReadReceipt:
+    """Stream one sealed value with exact page-tree/hash validation.
+
+    This read-only connector-level entry point lets READY and catalog readers
+    share the same byte authority without fabricating a write unit-of-work.
+    ``consume_provisional`` remains provisional until the receipt returns.
+    """
+
+    value = require_digest32(value_sha256, field="value_sha256")
+    sealed_identity = load_sealed_value_identity(
+        connector,
+        value_sha256=value,
+    )
+    if sealed_identity is None:
+        raise CanonicalValueNotReadyError("canonical identity is not sealed")
+    domain = sealed_identity.digest_domain
+    byte_count = sealed_identity.byte_count
+    root = sealed_identity.root_page_sha256
+    root_level = _expected_root_level(byte_count)
+    consumed = 0
+
+    def payload_parts() -> Iterator[bytes]:
+        nonlocal consumed
+        for chunk in _iter_tree_payload(
+            connector,
+            owner=value,
+            page_sha256=root,
+            expected_level=root_level,
+            expected_position=0,
+            expected_byte_offset=0,
+            total_byte_count=byte_count,
+        ):
+            consumed += len(chunk)
+            if consumed > byte_count:
+                raise CanonicalValueCollisionError(
+                    "canonical page tree exceeds allocation byte_count"
+                )
+            consume_provisional(chunk)
+            yield chunk
+
+    recomputed = canonical_value_digest_parts(
+        domain.decode("ascii"),
+        byte_count,
+        payload_parts(),
+    )
+    if consumed != byte_count or recomputed != value:
+        raise CanonicalValueCollisionError(
+            "canonical tree does not recompute its value identity"
         )
-        if consumed != byte_count or recomputed != value:
-            raise CanonicalValueCollisionError(
-                "canonical tree does not recompute its value identity"
-            )
-        return CanonicalValueReadReceipt(value, domain, byte_count, root)
+    return CanonicalValueReadReceipt(value, domain, byte_count, root)
 
 
 def _require_upload_plan(value: object) -> CanonicalValueUploadPlan:
@@ -945,7 +967,7 @@ def _page_count_at_level(byte_count: int, level: int) -> int:
 
 
 def _iter_tree_payload(
-    work: VNextUnitOfWork,
+    connector: SQLConnector,
     *,
     owner: bytes,
     page_sha256: bytes,
@@ -955,7 +977,7 @@ def _iter_tree_payload(
     total_byte_count: int,
 ) -> Iterator[bytes]:
     family = load_page_family(
-        work.connector,
+        connector,
         page_sha256=page_sha256,
     )
     if family is None:
@@ -979,7 +1001,7 @@ def _iter_tree_payload(
         ),
     )
     _validate_page_shape(page, total_byte_count)
-    validate_exact_page_parent_edges(work.connector, page=family)
+    validate_exact_page_parent_edges(connector, page=family)
     if expected_level == 0:
         if page.entries:
             entry = page.entries[0]
@@ -999,7 +1021,7 @@ def _iter_tree_payload(
             raise CanonicalValueCollisionError("branch entry has the wrong type")
         child_position = expected_position * CANONICAL_VALUE_BRANCH_CAPACITY + position
         yield from _iter_tree_payload(
-            work,
+            connector,
             owner=owner,
             page_sha256=entry.child_page_sha256,
             expected_level=expected_level - 1,

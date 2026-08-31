@@ -115,9 +115,9 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
     }
     assert set(data["inline_projections"]) == expected_data_inline
     assert operational["inline_projections"] == ["operational_activation"]
-    assert len(data["relation"]) == 185
+    assert len(data["relation"]) == 203
     assert (
-        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 152
+        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 170
     )
     assert sum(value.get("kind", "table") == "view" for value in data["relation"]) == 33
     assert len(operational["relation"]) == 66
@@ -152,10 +152,10 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
             if value["name"] != "schema_epoch_control"
         }
         assert len(generated_tables) == len(backend_payload["relations"])
-        assert len(backend_payload["relations"]) == 250
+        assert len(backend_payload["relations"]) == 268
         assert (
             sum(value["kind"] == "table" for value in backend_payload["relations"])
-            == 217
+            == 235
         )
         assert (
             sum(value["kind"] == "view" for value in backend_payload["relations"]) == 33
@@ -590,16 +590,15 @@ def test_generated_recomposed_analysis_component_sealed_at_is_non_null(
             ("analysis_id", "state_component", "row_count", "sealed_at"),
         ),
         (
-            "artifact_producer_fingerprint",
+            "artifact_semantic_input",
             (
-                "producer_fingerprint_sha256",
-                "artifact_algorithm_version",
-                "producer_equivalence_class",
-                "writer_id",
-                "python_abi",
-                "pillow_build",
-                "libjpeg_build",
-                "zlib_build",
+                "artifact_semantics_sha256",
+                "source_manifest_component_sha256",
+                "member_plan_component_sha256",
+                "effective_content_component_sha256",
+                "selected_component_sha256",
+                "owner_component_sha256",
+                "policy_component_sha256",
             ),
         ),
     ),
@@ -728,7 +727,7 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
         assert tuple(provider.writer_hook_bindings) == (
             expected_recurring_obligation_ids
         )
-        assert len(provider.writer_hook_bindings) == 28
+        assert len(provider.writer_hook_bindings) == 29
         assert not provider.blockers
         assert not any("validators are missing" in value for value in provider.blockers)
         assert not any("undeclared IDs" in value for value in provider.blockers)
@@ -785,8 +784,8 @@ def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> Non
         obligation for obligation in recurring if obligation["id"] not in installed_ids
     )
 
-    assert len(recurring) == 28
-    assert len(installed_ids) == 28
+    assert len(recurring) == 29
+    assert len(installed_ids) == 29
     assert len(writer_blockers) == len(unresolved) == 0
     assert installed_ids == frozenset(value["id"] for value in recurring)
     assert installed_ids.isdisjoint(building_only_ids)
@@ -865,7 +864,7 @@ def test_generated_provider_rejects_a_noncanonical_writer_binding(
     provider = GeneratedVNextSchemaProvider("sqlite")
 
     assert target_id not in provider.writer_hook_bindings
-    assert len(provider.writer_hook_bindings) == 27
+    assert len(provider.writer_hook_bindings) == 28
     assert any(
         repr(target_id) in blocker and "non-canonical binding" in blocker
         for blocker in provider.blockers
@@ -983,7 +982,7 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
 def test_generated_manifests_are_backend_specific_and_well_formed() -> None:
     assert ARTIFACT_DATA["artifact_version"] == 1
     assert ARTIFACT_DATA["epoch"] == 3
-    assert ARTIFACT_DATA["schema_version"] == 1
+    assert ARTIFACT_DATA["schema_version"] == 2
     assert len(ARTIFACT_DATA["source_manifest_sha256"]) == 64
     sqlite_manifest = ARTIFACT_DATA["backends"]["sqlite"]["ddl_manifest_sha256"]
     mariadb_manifest = ARTIFACT_DATA["backends"]["mariadb"]["ddl_manifest_sha256"]

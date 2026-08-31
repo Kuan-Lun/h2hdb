@@ -24,7 +24,6 @@ from vnext_catalog_identity_fixtures import (
 from vnext_catalog_registry_fixtures import (
     seed_analysis_policy,
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -88,17 +87,8 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _EMPTY_EVENT_CHAIN = sha256(b"h2hdb-operational-event-chain-v1\0").digest()
-_PRODUCER_FIELDS = (
-    b"analysis-test-writer",
-    b"cpython-test-abi",
-    b"pillow-test-build",
-    b"libjpeg-test-build",
-    b"zlib-test-build",
-)
-_PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
-_PRODUCER_EQUIVALENCE_CLASS = identity.artifact_producer_equivalence_class(
-    _PRODUCER_FINGERPRINT
-)
+_ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
+_ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
 def test_already_uploaded_marker_rejects_cross_domain_canonical_value(
@@ -461,28 +451,21 @@ def _seed_root(connector: SQLiteConnector) -> bytes:
         connector,
     )
     policy_component = identity.artifact_policy_digest(
-        1,
-        2048,
-        _PRODUCER_FINGERPRINT,
+        2,
+        _ARTIFACT_ADAPTER_ID,
+        _ARTIFACT_POLICY_FINGERPRINT,
     )
     _canonical_identity(
         connector,
         policy_component,
-        domain=b"artifact_policy_v2",
+        domain=b"artifact_policy_v3",
         serial=4,
     )
-    producer = seed_artifact_producer_fingerprint(
-        connector,
-        writer_id=_PRODUCER_FIELDS[0],
-        python_abi=_PRODUCER_FIELDS[1],
-        pillow_build=_PRODUCER_FIELDS[2],
-        libjpeg_build=_PRODUCER_FIELDS[3],
-        zlib_build=_PRODUCER_FIELDS[4],
-    )
-    assert producer.producer_fingerprint_sha256 == _PRODUCER_FINGERPRINT
     semantics = seed_artifact_policy_semantics(
         connector,
-        producer_fingerprint_sha256=_PRODUCER_FINGERPRINT,
+        policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
+        adapter_id=_ARTIFACT_ADAPTER_ID,
+        artifact_algorithm_version=2,
     )
     assert semantics.policy_component_sha256 == policy_component
     connector.execute(

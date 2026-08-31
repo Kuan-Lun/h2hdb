@@ -6,6 +6,7 @@ __all__ = [
     "CatalogCursorError",
     "CatalogIdentifierError",
     "CatalogRevisionNotFoundError",
+    "CatalogSearchQueryTooComplexError",
 ]
 
 
@@ -23,3 +24,7 @@ class CatalogRevisionNotFoundError(LookupError):
     def __init__(self, revision: int) -> None:
         self.revision = revision
         super().__init__(f"Catalog revision {revision} does not exist")
+
+
+class CatalogSearchQueryTooComplexError(ValueError):
+    """A valid search query exceeds the sealed unique-lexeme budget."""

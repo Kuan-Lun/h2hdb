@@ -11,10 +11,8 @@ from __future__ import annotations
 
 __all__ = [
     "AnalysisPolicyRecord",
+    "ArtifactAdapterPolicyRecord",
     "ArtifactPolicySemanticsRecord",
-    "ArtifactProducerFingerprintRecord",
-    "ArtifactStorageCodecRecord",
-    "ArtifactZipWriterPolicyRecord",
     "CatalogRegistryConflictError",
     "CatalogRegistryError",
     "CatalogRegistryNotReadyError",
@@ -25,10 +23,8 @@ __all__ = [
     "TitleSortPolicyRecord",
     "ensure_source_scope",
     "load_analysis_policy",
+    "load_artifact_adapter_policy",
     "load_artifact_policy_semantics",
-    "load_artifact_producer_fingerprint",
-    "load_artifact_storage_codec",
-    "load_artifact_zip_writer_policy",
     "load_display_title_policy",
     "load_manifest_policy",
     "load_manifest_policy_by_natural",
@@ -117,78 +113,31 @@ class AnalysisPolicyRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactZipWriterPolicyRecord:
-    artifact_algorithm_version: int
-    zip_codec_version: int
-    compression_method: int
-    compression_level: int
-    dos_date: int
-    dos_time: int
-    unix_mode: int
-    general_purpose_flags: int
-    create_system: int
-    archive_name_codec_version: int
-    artifact_name_codec_version: int
-
-    def __post_init__(self) -> None:
-        _positive_uint32(
-            self.artifact_algorithm_version,
-            field="ZIP artifact_algorithm_version",
-        )
-        for field_name, value in (
-            ("zip_codec_version", self.zip_codec_version),
-            ("archive_name_codec_version", self.archive_name_codec_version),
-            ("artifact_name_codec_version", self.artifact_name_codec_version),
-        ):
-            _positive_uint32(value, field=f"ZIP {field_name}")
-        for field_name, value in (
-            ("compression_method", self.compression_method),
-            ("compression_level", self.compression_level),
-            ("dos_date", self.dos_date),
-            ("dos_time", self.dos_time),
-            ("unix_mode", self.unix_mode),
-            ("general_purpose_flags", self.general_purpose_flags),
-            ("create_system", self.create_system),
-        ):
-            require_uint32(value, field=f"ZIP {field_name}")
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactStorageCodecRecord:
-    storage_codec_version: int
+class ArtifactAdapterPolicyRecord:
+    policy_fingerprint_sha256: bytes
     adapter_id: bytes
-    storage_key_codec_version: int
-    protection_token_codec_version: int
 
     def __post_init__(self) -> None:
-        _positive_uint32(
-            self.storage_codec_version,
-            field="storage_codec_version",
+        require_digest32(
+            self.policy_fingerprint_sha256,
+            field="artifact policy_fingerprint_sha256",
         )
         require_ascii_bytes(
             self.adapter_id,
-            field="storage adapter_id",
+            field="artifact adapter_id",
             minimum=1,
             maximum=64,
-        )
-        _positive_uint32(
-            self.storage_key_codec_version,
-            field="storage storage_key_codec_version",
-        )
-        _positive_uint32(
-            self.protection_token_codec_version,
-            field="storage protection_token_codec_version",
         )
 
 
 @dataclass(frozen=True, slots=True)
 class ArtifactPolicySemanticsRecord:
-    """Policy semantics with the algorithm derived from producer registration."""
+    """Neutral protocol version bound to one adapter-owned policy fingerprint."""
 
     policy_component_sha256: bytes
     artifact_algorithm_version: int
-    max_image_short_side: int
-    producer_fingerprint_sha256: bytes
+    policy_fingerprint_sha256: bytes
+    adapter_id: bytes
 
     def __post_init__(self) -> None:
         policy_digest = require_digest32(
@@ -199,19 +148,21 @@ class ArtifactPolicySemanticsRecord:
             self.artifact_algorithm_version,
             field="artifact policy algorithm version",
         )
-        short_side = _positive_uint32(
-            self.max_image_short_side,
-            field="artifact policy max_image_short_side",
+        fingerprint = require_digest32(
+            self.policy_fingerprint_sha256,
+            field="artifact policy_fingerprint_sha256",
         )
-        producer = require_digest32(
-            self.producer_fingerprint_sha256,
-            field="artifact policy producer_fingerprint_sha256",
+        adapter = require_ascii_bytes(
+            self.adapter_id,
+            field="artifact adapter_id",
+            minimum=1,
+            maximum=64,
         )
         if (
             identity.artifact_policy_digest(
                 algorithm_version,
-                short_side,
-                producer,
+                adapter,
+                fingerprint,
             )
             != policy_digest
         ):
@@ -300,57 +251,6 @@ class SourceScopeWrite:
             raise TypeError("source-scope write requires a SourceScopeRecord")
         if not isinstance(self.replayed, bool):
             raise TypeError("source-scope replayed must be bool")
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactProducerFingerprintRecord:
-    producer_fingerprint_sha256: bytes
-    artifact_algorithm_version: int
-    producer_equivalence_class: bytes
-    writer_id: bytes
-    python_abi: bytes
-    pillow_build: bytes
-    libjpeg_build: bytes
-    zlib_build: bytes
-
-    def __post_init__(self) -> None:
-        fingerprint = require_digest32(
-            self.producer_fingerprint_sha256,
-            field="artifact producer_fingerprint_sha256",
-        )
-        _positive_uint32(
-            self.artifact_algorithm_version,
-            field="artifact producer algorithm version",
-        )
-        equivalence = require_bounded_bytes(
-            self.producer_equivalence_class,
-            field="artifact producer_equivalence_class",
-            minimum=1,
-            maximum=128,
-        )
-        fields = tuple(
-            require_bounded_bytes(
-                value,
-                field=f"artifact producer {field_name}",
-                minimum=1,
-                maximum=128,
-            )
-            for field_name, value in (
-                ("writer_id", self.writer_id),
-                ("python_abi", self.python_abi),
-                ("pillow_build", self.pillow_build),
-                ("libjpeg_build", self.libjpeg_build),
-                ("zlib_build", self.zlib_build),
-            )
-        )
-        if identity.artifact_producer_fingerprint_sha256(*fields) != fingerprint:
-            raise ValueError(
-                "artifact producer fingerprint disagrees with its exact frame"
-            )
-        if identity.artifact_producer_equivalence_class(fingerprint) != equivalence:
-            raise ValueError(
-                "artifact producer equivalence class is not repository-derived"
-            )
 
 
 def _validated[T](label: str, factory: Callable[[], T]) -> T:
@@ -446,54 +346,27 @@ def load_analysis_policy(
     return _validated("analysis policy", lambda: AnalysisPolicyRecord(*row))
 
 
-def load_artifact_zip_writer_policy(
+def load_artifact_adapter_policy(
     connector: SQLConnector,
-    artifact_algorithm_version: int,
-) -> ArtifactZipWriterPolicyRecord:
-    algorithm_version = _positive_uint32(
-        artifact_algorithm_version,
-        field="ZIP artifact_algorithm_version",
+    policy_fingerprint_sha256: bytes,
+) -> ArtifactAdapterPolicyRecord:
+    fingerprint = require_digest32(
+        policy_fingerprint_sha256,
+        field="artifact policy_fingerprint_sha256",
     )
     row = _required_row(
         connector,
         query=(
-            "SELECT artifact_algorithm_version, zip_codec_version, "
-            "compression_method, compression_level, dos_date, dos_time, "
-            "unix_mode, general_purpose_flags, create_system, "
-            "archive_name_codec_version, artifact_name_codec_version "
-            "FROM catalog_artifact_zip_writer_policies "
-            "WHERE artifact_algorithm_version = %s"
+            "SELECT policy_fingerprint_sha256, adapter_id "
+            "FROM catalog_artifact_adapter_policy "
+            "WHERE policy_fingerprint_sha256 = %s"
         ),
-        parameters=(algorithm_version,),
-        label="artifact ZIP writer policy",
+        parameters=(fingerprint,),
+        label="artifact adapter policy",
     )
     return _validated(
-        "artifact ZIP writer policy",
-        lambda: ArtifactZipWriterPolicyRecord(*row),
-    )
-
-
-def load_artifact_storage_codec(
-    connector: SQLConnector,
-    storage_codec_version: int,
-) -> ArtifactStorageCodecRecord:
-    codec_version = _positive_uint32(
-        storage_codec_version,
-        field="storage_codec_version",
-    )
-    row = _required_row(
-        connector,
-        query=(
-            "SELECT storage_codec_version, adapter_id, storage_key_codec_version, "
-            "protection_token_codec_version FROM catalog_artifact_storage_codecs "
-            "WHERE storage_codec_version = %s"
-        ),
-        parameters=(codec_version,),
-        label="artifact storage codec",
-    )
-    return _validated(
-        "artifact storage codec",
-        lambda: ArtifactStorageCodecRecord(*row),
+        "artifact adapter policy",
+        lambda: ArtifactAdapterPolicyRecord(*row),
     )
 
 
@@ -509,13 +382,12 @@ def load_artifact_policy_semantics(
         connector,
         query=(
             "SELECT semantics.policy_component_sha256, "
-            "producer.artifact_algorithm_version, "
-            "semantics.max_image_short_side, "
-            "semantics.producer_fingerprint_sha256 "
+            "semantics.artifact_algorithm_version, "
+            "semantics.policy_fingerprint_sha256, adapter.adapter_id "
             "FROM catalog_artifact_policy_semantics AS semantics "
-            "JOIN catalog_artifact_producer_fingerprints AS producer "
-            "ON producer.producer_fingerprint_sha256 = "
-            "semantics.producer_fingerprint_sha256 "
+            "JOIN catalog_artifact_adapter_policy AS adapter "
+            "ON adapter.policy_fingerprint_sha256 = "
+            "semantics.policy_fingerprint_sha256 "
             "WHERE semantics.policy_component_sha256 = %s"
         ),
         parameters=(digest,),
@@ -588,31 +460,6 @@ def load_source_scope(
         label="source scope",
     )
     return _validated("source scope", lambda: SourceScopeRecord(*row))
-
-
-def load_artifact_producer_fingerprint(
-    connector: SQLConnector,
-    producer_fingerprint_sha256: bytes,
-) -> ArtifactProducerFingerprintRecord:
-    digest = require_digest32(
-        producer_fingerprint_sha256,
-        field="artifact producer_fingerprint_sha256",
-    )
-    row = _required_row(
-        connector,
-        query=(
-            "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
-            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-            "libjpeg_build, zlib_build FROM catalog_artifact_producer_fingerprints "
-            "WHERE producer_fingerprint_sha256 = %s"
-        ),
-        parameters=(digest,),
-        label="artifact producer fingerprint",
-    )
-    return _validated(
-        "artifact producer fingerprint",
-        lambda: ArtifactProducerFingerprintRecord(*row),
-    )
 
 
 def ensure_source_scope(

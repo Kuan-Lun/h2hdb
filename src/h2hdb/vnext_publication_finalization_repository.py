@@ -37,9 +37,16 @@ __all__ = [
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from . import vnext_identity as identity
-from .domain import ArtifactStorageKey, artifact_storage_key
+from .domain import (
+    CatalogResourceKind,
+    StorageObjectDescriptor,
+    StorageObjectKey,
+    VNextLibraryActivationCursor,
+)
 from .sql_connector import SQLConnector
 from .vnext_artifact_release_repository import (
     ArtifactReleaseAdapter,
@@ -52,6 +59,7 @@ from .vnext_domains import (
     require_digest32,
     require_int63,
     require_positive_int63,
+    require_utf8_bytes,
     require_uuid16,
 )
 from .vnext_maintenance_gate_repository import (
@@ -72,11 +80,11 @@ PublicationFinalizationAdapter = ArtifactReleaseAdapter
 PublicationFinalizationStorageEvidence = ArtifactReleaseStorageEvidence
 
 _MAX_PAGE_ROWS = 128
-_MAX_CURSOR_BYTES = 32
-_PREPARED_STAGE = b"VALIDATE_PREPARED_ARTIFACT"
+_MAX_CURSOR_BYTES = 33
 _PAGE_CAPABILITY = object()
 _ACK_CAPABILITY = object()
 _PRELOCKED_GATE_CAPABILITY = object()
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 _CHECKPOINT_TABLE = "catalog_publication_finalization_checkpoints"
 
@@ -106,15 +114,13 @@ class PublicationFinalizationCorruptionError(PublicationFinalizationRepositoryEr
 
 @dataclass(frozen=True, slots=True)
 class PublicationFinalizationItem:
-    """Exact immutable storage facts for one published PREPARED artifact."""
+    """Exact immutable storage facts for one published PREPARED resource."""
 
     candidate_id: bytes
     publication_key: bytes
-    artifact_sha256: bytes
-    artifact_storage_key_sha256: bytes
-    storage_key: ArtifactStorageKey
-    size_bytes: int
-    storage_codec_version: int
+    resource_kind: CatalogResourceKind
+    storage_object_key_sha256: bytes
+    storage_object: StorageObjectDescriptor
     storage_generation: int
     protection_token: bytes
     adapter_id: bytes
@@ -129,40 +135,30 @@ class PublicationFinalizationItem:
             self.publication_key,
             field="publication finalization publication_key",
         )
-        artifact = require_digest32(
-            self.artifact_sha256,
-            field="publication finalization artifact_sha256",
-        )
+        if type(self.resource_kind) is not CatalogResourceKind:
+            raise TypeError("publication finalization resource_kind is not registered")
         storage_key_sha256 = require_digest32(
-            self.artifact_storage_key_sha256,
-            field="publication finalization artifact_storage_key_sha256",
+            self.storage_object_key_sha256,
+            field="publication finalization storage_object_key_sha256",
         )
-        if not isinstance(self.storage_key, ArtifactStorageKey):
-            raise TypeError("publication finalization storage_key is not registered")
-        gid = identity.decode_artifact_name(self.storage_key.segments[-1].encode())
+        if not isinstance(self.storage_object, StorageObjectDescriptor):
+            raise TypeError("publication finalization storage_object is not registered")
+        self.storage_object.__post_init__()
         if (
-            identity.publication_key(gid) != publication
-            or identity.artifact_storage_key_digest(self.storage_key.segments)
+            identity.artifact_storage_key_digest(
+                self.storage_object.key.codec,
+                self.storage_object.key.segments,
+            )
             != storage_key_sha256
         ):
             raise ValueError("publication finalization storage key disagrees")
-        size = require_int63(
-            self.size_bytes,
-            field="publication finalization size_bytes",
-        )
-        codec = require_positive_int63(
-            self.storage_codec_version,
-            field="publication finalization storage_codec_version",
-        )
         generation = require_int63(
             self.storage_generation,
             field="publication finalization storage_generation",
         )
-        token = require_bounded_bytes(
+        token = require_digest32(
             self.protection_token,
             field="publication finalization protection_token",
-            minimum=184,
-            maximum=184,
         )
         require_ascii_bytes(
             self.adapter_id,
@@ -174,31 +170,39 @@ class PublicationFinalizationItem:
             raise ValueError("publication finalization item is not PREPARED")
         try:
             decoded = identity.decode_artifact_protection_token(token)
+            expected = identity.encode_artifact_protection_token(
+                candidate,
+                publication,
+                self.resource_kind.value,
+                storage_key_sha256,
+                generation,
+            )
         except identity.VNextIdentityError as error:
             raise ValueError("publication finalization token is malformed") from error
-        if (
-            decoded.candidate_id != candidate
-            or decoded.publication_key != publication
-            or decoded.artifact_sha256 != artifact
-            or decoded.artifact_storage_key_sha256 != storage_key_sha256
-            or decoded.storage_codec_version != codec
-            or decoded.storage_generation != generation
-            or decoded.size_bytes != size
-        ):
+        if decoded != token or token != expected:
             raise ValueError(
                 "publication finalization token disagrees with durable facts"
             )
+
+    @property
+    def coordinate(self) -> VNextLibraryActivationCursor:
+        return VNextLibraryActivationCursor(
+            self.publication_key,
+            self.resource_kind,
+        )
+
+    @property
+    def cursor(self) -> bytes:
+        return self.coordinate.to_bytes()
 
     @property
     def immutable_facts(self) -> tuple[object, ...]:
         return (
             self.candidate_id,
             self.publication_key,
-            self.artifact_sha256,
-            self.artifact_storage_key_sha256,
-            self.storage_key,
-            self.size_bytes,
-            self.storage_codec_version,
+            self.resource_kind,
+            self.storage_object_key_sha256,
+            self.storage_object,
             self.storage_generation,
             self.protection_token,
             self.adapter_id,
@@ -218,7 +222,6 @@ class PublicationFinalizationPage:
     start_processed_count: int
     checkpoint_updated_at: int
     publication_committed_at: int
-    expected_prepared_count: int
     page_limit: int
     items: tuple[PublicationFinalizationItem, ...]
     next_cursor: bytes
@@ -244,7 +247,7 @@ class PublicationFinalizationPage:
         )
         start = _require_cursor(self.start_cursor, field="start_cursor")
         next_cursor = _require_cursor(self.next_cursor, field="next_cursor")
-        processed = require_int63(
+        require_int63(
             self.start_processed_count,
             field="publication finalization start_processed_count",
         )
@@ -256,15 +259,7 @@ class PublicationFinalizationPage:
             self.publication_committed_at,
             field="publication finalization publication_committed_at",
         )
-        expected = require_int63(
-            self.expected_prepared_count,
-            field="publication finalization expected_prepared_count",
-        )
         limit = _require_page_limit(self.page_limit)
-        if processed > expected:
-            raise ValueError(
-                "publication finalization checkpoint exceeds expected count"
-            )
         if not isinstance(self.items, tuple):
             raise TypeError("publication finalization page items must be a tuple")
         if len(self.items) > limit:
@@ -276,7 +271,7 @@ class PublicationFinalizationPage:
             item.__post_init__()
             if item.candidate_id != candidate:
                 raise ValueError("publication finalization page mixes candidates")
-            keys.append(item.publication_key)
+            keys.append(item.cursor)
         ordered = tuple(keys)
         if ordered != tuple(sorted(set(ordered))):
             raise ValueError("publication finalization page keys are not ordered")
@@ -285,12 +280,8 @@ class PublicationFinalizationPage:
         expected_next = start if not ordered else ordered[-1]
         if next_cursor != expected_next:
             raise ValueError("publication finalization next cursor is not derived")
-        if processed + len(ordered) > expected:
-            raise ValueError("publication finalization page exceeds expected coverage")
         if type(self.terminal) is not bool or self.terminal != (not ordered):
             raise ValueError("publication finalization terminal marker disagrees")
-        if self.terminal and processed != expected:
-            raise ValueError("terminal publication finalization count disagrees")
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,17 +433,13 @@ class PublicationFinalizationRepository:
                 raise PublicationFinalizationUnavailableError(
                     "publication finalization issue time precedes durable authority"
                 )
-            expected_count = _load_expected_prepared_count(
-                connector,
-                context.candidate_id,
-            )
             items = _load_page_items(
                 connector,
                 candidate_id=context.candidate_id,
                 cursor=checkpoint.cursor,
                 page_limit=bound,
             )
-            next_cursor = checkpoint.cursor if not items else items[-1].publication_key
+            next_cursor = checkpoint.cursor if not items else items[-1].cursor
             try:
                 return PublicationFinalizationPage(
                     gate_lease,
@@ -464,7 +451,6 @@ class PublicationFinalizationRepository:
                     checkpoint.processed_count,
                     checkpoint.updated_at,
                     context.committed_at,
-                    expected_count,
                     bound,
                     items,
                     next_cursor,
@@ -507,10 +493,11 @@ class PublicationFinalizationRepository:
 
         released: list[bytes] = []
         for item in requested.items:
+            descriptor = item.storage_object
             evidence = resolved[item.adapter_id].release(
-                item.storage_key,
-                item.artifact_sha256,
-                item.size_bytes,
+                descriptor.key,
+                bytes.fromhex(descriptor.sha256),
+                descriptor.size_bytes,
                 item.protection_token,
             )
             if (
@@ -577,25 +564,13 @@ class PublicationFinalizationRepository:
             raise PublicationFinalizationUnavailableError(
                 "publication finalization commit time precedes durable authority"
             )
-        expected_count = _load_expected_prepared_count(
-            work.connector,
-            page.candidate_id,
-        )
-        if expected_count != page.expected_prepared_count:
-            raise PublicationFinalizationConflictError(
-                "terminal prepared-artifact receipt changed"
-            )
         current_items = _lock_current_items(work, page)
         row_count = len(current_items)
         next_count = checkpoint.processed_count + row_count
         terminal = row_count == 0
-        if terminal != page.terminal or next_count > expected_count:
+        if terminal != page.terminal:
             raise PublicationFinalizationConflictError(
                 "publication finalization page coverage changed"
-            )
-        if terminal and next_count != expected_count:
-            raise PublicationFinalizationCorruptionError(
-                "terminal finalization count disagrees with validation receipt"
             )
         if checkpoint.generation == INT63_MAX:
             raise PublicationFinalizationUnavailableError(
@@ -607,8 +582,12 @@ class PublicationFinalizationRepository:
                 work.compare_and_swap(
                     "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
                     "WHERE candidate_id = %s AND publication_key = %s "
-                    "AND state = 'PREPARED'",
-                    (item.candidate_id, item.publication_key),
+                    "AND resource_kind = %s AND state = 'PREPARED'",
+                    (
+                        item.candidate_id,
+                        item.publication_key,
+                        item.resource_kind.value.encode("ascii"),
+                    ),
                     authority="published artifact protection release",
                 )
             _insert_batch_receipt(
@@ -707,22 +686,55 @@ class PublicationFinalizationRepository:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _FinalizationHeader:
+    candidate_id: bytes
+    publication_key: bytes
+    resource_kind: CatalogResourceKind
+    storage_object_key_sha256: bytes
+    storage_generation: int
+    protection_token: bytes
+    state: str
+    storage_object_sha256: bytes
+    size_bytes: int
+    modified_at: int
+    key_codec: str
+    segment_count: int
+    adapter_id: bytes
+
+
 _ITEM_SELECT = (
     "SELECT prepared.candidate_id, prepared.publication_key, "
-    "prepared.artifact_sha256, prepared.storage_codec_version, "
+    "prepared.resource_kind, prepared.storage_object_key_sha256, "
     "prepared.storage_generation, prepared.protection_token, prepared.state, "
-    "artifact_blob.size_bytes, publication_identity.gid, "
-    "codec.storage_codec_version, codec.adapter_id "
+    "stored.storage_object_sha256, stored.size_bytes, stored.modified_at, "
+    "resource_blob.storage_object_sha256, blob_row.size_bytes, "
+    "key_row.storage_object_key_sha256, key_row.key_codec, "
+    "key_row.segment_count, adapter.adapter_id "
 )
 
 _ITEM_JOINS = (
     "FROM catalog_prepared_artifacts AS prepared "
-    "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
-    "ON artifact_blob.artifact_sha256 = prepared.artifact_sha256 "
-    "LEFT JOIN catalog_publication_identities AS publication_identity "
-    "ON publication_identity.publication_key = prepared.publication_key "
-    "LEFT JOIN catalog_artifact_storage_codecs AS codec "
-    "ON codec.storage_codec_version = prepared.storage_codec_version "
+    "LEFT JOIN catalog_prepared_storage_objects AS stored "
+    "ON stored.candidate_id = prepared.candidate_id "
+    "AND stored.publication_key = prepared.publication_key "
+    "AND stored.resource_kind = prepared.resource_kind "
+    "LEFT JOIN catalog_prepared_resource_blob AS resource_blob "
+    "ON resource_blob.candidate_id = prepared.candidate_id "
+    "AND resource_blob.publication_key = prepared.publication_key "
+    "AND resource_blob.resource_kind = prepared.resource_kind "
+    "LEFT JOIN catalog_artifact_blobs AS blob_row "
+    "ON blob_row.artifact_sha256 = resource_blob.storage_object_sha256 "
+    "LEFT JOIN catalog_storage_object_key_identities AS key_row "
+    "ON key_row.storage_object_key_sha256 = prepared.storage_object_key_sha256 "
+    "LEFT JOIN catalog_publication_candidates AS candidate "
+    "ON candidate.candidate_id = prepared.candidate_id "
+    "LEFT JOIN catalog_artifact_policies AS policy "
+    "ON policy.artifact_policy_id = candidate.artifact_policy_id "
+    "LEFT JOIN catalog_artifact_policy_semantics AS semantics "
+    "ON semantics.policy_component_sha256 = policy.policy_component_sha256 "
+    "LEFT JOIN catalog_artifact_adapter_policy AS adapter "
+    "ON adapter.policy_fingerprint_sha256 = semantics.policy_fingerprint_sha256 "
 )
 
 
@@ -757,18 +769,36 @@ def _load_page_items(
     cursor: bytes,
     page_limit: int,
 ) -> tuple[PublicationFinalizationItem, ...]:
+    start = _require_cursor(cursor, field="page cursor")
+    if start:
+        coordinate = VNextLibraryActivationCursor.from_bytes(start)
+        predicate = (
+            "WHERE prepared.candidate_id = %s AND ("
+            "prepared.publication_key > %s OR "
+            "(prepared.publication_key = %s AND prepared.resource_kind > %s)) "
+        )
+        parameters: tuple[object, ...] = (
+            candidate_id,
+            coordinate.publication_key,
+            coordinate.publication_key,
+            coordinate.resource_kind.value.encode("ascii"),
+            page_limit,
+        )
+    else:
+        predicate = "WHERE prepared.candidate_id = %s "
+        parameters = (candidate_id, page_limit)
     rows = connector.fetch_all(
         _ITEM_SELECT
         + _ITEM_JOINS
-        + "WHERE prepared.candidate_id = %s AND prepared.publication_key > %s "
-        "ORDER BY prepared.publication_key LIMIT %s",
-        (candidate_id, cursor, page_limit),
+        + predicate
+        + "ORDER BY prepared.publication_key, prepared.resource_kind LIMIT %s",
+        parameters,
     )
     try:
-        return tuple(_item_from_row(row) for row in rows)
-    except (TypeError, ValueError) as error:
+        return _items_from_rows(connector, rows)
+    except (TypeError, UnicodeError, ValueError) as error:
         raise PublicationFinalizationCorruptionError(
-            "prepared artifact finalization family is partial or invalid"
+            "prepared resource finalization family is partial or invalid"
         ) from error
 
 
@@ -777,67 +807,243 @@ def _load_exact_item(
     *,
     candidate_id: bytes,
     publication_key: bytes,
+    resource_kind: CatalogResourceKind,
 ) -> PublicationFinalizationItem | None:
-    row = connector.fetch_one(
+    if type(resource_kind) is not CatalogResourceKind:
+        raise TypeError("publication finalization resource_kind is not registered")
+    rows = connector.fetch_all(
         _ITEM_SELECT
         + _ITEM_JOINS
-        + "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s",
-        (candidate_id, publication_key),
+        + "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s "
+        "AND prepared.resource_kind = %s LIMIT 2",
+        (
+            candidate_id,
+            publication_key,
+            resource_kind.value.encode("ascii"),
+        ),
     )
-    if not row:
+    if not rows:
         return None
     try:
-        return _item_from_row(row)
-    except (TypeError, ValueError) as error:
+        items = _items_from_rows(connector, rows)
+    except (TypeError, UnicodeError, ValueError) as error:
         raise PublicationFinalizationCorruptionError(
-            "prepared artifact finalization family is partial or invalid"
+            "prepared resource finalization family is partial or invalid"
         ) from error
+    if len(items) != 1:
+        raise PublicationFinalizationCorruptionError(
+            "prepared resource finalization coordinate is duplicated"
+        )
+    return items[0]
 
 
-def _item_from_row(row: tuple[object, ...]) -> PublicationFinalizationItem:
-    if len(row) != 11:
-        raise ValueError("publication finalization item row has an invalid shape")
-    codec = require_positive_int63(
-        row[3],
-        field="publication finalization storage codec",
-    )
-    if row[9] != codec:
-        raise ValueError("publication finalization codec registry is incomplete")
-    artifact = require_digest32(
-        row[2],
-        field="publication finalization artifact_sha256",
-    )
-    gid = require_positive_int63(row[8], field="publication finalization GID")
-    storage_key = artifact_storage_key(gid)
-    state = row[6]
-    if not isinstance(state, str):
-        raise TypeError("publication finalization state must be exact text")
-    return PublicationFinalizationItem(
-        require_uuid16(row[0], field="publication finalization candidate_id"),
-        require_digest32(row[1], field="publication finalization publication_key"),
-        artifact,
-        identity.artifact_storage_key_digest(storage_key.segments),
-        storage_key,
-        require_int63(row[7], field="publication finalization size_bytes"),
-        codec,
-        require_int63(
-            row[4],
-            field="publication finalization storage_generation",
-        ),
-        require_bounded_bytes(
-            row[5],
-            field="publication finalization protection_token",
-            minimum=184,
-            maximum=184,
-        ),
-        require_ascii_bytes(
-            row[10],
-            field="publication finalization adapter_id",
+def _items_from_rows(
+    connector: SQLConnector,
+    rows: list[tuple[Any, ...]],
+) -> tuple[PublicationFinalizationItem, ...]:
+    headers: list[_FinalizationHeader] = []
+    key_counts: dict[bytes, int] = {}
+    for row in rows:
+        if len(row) != 16 or any(value is None for value in row):
+            raise ValueError("publication finalization item row has an invalid shape")
+        candidate = require_uuid16(
+            row[0],
+            field="publication finalization candidate_id",
+        )
+        publication = require_digest32(
+            row[1],
+            field="publication finalization publication_key",
+        )
+        kind = _resource_kind(row[2])
+        key_digest = require_digest32(
+            row[3],
+            field="publication finalization storage_object_key_sha256",
+        )
+        object_digest = require_digest32(
+            row[7],
+            field="publication finalization storage object sha256",
+        )
+        size_bytes = require_positive_int63(
+            row[8],
+            field="publication finalization storage object size",
+        )
+        if (
+            require_digest32(
+                row[10],
+                field="publication finalization resource blob sha256",
+            )
+            != object_digest
+            or require_positive_int63(
+                row[11],
+                field="publication finalization resource blob size",
+            )
+            != size_bytes
+        ):
+            raise ValueError(
+                "publication finalization storage object disagrees with its blob"
+            )
+        if (
+            require_digest32(
+                row[12],
+                field="publication finalization key identity digest",
+            )
+            != key_digest
+        ):
+            raise ValueError(
+                "publication finalization storage key identity is noncongruent"
+            )
+        codec = require_ascii_bytes(
+            row[13],
+            field="publication finalization storage key codec",
             minimum=1,
             maximum=64,
-        ),
-        state,
+        ).decode("ascii")
+        segment_count = require_positive_int63(
+            row[14],
+            field="publication finalization storage key segment_count",
+        )
+        if segment_count > 16:
+            raise ValueError(
+                "publication finalization storage key has too many segments"
+            )
+        previous = key_counts.setdefault(key_digest, segment_count)
+        if previous != segment_count:
+            raise ValueError("publication finalization storage key counts conflict")
+        state = row[6]
+        if not isinstance(state, str):
+            raise TypeError("publication finalization state must be exact text")
+        headers.append(
+            _FinalizationHeader(
+                candidate,
+                publication,
+                kind,
+                key_digest,
+                require_int63(
+                    row[4],
+                    field="publication finalization storage_generation",
+                ),
+                require_digest32(
+                    row[5],
+                    field="publication finalization protection_token",
+                ),
+                state,
+                object_digest,
+                size_bytes,
+                require_int63(
+                    row[9],
+                    field="publication finalization storage object modified_at",
+                ),
+                codec,
+                segment_count,
+                require_ascii_bytes(
+                    row[15],
+                    field="publication finalization adapter_id",
+                    minimum=1,
+                    maximum=64,
+                ),
+            )
+        )
+
+    segments = _load_key_segments(connector, key_counts)
+    items: list[PublicationFinalizationItem] = []
+    for header in headers:
+        exact_segments = segments.get(header.storage_object_key_sha256, ())
+        if len(exact_segments) != header.segment_count:
+            raise ValueError(
+                "publication finalization storage key family is incomplete"
+            )
+        key = StorageObjectKey(header.key_codec, exact_segments)
+        if (
+            identity.artifact_storage_key_digest(key.codec, key.segments)
+            != header.storage_object_key_sha256
+        ):
+            raise ValueError("publication finalization storage key digest disagrees")
+        try:
+            modified_at = _EPOCH + timedelta(microseconds=header.modified_at)
+        except OverflowError as error:
+            raise ValueError(
+                "publication finalization storage object modified_at is out of range"
+            ) from error
+        descriptor = StorageObjectDescriptor(
+            key,
+            header.size_bytes,
+            header.storage_object_sha256.hex(),
+            modified_at,
+        )
+        items.append(
+            PublicationFinalizationItem(
+                header.candidate_id,
+                header.publication_key,
+                header.resource_kind,
+                header.storage_object_key_sha256,
+                descriptor,
+                header.storage_generation,
+                header.protection_token,
+                header.adapter_id,
+                header.state,
+            )
+        )
+    return tuple(items)
+
+
+def _load_key_segments(
+    connector: SQLConnector,
+    key_counts: dict[bytes, int],
+) -> dict[bytes, tuple[str, ...]]:
+    if not key_counts:
+        return {}
+    digests = tuple(sorted(key_counts))
+    placeholders = ", ".join("%s" for _digest in digests)
+    rows = connector.fetch_all(
+        "SELECT storage_object_key_sha256, segment_position, key_segment "
+        "FROM catalog_storage_object_key_segments "
+        f"WHERE storage_object_key_sha256 IN ({placeholders}) "
+        "ORDER BY storage_object_key_sha256, segment_position",
+        digests,
     )
+    grouped: dict[bytes, list[str]] = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ValueError(
+                "publication finalization storage key segment is malformed"
+            )
+        digest = require_digest32(
+            row[0],
+            field="publication finalization key segment digest",
+        )
+        if digest not in key_counts:
+            raise ValueError(
+                "publication finalization storage key segment is unexpected"
+            )
+        position = require_int63(
+            row[1],
+            field="publication finalization key segment position",
+        )
+        current = grouped.setdefault(digest, [])
+        if position != len(current):
+            raise ValueError(
+                "publication finalization storage key segments are not dense"
+            )
+        current.append(
+            require_utf8_bytes(
+                row[2],
+                field="publication finalization storage key segment",
+                minimum=1,
+                maximum=255,
+                reject_nul=True,
+            ).decode("utf-8")
+        )
+    return {digest: tuple(values) for digest, values in grouped.items()}
+
+
+def _resource_kind(value: object) -> CatalogResourceKind:
+    raw = require_ascii_bytes(
+        value,
+        field="publication finalization resource_kind",
+        minimum=1,
+        maximum=11,
+    )
+    return CatalogResourceKind(raw.decode("ascii"))
 
 
 def _revalidate_fresh_page(
@@ -857,13 +1063,6 @@ def _revalidate_fresh_page(
         raise PublicationFinalizationUnavailableError(
             "publication finalization release time precedes durable authority"
         )
-    if (
-        _load_expected_prepared_count(work.connector, page.candidate_id)
-        != page.expected_prepared_count
-    ):
-        raise PublicationFinalizationConflictError(
-            "terminal prepared-artifact receipt changed"
-        )
     _lock_current_items(work, page)
 
 
@@ -882,21 +1081,53 @@ def _lock_current_items(
             raise PublicationFinalizationConflictError(
                 "terminal publication finalization page is no longer empty"
             )
+        state_row = work.connector.fetch_one(
+            "SELECT state FROM catalog_prepared_artifacts "
+            "WHERE candidate_id = %s AND state <> 'COMMITTED' LIMIT 1",
+            (page.candidate_id,),
+        )
+        if state_row:
+            raise PublicationFinalizationConflictError(
+                "terminal publication finalization has an unreleased resource"
+            )
         return ()
-    placeholders = ", ".join("%s" for _item in page.items)
+    predicates = " OR ".join(
+        "(publication_key = %s AND resource_kind = %s)" for _item in page.items
+    )
     lock_keys = tuple(
-        encode_lock_key("publication-finalization-item", item.publication_key)
+        encode_lock_key(
+            "publication-finalization-item",
+            item.cursor,
+        )
         for item in page.items
     )
     state_rows = work.lock_rows(
         LockRank.CHILD,
         lock_keys,
-        "SELECT publication_key, state FROM catalog_prepared_artifacts "
-        f"WHERE candidate_id = %s AND publication_key IN ({placeholders}) "
-        "ORDER BY publication_key",
-        (page.candidate_id, *(item.publication_key for item in page.items)),
+        "SELECT publication_key, resource_kind, state "
+        "FROM catalog_prepared_artifacts "
+        f"WHERE candidate_id = %s AND ({predicates}) "
+        "ORDER BY publication_key, resource_kind",
+        (
+            page.candidate_id,
+            *(
+                value
+                for item in page.items
+                for value in (
+                    item.publication_key,
+                    item.resource_kind.value.encode("ascii"),
+                )
+            ),
+        ),
     )
-    expected_states = tuple((item.publication_key, "PREPARED") for item in page.items)
+    expected_states = tuple(
+        (
+            item.publication_key,
+            item.resource_kind.value.encode("ascii"),
+            "PREPARED",
+        )
+        for item in page.items
+    )
     if tuple(state_rows) != expected_states:
         raise PublicationFinalizationConflictError(
             "publication finalization page has mixed or changed artifact state"
@@ -907,6 +1138,7 @@ def _lock_current_items(
             work.connector,
             candidate_id=page.candidate_id,
             publication_key=expected.publication_key,
+            resource_kind=expected.resource_kind,
         )
         if item is None or item.immutable_facts != expected.immutable_facts:
             raise PublicationFinalizationConflictError(
@@ -1186,37 +1418,6 @@ def _require_exact_published_analysis_components(
         raise PublicationFinalizationCorruptionError(
             "published analysis lacks its exact five component seals"
         )
-
-
-def _load_expected_prepared_count(
-    connector: SQLConnector,
-    candidate_id: bytes,
-) -> int:
-    row = connector.fetch_one(
-        "SELECT terminal.next_processed_count "
-        "FROM catalog_publication_checkpoints AS checkpoint "
-        "JOIN catalog_publication_batch_receipts AS terminal "
-        "ON terminal.candidate_id = checkpoint.candidate_id "
-        "AND terminal.stage = checkpoint.stage "
-        "AND terminal.committed_generation = checkpoint.generation "
-        "AND terminal.next_cursor = checkpoint.`cursor` "
-        "AND terminal.next_cursor = terminal.start_cursor "
-        "AND terminal.next_processed_count = checkpoint.processed_count "
-        "AND terminal.committed_at = checkpoint.updated_at "
-        "AND terminal.terminal = 1 "
-        "AND terminal.next_state = checkpoint.state "
-        "WHERE checkpoint.candidate_id = %s AND checkpoint.stage = %s "
-        "AND checkpoint.state = 'COMPLETE'",
-        (candidate_id, _PREPARED_STAGE),
-    )
-    if len(row) != 1:
-        raise PublicationFinalizationCorruptionError(
-            "VALIDATE_PREPARED_ARTIFACT lacks one exact terminal receipt"
-        )
-    return require_int63(
-        row[0],
-        field="terminal prepared-artifact count",
-    )
 
 
 def _load_checkpoint(connector: SQLConnector, receipt_id: bytes) -> _Checkpoint:

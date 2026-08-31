@@ -18,7 +18,6 @@ from vnext_catalog_identity_fixtures import seed_gallery_identity, seed_tag_term
 from vnext_catalog_registry_fixtures import (
     seed_analysis_policy,
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -35,6 +34,7 @@ from vnext_manifest_fixtures import (
 )
 from vnext_publication_fixtures import seed_publication_commit
 
+from h2hdb import catalog_refinement
 from h2hdb import vnext_identity as identity
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import CanonicalValueRepository
@@ -59,14 +59,8 @@ _CANDIDATE = b"c" * 16
 _BASE_RECEIPT = b"q" * 16
 _BASE_CANDIDATE = b"p" * 16
 _BASE_PREPARATION = b"e" * 16
-_PRODUCER_FIELDS = (
-    b"h2hdb-test-writer",
-    b"cpython-test-abi",
-    b"pillow-test-build",
-    b"libjpeg-test-build",
-    b"zlib-test-build",
-)
-_PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
+_ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
+_ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 _CHANNEL = b"default"
 
 
@@ -230,7 +224,11 @@ def _seed_completed_analysis(
         else identity.source_root_digest(source_root_components)
     )
     snapshot = b"m" * 32
-    policy_component = identity.artifact_policy_digest(1, 2048, _PRODUCER_FINGERPRINT)
+    policy_component = identity.artifact_policy_digest(
+        2,
+        _ARTIFACT_ADAPTER_ID,
+        _ARTIFACT_POLICY_FINGERPRINT,
+    )
     _canonical_identity(
         connector,
         source_root,
@@ -247,12 +245,12 @@ def _seed_completed_analysis(
     _canonical_identity(
         connector,
         policy_component,
-        domain=b"artifact_policy_v2",
+        domain=b"artifact_policy_v3",
         serial=3,
         payload=identity.encode_artifact_policy(
-            1,
-            1024 if forged_policy_payload else 2048,
-            _PRODUCER_FINGERPRINT,
+            2,
+            _ARTIFACT_ADAPTER_ID,
+            b"q" * 32 if forged_policy_payload else _ARTIFACT_POLICY_FINGERPRINT,
         ),
     )
     scope = seed_source_scope(connector, source_root_sha256=source_root)
@@ -264,19 +262,11 @@ def _seed_completed_analysis(
         file_count=0,
         byte_count=0,
     )
-    producer = seed_artifact_producer_fingerprint(
-        connector,
-        artifact_algorithm_version=1,
-        writer_id=_PRODUCER_FIELDS[0],
-        python_abi=_PRODUCER_FIELDS[1],
-        pillow_build=_PRODUCER_FIELDS[2],
-        libjpeg_build=_PRODUCER_FIELDS[3],
-        zlib_build=_PRODUCER_FIELDS[4],
-    )
-    assert producer.producer_fingerprint_sha256 == _PRODUCER_FINGERPRINT
     semantics = seed_artifact_policy_semantics(
         connector,
-        producer_fingerprint_sha256=_PRODUCER_FINGERPRINT,
+        policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
+        adapter_id=_ARTIFACT_ADAPTER_ID,
+        artifact_algorithm_version=2,
     )
     assert semantics.policy_component_sha256 == policy_component
     connector.execute(
@@ -1356,7 +1346,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         ) as validation,
     ):
         assert plan.publication_count == validation.publication_count == 1
-        assert plan.child_count == validation.child_count == 8
+        assert plan.child_count == validation.child_count == 18
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1375,7 +1365,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-1",
                 now=112,
             )
-        assert built.row_count == 8 and not built.terminal
+        assert built.row_count == 18 and not built.terminal
         with connector.transaction():
             replay = PublicationCandidateRepository.process_catalog_projection_batch(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1397,7 +1387,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-2",
                 now=114,
             )
-        assert terminal.terminal and terminal.next_processed_count == 8
+        assert terminal.terminal and terminal.next_processed_count == 18
 
         with connector.transaction():
             checked = PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1409,7 +1399,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-validate-1",
                 now=115,
             )
-        assert checked.row_count == 8 and not checked.terminal
+        assert checked.row_count == 18 and not checked.terminal
         with connector.transaction():
             checked_terminal = (
                 PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1423,7 +1413,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 )
             )
         assert checked_terminal.terminal
-        assert checked_terminal.next_processed_count == 8
+        assert checked_terminal.next_processed_count == 18
 
     publication_key = identity.publication_key(10_001)
     assert connector.fetch_one(
@@ -1455,6 +1445,52 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
     assert connector.fetch_one(
         "SELECT COUNT(*) FROM catalog_subjects WHERE revision = 1"
     ) == (2,)
+    expected_search_tokens = {b"1", b"artist", b"english", b"title", b"uploader"}
+    expected_search_digests = {
+        identity.canonical_value_digest("search_lexeme_utf8_v1", token)
+        for token in expected_search_tokens
+    }
+    assert connector.fetch_one(
+        "SELECT row_count FROM catalog_search_documents "
+        "WHERE revision = 1 AND publication_key = %s",
+        (publication_key,),
+    ) == (len(expected_search_digests),)
+    assert {
+        row[0]
+        for row in connector.fetch_all(
+            "SELECT value_sha256 FROM catalog_search_postings "
+            "WHERE revision = 1 AND publication_key = %s",
+            (publication_key,),
+        )
+    } == expected_search_digests
+    language_sha256 = identity.canonical_value_digest(
+        "catalog_language_utf8_v1",
+        b"english",
+    )
+    assert connector.fetch_all(
+        "SELECT position, language_sha256, occurrence_count "
+        "FROM catalog_language_facet_order WHERE revision = 1"
+    ) == [(0, language_sha256, 1)]
+    assert (
+        connector.fetch_all(
+            "SELECT position, tag_id, occurrence_count "
+            "FROM catalog_subject_facet_order WHERE revision = 1"
+        )
+        == []
+    )
+    assert connector.fetch_all(
+        "SELECT role, occurrence_count FROM catalog_contributor_facet_order "
+        "WHERE revision = 1 ORDER BY position"
+    ) == [(b"artist", 1), (b"uploader", 1)]
+    assert connector.fetch_one(
+        "SELECT policy_id FROM catalog_discovery_seals WHERE revision = 1"
+    ) == (1,)
+    catalog_refinement._validate_active_discovery_projection(
+        connector,
+        revision=1,
+        display_title_policy_id=1,
+        expected_publication_count=1,
+    )
     assert not connector.fetch_one(
         "SELECT 1 FROM operational_canonical_value_uploads WHERE generation = %s",
         (turn.generation,),
@@ -1493,7 +1529,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
             authority=authority,
         ) as validation,
     ):
-        assert plan.child_count == validation.child_count == 250
+        assert plan.child_count == validation.child_count == 502
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1513,7 +1549,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
 
         built = []
         with patch.object(connector, "fetch_all", side_effect=recording_fetch_all):
-            for index in range(3):
+            for index in range(5):
                 with connector.transaction():
                     built.append(
                         PublicationCandidateRepository.process_catalog_projection_batch(
@@ -1526,15 +1562,15 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                             now=112 + index,
                         )
                     )
-        assert [batch.row_count for batch in built] == [128, 122, 0]
-        assert built[-1].terminal and built[-1].next_processed_count == 250
+        assert [batch.row_count for batch in built] == [128, 128, 128, 118, 0]
+        assert built[-1].terminal and built[-1].next_processed_count == 502
         normalized = " ".join(mutation_queries).upper()
         assert "COUNT(" not in normalized and "SUM(" not in normalized
         assert "CATALOG_GALLERY_OBSERVATION_TAGS" not in normalized
         assert "CATALOG_GALLERY_OBSERVATION_PAGES" not in normalized
 
         checked = []
-        for index in range(3):
+        for index in range(5):
             with connector.transaction():
                 checked.append(
                     PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1547,8 +1583,8 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                         now=120 + index,
                     )
                 )
-        assert [batch.row_count for batch in checked] == [128, 122, 0]
-        assert checked[-1].terminal and checked[-1].next_processed_count == 250
+        assert [batch.row_count for batch in checked] == [128, 128, 128, 118, 0]
+        assert checked[-1].terminal and checked[-1].next_processed_count == 502
     assert connector.fetch_one(
         "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
     ) == (50,)

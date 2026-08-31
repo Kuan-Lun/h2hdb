@@ -107,6 +107,10 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "catalog.publication-atomicity.v1",
         "catalog_writer.validate_publication_transition",
     ),
+    (
+        "catalog.discovery-exactness.v1",
+        "catalog_writer.validate_discovery_projection",
+    ),
     ("catalog.state-machines.v1", "catalog_writer.validate_state_transition"),
     ("catalog.role-derivation.v1", "catalog_writer.validate_file_role"),
     ("catalog.physical-domains.v1", "catalog_writer.validate_physical_domain"),
@@ -550,8 +554,6 @@ _ARTIFACT_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     ArtifactPreparationRepository.validate_duplicate_loser_batch,
 )
 
-_ARTIFACT_PRODUCER_REGISTRY_RELATIONS = frozenset({"artifact_producer_fingerprint"})
-
 _PUBLICATION_CANDIDATE_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     PublicationCandidateRepository.process_selection_batch,
     PublicationCandidateRepository.validate_selection_batch,
@@ -696,7 +698,6 @@ _INGEST_FENCED_WRITERS: tuple[WriterEntrypoint, ...] = (
     CanonicalValueRepository.allocate,
     CanonicalValueRepository.put_page,
     CanonicalValueRepository.seal,
-    ArtifactPreparationRepository.register_producer,
     GalleryIdentityRepository.handoff_locator,
     *_BUILD_GENERATION_WRITERS,
     *_GALLERY_STAGING_WRITERS,
@@ -852,7 +853,6 @@ _BOUND_BINDINGS = (
     _binding(
         "catalog.artifact-semantics.v1",
         (
-            ArtifactPreparationRepository.register_producer,
             VNextIngestPolicyRepository.ensure,
             ArtifactPreparationRepository.issue_input_projection_authority,
             *_ARTIFACT_BATCH_WRITERS,
@@ -866,17 +866,28 @@ _BOUND_BINDINGS = (
         ),
         frozenset(
             {
+                "artifact_adapter_policy",
+                "artifact_policy_semantics",
                 "artifact_semantic_input",
                 "artifact_input",
                 "artifact_delta_old",
                 "artifact_delta_new",
                 "artifact_operation",
                 "prepared_artifact",
+                "prepared_storage_object",
+                "prepared_artifact_descriptor",
+                "prepared_page",
+                "prepared_thumbnail",
                 "artifact_blob",
+                "storage_object_key_identity",
+                "storage_object_key_segment",
+                "catalog_artifact",
+                "catalog_storage_object",
+                "catalog_page",
+                "catalog_thumbnail",
                 "publication_identity",
             }
-        )
-        | _ARTIFACT_PRODUCER_REGISTRY_RELATIONS,
+        ),
     ),
     _binding(
         "catalog.publication-atomicity.v1",
@@ -891,6 +902,24 @@ _BOUND_BINDINGS = (
             *_PUBLICATION_FINALIZATION_WRITERS,
         ),
         _contract_relations("catalog.publication-atomicity.v1") - {"publication_stage"},
+    ),
+    _binding(
+        "catalog.discovery-exactness.v1",
+        (
+            PublicationCandidateRepository.process_catalog_projection_batch,
+            PublicationCandidateRepository.validate_catalog_projection_batch,
+        ),
+        frozenset(
+            {
+                "search_lexeme",
+                "search_document",
+                "search_posting",
+                "discovery_seal",
+                "language_facet_order",
+                "subject_facet_order",
+                "contributor_facet_order",
+            }
+        ),
     ),
     _binding(
         "catalog.state-machines.v1",

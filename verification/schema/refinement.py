@@ -3739,9 +3739,27 @@ def _validate_physical_schema(
 
     artifact_policy = physical.relation("artifact_policy")
     artifact_policy_semantics = physical.relation("artifact_policy_semantics")
-    if artifact_policy is not None or artifact_policy_semantics is not None:
-        if artifact_policy is None or artifact_policy_semantics is None:
+    artifact_adapter_policy = physical.relation("artifact_adapter_policy")
+    if any(
+        relation is not None
+        for relation in (
+            artifact_policy,
+            artifact_policy_semantics,
+            artifact_adapter_policy,
+        )
+    ):
+        if any(
+            relation is None
+            for relation in (
+                artifact_policy,
+                artifact_policy_semantics,
+                artifact_adapter_policy,
+            )
+        ):
             raise ValueError("artifact policy split is physically incomplete")
+        assert artifact_policy is not None
+        assert artifact_policy_semantics is not None
+        assert artifact_adapter_policy is not None
         if artifact_policy.primary_key != ("artifact_policy_id",) or (
             artifact_policy.unique_keys != (("policy_component_sha256",),)
         ):
@@ -3760,8 +3778,8 @@ def _validate_physical_schema(
             "policy_component_sha256",
         ) or artifact_policy_semantics.unique_keys != (
             (
-                "max_image_short_side",
-                "producer_fingerprint_sha256",
+                "artifact_algorithm_version",
+                "policy_fingerprint_sha256",
             ),
         ):
             raise ValueError(
@@ -3772,76 +3790,31 @@ def _validate_physical_schema(
         }
         if set(semantic_columns) != {
             "policy_component_sha256",
-            "max_image_short_side",
-            "producer_fingerprint_sha256",
+            "artifact_algorithm_version",
+            "policy_fingerprint_sha256",
         }:
             raise ValueError(
                 "artifact policy physical columns are incomplete/redundant"
             )
-        if not any(
-            "max_image_short_side" in value
-            and "algorithm/resize/producer tuple change" in value
-            for value in physical.runtime_obligations
-        ):
-            raise ValueError(
-                "artifact byte-producer policy runtime obligation is absent"
-            )
-
-        producer = physical.relation("artifact_producer_fingerprint")
-        zip_policy = physical.relation("artifact_zip_writer_policy")
-        storage_codec = physical.relation("artifact_storage_codec")
-        if producer is None or zip_policy is None or storage_codec is None:
-            raise ValueError("artifact closed producer/storage registries are missing")
-        producer_columns = tuple(column.attribute for column in producer.columns)
         if (
-            producer.kind != "table"
-            or producer.primary_key != ("producer_fingerprint_sha256",)
-            or producer.unique_keys
-            != (
-                ("producer_equivalence_class",),
-                (
-                    "writer_id",
-                    "python_abi",
-                    "pillow_build",
-                    "libjpeg_build",
-                    "zlib_build",
-                ),
-            )
-            or producer_columns
-            != (
-                "producer_fingerprint_sha256",
-                "artifact_algorithm_version",
-                "producer_equivalence_class",
-                "writer_id",
-                "python_abi",
-                "pillow_build",
-                "libjpeg_build",
-                "zlib_build",
-            )
+            artifact_adapter_policy.kind != "table"
+            or artifact_adapter_policy.primary_key != ("policy_fingerprint_sha256",)
+            or artifact_adapter_policy.unique_keys
+            or tuple(column.attribute for column in artifact_adapter_policy.columns)
+            != ("policy_fingerprint_sha256", "adapter_id")
         ):
-            raise ValueError("artifact producer fingerprint table has wrong shape")
-        if zip_policy.primary_key != ("artifact_algorithm_version",) or (
-            zip_policy.unique_keys
-            != (
-                (
-                    "zip_codec_version",
-                    "compression_method",
-                    "compression_level",
-                    "dos_date",
-                    "dos_time",
-                    "unix_mode",
-                    "general_purpose_flags",
-                    "create_system",
-                    "archive_name_codec_version",
-                    "artifact_name_codec_version",
-                ),
-            )
+            raise ValueError("artifact adapter-policy registry has wrong shape")
+        policy_phrases = (
+            "adapter-issued identifier",
+            "complete policy fingerprint",
+            "never inspect or persist",
+            "storage-layout policy",
+        )
+        if any(
+            not any(phrase in value for value in physical.runtime_obligations)
+            for phrase in policy_phrases
         ):
-            raise ValueError("artifact ZIP writer policy has wrong primary key")
-        if storage_codec.primary_key != ("storage_codec_version",) or (
-            storage_codec.unique_keys != (("adapter_id",),)
-        ):
-            raise ValueError("artifact storage codec has wrong equivalent keys")
+            raise ValueError("neutral artifact adapter-policy obligation is absent")
 
         semantic_input = physical.relation("artifact_semantic_input")
         if semantic_input is None:
@@ -3867,9 +3840,9 @@ def _validate_physical_schema(
         ):
             raise ValueError("artifact semantic input has wrong exact candidate keys")
         member_plan_phrases = (
-            "including excluded entries",
-            "no generated archive member",
-            "resolved per-file exclusion decisions",
+            "unique adapter-issued METADATA",
+            "all and only nonexcluded PAGE",
+            "OTHER position is covered but absent",
         )
         for phrase in member_plan_phrases:
             if not any(phrase in value for value in physical.runtime_obligations):

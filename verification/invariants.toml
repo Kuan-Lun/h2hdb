@@ -635,8 +635,8 @@ id = "runtime.data.artifact-semantics"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "supporting"
-claim = "The executable manifest checker validates artifact delta truth tables, six exact semantic codecs and goldens, producer parameters, member-plan framing, ZIP comment declarations, and the prepared-artifact write obligation's durable PENDING intent, monotone per-token adapter lifecycle, terminal external release, exact orphan-reconciliation acknowledgement, and zero-DML replay."
-assumptions = ["The runtime artifact producer must use the pinned codecs and implementation fingerprint checked by the manifest."]
+claim = "The executable manifest checker validates artifact delta truth tables, neutral immutable acquisition identities, adapter-policy tuples, opaque member-plan framing, and the multi-resource prepared-artifact obligation's durable PENDING intent, per-token lifecycle, terminal external release, exact orphan-reconciliation acknowledgement, and zero-DML replay."
+assumptions = ["The registered adapter must refine the opaque render and storage contracts; core assigns no archive, image, or filesystem semantics."]
 [[evidence.location]]
 path = "verification/schema/check_contract.py"
 symbol = "_validate_artifact_delta_contract"
@@ -645,7 +645,7 @@ path = "verification/schema/check_contract.py"
 symbol = "_validate_artifact_codecs"
 [[evidence.location]]
 path = "verification/schema/check_contract.py"
-symbol = "_validate_artifact_byte_producer_contract"
+symbol = "_validate_artifact_adapter_policy_contract"
 [[evidence.location]]
 path = "verification/schema/check_contract.py"
 symbol = "_validate_artifact_member_plan_contract"
@@ -666,6 +666,51 @@ symbol = "_validate_publication_atomic_contract"
 [[evidence.location]]
 path = "verification/schema/check_contract.py"
 symbol = "_validate_transition_authority_contract"
+
+[[evidence]]
+id = "runtime.production.discovery-exactness"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The production READY audit loads the one current revision, enforces all-or-none acquisition coverage, replays every publication's bounded canonical search sources through the pinned Unicode policy, exact-compares document and posting membership, and independently reconstructs dense canonically ordered language, subject, and contributor facets from current publication facts."
+assumptions = ["Canonical value payloads remain immutable under their digest identity; each bounded keyset and payload page is read through the same read-only READY transaction."]
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "check_discovery_exactness_v1"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validate_active_discovery_projection"
+[[evidence.location]]
+path = "src/h2hdb/vnext_canonical_value_repository.py"
+symbol = "stream_and_validate_canonical_value"
+
+[[evidence]]
+id = "fault.production.discovery-exactness"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "READY audit regressions inject extra search documents, postings, and each facet family, reject a descriptor count that differs from the exact search source set, and reject partial artifact coverage rather than accepting a partially discoverable revision."
+assumptions = ["SQLite foreign-key and check-constraint bypasses are test-only corruption injection mechanisms; validation executes the production READY checker after each mutation."]
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_ready_rejects_active_discovery_projection_corruption"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_active_publication_compares_descriptor_count_with_discovery_projection"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_active_publication_rejects_partial_artifact_coverage"
+
+[[evidence]]
+id = "integration.sqlite.discovery-exactness"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated SQLite E2E materializes a nonempty publication with canonical search and facet authority, independently validates the projection during candidate construction, and replays the production exact discovery validator over the resulting nonempty revision."
+assumptions = ["This executes SQLite and does not establish MariaDB cursor, payload-streaming, or collation behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_candidate_repository.py"
+symbol = "test_catalog_projection_uses_typed_disk_plan_and_independent_validation"
 
 [[evidence]]
 id = "runtime.data.state-machines"
@@ -1003,54 +1048,51 @@ id = "fault.production.artifact-preparation"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Artifact tests reject forged policy capability, member-plan and source-size drift, wrong or byte-mutating adapters, collision forgery, and every PENDING-seal persistence fault with complete transaction rollback; an external protection failure deliberately leaves the exact sealed PENDING intent, retry reuses its token and generation, exact evidence alone can confirm it, and PREPARED or COMMITTED replay refuses a second protect and performs zero DML."
-assumptions = ["Injected connector exceptions use the same transaction rollback path as production exceptions."]
+claim = "Artifact preparation tests reject a non-neutral adapter surface, malformed multi-resource bundles, forged protection-token or storage descriptors, thumbnail-without-pages presentation, missing pre-protection blob bindings, and catalog storage facts that differ from the verified resource identity."
+assumptions = ["These focused negative controls establish neutral domain and normalized persistence boundaries; orchestration and statement-fault evidence is tracked separately."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_input_audit_rejects_member_plan_source_size_corruption"
+symbol = "test_storage_adapter_contract_is_neutral_and_complete"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_forged_repository_capability_is_revalidated_against_durable_facts"
+symbol = "test_prepared_resource_bundle_uses_distinct_kinds_and_digest32_tokens"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_storage_adapter_cannot_mutate_verified_archive"
+symbol = "test_persistence_receipt_rejects_noncanonical_resource_bundle"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_storage_failure_leaves_exact_pending_intent_for_retry"
+symbol = "test_descriptor_presentation_totality_rejects_thumbnail_without_pages"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_prepared_and_committed_intents_refuse_protection_and_replay_zero_dml"
+symbol = "test_prepared_resource_blob_schema_binds_before_storage_confirmation"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_persistence_collision_forgery_and_each_statement_fault_roll_back"
+symbol = "test_catalog_storage_object_retains_neutral_verified_blob"
 
 [[evidence]]
 id = "integration.sqlite.artifact-preparation"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production authority audit, canonical archive construction, bounded input and delta projection, content-digest integrity plus GID-derived neutral storage-key validation, exact PENDING intent seal, external adapter protection, evidence-bound PENDING-to-PREPARED confirmation with occurrence insertion, and response-loss retry with the same token and generation."
+claim = "Generated SQLite evidence persists the normalized prepared-resource blob binding before storage confirmation and publishes a neutral verified storage object whose exact key, digest, size, generation, and timestamp hydrate without container-specific knowledge."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_authority_audit_and_canonical_storage_receipt"
+symbol = "test_prepared_resource_blob_schema_binds_before_storage_confirmation"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_artifact_projection_persistence_and_seal_end_to_end"
-[[evidence.location]]
-path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_storage_failure_leaves_exact_pending_intent_for_retry"
+symbol = "test_catalog_storage_object_retains_neutral_verified_blob"
 
 [[evidence]]
 id = "integration.mariadb-shape.artifact-preparation"
 layer = "integration"
 strength = "runtime_integration"
 directness = "supporting"
-claim = "A MariaDB recorder checks bounded production artifact evaluator and contract-loader SQL plus server placeholder shape; it does not execute the PENDING seal, external protect, evidence-bound confirmation, terminal release, or any artifact race against a MariaDB server."
-assumptions = ["SQL-shape recording cannot establish MariaDB isolation, locking, rollback, constraints, external adapter ordering, or exact replay."]
+claim = "No dedicated MariaDB artifact-preparation integration is presently cited; live backend coverage remains an explicit release blocker rather than being inferred from SQLite domain tests."
+assumptions = ["SQLite evidence cannot establish MariaDB isolation, locking, rollback, constraints, external adapter ordering, or exact replay."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
-symbol = "test_mariadb_artifact_evaluators_use_bounded_server_sql_shape"
+symbol = "test_prepared_resource_blob_schema_binds_before_storage_confirmation"
 
 [[evidence]]
 id = "runtime.production.artifact-release"
@@ -1077,34 +1119,34 @@ id = "fault.production.artifact-release"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Artifact-release tests reject active or published candidates before every external call, keep state nonterminal when a candidate becomes active after external release, reject forged capabilities and corrupt token-family facts, and inject every page-state update fault while proving the complete page transaction rolls back before exact retry."
+claim = "Artifact-release tests reject active candidates before external release, reject missing committed cursor predecessors, corrupt token/key/blob authority, forged page evidence and noncanonical typed cursors, and enforce acquisition-before-thumbnail lock order for one publication."
 assumptions = ["The monotone test adapter models the required terminal tombstone but is not a live production storage service."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_active_or_published_candidate_blocks_every_external_call"
+symbol = "test_active_candidate_blocks_external_release"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_candidate_race_after_external_release_blocks_state_until_retry"
+symbol = "test_cursor_requires_a_committed_predecessor"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_every_release_state_statement_rolls_back_the_complete_page"
+symbol = "test_corrupt_resource_authority_fails_closed"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_forged_capabilities_and_corrupt_token_facts_fail_closed"
+symbol = "test_forged_page_and_noncanonical_cursor_fail_closed"
 
 [[evidence]]
 id = "integration.sqlite.artifact-release"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E reconstructs the same sealed PENDING-and-PREPARED page after response loss, releases the same durable tokens outside the revalidation transaction, proves late protect cannot defeat the terminal tombstones, atomically commits both states to COMMITTED, and replays the retained acknowledgement with zero DML."
+claim = "Generated SQLite E2E reconstructs acquisition and thumbnail resources after response loss, commits their exact release acknowledgements, replays with zero DML, and preserves typed resource ordering within one publication."
 assumptions = ["This executes SQLite with a monotone test adapter and does not establish MariaDB transaction behavior or a production storage service's tombstone semantics."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_response_loss_reuses_tokens_and_commit_replay_is_zero_write"
+symbol = "test_multi_resource_response_loss_and_commit_replay"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_candidate_race_after_external_release_blocks_state_until_retry"
+symbol = "test_same_publication_resources_commit_in_typed_lock_order"
 
 [[evidence]]
 id = "integration.mariadb-shape.artifact-release"
@@ -1115,7 +1157,7 @@ claim = "A MariaDB recorder checks the bounded release-page keyset predicate, ac
 assumptions = ["SQL-shape recording cannot establish MariaDB isolation, row locking, transaction boundaries, external adapter ordering, rollback, or exact replay."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
-symbol = "test_mariadb_page_shape_uses_portable_placeholders_and_keyset_predicate"
+symbol = "test_mariadb_page_shape_uses_typed_resource_keyset"
 
 [[evidence]]
 id = "runtime.production.publication-candidate"
@@ -1184,7 +1226,7 @@ id = "runtime.production.publication"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, then seals a DB_COMMITTED receipt without changing the reader head.  The receipt-pinned library reader exposes immutable artifacts in keyset pages capped at 128 while the ingest publication orchestrator durably spools and reconciles them through the adapter.  Only adapter READY permits bounded external protection release and terminal finalization; that terminal transaction records PUBLISHED, CASes the exact successor into the reader head, and deletes its working roots.  Adapter COMPLETE is durable and idempotent, so response loss replays only the remaining database COMPLETE cleanup without repeating finalization or adapter effects."
+claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, then seals a DB_COMMITTED receipt without changing the reader head. The receipt-pinned library reader exposes immutable acquisition and thumbnail resources in typed keyset pages capped at 128 while the ingest publication orchestrator durably activates them through the adapter. Only adapter READY permits bounded external protection release and terminal finalization; that terminal transaction records PUBLISHED, CASes the exact successor into the reader head, and deletes its working roots. Adapter COMPLETE is durable and idempotent, so response loss replays only the remaining database COMPLETE cleanup without repeating finalization or adapter effects."
 assumptions = ["Each repository mutation is covered by its connector transaction; library adapter methods provide their declared durable, idempotent checkpoint semantics outside database transactions."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_publication_repository.py"
@@ -1194,7 +1236,7 @@ path = "src/h2hdb/vnext_publication_finalization_repository.py"
 symbol = "PublicationFinalizationRepository"
 [[evidence.location]]
 path = "src/h2hdb/vnext_library_activation_repository.py"
-symbol = "LibraryActivationArtifactRepository"
+symbol = "LibraryActivationResourceRepository"
 [[evidence.location]]
 path = "src/h2hdb/vnext_ingest_publication.py"
 symbol = "VNextIngestPublication"
@@ -1210,7 +1252,7 @@ id = "fault.production.publication"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Publication tests race the exact predecessor head and deletion-generation authority, inject every DB_COMMITTED and terminal mutation failure, and prove an initial commit cannot change reader visibility or release working roots.  Activation tests reject corrupt receipt-pinned pages and recover the adapter-owned cursor after response loss.  Finalization and orchestration tests exercise post-external races, require READY before terminal head activation, prove the PUBLISHED marker, head CAS and working-root cleanup roll back atomically, and after a durably persisted adapter COMPLETE loses its response, replay only the remaining database cleanup."
+claim = "Publication tests race the exact predecessor head and deletion-generation authority, inject DB_COMMITTED and terminal mutation failures, and prove an initial commit cannot change reader visibility or release working roots. Activation tests reject corrupt storage descriptors, forged cursor membership and page bounds, while orchestration tests recover the adapter-owned cursor after response loss. Finalization tests exercise post-external races and terminal rollback."
 assumptions = ["Injected connector and storage-adapter exceptions use the same transaction rollback and idempotent adapter paths as production exceptions."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
@@ -1220,7 +1262,7 @@ path = "tests/test_vnext_publication_repository.py"
 symbol = "test_each_pointer_mutation_fault_rolls_back_the_whole_publication"
 [[evidence.location]]
 path = "tests/test_vnext_library_activation_repository.py"
-symbol = "test_sealed_projection_corruption_is_not_silently_omitted"
+symbol = "test_corrupt_storage_descriptor_is_not_silently_omitted"
 [[evidence.location]]
 path = "tests/test_vnext_ingest_publication.py"
 symbol = "test_restart_after_database_commit_uses_adapter_owned_cursor"
@@ -1248,7 +1290,7 @@ id = "integration.sqlite.publication"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite repository E2E executes genesis and successor publication as reader-invisible DB_COMMITTED receipts with both working roots retained, reads their immutable activation artifacts through receipt-pinned keyset pages capped at 128, and then atomically derives PUBLISHED, advances the exact reader head, and releases the working roots only in terminal finalization.  Orchestration regressions additionally establish READY-before-finalization ordering, COMPLETE adapter cleanup, and replay when either terminal head activation or the persisted COMPLETE acknowledgement loses its response."
+claim = "SQLite repository E2E executes genesis and successor publication as reader-invisible DB_COMMITTED receipts with both working roots retained, reads immutable acquisition and thumbnail activation resources through receipt-pinned typed keyset pages capped at 128, and then atomically derives PUBLISHED, advances the exact reader head, and releases working roots only in terminal finalization. Orchestration regressions additionally establish READY-before-finalization ordering and COMPLETE response-loss replay."
 assumptions = ["Repository locations execute SQLite; orchestration locations use a durable checkpoint test double for the adapter protocol, and the COMPLETE-response-loss case executes the production SQLite source-working cleanup, but these locations do not establish MariaDB or a concrete filesystem adapter."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
@@ -1258,10 +1300,10 @@ path = "tests/test_vnext_publication_repository.py"
 symbol = "test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping"
 [[evidence.location]]
 path = "tests/test_vnext_library_activation_repository.py"
-symbol = "test_db_committed_projection_pages_are_bounded_and_empty_terminal"
+symbol = "test_resource_pages_use_typed_composite_cursor_and_empty_terminal"
 [[evidence.location]]
 path = "tests/test_vnext_library_activation_repository.py"
-symbol = "test_receipt_pinned_continuation_is_independent_of_reader_head"
+symbol = "test_published_receipt_resources_remain_replayable"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_current_batch_replays_after_cleanup_and_expired_gate"
@@ -1421,7 +1463,7 @@ id = "runtime.production.cleanup"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production cleanup repository uses the fixed twenty-two-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. CATALOG_PUBLICATION removes only finalized non-head payload after the current head is published and live predecessor pins release; PUBLICATION_CANDIDATE retains every unresolved PENDING or PREPARED protection family; generic OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement under an exact frozen receipt/preparation authority before its unreachable commit family."
+claim = "The production cleanup repository uses the fixed twenty-three-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. STORAGE_OBJECT_KEY reclaims only unreachable normalized key families; CATALOG_PUBLICATION removes only finalized non-head payload; PUBLICATION_CANDIDATE retains unresolved resource protection families; OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement."
 assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_cleanup_repository.py"
@@ -1436,7 +1478,7 @@ layer = "fault"
 strength = "negative_control"
 directness = "direct"
 claim = "Cleanup tests reject registry drift, shared or stale gate authority, live retention roots, forged latest-receipt prestate and stale attempts, retain unresolved PENDING and PREPARED artifact-protection families before every delete, preserve COMPLETE preparations outside their owning publication-commit lifecycle, distinguish blocked terminal responsibility from a true empty phase and resume the same phase after pin release, prove empty-terminal replay, validate exact typed event coordinates, reject every post-compound publication relation-family reappearance, and roll back paired event and compound commit/effect-root deletes on injected faults."
-assumptions = ["The injected-write matrix covers the publication-owned transient event and compound commit/effect-root boundaries plus representative paired strategies, but does not interrupt every statement in all twenty-two strategies."]
+assumptions = ["The injected-write matrix covers the publication-owned transient event and compound commit/effect-root boundaries plus representative paired strategies, but does not interrupt every statement in all twenty-three strategies."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_cleanup_fails_closed_for_shared_gate_and_registry_drift"
@@ -1467,11 +1509,11 @@ id = "integration.sqlite.cleanup"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes all twenty-two static production strategies, child-first source, analysis, publication-commit, revision-descriptor, publication-generation, catalog-publication, candidate and staging cleanup, generic COMPLETE-preparation preservation, ABANDONED-stream deletion, publication-owned transient event retirement, bounded replay, and retention blocking. The public current-only facade runs against an FK-on READY rev1-to-rev2 database containing every catalog-publication payload phase including artifact, requires multiple bounded attempts, rejects the stale reader pin, removes all eleven old payload families, preserves current payload and audit descriptors, and remains READY."
+claim = "Generated SQLite E2E executes all twenty-three production strategies, including normalized storage-object-key reclamation, child-first source, analysis, publication-commit, revision-descriptor, publication-generation, catalog-publication, candidate and staging cleanup, COMPLETE-preparation preservation, ABANDONED-stream deletion, publication-owned transient event retirement, bounded replay, and retention blocking. The public current-only facade removes historical catalog payload while preserving current payload and audit descriptors under FK enforcement."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_all_twenty_two_strategies_match_the_closed_phase_registry"
+symbol = "test_all_twenty_three_strategies_match_the_closed_phase_registry"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_source_analysis_and_candidate_strategies_delete_child_first"
@@ -2015,7 +2057,7 @@ lean = { status = "covered", evidence = ["lean.data.artifact-delta"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.artifact-semantics", "runtime.production.writer-bindings", "runtime.production.artifact-preparation", "runtime.production.artifact-release"] }
 fault = { status = "covered", evidence = ["fault.production.artifact-preparation", "fault.production.artifact-release"] }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.artifact-preparation", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.artifact-release"], blocker = "SQLite executes production archive and delta validation, durable PENDING seal, external protect, exact PREPARED confirmation, terminal orphan release from PENDING or PREPARED, and exact replay including an independent byte audit; MariaDB evidence checks evaluator, contract-loader, and release-page SQL shape only, so no live MariaDB protect, confirm, release, or artifact-race workflow has run." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.artifact-preparation", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.artifact-release"], blocker = "SQLite exercises neutral multi-resource persistence, normalized blob/storage authority, typed release pages and response-loss replay; MariaDB evidence covers release-page SQL shape only, so no live MariaDB protect, confirm, release, or resource-race workflow has run." }
 
 [[invariant]]
 id = "catalog.publication-atomicity.v1"
@@ -2025,6 +2067,15 @@ tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication"] }
 fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication"] }
 integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication"], blocker = "SQLite executes projection, durable PENDING artifact-intent seal, external protect, exact PREPARED confirmation, a sealed reader-invisible DB_COMMITTED commit, receipt-pinned bounded library activation, READY-gated external-release/finalization pages, the terminal PUBLISHED reader-head CAS with working-root cleanup, and COMPLETE response-loss replay; MariaDB evidence checks SQL shape only, so no live MariaDB library activation, atomic terminal publication, or artifact protect/release race has run." }
+
+[[invariant]]
+id = "catalog.discovery-exactness.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model canonical payload streaming, pinned Unicode tokenization, SQL keyset traversal, or exact revision-scoped search and facet reconstruction." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.discovery-exactness"] }
+fault = { status = "covered", evidence = ["fault.production.discovery-exactness"] }
+integration = { status = "blocked", evidence = ["integration.sqlite.discovery-exactness"], blocker = "SQLite executes nonempty exact search and facet reconstruction plus corruption rejection, but no live MariaDB READY audit has exercised canonical payload streaming, byte ordering, and indexed keyset traversal for this projection." }
 
 [[invariant]]
 id = "catalog.state-machines.v1"
@@ -2068,8 +2119,8 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "covered", evidence = ["lean.data.retention"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.retention", "runtime.production.writer-bindings", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back one paired delete, but it does not race every retention root or interrupt every phase of all twenty-two strategies." }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all twenty-two production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back representative paired deletes, but it does not race every retention root or interrupt every phase of all twenty-three strategies." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all twenty-three production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
 
 [[invariant]]
 id = "h2hdb.operational.physical-domains.v1"

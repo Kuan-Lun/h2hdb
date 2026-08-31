@@ -170,8 +170,9 @@ relations、bounded transactions、durable coordination state，以及 public
 application facades。
 
 - Core不得依賴 Pillow、FastAPI、OPDS types、`hbrowser`、filesystem scanning、
-  gallery parsing或具體 CBZ/object-storage行為。那些責任屬於 consumer或
-  adapter repositories。
+  gallery parsing或具體 archive/artwork/object-storage行為。Core只保存 opaque
+  storage object、acquisition與presentation descriptors；CBZ及artwork bytes的
+  render、store、resolve與release責任屬於 ingest integration及其 adapters。
 - Consumers只使用 `VNextDatabaseAdminFacade`、`VNextCatalogFacade`、
   `VNextIngestFacade`、`VNextDownloadQueueFacade`與公開 immutable values，
   不得直接使用 connector、repository、generated schema或 table internals。
@@ -250,19 +251,28 @@ Schema變更依序進行：
   publication、pending effects或 protection claims引用的 identity/history都須
   保留。
 - Catalog calls只接受 current publication head。 supplied `CatalogRevision`只在
-  仍精確等於該 head時有效，每次 read回傳前都須重查 head。
+  仍精確等於該 head時有效；每次 read完成 pinned snapshot後，回傳前都須在
+  第二個 fresh read transaction精確重查 head。
 - 每個 published catalog occurrence必須有一筆 immutable
   `catalog_publication_download_time` child，保存被選 observation的
   `download_time`；publication seal、READY audit與 cleanup都必須證明或維持
   這個 total authority，不得從 mutable downloader queue推導。
-- `CatalogReader.list_recent_artifact_publications`只提供 current revision中
-  artifact-bearing publications的固定完整 top 128 window，不接受 caller
+- `CatalogReader.discover_publications`只可使用 revision-scoped normalized SQL
+  discovery authority。Nonblank search使用 pinned Unicode policy產生的 lexeme
+  AND matching；language、subject與contributor是exact filters。結果使用
+  hard-capped keyset pages；caller cursor必須重新驗證 revision、query digest、
+  position與filtered-set membership，不得以 hydrate後的Python scan取代index。
+- `CatalogReader.list_publication_facets`對language、subject與contributor提供
+  keyset-paged exact publication counts。計算某facet family時忽略同family既選
+  filter，但保留search及其他family filters；cursor同樣不得作為authority。
+- `CatalogReader.list_recent_publications`提供 current revision中具有 sealed
+  acquisition descriptor之publications的固定完整 top 128 window，不接受 caller
   `limit`或 cursor。`UPLOADED`依 `upload_time DESC, gid DESC`，`DOWNLOADED`依
-  published `download_time DESC, gid DESC`；reader每次動態掃描／排序完整
-  current artifact set、hydrate最多128筆並重查 head。本契約明確接受查詢的
-  current-set scan/sort成本，不宣稱 indexed或 bounded database work，也不得
-  另建未經 manifest審核的 recency materialization。
-- 在 manifest定義 normalized current-head index前，nonblank search維持不可用。
+  published `download_time DESC, gid DESC`；沒有acquisition的revision回傳空
+  window。
+- Acquisition與presentation只保存 neutral immutable descriptors。Core不得
+  指定hash path、CBZ/ZIP layout或共享mount；ingest adapters擁有archive與
+  artwork bytes及其storage lifecycle，且byte I/O不得進入core DB transaction。
 - 在 manifest定義 durable revision-scoped authority與 replay semantics前，
   不得從 transient joins推導 `redownload_required`。
 - Public ingest orchestration把 transaction-owned issue/commit與 adapter-owned
@@ -271,7 +281,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/version 1只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 2只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為

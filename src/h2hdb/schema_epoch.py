@@ -58,7 +58,7 @@ from typing import Any, NoReturn, Protocol
 from .sql_connector import SQLConnector
 
 V_NEXT_SCHEMA_EPOCH = 3
-V_NEXT_SCHEMA_VERSION = 1
+V_NEXT_SCHEMA_VERSION = 2
 SCHEMA_EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
 MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:3"
 
@@ -80,8 +80,15 @@ _MARIADB_NOOP_UPDATE = re.compile(
     re.IGNORECASE,
 )
 _READ_ONLY_SELECT = re.compile(r"\ASELECT\b", re.IGNORECASE)
+_READ_ONLY_WITH = re.compile(r"\AWITH\b", re.IGNORECASE)
+_SQL_MUTATION = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|ATTACH|DETACH|"
+    r"PRAGMA|VACUUM|REINDEX|ANALYZE|TRUNCATE|MERGE|CALL|DO|SET|GRANT|"
+    r"REVOKE|LOAD|COPY)\b",
+    re.IGNORECASE,
+)
 _SELECT_SIDE_EFFECT = re.compile(
-    r"\b(?:INTO\s+(?:OUTFILE|DUMPFILE)|FOR\s+UPDATE|LOCK\s+IN\s+SHARE\s+MODE|"
+    r"\b(?:INTO|FOR\s+UPDATE|LOCK\s+IN\s+SHARE\s+MODE|"
     r"GET_LOCK|RELEASE_LOCK|SLEEP|BENCHMARK|LOAD_FILE)\b",
     re.IGNORECASE,
 )
@@ -428,14 +435,15 @@ class _ReadOnlySemanticConnector(SQLConnector):
         if statement.endswith(";"):
             statement = statement[:-1].rstrip()
         if (
-            not _READ_ONLY_SELECT.match(statement)
+            not _is_single_read_only_query(statement)
             or ";" in statement
+            or _SQL_MUTATION.search(statement)
             or _SELECT_SIDE_EFFECT.search(statement)
         ):
             raise SchemaEpochValidationError(
                 "Semantic validators are read-only; fetch operations accept only "
-                "one non-locking SELECT without file, advisory-lock, delay, or "
-                "multi-statement side effects"
+                "one non-locking SELECT or read-only CTE without file, "
+                "advisory-lock, delay, mutation, or multi-statement side effects"
             )
 
     @staticmethod
@@ -444,6 +452,92 @@ class _ReadOnlySemanticConnector(SQLConnector):
             "Semantic validators are read-only; "
             f"connector operation {operation!r} is forbidden"
         )
+
+
+def _is_single_read_only_query(statement: str) -> bool:
+    if _READ_ONLY_SELECT.match(statement):
+        return True
+    if not _READ_ONLY_WITH.match(statement):
+        return False
+    top_level_words = _top_level_sql_words(statement)
+    return (
+        top_level_words is not None
+        and top_level_words[:1] == ("WITH",)
+        and "SELECT" in top_level_words[1:]
+    )
+
+
+def _top_level_sql_words(statement: str) -> tuple[str, ...] | None:
+    """Lex enough SQL to locate a CTE's top-level read operation.
+
+    Quoted text and comments cannot contribute parentheses or keywords.  The
+    separate mutation/side-effect deny lists still inspect the original SQL,
+    intentionally preferring a harmless false rejection to an unsafe accept.
+    """
+
+    words: list[str] = []
+    depth = 0
+    index = 0
+    length = len(statement)
+    while index < length:
+        character = statement[index]
+        if character in {"'", '"', "`"}:
+            quote = character
+            index += 1
+            while index < length:
+                if statement[index] == quote:
+                    if index + 1 < length and statement[index + 1] == quote:
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                if statement[index] == "\\":
+                    index += 2
+                else:
+                    index += 1
+            else:
+                return None
+            continue
+        if character == "[":
+            closing = statement.find("]", index + 1)
+            if closing < 0:
+                return None
+            index = closing + 1
+            continue
+        if statement.startswith("--", index):
+            newline = statement.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if statement.startswith("/*", index):
+            closing = statement.find("*/", index + 2)
+            if closing < 0:
+                return None
+            index = closing + 2
+            continue
+        if character == "(":
+            depth += 1
+            index += 1
+            continue
+        if character == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+            index += 1
+            continue
+        if character.isascii() and (character.isalpha() or character == "_"):
+            end = index + 1
+            while (
+                end < length
+                and statement[end].isascii()
+                and (statement[end].isalnum() or statement[end] == "_")
+            ):
+                end += 1
+            if depth == 0:
+                words.append(statement[index:end].upper())
+            index = end
+            continue
+        index += 1
+    return tuple(words) if depth == 0 else None
 
 
 class SchemaEpochGate(Protocol):

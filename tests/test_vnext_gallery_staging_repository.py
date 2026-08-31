@@ -299,6 +299,7 @@ def _file_observation(index: int) -> FileObservation:
     return FileObservation(
         name,
         FileContentReceipt.from_parts((payload[:3], payload[3:])),
+        domain_module.ArtifactSourceRole.PAGE,
         100 + index,
         1000 + index,
         -50 + index,
@@ -797,7 +798,15 @@ def test_file_content_receipt_is_stream_derived_and_not_forgeable() -> None:
     with pytest.raises(TypeError, match="from_parts"):
         FileContentReceipt(sha256(b"abcdef").digest(), 6, object())
     with pytest.raises(TypeError, match="FileContentReceipt"):
-        FileObservation(b"x", object(), 1, 1, 1, 1)  # type: ignore[arg-type]
+        FileObservation(
+            b"x",
+            object(),  # type: ignore[arg-type]  # deliberate constructor forgery
+            domain_module.ArtifactSourceRole.OTHER,
+            1,
+            1,
+            1,
+            1,
+        )
 
 
 def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write(
@@ -869,6 +878,7 @@ def test_file_replay_reads_raw_binary_key_and_rejects_partial_filesystem_family(
         source = FileObservation(
             b"directory-0000",
             FileContentReceipt.from_parts(()),
+            domain_module.ArtifactSourceRole.OTHER,
             100,
             1_000,
             0,
@@ -971,6 +981,7 @@ def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
             FileObservation(
                 f"page-one-{index:03d}.bin".encode("ascii"),
                 shared,
+                domain_module.ArtifactSourceRole.PAGE,
                 index,
                 1_000 + index,
                 index,
@@ -994,8 +1005,24 @@ def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
 
         final = FileBatchCommand(
             (
-                FileObservation(b"last-content.bin", shared, 300, 1_300, 300, 300),
-                FileObservation(b"galleryinfo.txt", shared, 301, 1_301, 301, 301),
+                FileObservation(
+                    b"last-content.bin",
+                    shared,
+                    domain_module.ArtifactSourceRole.PAGE,
+                    300,
+                    1_300,
+                    300,
+                    300,
+                ),
+                FileObservation(
+                    b"galleryinfo.txt",
+                    shared,
+                    domain_module.ArtifactSourceRole.METADATA,
+                    301,
+                    1_301,
+                    301,
+                    301,
+                ),
             ),
             True,
             BatchAttempt(b"b" * 16, b"a" * 16),
@@ -1059,6 +1086,7 @@ def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
                 FileObservation(
                     f"page-one-{index:03d}.bin".encode("ascii"),
                     shared,
+                    domain_module.ArtifactSourceRole.PAGE,
                     index,
                     1_000 + index,
                     index,
@@ -1082,7 +1110,17 @@ def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
             ),
         )
         final = FileBatchCommand(
-            (FileObservation(b"last-content.bin", shared, 300, 1_300, 300, 300),),
+            (
+                FileObservation(
+                    b"last-content.bin",
+                    shared,
+                    domain_module.ArtifactSourceRole.PAGE,
+                    300,
+                    1_300,
+                    300,
+                    300,
+                ),
+            ),
             True,
             BatchAttempt(b"b" * 16, b"a" * 16),
         )
@@ -1405,8 +1443,24 @@ def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
                 handle,
                 FileBatchCommand(
                     (
-                        FileObservation(b"a.bin", short, 1, 2, 3, 4),
-                        FileObservation(b"b.bin", long, 5, 6, 7, 8),
+                        FileObservation(
+                            b"a.bin",
+                            short,
+                            domain_module.ArtifactSourceRole.PAGE,
+                            1,
+                            2,
+                            3,
+                            4,
+                        ),
+                        FileObservation(
+                            b"b.bin",
+                            long,
+                            domain_module.ArtifactSourceRole.OTHER,
+                            5,
+                            6,
+                            7,
+                            8,
+                        ),
                     ),
                     True,
                     BatchAttempt(b"a" * 16, None),
@@ -2590,6 +2644,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                     file_key(file.name_bytes),
                     file.content.file_sha256,
                     file.content.size_bytes,
+                    file.artifact_role.value.encode("ascii"),
                     file.device,
                     file.inode,
                     file.modified_ns,

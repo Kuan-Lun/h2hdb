@@ -10,7 +10,6 @@ from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import seed_gallery_identity
 from vnext_catalog_registry_fixtures import (
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -79,6 +78,9 @@ from h2hdb.vnext_transaction import (
     VNextUnitOfWork,
     encode_lock_key,
 )
+
+_ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
+_ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
 class _LiveMariaDBConnector(MariaDBConnector):
@@ -1069,33 +1071,21 @@ def test_live_mariadb_operational_writer_workflows(
         "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
         (catalog_revision, 0, 0),
     )
-    producer = seed_artifact_producer_fingerprint(
-        connector,
-        artifact_algorithm_version=1,
-        writer_id=b"writer",
-        python_abi=b"abi",
-        pillow_build=b"pillow",
-        libjpeg_build=b"jpeg",
-        zlib_build=b"zlib",
-    )
-    # Exact registry replay can be SELECT-only and therefore opens an implicit
-    # Connector/Python transaction even though no fixture mutation was needed.
-    connector.commit()
     policy_payload = identity.encode_artifact_policy(
-        1,
-        2048,
-        producer.producer_fingerprint_sha256,
+        2,
+        _ARTIFACT_ADAPTER_ID,
+        _ARTIFACT_POLICY_FINGERPRINT,
     )
     with CanonicalValueUploadPlan.from_parts(
-        "artifact_policy_v2",
+        "artifact_policy_v3",
         (policy_payload,),
     ) as policy_plan:
         _upload(connector, current_gate, current_turn, policy_plan, now=551)
         policy_semantics = seed_artifact_policy_semantics(
             connector,
-            artifact_algorithm_version=1,
-            max_image_short_side=2048,
-            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+            artifact_algorithm_version=2,
+            adapter_id=_ARTIFACT_ADAPTER_ID,
+            policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
         )
         assert policy_semantics.policy_component_sha256 == policy_plan.value_sha256
     connector.execute(

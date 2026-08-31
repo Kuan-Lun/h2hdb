@@ -50,7 +50,7 @@ def _ddl_identifier(value: str) -> str:
 
 
 EPOCH = 3
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CONTROL_RELATION = "schema_epoch_control"
 CONTROL_TABLE = "h2hdb_schema_epoch"
 _SAFE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")

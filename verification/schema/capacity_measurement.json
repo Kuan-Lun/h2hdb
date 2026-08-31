@@ -1,5 +1,5 @@
 {
-  "benchmark_script_sha256": "c18333344bb0338555d8ce1ba4101f9f6392c2ed7bc157a53b3695324bbe67d8",
+  "benchmark_script_sha256": "da8ea0552e06ee7c9e34e262b2cc79db5b010fbea7cb691bcc23fca9cc5d0a59",
   "execution_mode": "testcontainers",
   "innodb_page_size": 16384,
   "insert_batch_size": 5000,
@@ -9,18 +9,18 @@
   "measurement_version": 1,
   "registry": {
     "actual_rows": 50000,
-    "data_bytes": 68960256,
+    "data_bytes": 5783552,
     "engine": "INNODB",
-    "index_bytes": 79888384,
-    "information_schema_estimated_rows": 49258,
-    "key_distribution": "sha256_counter_stream_fingerprint_v1",
-    "physical_shape_sha256": "3d5c79eec6365f436b561f6e95f798ffba3b41c0844a1d79c7645b086db1e0e3",
-    "relation": "artifact_producer_fingerprint",
+    "index_bytes": 12681216,
+    "information_schema_estimated_rows": 49638,
+    "key_distribution": "bit_reversed_u63_policy_id_v1",
+    "physical_shape_sha256": "b98d080c99ae38cea7660aae96b5350234a8dcccc63e0e69f4ce5f61da418fff",
+    "relation": "analysis_policy",
     "row_count": 50000,
     "row_format": "DYNAMIC",
-    "row_generator": "maximum_width_artifact_producer_v1",
+    "row_generator": "maximum_width_analysis_policy_v1",
     "table_collation": "utf8mb4_nopad_bin",
-    "total_bytes": 148848640
+    "total_bytes": 18464768
   },
   "seed": 95965496280988374325193972463257083697,
   "source_scope": {
@@ -28,7 +28,7 @@
     "data_bytes": 48906240,
     "engine": "INNODB",
     "index_bytes": 158875648,
-    "information_schema_estimated_rows": 290241,
+    "information_schema_estimated_rows": 311514,
     "key_distribution": "sha256_coordinate_stream_scope_and_root_v1",
     "physical_shape_sha256": "451217bbf9669fa2024bdbd183c59fb03a905810fc58cffde3dbf5f2d5fd6019",
     "relation": "source_scope",
@@ -42,8 +42,8 @@
     "actual_rows": 1500000,
     "data_bytes": 157810688,
     "engine": "INNODB",
-    "index_bytes": 146276352,
-    "information_schema_estimated_rows": 1496682,
+    "index_bytes": 145227776,
+    "information_schema_estimated_rows": 1703633,
     "key_distribution": "independent_sha256_coordinate_request_and_staging_uuid_domains_v2",
     "physical_shape_sha256": "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227",
     "relation": "gallery_observation_staging_request",
@@ -53,15 +53,15 @@
     "row_generator": "different_domain_churn_then_five_then_sixth_requests_v2",
     "staging_id_count": 300000,
     "table_collation": "utf8mb4_nopad_bin",
-    "total_bytes": 304087040
+    "total_bytes": 303038464
   },
   "staging_churn_empty": {
     "actual_rows": 0,
-    "data_bytes": 49299456,
+    "data_bytes": 29376512,
     "delete_commit_count": 300,
     "deleted_rows": 1500000,
     "engine": "INNODB",
-    "index_bytes": 40910848,
+    "index_bytes": 24133632,
     "information_schema_estimated_rows": 0,
     "insert_commit_count": 300,
     "inserted_rows": 1500000,
@@ -72,7 +72,7 @@
     "row_format": "DYNAMIC",
     "row_generator": "different_domain_churn_then_five_then_sixth_requests_v2",
     "table_collation": "utf8mb4_nopad_bin",
-    "total_bytes": 90210304
+    "total_bytes": 53510144
   },
   "staging_churn_full": {
     "actual_rows": 1500000,
@@ -94,7 +94,7 @@
     "data_bytes": 189267968,
     "engine": "INNODB",
     "index_bytes": 169345024,
-    "information_schema_estimated_rows": 1783768,
+    "information_schema_estimated_rows": 1999912,
     "key_distribution": "independent_sha256_coordinate_request_and_staging_uuid_domains_v2",
     "physical_shape_sha256": "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227",
     "relation": "gallery_observation_staging_request",

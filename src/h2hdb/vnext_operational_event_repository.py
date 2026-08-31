@@ -359,16 +359,10 @@ class OperationalEffectRepository:
             raise OperationalEffectCorruptionError(
                 "operational preparation build changed during authorization"
             )
-        cap = row.max_batch_rows
-        if isinstance(effects, (bytes, bytearray, str)) or not isinstance(
-            effects, Sequence
-        ):
-            raise TypeError("effects must be a bounded sequence of typed effects")
-        if len(effects) > cap:
-            raise OperationalBatchLimitError(
-                f"effect batch has {len(effects)} rows; policy permits {cap}"
-            )
-        exact_effects = _require_effects(effects)
+        exact_effects = _require_effects(
+            effects,
+            max_rows=row.max_batch_rows,
+        )
 
         request_frame = _effect_request_frame(preparation, exact_effects)
         batch_key = _digest(_BATCH_KEY_DOMAIN, request_frame)
@@ -1029,23 +1023,31 @@ def _authorize_build(
 
 
 def _require_effects(
-    effects: Sequence[OperationalEffect],
+    effects: object,
+    *,
+    max_rows: int,
 ) -> tuple[OperationalEffect, ...]:
     if isinstance(effects, (bytes, bytearray, str)) or not isinstance(
         effects, Sequence
     ):
         raise TypeError("effects must be a bounded sequence of typed effects")
-    exact = tuple(effects)
-    for effect in exact:
+    if len(effects) > max_rows:
+        raise OperationalBatchLimitError(
+            f"effect batch has {len(effects)} rows; policy permits {max_rows}"
+        )
+    exact: list[OperationalEffect] = []
+    for effect in effects:
         if type(effect) not in {RemovedGid, DeletionConsumption}:
             raise TypeError(
                 "effects must contain only RemovedGid or DeletionConsumption"
             )
+        assert isinstance(effect, (RemovedGid, DeletionConsumption))
         # A frozen command can still be changed with ``object.__setattr__``.
         # Re-run its exact physical-domain guards before deriving any event
         # identity or binding subtype values.
         effect.__post_init__()
-    return exact
+        exact.append(effect)
+    return tuple(exact)
 
 
 def _require_batch_cap(value: object) -> int:

@@ -1788,6 +1788,15 @@ _CLEANUP_TARGET_SHAPES = {
         "h2hdb.cleanup.artifact_blob.v1",
         ("AB_ROOT",),
     ),
+    "STORAGE_OBJECT_KEY": (
+        "storage_object_key_identity",
+        ("storage_object_key_sha256",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "storage_object_key_unreferenced_v1",
+        "storage_object_key_retention_roots_v1",
+        "h2hdb.cleanup.storage_object_key.v1",
+        ("SK_SEGMENT", "SK_ROOT"),
+    ),
     "CANONICAL_VALUE": (
         "canonical_value_allocation_anchor",
         ("value_sha256",),
@@ -1916,6 +1925,7 @@ _CLEANUP_SELECTION_ORDERS = {
     "OPERATIONAL_PREPARATION": "uuid_first_byte_then_uuid_v1",
     "GALLERY_OBSERVATION": "gallery_id_mod_256_then_gallery_id_observation_id_v1",
     "ARTIFACT_BLOB": "sha256_prefix_then_candidate_key_v1",
+    "STORAGE_OBJECT_KEY": "sha256_prefix_then_candidate_key_v1",
     "CANONICAL_VALUE": "sha256_prefix_then_candidate_key_v1",
     "CONTENT_BLOB": "sha256_prefix_then_candidate_key_v1",
     "GALLERY_OBSERVATION_PAGE": "sha256_prefix_then_candidate_key_v1",
@@ -1958,6 +1968,7 @@ _CLEANUP_FROZEN_ROOT_DIGEST_ATTRIBUTES = {
     "page_sha256",
     "publication_key",
     "source_identity_sha256",
+    "storage_object_key_sha256",
     "value_sha256",
 }
 
@@ -2138,7 +2149,7 @@ def check_cleanup_reachability_v1(
                     "predecessor_blockers",
                 }
             )
-        if kind in {"ARTIFACT_BLOB", "CANONICAL_VALUE"}:
+        if kind in {"ARTIFACT_BLOB", "STORAGE_OBJECT_KEY", "CANONICAL_VALUE"}:
             extra_allowed.update({"owned_prunable_intermediates", "required_via_paths"})
         if kind in {
             "PUBLICATION_COMMIT",
@@ -2235,7 +2246,7 @@ def check_cleanup_reachability_v1(
             child_relations.update(relations)
         if root not in child_relations or root not in tuple(phases[-1]["relations"]):
             raise ValueError(f"cleanup target {kind} root is not in its terminal phase")
-        if kind in {"ARTIFACT_BLOB", "CANONICAL_VALUE"}:
+        if kind in {"ARTIFACT_BLOB", "STORAGE_OBJECT_KEY", "CANONICAL_VALUE"}:
             raw_owned = target.get("owned_prunable_intermediates")
             if not isinstance(raw_owned, list) or not all(
                 isinstance(value, str) and value for value in raw_owned
@@ -2410,6 +2421,14 @@ def check_cleanup_reachability_v1(
     candidate = by_kind["PUBLICATION_CANDIDATE"]
     expected_candidate_phase_relations = [
         [
+            "prepared_page",
+            "prepared_thumbnail",
+            "prepared_storage_object",
+            "prepared_resource_blob",
+            "search_posting",
+            "catalog_page",
+            "catalog_thumbnail",
+            "catalog_storage_object",
             "publication_candidate_preparation",
             "publication_candidate_projection_seal",
             "publication_batch_receipt_stored",
@@ -2417,7 +2436,12 @@ def check_cleanup_reachability_v1(
             "catalog_publication_storage",
             "catalog_publication_download_time",
         ],
-        ["prepared_artifact", "catalog_contributor"],
+        [
+            "prepared_artifact",
+            "prepared_artifact_descriptor",
+            "search_document",
+            "catalog_contributor",
+        ],
         ["artifact_input"],
         ["publication_checkpoint"],
         ["publication_selection_storage", "catalog_publication_order"],
@@ -4957,6 +4981,7 @@ def _validate_bootstrap(
         "OPERATIONAL_PREPARATION": "93f08650a665d7d4d98b72e183ed7e74",
         "GALLERY_OBSERVATION": "a5ea90668cd7204ebc7d72e131405102",
         "ARTIFACT_BLOB": "8d0db7c218d2a04b41580511c91cdd19",
+        "STORAGE_OBJECT_KEY": "05dd7aff29baa7ad5df6490376a9728f",
         "CANONICAL_VALUE": "089873b3842efcfad4669d8ca21ac3b1",
         "CONTENT_BLOB": "b25317c47fc6b84dc61e079bd6dbe8bd",
         "GALLERY_OBSERVATION_PAGE": "c12831ed560200c722ead234511f58cd",

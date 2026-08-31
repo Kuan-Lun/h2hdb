@@ -1104,7 +1104,7 @@ class VNextIngestFacade:
         self,
         lease_duration_microseconds: int,
     ) -> VNextCurrentOnlyMaintenanceOutcome:
-        """Advance one bounded gallery/CBZ current-only fixed-point attempt.
+        """Advance one bounded publication/resource current-only fixed point.
 
         Each durable cleanup transaction selects at most 256 logical cleanup
         keys/families; a key can execute a schema-fixed bounded compound delete
@@ -1117,7 +1117,7 @@ class VNextIngestFacade:
         21-target dependency-priority scan from its head.
 
         File-derived hash-cache expiration is intentionally separate from this
-        gallery/CBZ fixed point.  It requires an explicit nonzero age policy;
+        publication/resource fixed point.  It requires an explicit nonzero age policy;
         fresh cache rows therefore neither prevent ``DONE`` nor get deleted by
         a resident idle poll.
         """
@@ -1509,7 +1509,7 @@ def _same_resolved_policy(
         left.manifest_policy_id,
         left.analysis_policy_id,
         left.artifact_policy_sha256,
-        left.producer_fingerprint_sha256,
+        left.artifact_policy_fingerprint_sha256,
         left.display_title_policy_id,
         left.title_sort_policy_id,
         left.operational_policy_id,
@@ -1518,7 +1518,7 @@ def _same_resolved_policy(
         right.manifest_policy_id,
         right.analysis_policy_id,
         right.artifact_policy_sha256,
-        right.producer_fingerprint_sha256,
+        right.artifact_policy_fingerprint_sha256,
         right.display_title_policy_id,
         right.title_sort_policy_id,
         right.operational_policy_id,

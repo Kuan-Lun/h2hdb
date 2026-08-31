@@ -26,8 +26,7 @@ from h2hdb import (
 )
 from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
-    VNextArtifactProducer,
-    VNextArtifactStoragePolicy,
+    VNextArtifactAdapterPolicy,
     VNextIngestPolicy,
     VNextIngestSession,
     VNextResolvedIngestPolicy,
@@ -78,23 +77,19 @@ def _config(path: Path) -> CoreConfig:
 
 
 def _policy() -> VNextResolvedIngestPolicy:
-    producer = VNextArtifactProducer(
-        b"analysis-test-writer",
-        b"cpython-test-abi",
-        b"pillow-test-build",
-        b"libjpeg-test-build",
-        b"zlib-test-build",
+    artifact = VNextArtifactAdapterPolicy(
+        adapter_id=b"test-artifact-adapter",
+        policy_fingerprint_sha256=b"p" * 32,
     )
     natural = VNextIngestPolicy(
-        producer=producer,
-        storage=VNextArtifactStoragePolicy(b"analysis-test-storage"),
+        artifact=artifact,
     )
     return VNextResolvedIngestPolicy(
         natural,
         1,
         1,
         natural.artifact_policy_sha256,
-        natural.producer_fingerprint_sha256,
+        natural.artifact_policy_fingerprint_sha256,
         1,
         1,
         1,

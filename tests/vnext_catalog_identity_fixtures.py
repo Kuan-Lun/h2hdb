@@ -45,6 +45,7 @@ def seed_gallery_observation_file(
     file_no: int,
     file_key: bytes,
     file_sha256: bytes,
+    artifact_role: bytes = b"page",
 ) -> None:
     key = (gallery_id, observation_id, file_key)
     connector.execute(
@@ -63,6 +64,12 @@ def seed_gallery_observation_file(
         "(gallery_id, observation_id, file_key, file_sha256) "
         "VALUES (%s, %s, %s, %s)",
         (*key, file_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_artifact_role "
+        "(gallery_id, observation_id, file_key, artifact_role) "
+        "VALUES (%s, %s, %s, %s)",
+        (*key, artifact_role),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_seals "

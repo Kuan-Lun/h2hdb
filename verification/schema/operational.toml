@@ -264,7 +264,7 @@ writer_hook = "h2hdb.cleanup.catalog_publication.v1"
 retention_roots = ["the publication occurrence for the current publication_commit_head receipt", "every prior occurrence while the current publication head receipt is DB_COMMITTED or otherwise not PUBLISHED", "every occurrence whose own revision lacks a PUBLISHED receipt", "every predecessor revision pinned through publication_candidate_base_publication_commit by the live catalog_working_candidate", "every predecessor revision pinned through source_build_base_publication_commit by the live source_working_build", "the exact catalog revision descriptor and sealed commit audit families, which outlive payload cleanup at O(revision) cardinality"]
 retained_fk_edges = []
 phases = [
-  { phase = "CP_STORAGE", order = 1, relations = ["catalog_publication_storage"] },
+  { phase = "CP_STORAGE", order = 1, relations = ["search_posting", "search_document", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "catalog_publication_storage"] },
   { phase = "CP_DOWNLOAD_TIME", order = 2, relations = ["catalog_publication_download_time"] },
   { phase = "CP_CONTRIBUTOR", order = 3, relations = ["catalog_contributor"] },
   { phase = "CP_ORDER", order = 4, relations = ["catalog_publication_order"] },
@@ -327,7 +327,7 @@ retained_fk_edges = [
   { relation = "catalog_publication_occurrence_identity", attributes = ["revision"] },
   { relation = "publication_commit", attributes = ["revision"] },
 ]
-phases = [{ phase = "CRD_ROOT", order = 1, relations = ["catalog_revision_descriptor"] }]
+phases = [{ phase = "CRD_ROOT", order = 1, relations = ["discovery_seal", "language_facet_order", "subject_facet_order", "contributor_facet_order", "catalog_revision_descriptor"] }]
 
 [[cleanup_target]]
 target_kind = "SOURCE_REVISION_DESCRIPTOR"
@@ -391,8 +391,8 @@ conditional_blockers = [
 ]
 machine_gates = [{ id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" }]
 phases = [
-  { phase = "PC_SEALS", order = 1, relations = ["publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
-  { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "catalog_contributor"] },
+  { phase = "PC_SEALS", order = 1, relations = ["prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
+  { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "prepared_artifact_descriptor", "search_document", "catalog_contributor"] },
   { phase = "PC_INPUT", order = 3, relations = ["artifact_input"] },
   { phase = "PC_CHECKPOINT", order = 4, relations = ["publication_checkpoint"] },
   { phase = "PC_SELECTION_STORAGE", order = 5, relations = ["publication_selection_storage", "catalog_publication_order"] },
@@ -456,7 +456,7 @@ phases = [
   { phase = "GO_FILESYSTEM_SEAL", order = 9, relations = ["gallery_observation_file_filesystem_seal"] },
   { phase = "GO_FILESYSTEM_VALUES", order = 10, relations = ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"] },
   { phase = "GO_FILESYSTEM_ANCHOR", order = 11, relations = ["gallery_observation_file_filesystem_anchor"] },
-  { phase = "GO_FILES", order = 12, relations = ["gallery_observation_file_seal", "gallery_observation_file_file_sha256", "gallery_observation_file_file_no", "gallery_observation_file_anchor"] },
+  { phase = "GO_FILES", order = 12, relations = ["gallery_observation_file_seal", "gallery_observation_file_file_sha256", "gallery_observation_file_file_no", "gallery_observation_file_artifact_role", "gallery_observation_file_anchor"] },
   { phase = "GO_OBSERVATION_FACTS", order = 13, relations = ["gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"] },
   { phase = "GO_DESCRIPTOR", order = 14, relations = ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"] },
   { phase = "GO_ROOT", order = 15, relations = ["gallery_observation_allocation"] },
@@ -499,12 +499,37 @@ key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "artifact_blob_unreferenced_v1"
 blocker_query_id = "artifact_blob_retention_roots_v1"
 writer_hook = "h2hdb.cleanup.artifact_blob.v1"
-retention_roots = ["prepared_artifact.artifact_sha256", "catalog_artifact.artifact_sha256"]
-retained_fk_edges = [{ relation = "prepared_artifact", attributes = ["artifact_sha256"] }, { relation = "catalog_artifact", attributes = ["artifact_sha256"] }]
+retention_roots = ["prepared_resource_blob.storage_object_sha256", "prepared_artifact_descriptor.artifact_sha256", "catalog_artifact.artifact_sha256", "catalog_storage_object.storage_object_sha256"]
+retained_fk_edges = [
+  { relation = "prepared_resource_blob", attributes = ["storage_object_sha256"] },
+  { relation = "prepared_artifact_descriptor", attributes = ["artifact_sha256"] },
+  { relation = "catalog_artifact", attributes = ["artifact_sha256"] },
+  { relation = "catalog_storage_object", attributes = ["storage_object_sha256"] },
+]
 owned_prunable_intermediates = []
 required_via_paths = []
 phases = [
   { phase = "AB_ROOT", order = 1, relations = ["artifact_blob"] },
+]
+
+[[cleanup_target]]
+target_kind = "STORAGE_OBJECT_KEY"
+mode = "SWEEP"
+sweep_shard_count = 256
+selection_order_id = "sha256_prefix_then_candidate_key_v1"
+root_relation = "storage_object_key_identity"
+root_key = ["storage_object_key_sha256"]
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+eligible_predicate_id = "storage_object_key_unreferenced_v1"
+blocker_query_id = "storage_object_key_retention_roots_v1"
+writer_hook = "h2hdb.cleanup.storage_object_key.v1"
+retention_roots = ["prepared_artifact.storage_object_key_sha256", "catalog_storage_object.storage_object_key_sha256"]
+retained_fk_edges = [{ relation = "prepared_artifact", attributes = ["storage_object_key_sha256"] }, { relation = "catalog_storage_object", attributes = ["storage_object_key_sha256"] }]
+owned_prunable_intermediates = ["storage_object_key_segment"]
+required_via_paths = []
+phases = [
+  { phase = "SK_SEGMENT", order = 1, relations = ["storage_object_key_segment"] },
+  { phase = "SK_ROOT", order = 2, relations = ["storage_object_key_identity"] },
 ]
 
 [[cleanup_target]]
@@ -547,8 +572,12 @@ retained_fk_edges = [
   { relation = "catalog_contributor", attributes = ["contributor_name_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["summary_sha256"] },
   { relation = "catalog_publication_storage", attributes = ["language_sha256"] },
+  { relation = "language_facet_order", attributes = ["language_sha256"] },
+  { relation = "subject_facet_order", attributes = ["tag_id"] },
+  { relation = "contributor_facet_order", attributes = ["contributor_name_sha256"] },
+  { relation = "search_posting", attributes = ["value_sha256"] },
 ]
-owned_prunable_intermediates = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input", "artifact_policy_semantics", "canonical_value_identity", "canonical_value_page_parent", "canonical_value_page_seal", "canonical_value_page_coordinate", "canonical_value_page_payload", "canonical_value_page_subtree_item_count", "canonical_value_page_anchor", "canonical_value_allocation_seal", "canonical_value_allocation_allocated_at", "canonical_value_allocation_byte_count", "canonical_value_allocation_digest_domain"]
+owned_prunable_intermediates = ["search_lexeme", "display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input", "artifact_policy_semantics", "canonical_value_identity", "canonical_value_page_parent", "canonical_value_page_seal", "canonical_value_page_coordinate", "canonical_value_page_payload", "canonical_value_page_subtree_item_count", "canonical_value_page_anchor", "canonical_value_allocation_seal", "canonical_value_allocation_allocated_at", "canonical_value_allocation_byte_count", "canonical_value_allocation_digest_domain"]
 operational_blockers = [{ relation = "hash_cache_observation", attributes = ["source_identity_sha256"] }, { relation = "hash_cache_observation", attributes = ["fingerprint_sha256"] }, { relation = "canonical_value_upload", attributes = ["value_sha256"] }]
 machine_gates = [{ id = "catalog.current_source_snapshot_manifest(source_revision,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.live_source_working_analysis_snapshot_manifest(analysis_id,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "catalog.live_publication_candidate_snapshot_manifest(candidate_id,snapshot_manifest_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.canonical_value_upload(generation,value_sha256)", semantic_obligation_id = "catalog.retention.v2" }, { id = "operational.canonical_value_maintenance_fence", semantic_obligation_id = "catalog.retention.v2" }]
 phase_selectors = [
@@ -561,7 +590,7 @@ phase_selectors = [
 ]
 required_via_paths = []
 phases = [
-  { phase = "CV_DICTIONARY", order = 1, relations = ["display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"] },
+  { phase = "CV_DICTIONARY", order = 1, relations = ["search_lexeme", "display_title_choice", "title_sort", "source_scope", "source_locator_identity", "tag_term", "source_snapshot_manifest_identity", "artifact_policy", "artifact_semantic_input"] },
   { phase = "CV_SEMANTIC_LINK", order = 2, relations = ["artifact_policy_semantics"] },
   { phase = "CV_IDENTITY", order = 3, relations = ["canonical_value_identity"] },
   { phase = "CV_PARENT_DESCRIPTOR", order = 4, relations = ["canonical_value_page_parent", "canonical_value_page_seal"] },
@@ -1329,6 +1358,16 @@ lifecycle = "building_only"
 relation = "cleanup_target_kind"
 value = [{ attribute = "target_kind", type = "ascii_enum", text = "ARTIFACT_BLOB" }]
 invariant = "ARTIFACT_BLOB uses exactly 256 fixed shard keys; individual digests are batch-selected by first byte then digest and never represented by cleanup jobs."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-target.storage-object-key.v1"
+columns = ["target_kind"]
+values = ["STORAGE_OBJECT_KEY"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_target_kind"
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "STORAGE_OBJECT_KEY" }]
+invariant = "STORAGE_OBJECT_KEY uses exactly 256 fixed shard keys and removes only unreferenced opaque key families child-first."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.canonical-value.v1"
@@ -2271,6 +2310,26 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "AB_ROOT" }, { attri
 invariant = "AB_ROOT removes the complete artifact blob and mandatory locator row in one phase."
 
 [[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sk-segment.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SK_SEGMENT", "STORAGE_OBJECT_KEY", "1"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SK_SEGMENT" }, { attribute = "target_kind", type = "ascii_enum", text = "STORAGE_OBJECT_KEY" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Delete every bounded opaque key segment before its identity."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sk-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SK_ROOT", "STORAGE_OBJECT_KEY", "2"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SK_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "STORAGE_OBJECT_KEY" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Delete an unreferenced opaque storage-object key identity only after all segments are absent."
+
+[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cv-semantic-link.v1"
 columns = ["phase", "target_kind", "phase_order"]
 values = ["CV_SEMANTIC_LINK", "CANONICAL_VALUE", "2"]
@@ -2658,6 +2717,18 @@ shard_end = 255
 key_codec = "target_kind_tag16_u64be_zero8_v1"
 target_kind_tag_hex = "8d0db7c218d2a04b41580511c91cdd19"
 invariant = "Seed exactly 256 fixed sweep targets; create cleanup jobs only for shards polled or known to contain work, never per data row."
+
+[[bootstrap_seed_range]]
+id = "h2hdb.operational.cleanup-sweep.storage-object-key.v1"
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_sweep_target"
+target_kind = "STORAGE_OBJECT_KEY"
+shard_start = 0
+shard_end = 255
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+target_kind_tag_hex = "05dd7aff29baa7ad5df6490376a9728f"
+invariant = "Seed exactly 256 opaque storage-key digest shards for bounded child-first orphan collection."
 
 [[bootstrap_seed_range]]
 id = "h2hdb.operational.cleanup-sweep.canonical-value.v1"

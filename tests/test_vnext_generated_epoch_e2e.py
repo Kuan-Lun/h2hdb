@@ -57,7 +57,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_TYPE = 'BASE TABLE'
-            """) == (218,)
+            """) == (236,)
         mariadb_foreign_keys = connector.fetch_all(
             """
             SELECT CONSTRAINT_NAME, COLUMN_NAME,
@@ -110,7 +110,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         FROM sqlite_master
         WHERE type = 'table'
           AND name NOT LIKE 'sqlite_%'
-    """) == (218,)
+    """) == (236,)
     sqlite_foreign_keys = {
         (str(row[2]), str(row[3]), str(row[4]))
         for row in connector.fetch_all(
@@ -143,7 +143,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
 
     initialized = admin.initialize()
     assert initialized.epoch == ARTIFACT["epoch"] == 3
-    assert initialized.schema_version == ARTIFACT["schema_version"] == 1
+    assert initialized.schema_version == ARTIFACT["schema_version"] == 2
     assert initialized.state == "READY"
     assert initialized.transitioned_to_ready
 
@@ -214,7 +214,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
     bootstrap_seeds = cast(Sequence[object], backends[backend]["bootstrap_seeds"])
-    assert len(bootstrap_seeds) == 5_833
+    assert len(bootstrap_seeds) == 6_094
 
 
 def test_default_generated_epoch_end_to_end_on_sqlite(

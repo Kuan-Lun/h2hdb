@@ -19,7 +19,6 @@ from vnext_catalog_identity_fixtures import (
 from vnext_catalog_registry_fixtures import (
     seed_analysis_policy,
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
     seed_source_scope,
@@ -63,6 +62,9 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
 )
 from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork
+
+_ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
+_ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
 def _database(path: Path) -> SQLiteConnector:
@@ -681,6 +683,11 @@ _ALL_ANALYSIS_OVERLAY_TABLES = tuple(
 )
 
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
+    "catalog_search_postings",
+    "catalog_search_documents",
+    "catalog_pages",
+    "catalog_thumbnails",
+    "catalog_storage_objects",
     "catalog_publication_storage",
     "catalog_publication_download_times",
     "catalog_contributors",
@@ -689,6 +696,15 @@ _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
     "catalog_subjects",
     "catalog_artifacts",
     "catalog_publication_occurrence_identities",
+)
+_CATALOG_PUBLICATION_PAYLOAD_COUNTS = {
+    table: 1 for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES
+}
+_CATALOG_PUBLICATION_PAYLOAD_COUNTS.update(
+    {
+        "catalog_search_postings": 0,
+        "catalog_storage_objects": 2,
+    }
 )
 
 
@@ -835,8 +851,55 @@ def _seed_catalog_publication_cleanup_fixture(
                 (
                     "INSERT INTO catalog_artifacts "
                     "(revision, publication_key, artifact_sha256, "
-                    "artifact_semantics_sha256) VALUES (%s, %s, %s, %s)",
-                    (revision, publication_key, b"b" * 32, b"m" * 32),
+                    "artifact_semantics_sha256, artifact_name, media_type, "
+                    "page_count) VALUES (%s, %s, %s, %s, %s, %s, 1)",
+                    (
+                        revision,
+                        publication_key,
+                        b"b" * 32,
+                        b"m" * 32,
+                        b"artifact.bin",
+                        b"application/octet-stream",
+                    ),
+                ),
+                (
+                    "INSERT INTO catalog_storage_objects "
+                    "(revision, publication_key, resource_kind, "
+                    "storage_object_key_sha256, storage_object_sha256, "
+                    "size_bytes, modified_at) VALUES (%s, %s, %s, %s, %s, 4, 1)",
+                    (revision, publication_key, b"acquisition", b"k" * 32, b"b" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_storage_objects "
+                    "(revision, publication_key, resource_kind, "
+                    "storage_object_key_sha256, storage_object_sha256, "
+                    "size_bytes, modified_at) VALUES (%s, %s, %s, %s, %s, 4, 1)",
+                    (revision, publication_key, b"thumbnail", b"q" * 32, b"h" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_pages "
+                    "(revision, publication_key, resource_kind, page_index, "
+                    "extent_offset, extent_length, media_type, image_sha256, "
+                    "width, height) VALUES (%s, %s, %s, 0, 0, 4, %s, %s, 1, 1)",
+                    (
+                        revision,
+                        publication_key,
+                        b"acquisition",
+                        b"image/jpeg",
+                        b"i" * 32,
+                    ),
+                ),
+                (
+                    "INSERT INTO catalog_thumbnails "
+                    "(revision, publication_key, resource_kind, extent_offset, "
+                    "extent_length, media_type, image_sha256, width, height) "
+                    "VALUES (%s, %s, %s, 0, 4, %s, %s, 1, 1)",
+                    (revision, publication_key, b"thumbnail", b"image/jpeg", b"h" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_search_documents "
+                    "(revision, publication_key, row_count) VALUES (%s, %s, 0)",
+                    (revision, publication_key),
                 ),
             )
         )
@@ -1311,18 +1374,46 @@ def _seed_prepared_artifact_family(
     artifact_sha256: bytes,
     state: str,
 ) -> None:
-    _fixture_rows(
-        connector,
-        [
+    resource_kind = b"acquisition"
+    storage_key_sha256 = b"k" * 32
+    statements: list[tuple[str, tuple[object, ...]]] = [
+        (
+            "INSERT INTO catalog_artifact_blobs "
+            "(artifact_sha256, size_bytes) VALUES (%s, 4)",
+            (artifact_sha256,),
+        ),
+        (
+            "INSERT INTO catalog_prepared_resource_blob "
+            "(candidate_id, publication_key, resource_kind, storage_object_sha256) "
+            "VALUES (%s, %s, %s, %s)",
+            (candidate_id, publication_key, resource_kind, artifact_sha256),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifacts "
+            "(candidate_id, publication_key, resource_kind, "
+            "storage_object_key_sha256, storage_generation, protection_token, state) "
+            "VALUES (%s, %s, %s, %s, 7, %s, %s)",
             (
-                "INSERT INTO catalog_prepared_artifacts "
-                "(candidate_id, publication_key, artifact_sha256, "
-                "storage_codec_version, storage_generation, protection_token, state) "
-                "VALUES (%s, %s, %s, 1, 7, %s, %s)",
-                (candidate_id, publication_key, artifact_sha256, b"t" * 184, state),
+                candidate_id,
+                publication_key,
+                resource_kind,
+                storage_key_sha256,
+                b"t" * 32,
+                state,
             ),
-        ],
-    )
+        ),
+    ]
+    if state != "PENDING":
+        statements.append(
+            (
+                "INSERT INTO catalog_prepared_storage_objects "
+                "(candidate_id, publication_key, resource_kind, "
+                "storage_object_sha256, size_bytes, modified_at) "
+                "VALUES (%s, %s, %s, %s, 4, 1)",
+                (candidate_id, publication_key, resource_kind, artifact_sha256),
+            )
+        )
+    _fixture_rows(connector, statements)
 
 
 def _prepared_artifact_family_rows(
@@ -1334,6 +1425,16 @@ def _prepared_artifact_family_rows(
     return (
         connector.fetch_all(
             "SELECT * FROM catalog_prepared_artifacts "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            (candidate_id, publication_key),
+        ),
+        connector.fetch_all(
+            "SELECT * FROM catalog_prepared_resource_blob "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            (candidate_id, publication_key),
+        ),
+        connector.fetch_all(
+            "SELECT * FROM catalog_prepared_storage_objects "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
         ),
@@ -2220,7 +2321,7 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
         connector.close()
 
 
-def test_all_twenty_two_strategies_match_the_closed_phase_registry(
+def test_all_twenty_three_strategies_match_the_closed_phase_registry(
     tmp_path: Path,
 ) -> None:
     expected = {
@@ -2324,6 +2425,7 @@ def test_all_twenty_two_strategies_match_the_closed_phase_registry(
             "GOS_ROOT",
         ),
         CleanupTargetKind.ARTIFACT_BLOB: ("AB_ROOT",),
+        CleanupTargetKind.STORAGE_OBJECT_KEY: ("SK_SEGMENT", "SK_ROOT"),
         CleanupTargetKind.CANONICAL_VALUE: (
             "CV_DICTIONARY",
             "CV_SEMANTIC_LINK",
@@ -4467,8 +4569,8 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
         results = _drain(connector, gate, cycle)
 
         assert results[-1].cycle_complete
-        assert sum(result.row_count for result in results) == len(
-            _CATALOG_PUBLICATION_PAYLOAD_TABLES
+        assert sum(result.row_count for result in results) == sum(
+            _CATALOG_PUBLICATION_PAYLOAD_COUNTS.values()
         )
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
             if table in {
@@ -4490,7 +4592,7 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
             assert connector.fetch_one(
                 selector,
                 (2,),
-            ) == (1,)
+            ) == (_CATALOG_PUBLICATION_PAYLOAD_COUNTS[table],)
         assert connector.fetch_one(
             "SELECT publication_count FROM catalog_revision_descriptors "
             "WHERE revision = 1"
@@ -4809,6 +4911,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
 
     canonical = cleanup_module._STATIC_PLANS[CleanupTargetKind.CANONICAL_VALUE].phases
     assert tuple(spec.table for spec in canonical["CV_DICTIONARY"]) == (
+        "catalog_search_lexemes",
         "catalog_display_title_choices",
         "catalog_title_sorts",
         "catalog_source_scopes",
@@ -4818,13 +4921,13 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_artifact_policies",
         "catalog_artifact_semantic_inputs",
     )
-    source_scope = canonical["CV_DICTIONARY"][2]
+    source_scope = canonical["CV_DICTIONARY"][3]
     assert source_scope.primary_key == ("scope_key",)
     assert "catalog_source_scopes AS c" in source_scope.source
     assert source_scope.delete_sql == (
         "DELETE FROM catalog_source_scopes WHERE scope_key = %s",
     )
-    tag_term = canonical["CV_DICTIONARY"][4]
+    tag_term = canonical["CV_DICTIONARY"][5]
     assert tag_term.delete_sql == ("DELETE FROM catalog_tag_terms WHERE tag_id = %s",)
     assert tuple(spec.table for spec in canonical["CV_SEMANTIC_LINK"]) == (
         "catalog_artifact_policy_semantics",
@@ -5222,19 +5325,29 @@ def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
 
         def record_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
             statement = sql.lstrip()
-            if statement.startswith("DELETE FROM catalog_prepared_artifacts"):
+            if statement.startswith(
+                (
+                    "DELETE FROM catalog_prepared_storage_objects",
+                    "DELETE FROM catalog_prepared_resource_blob",
+                    "DELETE FROM catalog_prepared_artifacts",
+                )
+            ):
                 family_deletes.append(statement.split()[2])
             return original_execute_affected(sql, data)
 
         with patch.object(connector, "execute_affected", side_effect=record_delete):
             results = _drain(connector, gate, cycle)
-        assert family_deletes == ["catalog_prepared_artifacts"]
-        assert results[-1].deleted_count == 2
+        assert family_deletes == [
+            "catalog_prepared_storage_objects",
+            "catalog_prepared_resource_blob",
+            "catalog_prepared_artifacts",
+        ]
+        assert results[-1].deleted_count == 4
         assert _prepared_artifact_family_rows(
             connector,
             candidate_id=candidate_id,
             publication_key=publication_key,
-        ) == ([],)
+        ) == ([], [], [])
     finally:
         connector.close()
 
@@ -5302,8 +5415,16 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                 (
                     "INSERT INTO catalog_artifacts "
                     "(revision, publication_key, artifact_sha256, "
-                    "artifact_semantics_sha256) VALUES (%s, %s, %s, %s)",
-                    (revision, publication_key, b"a" * 32, b"m" * 32),
+                    "artifact_semantics_sha256, artifact_name, media_type, "
+                    "page_count) VALUES (%s, %s, %s, %s, %s, %s, 1)",
+                    (
+                        revision,
+                        publication_key,
+                        b"a" * 32,
+                        b"m" * 32,
+                        b"artifact.bin",
+                        b"application/octet-stream",
+                    ),
                 ),
             ],
         )
@@ -5913,6 +6034,12 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                     "(gallery_id, observation_id, file_key, file_sha256) "
                     "VALUES (24, 2, %s, %s)",
                     (b"n" * 32, b"f" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_artifact_role "
+                    "(gallery_id, observation_id, file_key, artifact_role) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"page"),
                 ),
                 (
                     "INSERT INTO catalog_gallery_observation_file_seals "
@@ -6683,23 +6810,22 @@ def test_canonical_cleanup_removes_wide_policy_semantics_atomically(
 ) -> None:
     connector = _database(tmp_path / "canonical-wide-policy.sqlite3")
     try:
-        producer = seed_artifact_producer_fingerprint(connector)
         policy = identity.artifact_policy_digest(
-            1,
-            2048,
-            producer.producer_fingerprint_sha256,
+            2,
+            _ARTIFACT_ADAPTER_ID,
+            _ARTIFACT_POLICY_FINGERPRINT,
         )
         _seed_minimal_canonical_value(
             connector,
             value_sha256=policy,
             page_sha256=b"P" * 32,
-            digest_domain=b"artifact_policy_v2",
+            digest_domain=b"artifact_policy_v3",
         )
         seed_artifact_policy_semantics(
             connector,
-            artifact_algorithm_version=1,
-            max_image_short_side=2048,
-            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+            artifact_algorithm_version=2,
+            adapter_id=_ARTIFACT_ADAPTER_ID,
+            policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
         )
         assert tuple(
             bool(rows) for rows in _artifact_policy_semantics_family_rows(connector)
@@ -6865,7 +6991,7 @@ def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
         protocol_before = _cleanup_protocol_snapshot(connector)
         source_scope_spec = cleanup_module._STATIC_PLANS[
             CleanupTargetKind.CANONICAL_VALUE
-        ].phases["CV_DICTIONARY"][2]
+        ].phases["CV_DICTIONARY"][3]
         tables = tuple(
             statement.split()[2] for statement in source_scope_spec.delete_sql
         )
@@ -7535,23 +7661,22 @@ def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
 ) -> None:
     connector = _database(tmp_path / "canonical-policy-faults.sqlite3")
     try:
-        producer = seed_artifact_producer_fingerprint(connector)
         policy = identity.artifact_policy_digest(
-            1,
-            2048,
-            producer.producer_fingerprint_sha256,
+            2,
+            _ARTIFACT_ADAPTER_ID,
+            _ARTIFACT_POLICY_FINGERPRINT,
         )
         _seed_minimal_canonical_value(
             connector,
             value_sha256=policy,
             page_sha256=b"U" * 32,
-            digest_domain=b"artifact_policy_v2",
+            digest_domain=b"artifact_policy_v3",
         )
         seed_artifact_policy_semantics(
             connector,
-            artifact_algorithm_version=1,
-            max_image_short_side=2048,
-            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+            artifact_algorithm_version=2,
+            adapter_id=_ARTIFACT_ADAPTER_ID,
+            policy_fingerprint_sha256=_ARTIFACT_POLICY_FINGERPRINT,
         )
         gate = _exclusive(connector)
         cycle = _begin(
@@ -7696,8 +7821,10 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
         (
             "catalog_artifacts",
             "INSERT INTO catalog_artifacts "
-            "(revision, publication_key, artifact_sha256, artifact_semantics_sha256) "
-            "VALUES (1, %s, %s, %s)",
+            "(revision, publication_key, artifact_sha256, artifact_semantics_sha256, "
+            "artifact_name, media_type, page_count) "
+            "VALUES (1, %s, %s, %s, X'61727469666163742e62696e', "
+            "X'6170706c69636174696f6e2f6f637465742d73747265616d', 1)",
             (b"p" * 32, b"a" * 32),
         ),
     ),
@@ -8023,18 +8150,19 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
     ("blocker_table", "blocker_sql", "blocker_parameters"),
     (
         (
-            "catalog_prepared_artifacts",
-            "INSERT INTO catalog_prepared_artifacts "
-            "(candidate_id, publication_key, protection_token, artifact_sha256, "
-            "storage_codec_version, storage_generation, state) "
-            "VALUES (%s, %s, %s, %s, 1, 1, 'COMMITTED')",
-            (b"c" * 16, b"p" * 32, b"t" * 184),
+            "catalog_prepared_resource_blob",
+            "INSERT INTO catalog_prepared_resource_blob "
+            "(candidate_id, publication_key, resource_kind, storage_object_sha256) "
+            "VALUES (%s, %s, %s, %s)",
+            (b"c" * 16, b"p" * 32, b"acquisition"),
         ),
         (
             "catalog_artifacts",
             "INSERT INTO catalog_artifacts "
-            "(revision, publication_key, artifact_semantics_sha256, artifact_sha256) "
-            "VALUES (1, %s, %s, %s)",
+            "(revision, publication_key, artifact_semantics_sha256, artifact_sha256, "
+            "artifact_name, media_type, page_count) "
+            "VALUES (1, %s, %s, %s, X'61727469666163742e62696e', "
+            "X'6170706c69636174696f6e2f6f637465742d73747265616d', 1)",
             (b"p" * 32, b"s" * 32),
         ),
     ),

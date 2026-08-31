@@ -5,6 +5,8 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,10 +19,12 @@ import h2hdb.vnext_ingest_publication as publication
 from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
     ArtifactReleaseStorageEvidence,
-    ArtifactStorageKey,
+    CatalogResourceKind,
+    StorageObjectDescriptor,
+    StorageObjectKey,
     VNextIngestSession,
+    VNextLibraryActivationCursor,
     VNextLibraryActivationItem,
-    artifact_storage_key,
 )
 from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_artifact_preparation_repository import ArtifactPreparationRepository
@@ -38,9 +42,8 @@ from h2hdb.vnext_identity import (
 )
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
 from h2hdb.vnext_library_activation_repository import (
-    LibraryActivationArtifactItem,
-    LibraryActivationArtifactPage,
-    LibraryActivationArtifactRepository,
+    LibraryActivationResourcePage,
+    LibraryActivationResourceRepository,
 )
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
@@ -221,7 +224,10 @@ class _LibraryActivationAdapter:
                 revision,
                 self.checkpoint.receipt_id,
                 publication.LibraryActivationStatus.SPOOL,
-                items[-1].publication_key,
+                VNextLibraryActivationCursor(
+                    items[-1].publication_key,
+                    items[-1].resource_kind,
+                ),
             )
 
     def seal(self, revision: int) -> None:
@@ -272,22 +278,43 @@ class _LibraryActivationAdapter:
         )
 
 
-def _library_activation_item(gid: int) -> LibraryActivationArtifactItem:
-    artifact = gid.to_bytes(32, "big")
-    return LibraryActivationArtifactItem(
+def _storage_object(
+    gid: int,
+    resource_kind: CatalogResourceKind = CatalogResourceKind.ACQUISITION,
+) -> StorageObjectDescriptor:
+    return StorageObjectDescriptor(
+        StorageObjectKey(
+            "test-storage-v2",
+            (f"{gid:016x}", resource_kind.value),
+        ),
+        100 + gid,
+        sha256(f"{gid}:{resource_kind.value}".encode()).hexdigest(),
+        datetime(2025, 1, 1, tzinfo=UTC),
+    )
+
+
+def _library_activation_item(
+    gid: int,
+    resource_kind: CatalogResourceKind = CatalogResourceKind.ACQUISITION,
+) -> VNextLibraryActivationItem:
+    return VNextLibraryActivationItem(
         publication_key(gid),
         gid,
-        f"gallery-{gid}",
-        gid,
-        artifact_storage_key(gid),
-        artifact,
-        gid,
+        resource_kind,
+        _storage_object(gid, resource_kind),
     )
+
+
+def _activation_cursor(
+    gid: int,
+    resource_kind: CatalogResourceKind = CatalogResourceKind.ACQUISITION,
+) -> VNextLibraryActivationCursor:
+    return VNextLibraryActivationCursor(publication_key(gid), resource_kind)
 
 
 def test_checkpoint_is_receipt_scoped_and_cursor_is_spool_only() -> None:
     receipt = b"r" * 16
-    cursor = publication_key(1)
+    cursor = _activation_cursor(1)
     checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
@@ -323,21 +350,21 @@ def test_library_activation_maps_repository_items_to_the_shared_neutral_type(
         None,
     )
     adapter = _LibraryActivationAdapter(checkpoint)
-    page = LibraryActivationArtifactPage(
+    page = LibraryActivationResourcePage(
         receipt,
         3,
         (_library_activation_item(1),),
-        publication_key(1),
+        _activation_cursor(1),
         False,
     )
-    calls: list[tuple[bytes | None, int]] = []
+    calls: list[tuple[VNextLibraryActivationCursor | None, int]] = []
 
-    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationResourcePage:
         calls.append((kwargs["cursor"], kwargs["page_limit"]))
         return page
 
     monkeypatch.setattr(
-        LibraryActivationArtifactRepository,
+        LibraryActivationResourceRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -363,7 +390,7 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     receipt = b"r" * 16
-    cursor = publication_key(1)
+    cursor = _activation_cursor(1)
     checkpoint = publication.LibraryActivationCheckpoint(
         3,
         receipt,
@@ -371,14 +398,14 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
         cursor,
     )
     adapter = _LibraryActivationAdapter(checkpoint)
-    observed: list[bytes | None] = []
+    observed: list[VNextLibraryActivationCursor | None] = []
 
-    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationResourcePage:
         observed.append(kwargs["cursor"])
-        return LibraryActivationArtifactPage(receipt, 3, (), None, True)
+        return LibraryActivationResourcePage(receipt, 3, (), None, True)
 
     monkeypatch.setattr(
-        LibraryActivationArtifactRepository,
+        LibraryActivationResourceRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -412,24 +439,34 @@ def test_library_activation_page_hard_cap_is_always_128(
     adapter = _LibraryActivationAdapter(checkpoint)
     items = tuple(
         sorted(
-            (_library_activation_item(gid) for gid in range(1, 129)),
-            key=lambda item: item.publication_key,
+            (
+                item
+                for gid in range(1, 65)
+                for item in (
+                    _library_activation_item(gid, CatalogResourceKind.ACQUISITION),
+                    _library_activation_item(gid, CatalogResourceKind.THUMBNAIL),
+                )
+            ),
+            key=lambda item: (item.publication_key, item.resource_kind.value),
         )
     )
-    page = LibraryActivationArtifactPage(
+    page = LibraryActivationResourcePage(
         receipt,
         3,
         items,
-        items[-1].publication_key,
+        VNextLibraryActivationCursor(
+            items[-1].publication_key,
+            items[-1].resource_kind,
+        ),
         False,
     )
 
-    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationResourcePage:
         assert kwargs["page_limit"] == 128
         return page
 
     monkeypatch.setattr(
-        LibraryActivationArtifactRepository,
+        LibraryActivationResourceRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -463,13 +500,13 @@ def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
 
     adapter = _LibraryActivationAdapter(checkpoint, callback=probe)
 
-    def list_page(connector: Any, **_kwargs: Any) -> LibraryActivationArtifactPage:
+    def list_page(connector: Any, **_kwargs: Any) -> LibraryActivationResourcePage:
         with connector.read_transaction():
             assert connector.fetch_one("SELECT 1") == (1,)
-        return LibraryActivationArtifactPage(receipt, 3, (), None, True)
+        return LibraryActivationResourcePage(receipt, 3, (), None, True)
 
     monkeypatch.setattr(
-        LibraryActivationArtifactRepository,
+        LibraryActivationResourceRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -724,9 +761,7 @@ def test_reused_sealed_canonical_requires_and_then_accepts_current_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = b"same complete canonical preimage"
-    plan = CanonicalValueUploadPlan.from_parts(
-        "artifact_storage_key_bytes_v1", (payload,)
-    )
+    plan = CanonicalValueUploadPlan.from_parts("storage_object_key_v2", (payload,))
     connector = _CanonicalStateConnector()
     sealed = CanonicalValueReadReceipt(
         plan.value_sha256,
@@ -790,7 +825,7 @@ def test_reused_sealed_canonical_requires_and_then_accepts_current_claim(
 def test_canonical_claim_foreign_and_malformed_rows_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts("artifact_storage_key_bytes_v1", (b"x",))
+    plan = CanonicalValueUploadPlan.from_parts("storage_object_key_v2", (b"x",))
     connector = _CanonicalStateConnector()
     monkeypatch.setattr(
         publication,
@@ -820,9 +855,7 @@ def test_canonical_claim_foreign_and_malformed_rows_fail_closed(
 def test_fresh_canonical_keeps_allocate_page_and_seal_progression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts(
-        "artifact_storage_key_bytes_v1", (b"new",)
-    )
+    plan = CanonicalValueUploadPlan.from_parts("storage_object_key_v2", (b"new",))
     connector = _CanonicalStateConnector()
     family: object | None = None
     monkeypatch.setattr(
@@ -886,9 +919,7 @@ def test_sealed_canonical_full_preimage_mismatch_rejects_even_exact_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = b"expected"
-    plan = CanonicalValueUploadPlan.from_parts(
-        "artifact_storage_key_bytes_v1", (payload,)
-    )
+    plan = CanonicalValueUploadPlan.from_parts("storage_object_key_v2", (payload,))
     connector = _CanonicalStateConnector((1, plan.value_sha256))
     sealed = CanonicalValueReadReceipt(
         plan.value_sha256,
@@ -933,7 +964,7 @@ def test_sealed_canonical_full_preimage_mismatch_rejects_even_exact_claim(
 def test_partial_sealed_canonical_family_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = CanonicalValueUploadPlan.from_parts("artifact_storage_key_bytes_v1", (b"x",))
+    plan = CanonicalValueUploadPlan.from_parts("storage_object_key_v2", (b"x",))
     connector = _CanonicalStateConnector()
 
     def partial(*_args: object, **_kwargs: object) -> None:
@@ -1194,10 +1225,11 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
         def close(self) -> None:
             pass
 
-    authority = cast(Any, SimpleNamespace(storage_codec=(1, b"store")))
+    authority = cast(Any, SimpleNamespace(adapter_id=b"store"))
     seal = cast(Any, SimpleNamespace(preparation_id=b"p" * 16))
-    intent = cast(Any, SimpleNamespace(protection_token=b"t" * 184))
+    intent = cast(Any, SimpleNamespace(protection_token=b"t" * 32))
     evidence = cast(Any, SimpleNamespace(intent=intent))
+    family = cast(Any, SimpleNamespace(resource_kind=CatalogResourceKind.ACQUISITION))
     adapter = cast(Any, SimpleNamespace())
     protected: list[object] = []
 
@@ -1207,30 +1239,30 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
         staticmethod(lambda *_args, **_kwargs: object()),
     )
     monkeypatch.setattr(
-        publication,
-        "_prepare_archive_source_plan",
-        lambda *_args, **_kwargs: object(),
+        ArtifactPreparationRepository,
+        "prepare_with_storage_adapter",
+        staticmethod(lambda *_args, **_kwargs: Receipt()),
     )
     monkeypatch.setattr(
         publication,
-        "_render_prepared_artifact",
-        lambda *_args, **_kwargs: Receipt(),
+        "_protection_intent_from_family",
+        lambda *_args, **_kwargs: intent,
     )
 
-    def protect(_receipt: object, durable: object, _adapter: object) -> object:
-        protected.append(durable)
+    def protect(*_args: object, **kwargs: object) -> object:
+        protected.append(kwargs["intent"])
         return evidence
 
     monkeypatch.setattr(
-        publication,
-        "_protect_prepared_artifact_local",
-        protect,
+        ArtifactPreparationRepository,
+        "protect_prepared_artifact",
+        staticmethod(protect),
     )
     machine = publication.VNextIngestPublication(
         _context(tmp_path / "artifact-restart.sqlite3"),
         clock=lambda: 10,
     )
-    work = publication._ArtifactWork(authority, seal, intent)
+    work = publication._ArtifactWork(authority, seal, (family,))
 
     first = cast(Any, machine)._VNextIngestPublication__prepare_artifact(
         work, {b"store": adapter}
@@ -1253,40 +1285,53 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
     database_path = tmp_path / "vertical.sqlite3"
     receipt_id = b"r" * 16
     candidate_id = b"c" * 16
-    artifact_sha256 = b"z" * 32
     key = publication_key(1)
-    storage_key = artifact_storage_key(1)
-    storage_key_sha256 = artifact_storage_key_digest(storage_key.segments)
-    token = encode_artifact_protection_token(
-        1,
-        candidate_id,
-        key,
-        artifact_sha256,
-        storage_key_sha256,
-        1,
-        101,
+    descriptors = {
+        kind: _storage_object(1, kind)
+        for kind in (
+            CatalogResourceKind.ACQUISITION,
+            CatalogResourceKind.THUMBNAIL,
+        )
+    }
+    key_digests = {
+        kind: artifact_storage_key_digest(
+            descriptor.key.codec,
+            descriptor.key.segments,
+        )
+        for kind, descriptor in descriptors.items()
+    }
+    tokens = {
+        kind: encode_artifact_protection_token(
+            candidate_id,
+            key,
+            kind.value,
+            key_digests[kind],
+            1,
+        )
+        for kind in descriptors
+    }
+    finalization_items = tuple(
+        PublicationFinalizationItem(
+            candidate_id,
+            key,
+            kind,
+            key_digests[kind],
+            descriptors[kind],
+            1,
+            tokens[kind],
+            b"store",
+            "PREPARED",
+        )
+        for kind in descriptors
     )
-    finalization_item = PublicationFinalizationItem(
-        candidate_id,
-        key,
-        artifact_sha256,
-        storage_key_sha256,
-        storage_key,
-        101,
-        1,
-        1,
-        token,
-        b"store",
-        "PREPARED",
-    )
-    activation_item = LibraryActivationArtifactItem(
-        key,
-        1,
-        "gallery-1",
-        10,
-        storage_key,
-        artifact_sha256,
-        101,
+    activation_items = tuple(
+        VNextLibraryActivationItem(
+            key,
+            1,
+            kind,
+            descriptors[kind],
+        )
+        for kind in descriptors
     )
     state = {"finalized": False, "finalization_issues": 0}
     root = publication._Root(
@@ -1315,15 +1360,21 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
 
         def release(
             self,
-            exact_storage_key: ArtifactStorageKey,
-            expected_artifact_sha256: bytes,
+            exact_storage_key: StorageObjectKey,
+            expected_sha256: bytes,
             expected_size_bytes: int,
             protection_token: bytes,
         ) -> ArtifactReleaseStorageEvidence:
             assert adapter.guard_depth == 1
-            assert exact_storage_key == storage_key
-            assert expected_artifact_sha256 == artifact_sha256
-            assert expected_size_bytes == 101
+            kind = next(
+                resource_kind
+                for resource_kind, descriptor in descriptors.items()
+                if descriptor.key == exact_storage_key
+            )
+            descriptor = descriptors[kind]
+            assert expected_sha256 == bytes.fromhex(descriptor.sha256)
+            assert expected_size_bytes == descriptor.size_bytes
+            assert protection_token == tokens[kind]
             _probe_begin_immediate(database_path)
             self.tokens.append(protection_token)
             return ArtifactReleaseStorageEvidence(True)
@@ -1358,21 +1409,26 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
         issue_database_action,
     )
 
-    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationArtifactPage:
+    final_cursor = VNextLibraryActivationCursor(
+        key,
+        CatalogResourceKind.THUMBNAIL,
+    )
+
+    def list_page(_connector: object, **kwargs: Any) -> LibraryActivationResourcePage:
         assert kwargs["page_limit"] == 128
         if kwargs["cursor"] is None:
-            return LibraryActivationArtifactPage(
+            return LibraryActivationResourcePage(
                 receipt_id,
                 3,
-                (activation_item,),
-                key,
+                activation_items,
+                final_cursor,
                 False,
             )
-        assert kwargs["cursor"] == key
-        return LibraryActivationArtifactPage(receipt_id, 3, (), None, True)
+        assert kwargs["cursor"] == final_cursor
+        return LibraryActivationResourcePage(receipt_id, 3, (), None, True)
 
     monkeypatch.setattr(
-        LibraryActivationArtifactRepository,
+        LibraryActivationResourceRepository,
         "list_page",
         staticmethod(list_page),
     )
@@ -1394,10 +1450,9 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
                 0,
                 5,
                 5,
-                1,
                 128,
-                (finalization_item,),
-                key,
+                finalization_items,
+                final_cursor.to_bytes(),
                 False,
                 _PAGE_CAPABILITY,
             )
@@ -1407,14 +1462,13 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
             candidate_id,
             b"2" * 32,
             2,
-            key,
-            1,
+            final_cursor.to_bytes(),
+            2,
             6,
             5,
-            1,
             128,
             (),
-            key,
+            final_cursor.to_bytes(),
             True,
             _PAGE_CAPABILITY,
         )
@@ -1459,10 +1513,16 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
     assert operations.count("LIBRARY_ACTIVATION") == 5
     assert operations.count("FINALIZE") == 2
     assert operations[-1] == "COMPLETE"
-    assert releaser.tokens == [token]
+    assert releaser.tokens == [
+        tokens[CatalogResourceKind.ACQUISITION],
+        tokens[CatalogResourceKind.THUMBNAIL],
+    ]
     assert adapter.reconciled is True
     assert adapter.completed is True
-    assert type(adapter.appended[0][0]) is VNextLibraryActivationItem
+    assert tuple(type(item) for item in adapter.appended[0]) == (
+        VNextLibraryActivationItem,
+        VNextLibraryActivationItem,
+    )
 
 
 def test_complete_persisted_before_response_loss_replays_cleanup(

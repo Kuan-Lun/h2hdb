@@ -97,6 +97,10 @@ def test_identity_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
                 1,
                 2,
                 name_key,
+                b"page",
+                1,
+                2,
+                name_key,
             )
         ]
     )
@@ -106,13 +110,14 @@ def test_identity_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
         observation_id=2,
         file_keys=(name_key,),
         file_nos=(0,),
-    ) == {name_key: GalleryObservationFile(1, 2, 0, name_key, file_sha256)}
+    ) == {name_key: GalleryObservationFile(1, 2, 0, name_key, file_sha256, b"page")}
     _assert_one_set_read(
         observation_file,
         (
             "catalog_gallery_observation_file_anchors",
             "catalog_gallery_observation_file_file_nos",
             "catalog_gallery_observation_file_file_sha256s",
+            "catalog_gallery_observation_file_artifact_role",
             "catalog_gallery_observation_file_seals",
         ),
     )
@@ -154,6 +159,10 @@ def test_identity_loaders_fail_closed_on_invalid_or_partial_facts() -> None:
                         2,
                         key,
                         b"f" * 32,
+                        1,
+                        2,
+                        key,
+                        b"page",
                         None,
                         None,
                         None,
@@ -224,13 +233,17 @@ def test_identity_writers_reject_candidate_collisions_without_writes() -> None:
                 1,
                 2,
                 key,
+                b"other",
+                1,
+                2,
+                key,
             )
         ]
     )
     with pytest.raises(CatalogIdentityCollisionError, match="candidate key collides"):
         ensure_gallery_observation_files(
             observation_file,
-            identities=(GalleryObservationFile(1, 2, 0, key, b"f" * 32),),
+            identities=(GalleryObservationFile(1, 2, 0, key, b"f" * 32, b"page"),),
         )
     assert observation_file.executions == []
 
@@ -271,8 +284,8 @@ def test_identity_writers_use_one_candidate_read_and_complete_insert() -> None:
     ensure_gallery_observation_files(
         files,
         identities=(
-            GalleryObservationFile(1, 2, 0, file_key(first_name), b"a" * 32),
-            GalleryObservationFile(1, 2, 1, file_key(second_name), b"b" * 32),
+            GalleryObservationFile(1, 2, 0, file_key(first_name), b"a" * 32, b"page"),
+            GalleryObservationFile(1, 2, 1, file_key(second_name), b"b" * 32, b"page"),
         ),
     )
     _assert_one_set_read(files, ("catalog_gallery_observation_file_seals",))

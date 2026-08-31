@@ -76,7 +76,7 @@ refinement = operational_refinement.refinement
 def test_cleanup_frozen_root_bound_is_derived_from_every_registered_shape() -> None:
     frame_bytes = operational_refinement._cleanup_frozen_root_frame_bytes_by_target()
     assert set(frame_bytes) == set(operational_refinement._CLEANUP_TARGET_SHAPES)
-    assert len(frame_bytes) == 22
+    assert len(frame_bytes) == 23
     assert all(size <= 260 for size in frame_bytes.values())
     assert max(frame_bytes.values()) == 260
     assert frame_bytes["SOURCE_GALLERY_NAME_GID"] == 260

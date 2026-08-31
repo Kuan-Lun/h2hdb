@@ -30,15 +30,37 @@ __all__ = [
     "CatalogSourceFilePage",
     "CatalogSnapshot",
     "CatalogArtifact",
-    "CatalogArtifactCursor",
-    "CatalogArtifactPage",
-    "ArtifactStorageKey",
+    "ArtifactArchiveRenderEvidence",
+    "ArtifactPagePresentationEvidence",
+    "ArtifactPresentationRenderEvidence",
+    "ArtifactRenderedPage",
+    "ArtifactSourceMember",
+    "ArtifactSourceRole",
+    "ArtifactThumbnailPresentationEvidence",
+    "ByteExtent",
+    "CatalogContributorFilter",
+    "CatalogSubjectFilter",
+    "CatalogDiscoveryCursor",
+    "CatalogDiscoveryPage",
+    "CatalogDiscoveryQuery",
+    "DEFAULT_CATALOG_DISCOVERY_QUERY",
+    "CatalogFacetCursor",
+    "CatalogFacetKind",
+    "CatalogFacetPage",
+    "CatalogFacetValue",
+    "CatalogImageResource",
+    "CatalogPublicationPresentation",
+    "PreparedPageResource",
+    "PreparedPublicationPresentation",
+    "PreparedThumbnailResource",
+    "StorageObjectDescriptor",
+    "StorageObjectKey",
+    "CatalogResourceKind",
     "CatalogContributor",
-    "CatalogPage",
     "CatalogPublishResult",
     "CatalogPublication",
     "CatalogPublicationSelection",
-    "CatalogRecentArtifactWindow",
+    "CatalogRecentWindow",
     "CatalogRecentOrder",
     "CatalogRevision",
     "CatalogSourcePage",
@@ -94,10 +116,9 @@ __all__ = [
     "FileHashCacheKey",
     "SchemaCompatibility",
     "TagObservation",
-    "VNextArtifactProducer",
-    "VNextArtifactStoragePolicy",
-    "VNextArtifactZipPolicy",
+    "VNextArtifactAdapterPolicy",
     "VNextLibraryActivationItem",
+    "VNextLibraryActivationCursor",
     "VNextIngestAdvanceResult",
     "VNextIngestCompletionReceipt",
     "VNextIngestGalleryObservation",
@@ -108,19 +129,21 @@ __all__ = [
     "VNextIngestSession",
     "VNextIngestSourceReceipt",
     "VNextResolvedIngestPolicy",
-    "artifact_storage_key",
 ]
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from unicodedata import unidata_version
+from typing import BinaryIO
+from unicodedata import category, unidata_version
 from uuid import UUID
 
+from .catalog_search import canonical_query_lexemes
 from .vnext_domains import (
+    microseconds_from_datetime,
     require_ascii_bytes,
     require_bounded_bytes,
     require_digest32,
@@ -132,10 +155,9 @@ from .vnext_identity import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
     artifact_policy_digest,
-    artifact_producer_fingerprint_sha256,
-    artifact_storage_key_components,
     canonical_value_digest,
-    decode_artifact_name,
+    decode_artifact_id,
+    decode_publication_id,
     encode_source_relative_locator,
     publication_key,
     validate_file_name,
@@ -151,19 +173,50 @@ VNextIngestCursor = tuple[str, ...] | bytes | int
 
 
 def _validate_sha256(value: str, *, label: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be str")
     if len(value) != 64:
         raise ValueError(f"{label} must contain 64 hexadecimal characters")
-    try:
-        bytes.fromhex(value)
-    except ValueError as error:
-        raise ValueError(f"{label} is not hexadecimal") from error
+    if any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{label} must use exact lowercase hexadecimal")
 
 
 def _validate_leaf_name(value: str, *, label: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be str")
     if not value or value in {".", ".."}:
         raise ValueError(f"{label} must not be blank or a traversal segment")
     if "/" in value or "\\" in value or Path(value).name != value:
         raise ValueError(f"{label} must be a single leaf name")
+    if any(category(character).startswith("C") for character in value):
+        raise ValueError(f"{label} must not contain control characters")
+
+
+def _validate_media_type(value: object, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be str")
+    encoded = value.encode("ascii", errors="strict")
+    require_bounded_bytes(encoded, field=label, minimum=3, maximum=127)
+    if encoded.count(b"/") != 1:
+        raise ValueError(f"{label} must be an ASCII type/subtype")
+    major, minor = encoded.split(b"/", 1)
+    token = b"!#$&^_.+-"
+    if (
+        not major
+        or not minor
+        or any(
+            not (
+                byte in token
+                or 48 <= byte <= 57
+                or 65 <= byte <= 90
+                or 97 <= byte <= 122
+            )
+            for byte in encoded
+            if byte != 47
+        )
+    ):
+        raise ValueError(f"{label} must be an ASCII type/subtype")
+    return value
 
 
 def _validate_build_id(value: str) -> None:
@@ -1650,39 +1703,395 @@ class CatalogSubject:
     code: str | None = None
 
 
+class ArtifactSourceRole(StrEnum):
+    """Adapter-issued role for one sealed source observation member."""
+
+    METADATA = "metadata"
+    PAGE = "page"
+    OTHER = "other"
+
+
 @dataclass(frozen=True, slots=True)
-class ArtifactStorageKey:
-    """Neutral, versioned segments for one stable artifact storage identity."""
+class ArtifactSourceMember:
+    """One exact source stream exposed only for a synchronous render call.
+
+    Core supplies immutable, rewound spools for ``METADATA`` and ``PAGE``
+    members only.  ``OTHER`` remains part of observation coverage but is never
+    opened or passed to the renderer.
+    """
+
+    position: int
+    role: ArtifactSourceRole
+    source_name: bytes
+    expected_sha256: bytes
+    expected_size_bytes: int
+    source: BinaryIO = field(compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        require_int63(self.position, field="artifact source position")
+        if not isinstance(self.role, ArtifactSourceRole):
+            raise TypeError("artifact source role must be ArtifactSourceRole")
+        validate_file_name(self.source_name)
+        require_digest32(
+            self.expected_sha256,
+            field="artifact source expected_sha256",
+        )
+        require_int63(
+            self.expected_size_bytes,
+            field="artifact source expected_size_bytes",
+        )
+        if not hasattr(self.source, "read"):
+            raise TypeError("artifact source must be a readable binary stream")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRenderedPage:
+    """Adapter-issued mapping from a dense page to an opaque object locator."""
+
+    page_index: int
+    source_position: int
+    locator: str
+
+    def __post_init__(self) -> None:
+        page_index = require_int63(self.page_index, field="rendered page_index")
+        if page_index >= 4096:
+            raise ValueError("rendered page_index must be in 0..4095")
+        require_int63(self.source_position, field="rendered page source_position")
+        if not isinstance(self.locator, str):
+            raise TypeError("rendered page locator must be str")
+        require_bounded_bytes(
+            self.locator.encode("utf-8", errors="strict"),
+            field="rendered page locator",
+            minimum=1,
+            maximum=255,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactArchiveRenderEvidence:
+    """Untrusted, adapter-issued facts for one completely rendered object."""
+
+    artifact_sha256: bytes
+    size_bytes: int
+    media_type: str
+    download_name: str
+    pages: tuple[ArtifactRenderedPage, ...]
+
+    def __post_init__(self) -> None:
+        require_digest32(self.artifact_sha256, field="rendered artifact_sha256")
+        require_positive_int63(self.size_bytes, field="rendered artifact size_bytes")
+        _validate_media_type(self.media_type, label="rendered artifact media_type")
+        _validate_leaf_name(self.download_name, label="Rendered artifact download name")
+        require_bounded_bytes(
+            self.download_name.encode("utf-8", errors="strict"),
+            field="rendered artifact download_name",
+            minimum=1,
+            maximum=255,
+        )
+        object.__setattr__(self, "pages", tuple(self.pages))
+        if len(self.pages) > 4096:
+            raise ValueError("render evidence exceeds 4096 pages")
+        if tuple(page.page_index for page in self.pages) != tuple(
+            range(len(self.pages))
+        ):
+            raise ValueError("rendered pages must be zero-based and contiguous")
+        source_positions = tuple(page.source_position for page in self.pages)
+        if len(set(source_positions)) != len(source_positions):
+            raise ValueError("rendered page source positions must be unique")
+        if sum(len(page.locator.encode("utf-8")) for page in self.pages) > 1_044_480:
+            raise ValueError("rendered page locators exceed their aggregate bound")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPagePresentationEvidence:
+    """Adapter-issued generic facts for one page extent in an acquisition."""
+
+    page_index: int
+    locator: str
+    extent: ByteExtent
+    media_type: str
+    sha256: bytes
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        page_index = require_int63(
+            self.page_index,
+            field="presentation evidence page_index",
+        )
+        if page_index >= 4096:
+            raise ValueError("presentation evidence page_index must be in 0..4095")
+        if not isinstance(self.locator, str):
+            raise TypeError("presentation evidence locator must be str")
+        require_bounded_bytes(
+            self.locator.encode("utf-8", errors="strict"),
+            field="presentation evidence locator",
+            minimum=1,
+            maximum=255,
+        )
+        if not isinstance(self.extent, ByteExtent):
+            raise TypeError("presentation evidence extent must be ByteExtent")
+        _validate_media_type(self.media_type, label="page evidence media_type")
+        require_digest32(self.sha256, field="page evidence sha256")
+        require_positive_int63(self.width, field="page evidence width")
+        require_positive_int63(self.height, field="page evidence height")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactThumbnailPresentationEvidence:
+    """Adapter-issued facts for the complete thumbnail destination bytes."""
+
+    size_bytes: int
+    media_type: str
+    sha256: bytes
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        require_positive_int63(
+            self.size_bytes,
+            field="thumbnail evidence size_bytes",
+        )
+        _validate_media_type(self.media_type, label="thumbnail evidence media_type")
+        require_digest32(self.sha256, field="thumbnail evidence sha256")
+        require_positive_int63(self.width, field="thumbnail evidence width")
+        require_positive_int63(self.height, field="thumbnail evidence height")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPresentationRenderEvidence:
+    """Complete untrusted page/thumbnail evidence from one adapter call."""
+
+    pages: tuple[ArtifactPagePresentationEvidence, ...]
+    thumbnail: ArtifactThumbnailPresentationEvidence | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pages", tuple(self.pages))
+        if len(self.pages) > 4096:
+            raise ValueError("presentation evidence exceeds 4096 pages")
+        if tuple(page.page_index for page in self.pages) != tuple(
+            range(len(self.pages))
+        ):
+            raise ValueError("presentation evidence pages must be dense")
+        if (self.thumbnail is None) != (not self.pages):
+            raise ValueError("thumbnail evidence must exist exactly when pages exist")
+
+
+@dataclass(frozen=True, slots=True)
+class StorageObjectKey:
+    """Opaque, adapter-owned location for one immutable stored object."""
 
     codec: str
     segments: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.codec != "gid-sha256-12-v1":
-            raise ValueError("artifact storage key codec is not registered")
-        if not isinstance(self.segments, tuple):
-            raise TypeError("artifact storage key segments must be an exact tuple")
-        if len(self.segments) != 4:
-            raise ValueError("artifact storage key must contain exactly four segments")
-        try:
-            gid = decode_artifact_name(
-                self.segments[-1].encode("ascii", errors="strict")
+        if not isinstance(self.codec, str):
+            raise TypeError("storage object key codec must be str")
+        codec = self.codec.encode("ascii", errors="strict")
+        require_bounded_bytes(
+            codec,
+            field="storage object key codec",
+            minimum=1,
+            maximum=64,
+        )
+        if not chr(codec[0]).isalnum() or any(
+            chr(byte)
+            not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-"
+            for byte in codec[1:]
+        ):
+            raise ValueError("storage object key codec is not a safe ASCII token")
+        if not isinstance(self.segments, tuple) or not 1 <= len(self.segments) <= 16:
+            raise ValueError("storage object key must contain 1..16 segments")
+        for segment in self.segments:
+            _validate_leaf_name(segment, label="Storage object key segment")
+            encoded = segment.encode("utf-8", errors="strict")
+            require_bounded_bytes(
+                encoded,
+                field="storage object key segment",
+                minimum=1,
+                maximum=255,
             )
-        except (UnicodeError, ValueError) as error:
-            raise ValueError(
-                "artifact storage key leaf is not a canonical artifact name"
-            ) from error
-        if self.segments != artifact_storage_key_components(gid):
-            raise ValueError("artifact storage key does not match its GID shard")
 
 
-def artifact_storage_key(gid: int) -> ArtifactStorageKey:
-    """Return the only registered stable storage key for ``gid``."""
+@dataclass(frozen=True, slots=True)
+class ByteExtent:
+    """One bounded byte range within an immutable storage object."""
 
-    return ArtifactStorageKey(
-        codec="gid-sha256-12-v1",
-        segments=artifact_storage_key_components(gid),
-    )
+    offset: int
+    length: int
+
+    def __post_init__(self) -> None:
+        offset = require_int63(self.offset, field="byte extent offset")
+        length = require_positive_int63(self.length, field="byte extent length")
+        if offset + length >= 1 << 63:
+            raise ValueError("byte extent end exceeds signed-int63")
+
+
+@dataclass(frozen=True, slots=True)
+class StorageObjectDescriptor:
+    """Sealed enclosing-object facts needed to validate a stable locator."""
+
+    key: StorageObjectKey
+    size_bytes: int
+    sha256: str
+    modified_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, StorageObjectKey):
+            raise TypeError("storage object descriptor key must be StorageObjectKey")
+        require_positive_int63(
+            self.size_bytes,
+            field="storage object descriptor size_bytes",
+        )
+        _validate_sha256(self.sha256, label="Storage object SHA-256")
+        microseconds_from_datetime(
+            self.modified_at,
+            field="storage object descriptor modified_at",
+        )
+        object.__setattr__(self, "modified_at", self.modified_at.astimezone(UTC))
+
+
+def _validate_catalog_image_facts(
+    *,
+    storage_object: object,
+    extent: object,
+    media_type: object,
+    sha256_value: object,
+    width: object,
+    height: object,
+) -> None:
+    if not isinstance(storage_object, StorageObjectDescriptor):
+        raise TypeError("image storage_object must be StorageObjectDescriptor")
+    if not isinstance(extent, ByteExtent):
+        raise TypeError("image extent must be ByteExtent")
+    if extent.offset + extent.length > storage_object.size_bytes:
+        raise ValueError("image extent exceeds its sealed storage object")
+    _validate_media_type(media_type, label="catalog presentation media_type")
+    if not isinstance(sha256_value, str):
+        raise TypeError("catalog image sha256 must be str")
+    _validate_sha256(sha256_value, label="Catalog image SHA-256")
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, int)
+        or not isinstance(height, int)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError("catalog image dimensions must be positive integers")
+    require_positive_int63(width, field="catalog image width")
+    require_positive_int63(height, field="catalog image height")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPageResource:
+    """Adapter-prepared generic evidence for one ordered publication page."""
+
+    page_index: int
+    storage_object: StorageObjectDescriptor
+    extent: ByteExtent
+    media_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        page_index = require_int63(self.page_index, field="prepared page_index")
+        if page_index >= 4096:
+            raise ValueError("prepared page_index must be in 0..4095")
+        _validate_catalog_image_facts(
+            storage_object=self.storage_object,
+            extent=self.extent,
+            media_type=self.media_type,
+            sha256_value=self.sha256,
+            width=self.width,
+            height=self.height,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedThumbnailResource:
+    """Adapter-prepared evidence for one publication thumbnail resource."""
+
+    storage_object: StorageObjectDescriptor
+    extent: ByteExtent
+    media_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        _validate_catalog_image_facts(
+            storage_object=self.storage_object,
+            extent=self.extent,
+            media_type=self.media_type,
+            sha256_value=self.sha256,
+            width=self.width,
+            height=self.height,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPublicationPresentation:
+    """Complete ordered presentation evidence returned by a storage adapter."""
+
+    pages: tuple[PreparedPageResource, ...]
+    thumbnail: PreparedThumbnailResource | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pages", tuple(self.pages))
+        if len(self.pages) > 4096:
+            raise ValueError("publication presentation exceeds 4096 pages")
+        if tuple(page.page_index for page in self.pages) != tuple(
+            range(len(self.pages))
+        ):
+            raise ValueError("publication pages must be zero-based and contiguous")
+        if (self.thumbnail is None) != (not self.pages):
+            raise ValueError("thumbnail must exist exactly when pages exist")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogImageResource:
+    """Immutable generic locator and verified image facts exposed to readers."""
+
+    storage_object: StorageObjectDescriptor
+    extent: ByteExtent
+    media_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        _validate_catalog_image_facts(
+            storage_object=self.storage_object,
+            extent=self.extent,
+            media_type=self.media_type,
+            sha256_value=self.sha256,
+            width=self.width,
+            height=self.height,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPublicationPresentation:
+    publication_id: str
+    page_count: int
+    cover: CatalogImageResource | None
+    thumbnail: CatalogImageResource | None
+
+    def __post_init__(self) -> None:
+        if not self.publication_id:
+            raise ValueError("presentation publication_id must not be blank")
+        page_count = require_int63(
+            self.page_count,
+            field="presentation page_count",
+        )
+        if page_count > 4096:
+            raise ValueError("presentation page_count must be in 0..4096")
+        if (self.cover is None) != (self.page_count == 0):
+            raise ValueError("cover must exist exactly when pages exist")
+        if (self.thumbnail is None) != (self.page_count == 0):
+            raise ValueError("thumbnail must exist exactly when pages exist")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1691,58 +2100,211 @@ class CatalogArtifact:
     # Neutral, user-facing download name. Consumers locate bytes only through
     # the separately versioned storage key.
     name: str
-    storage_key: ArtifactStorageKey
+    storage_object: StorageObjectDescriptor
     media_type: str
-    size_bytes: int
-    sha256: str
-    modified_at: datetime
 
     def __post_init__(self) -> None:
-        if not isinstance(self.storage_key, ArtifactStorageKey):
-            raise TypeError("artifact storage_key must be ArtifactStorageKey")
-        if self.size_bytes < 0:
-            raise ValueError("Artifact size must not be negative")
-        if len(self.sha256) != 64:
-            raise ValueError("Artifact SHA-256 must contain 64 hexadecimal characters")
-        try:
-            bytes.fromhex(self.sha256)
-        except ValueError as error:
-            raise ValueError("Artifact SHA-256 is not hexadecimal") from error
+        if not isinstance(self.artifact_id, str):
+            raise TypeError("artifact_id must be str")
+        artifact_id = self.artifact_id.encode("ascii", errors="strict")
+        require_bounded_bytes(artifact_id, field="artifact_id", minimum=1, maximum=128)
+        _, artifact_digest = decode_artifact_id(artifact_id)
+        _validate_leaf_name(self.name, label="Artifact download name")
+        require_bounded_bytes(
+            self.name.encode("utf-8", errors="strict"),
+            field="artifact download name",
+            minimum=1,
+            maximum=255,
+        )
+        if not isinstance(self.storage_object, StorageObjectDescriptor):
+            raise TypeError("artifact storage_object must be StorageObjectDescriptor")
+        if artifact_digest.hex() != self.storage_object.sha256:
+            raise ValueError("artifact_id digest disagrees with storage object")
+        _validate_media_type(self.media_type, label="artifact media_type")
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogArtifactCursor:
-    """Current-revision seek cursor issued and revalidated by the catalog."""
+class CatalogContributorFilter:
+    name: str
+    role: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not isinstance(self.role, str):
+            raise TypeError("contributor filter name and role must be str")
+        require_bounded_bytes(
+            self.name.encode("utf-8", errors="strict"),
+            field="contributor filter name",
+            minimum=1,
+            maximum=1024,
+        )
+        if self.role not in {
+            "artist",
+            "author",
+            "cosplayer",
+            "group",
+            "illustrator",
+            "uploader",
+        }:
+            raise ValueError("contributor filter role is not registered")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSubjectFilter:
+    """Exact source-tag identity; names are not unique across namespaces."""
+
+    namespace: str
+    value: str
+
+    def __post_init__(self) -> None:
+        validate_namespace(self.namespace)
+        if not isinstance(self.value, str):
+            raise TypeError("subject filter value must be str")
+        require_bounded_bytes(
+            self.value.encode("utf-8", errors="strict"),
+            field="subject filter value",
+            minimum=1,
+            maximum=1024,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogDiscoveryQuery:
+    """Exact bounded search plus at most one value per facet family."""
+
+    search: str | None = None
+    language: str | None = None
+    subject: CatalogSubjectFilter | None = None
+    contributor: CatalogContributorFilter | None = None
+    search_lexemes: tuple[bytes, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.search is not None and not isinstance(self.search, str):
+            raise TypeError("discovery search must be str or None")
+        object.__setattr__(
+            self,
+            "search_lexemes",
+            () if self.search is None else canonical_query_lexemes(self.search),
+        )
+        if self.language is not None:
+            if not isinstance(self.language, str):
+                raise TypeError("discovery language must be str or None")
+            if not self.language.strip():
+                raise ValueError("discovery language must not be blank")
+            if len(self.language.encode("utf-8", errors="strict")) > 1024:
+                raise ValueError("discovery language exceeds 1024 UTF-8 bytes")
+        if self.subject is not None and not isinstance(
+            self.subject, CatalogSubjectFilter
+        ):
+            raise TypeError("discovery subject must be CatalogSubjectFilter")
+        if self.contributor is not None and not isinstance(
+            self.contributor, CatalogContributorFilter
+        ):
+            raise TypeError("discovery contributor must be CatalogContributorFilter")
+
+
+DEFAULT_CATALOG_DISCOVERY_QUERY = CatalogDiscoveryQuery()
+
+
+class CatalogFacetKind(StrEnum):
+    LANGUAGE = "language"
+    SUBJECT = "subject"
+    CONTRIBUTOR = "contributor"
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogDiscoveryCursor:
     revision: int
+    query_sha256: str
     position: int
     publication_id: str
 
     def __post_init__(self) -> None:
-        if self.revision <= 0:
-            raise ValueError("artifact cursor revision must be positive")
-        if self.position < 0:
-            raise ValueError("artifact cursor position must not be negative")
-        if not self.publication_id:
-            raise ValueError("artifact cursor publication_id must not be blank")
+        require_positive_int63(self.revision, field="discovery cursor revision")
+        _validate_sha256(self.query_sha256, label="Discovery query SHA-256")
+        require_int63(self.position, field="discovery cursor position")
+        if not isinstance(self.publication_id, str):
+            raise TypeError("discovery cursor publication_id must be str")
+        decode_publication_id(self.publication_id.encode("ascii", errors="strict"))
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogArtifactPage:
-    """One bounded artifact-only page addressed by an immutable seek cursor."""
-
+class CatalogDiscoveryPage:
     revision: CatalogRevision
     publications: tuple[CatalogPublication, ...]
-    next_cursor: CatalogArtifactCursor | None
+    next_cursor: CatalogDiscoveryCursor | None
     limit: int
-    total: int
+    total: int | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "publications", tuple(self.publications))
-        if self.limit <= 0 or len(self.publications) > self.limit:
-            raise ValueError("artifact page must honor its positive limit")
-        if self.total < len(self.publications):
-            raise ValueError("artifact page total is smaller than its page")
+        limit = require_positive_int63(self.limit, field="discovery page limit")
+        if limit > 128 or len(self.publications) > limit:
+            raise ValueError("discovery page must honor its limit in 1..128")
+        if self.total is not None:
+            total = require_int63(self.total, field="discovery page total")
+            if total < len(self.publications):
+                raise ValueError("discovery total is smaller than its page")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFacetCursor:
+    revision: int
+    query_sha256: str
+    facet: CatalogFacetKind
+    position: int
+    value_sha256: str
+
+    def __post_init__(self) -> None:
+        require_positive_int63(self.revision, field="facet cursor revision")
+        _validate_sha256(self.query_sha256, label="Facet query SHA-256")
+        if type(self.facet) is not CatalogFacetKind:
+            raise TypeError("facet cursor facet must be CatalogFacetKind")
+        require_int63(self.position, field="facet cursor position")
+        _validate_sha256(self.value_sha256, label="Facet value SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFacetValue:
+    value: str
+    label: str
+    publication_count: int
+    role: str | None = None
+    namespace: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.value or not self.label:
+            raise ValueError("facet value and label must not be blank")
+        require_positive_int63(
+            self.publication_count,
+            field="facet publication_count",
+        )
+        if self.role is not None and not self.role:
+            raise ValueError("facet role must not be blank")
+        if self.namespace is not None:
+            validate_namespace(self.namespace)
+        if self.role is not None and self.namespace is not None:
+            raise ValueError("facet role and namespace are mutually exclusive")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFacetPage:
+    revision: CatalogRevision
+    facet: CatalogFacetKind
+    values: tuple[CatalogFacetValue, ...]
+    next_cursor: CatalogFacetCursor | None
+    limit: int
+
+    def __post_init__(self) -> None:
+        if type(self.facet) is not CatalogFacetKind:
+            raise TypeError("facet page facet must be CatalogFacetKind")
+        object.__setattr__(self, "values", tuple(self.values))
+        limit = require_positive_int63(self.limit, field="facet page limit")
+        if limit > 128 or len(self.values) > limit:
+            raise ValueError("facet page must honor its limit in 1..128")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1759,6 +2321,9 @@ class CatalogPublication:
     downloaded_at: datetime
     # The selected canonical source is part of every immutable revision.
     source_gallery_name: str
+    page_count: int
+    cover: CatalogImageResource | None
+    thumbnail: CatalogImageResource | None
     contributors: tuple[CatalogContributor, ...] = field(default_factory=tuple)
     subjects: tuple[CatalogSubject, ...] = field(default_factory=tuple)
     artifacts: tuple[CatalogArtifact, ...] = field(default_factory=tuple)
@@ -1768,12 +2333,23 @@ class CatalogPublication:
     content_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        if self.gid <= 0:
-            raise ValueError("Publication GID must be positive")
-        if not self.publication_id:
-            raise ValueError("Publication ID must not be blank")
+        gid = require_positive_int63(self.gid, field="publication gid")
+        if not isinstance(self.publication_id, str):
+            raise TypeError("Publication ID must be str")
+        publication_id_bytes = self.publication_id.encode("ascii", errors="strict")
+        if decode_publication_id(publication_id_bytes) != gid:
+            raise ValueError("Publication ID disagrees with its GID")
         if not self.title:
             raise ValueError("Publication title must not be blank")
+        page_count = require_int63(self.page_count, field="publication page_count")
+        if page_count > 4096:
+            raise ValueError("Publication page_count must be in 0..4096")
+        if (self.cover is None) != (self.page_count == 0):
+            raise ValueError("Publication cover must exist exactly when pages exist")
+        if (self.thumbnail is None) != (self.page_count == 0):
+            raise ValueError(
+                "Publication thumbnail must exist exactly when pages exist"
+            )
         _validate_leaf_name(
             self.source_gallery_name,
             label="Publication source gallery name",
@@ -1783,6 +2359,12 @@ class CatalogPublication:
                 self.content_sha256,
                 label="Publication content SHA-256",
             )
+        for artifact in self.artifacts:
+            artifact_gid, _ = decode_artifact_id(
+                artifact.artifact_id.encode("ascii", errors="strict")
+            )
+            if artifact_gid != gid:
+                raise ValueError("Publication artifact ID disagrees with its GID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1893,10 +2475,9 @@ class CatalogRevision:
     artifact_count: int
 
     def __post_init__(self) -> None:
-        if self.revision <= 0:
-            raise ValueError("catalog revision must be positive")
-        if min(self.publication_count, self.artifact_count) < 0:
-            raise ValueError("catalog revision counts must not be negative")
+        require_positive_int63(self.revision, field="catalog revision")
+        require_int63(self.publication_count, field="catalog publication_count")
+        require_int63(self.artifact_count, field="catalog artifact_count")
         if self.artifact_count not in {0, self.publication_count}:
             raise ValueError("artifact_count must be zero or equal publication_count")
 
@@ -1909,8 +2490,8 @@ class CatalogRecentOrder(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogRecentArtifactWindow:
-    """The complete fixed-size recent artifact window for one current revision."""
+class CatalogRecentWindow:
+    """The complete fixed-size recent publication window for one current revision."""
 
     revision: CatalogRevision
     order: CatalogRecentOrder
@@ -1918,21 +2499,25 @@ class CatalogRecentArtifactWindow:
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision, CatalogRevision):
-            raise TypeError("recent artifact window revision must be CatalogRevision")
+            raise TypeError(
+                "recent publication window revision must be CatalogRevision"
+            )
         if type(self.order) is not CatalogRecentOrder:
-            raise TypeError("recent artifact window order must be CatalogRecentOrder")
+            raise TypeError(
+                "recent publication window order must be CatalogRecentOrder"
+            )
         object.__setattr__(self, "publications", tuple(self.publications))
         expected_count = min(128, self.revision.artifact_count)
         if len(self.publications) != expected_count:
             raise ValueError(
-                "recent artifact window must contain the complete fixed top-128 set"
+                "recent publication window must contain the complete fixed top-128 set"
             )
         if any(
-            not isinstance(publication, CatalogPublication) or not publication.artifacts
-            for publication in self.publications
+            not isinstance(item, CatalogPublication) or not item.artifacts
+            for item in self.publications
         ):
             raise ValueError(
-                "recent artifact window publications must all carry artifacts"
+                "recent publication window publications must all carry artifacts"
             )
 
 
@@ -1953,15 +2538,6 @@ class CatalogPublishResult:
             < 0
         ):
             raise ValueError("Catalog publish counts must not be negative")
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogPage:
-    revision: CatalogRevision
-    publications: tuple[CatalogPublication, ...]
-    offset: int
-    limit: int
-    total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -2050,10 +2626,11 @@ def _file_content_receipt_from_frozen_facts(
 
 @dataclass(frozen=True, slots=True)
 class FileObservation:
-    """One source FILE fact with a content-derived receipt."""
+    """One source FILE fact with an adapter-issued artifact role."""
 
     name_bytes: bytes
     content: FileContentReceipt
+    artifact_role: ArtifactSourceRole
     device: int
     inode: int
     modified_ns: int
@@ -2064,6 +2641,8 @@ class FileObservation:
         if not isinstance(self.content, FileContentReceipt):
             raise TypeError("content must be a FileContentReceipt from exact bytes")
         self.content.__post_init__()
+        if not isinstance(self.artifact_role, ArtifactSourceRole):
+            raise TypeError("artifact_role must be ArtifactSourceRole")
         _require_uint64(self.device, field_name="device")
         _require_uint64(self.inode, field_name="inode")
         _require_int64(self.modified_ns, field_name="modified_ns")
@@ -2127,10 +2706,15 @@ class ArtifactStorageEvidence:
     """Untrusted storage-adapter acknowledgement."""
 
     stored: bool
+    storage_object: StorageObjectDescriptor | None = None
 
     def __post_init__(self) -> None:
         if type(self.stored) is not bool:
             raise TypeError("artifact storage acknowledgement must be bool")
+        if self.stored != (self.storage_object is not None):
+            raise ValueError(
+                "artifact storage descriptor must exist exactly when stored"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2144,17 +2728,62 @@ class ArtifactReleaseStorageEvidence:
             raise TypeError("artifact release acknowledgement must be bool")
 
 
+class CatalogResourceKind(StrEnum):
+    ACQUISITION = "acquisition"
+    THUMBNAIL = "thumbnail"
+
+
+@dataclass(frozen=True, slots=True)
+class VNextLibraryActivationCursor:
+    """Exact reversible keyset coordinate for one activation resource."""
+
+    publication_key: bytes
+    resource_kind: CatalogResourceKind
+
+    def __post_init__(self) -> None:
+        require_digest32(
+            self.publication_key,
+            field="library activation cursor publication_key",
+        )
+        if type(self.resource_kind) is not CatalogResourceKind:
+            raise TypeError("library activation cursor resource_kind is not registered")
+
+    def to_bytes(self) -> bytes:
+        self.__post_init__()
+        if self.resource_kind is CatalogResourceKind.ACQUISITION:
+            kind_tag = b"\x00"
+        elif self.resource_kind is CatalogResourceKind.THUMBNAIL:
+            kind_tag = b"\x01"
+        else:  # pragma: no cover - __post_init__ rejects forged values first
+            raise ValueError("library activation cursor kind is not registered")
+        return self.publication_key + kind_tag
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> VNextLibraryActivationCursor:
+        if type(value) is not bytes or len(value) != 33:
+            raise ValueError(
+                "library activation cursor encoding must contain exactly 33 bytes"
+            )
+        if value[32] == 0:
+            kind = CatalogResourceKind.ACQUISITION
+        elif value[32] == 1:
+            kind = CatalogResourceKind.THUMBNAIL
+        else:
+            raise ValueError("library activation cursor kind tag is not registered")
+        cursor = cls(value[:32], kind)
+        if cursor.to_bytes() != value:
+            raise ValueError("library activation cursor encoding is not canonical")
+        return cursor
+
+
 @dataclass(frozen=True, slots=True)
 class VNextLibraryActivationItem:
-    """Neutral immutable facts for one stable current-library artifact."""
+    """Neutral immutable facts for one current publication resource."""
 
     publication_key: bytes
     gid: int
-    source_gallery_name: str
-    upload_time: int
-    storage_key: ArtifactStorageKey
-    artifact_sha256: bytes
-    size_bytes: int
+    resource_kind: CatalogResourceKind
+    storage_object: StorageObjectDescriptor
 
     def __post_init__(self) -> None:
         key = require_digest32(
@@ -2166,29 +2795,10 @@ class VNextLibraryActivationItem:
             raise ValueError(
                 "library activation publication_key disagrees with its GID"
             )
-        if not isinstance(self.source_gallery_name, str):
-            raise TypeError("library activation source_gallery_name must be str")
-        source_name = self.source_gallery_name.encode("utf-8", errors="strict")
-        require_bounded_bytes(
-            source_name,
-            field="library activation source_gallery_name UTF-8",
-            minimum=1,
-            maximum=255,
-        )
-        if b"\x00" in source_name:
-            raise ValueError("library activation source_gallery_name contains NUL")
-        require_int63(self.upload_time, field="library activation upload_time")
-        require_digest32(
-            self.artifact_sha256,
-            field="library activation artifact_sha256",
-        )
-        if not isinstance(self.storage_key, ArtifactStorageKey):
-            raise TypeError("library activation storage_key is not registered")
-        if self.storage_key != artifact_storage_key(gid):
-            raise ValueError("library activation storage_key disagrees with its GID")
-        size = require_int63(self.size_bytes, field="library activation size_bytes")
-        if size < 0:
-            raise ValueError("library activation size_bytes must be non-negative")
+        if type(self.resource_kind) is not CatalogResourceKind:
+            raise TypeError("library activation resource_kind is not registered")
+        if not isinstance(self.storage_object, StorageObjectDescriptor):
+            raise TypeError("library activation storage_object is not registered")
 
 
 def _require_positive_uint32(value: object, *, field_name: str) -> int:
@@ -2199,114 +2809,30 @@ def _require_positive_uint32(value: object, *, field_name: str) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class VNextArtifactProducer:
-    """Natural identity of the executable artifact producer."""
-
-    writer_id: bytes
-    python_abi: bytes
-    pillow_build: bytes
-    libjpeg_build: bytes
-    zlib_build: bytes
-
-    def __post_init__(self) -> None:
-        for field_name in (
-            "writer_id",
-            "python_abi",
-            "pillow_build",
-            "libjpeg_build",
-            "zlib_build",
-        ):
-            require_bounded_bytes(
-                getattr(self, field_name),
-                field=f"artifact producer {field_name}",
-                minimum=1,
-                maximum=128,
-            )
-
-    @property
-    def fingerprint_sha256(self) -> bytes:
-        return artifact_producer_fingerprint_sha256(
-            self.writer_id,
-            self.python_abi,
-            self.pillow_build,
-            self.libjpeg_build,
-            self.zlib_build,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class VNextArtifactStoragePolicy:
-    """Natural identity of the consumer-owned storage adapter codec."""
+class VNextArtifactAdapterPolicy:
+    """Natural identity of consumer-owned artifact rendering/storage policy."""
 
     adapter_id: bytes
-    storage_codec_version: int = 1
-    storage_key_codec_version: int = 1
-    protection_token_codec_version: int = 1
+    policy_fingerprint_sha256: bytes
 
     def __post_init__(self) -> None:
         require_ascii_bytes(
             self.adapter_id,
-            field="artifact storage adapter_id",
+            field="artifact adapter_id",
             minimum=1,
             maximum=64,
         )
-        for field_name in (
-            "storage_codec_version",
-            "storage_key_codec_version",
-            "protection_token_codec_version",
-        ):
-            _require_positive_uint32(
-                getattr(self, field_name),
-                field_name=f"artifact storage {field_name}",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class VNextArtifactZipPolicy:
-    """Exact deterministic ZIP-writer facts used by artifact production."""
-
-    zip_codec_version: int = 1
-    compression_method: int = 8
-    compression_level: int = 9
-    dos_date: int = 33
-    dos_time: int = 0
-    unix_mode: int = 33_188
-    general_purpose_flags: int = 2_048
-    create_system: int = 3
-    archive_name_codec_version: int = 1
-    artifact_name_codec_version: int = 1
-
-    def __post_init__(self) -> None:
-        for field_name in (
-            "zip_codec_version",
-            "archive_name_codec_version",
-            "artifact_name_codec_version",
-        ):
-            _require_positive_uint32(
-                getattr(self, field_name),
-                field_name=f"artifact ZIP {field_name}",
-            )
-        for field_name in (
-            "compression_method",
-            "compression_level",
-            "dos_date",
-            "dos_time",
-            "unix_mode",
-            "general_purpose_flags",
-            "create_system",
-        ):
-            require_uint32(
-                getattr(self, field_name),
-                field=f"artifact ZIP {field_name}",
-            )
+        require_digest32(
+            self.policy_fingerprint_sha256,
+            field="artifact adapter policy_fingerprint_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class VNextIngestPolicy:
     """Complete natural policy facts; callers never select registry IDs."""
 
-    producer: VNextArtifactProducer
-    storage: VNextArtifactStoragePolicy
+    artifact: VNextArtifactAdapterPolicy
     manifest_algorithm_version: int = 1
     file_order_version: int = 1
     analysis_algorithm_version: int = 1
@@ -2314,9 +2840,7 @@ class VNextIngestPolicy:
     spam_occurrence_threshold: int = 3
     content_owner_rule_version: int = 1
     gid_winner_rule_version: int = 1
-    artifact_algorithm_version: int = 1
-    max_image_short_side: int = 2_048
-    zip: VNextArtifactZipPolicy = field(default_factory=VNextArtifactZipPolicy)
+    artifact_algorithm_version: int = 2
     display_title_algorithm_version: int = 1
     title_sort_algorithm_version: int = 1
     unicode_data_version: bytes = unidata_version.encode("ascii")
@@ -2326,15 +2850,9 @@ class VNextIngestPolicy:
     artifacts_required: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.producer, VNextArtifactProducer):
-            raise TypeError("producer must be VNextArtifactProducer")
-        if not isinstance(self.storage, VNextArtifactStoragePolicy):
-            raise TypeError("storage must be VNextArtifactStoragePolicy")
-        if not isinstance(self.zip, VNextArtifactZipPolicy):
-            raise TypeError("zip must be VNextArtifactZipPolicy")
-        self.producer.__post_init__()
-        self.storage.__post_init__()
-        self.zip.__post_init__()
+        if not isinstance(self.artifact, VNextArtifactAdapterPolicy):
+            raise TypeError("artifact must be VNextArtifactAdapterPolicy")
+        self.artifact.__post_init__()
         for field_name in (
             "manifest_algorithm_version",
             "file_order_version",
@@ -2342,7 +2860,6 @@ class VNextIngestPolicy:
             "content_owner_rule_version",
             "gid_winner_rule_version",
             "artifact_algorithm_version",
-            "max_image_short_side",
             "display_title_algorithm_version",
             "title_sort_algorithm_version",
             "operational_schema_version",
@@ -2371,15 +2888,15 @@ class VNextIngestPolicy:
             raise TypeError("artifacts_required must be bool")
 
     @property
-    def producer_fingerprint_sha256(self) -> bytes:
-        return self.producer.fingerprint_sha256
+    def artifact_policy_fingerprint_sha256(self) -> bytes:
+        return self.artifact.policy_fingerprint_sha256
 
     @property
     def artifact_policy_sha256(self) -> bytes:
         return artifact_policy_digest(
             self.artifact_algorithm_version,
-            self.max_image_short_side,
-            self.producer_fingerprint_sha256,
+            self.artifact.adapter_id,
+            self.artifact.policy_fingerprint_sha256,
         )
 
 
@@ -2391,7 +2908,7 @@ class VNextResolvedIngestPolicy:
     manifest_policy_id: int
     analysis_policy_id: int
     artifact_policy_sha256: bytes
-    producer_fingerprint_sha256: bytes
+    artifact_policy_fingerprint_sha256: bytes
     display_title_policy_id: int
     title_sort_policy_id: int
     operational_policy_id: int
@@ -2414,14 +2931,16 @@ class VNextResolvedIngestPolicy:
             self.artifact_policy_sha256,
             field="resolved artifact_policy_sha256",
         )
-        producer = require_digest32(
-            self.producer_fingerprint_sha256,
-            field="resolved producer_fingerprint_sha256",
+        fingerprint = require_digest32(
+            self.artifact_policy_fingerprint_sha256,
+            field="resolved artifact_policy_fingerprint_sha256",
         )
         if artifact != self.policy.artifact_policy_sha256:
             raise ValueError("resolved artifact policy differs from natural facts")
-        if producer != self.policy.producer_fingerprint_sha256:
-            raise ValueError("resolved producer differs from natural facts")
+        if fingerprint != self.policy.artifact_policy_fingerprint_sha256:
+            raise ValueError(
+                "resolved artifact adapter policy differs from natural facts"
+            )
         if type(self.replayed) is not bool:
             raise TypeError("resolved policy replayed must be bool")
 

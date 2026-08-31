@@ -84,7 +84,7 @@ def test_generated_sqlite_setup_is_one_exact_batched_transaction(
         assert connector.rollback_count == 0
         assert tuple(connector.batches) == expected_batches
         assert len(expected_batches) == 17
-        assert sum(row_count for _sql, row_count in expected_batches) == 5_833
+        assert sum(row_count for _sql, row_count in expected_batches) == 6_094
         provider.validate_global(connector)
         assert tuple(provider.validate_bootstrap_seeds(connector)) == tuple(
             seed.seed_id for seed in definition.bootstrap_seeds

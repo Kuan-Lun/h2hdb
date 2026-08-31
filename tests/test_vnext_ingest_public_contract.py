@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
-from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, BinaryIO, cast
+from typing import Any
 from unicodedata import unidata_version
 
 import pytest
@@ -16,9 +14,9 @@ import h2hdb.vnext_ingest_policy_repository as policy_module
 from h2hdb import (
     ArtifactReleaseAdapter,
     ArtifactReleaseStorageEvidence,
+    ArtifactSourceRole,
     ArtifactStorageAdapter,
     ArtifactStorageEvidence,
-    ArtifactTransformKind,
     CoreConfig,
     DatabaseConfig,
     DirectoryObservation,
@@ -27,8 +25,7 @@ from h2hdb import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
     TagObservation,
-    VNextArtifactProducer,
-    VNextArtifactStoragePolicy,
+    VNextArtifactAdapterPolicy,
     VNextCurrentOnlyMaintenanceOutcome,
     VNextIngestCompletionReceipt,
     VNextIngestFacade,
@@ -40,11 +37,8 @@ from h2hdb import (
     VNextIssuedSourceStep,
     VNextPreparedSource,
     VNextPreparedSourceStep,
-    artifact_producer_fingerprint_sha256,
 )
-from h2hdb import vnext_identity as identity
 from h2hdb.sqlite_connector import SQLiteConnector
-from h2hdb.vnext_catalog_registry_repository import ArtifactProducerFingerprintRecord
 from h2hdb.vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
     CleanupTargetKind,
@@ -74,29 +68,25 @@ def _generated_database(path: Path) -> None:
     open_generated_sqlite_database(path).close()
 
 
-def test_public_policy_contains_natural_facts_and_derives_fingerprints() -> None:
-    producer = VNextArtifactProducer(
-        writer_id=b"writer",
-        python_abi=b"cp313",
-        pillow_build=b"pillow-11",
-        libjpeg_build=b"libjpeg-turbo-3",
-        zlib_build=b"zlib-1.3",
-    )
-    policy = VNextIngestPolicy(
-        producer=producer,
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
+def _policy(
+    *,
+    adapter_id: bytes = b"test-artifact-adapter",
+    policy_fingerprint_sha256: bytes = b"p" * 32,
+) -> VNextIngestPolicy:
+    return VNextIngestPolicy(
+        artifact=VNextArtifactAdapterPolicy(
+            adapter_id=adapter_id,
+            policy_fingerprint_sha256=policy_fingerprint_sha256,
+        ),
     )
 
+
+def test_public_policy_contains_neutral_adapter_facts_and_derives_identity() -> None:
+    policy = _policy()
+
     assert policy.unicode_data_version == unidata_version.encode("ascii")
-    assert policy.producer_fingerprint_sha256 == (
-        artifact_producer_fingerprint_sha256(
-            producer.writer_id,
-            producer.python_abi,
-            producer.pillow_build,
-            producer.libjpeg_build,
-            producer.zlib_build,
-        )
-    )
+    assert policy.artifact.adapter_id == b"test-artifact-adapter"
+    assert policy.artifact_policy_fingerprint_sha256 == b"p" * 32
     assert len(policy.artifact_policy_sha256) == 32
 
 
@@ -124,7 +114,15 @@ def test_public_source_page_is_keyset_addressed_and_bounded() -> None:
 
 def test_public_observations_and_source_adapter_are_repository_independent() -> None:
     receipt = FileContentReceipt.from_parts((b"abc",))
-    file = FileObservation(b"001.jpg", receipt, 1, 2, 3, 4)
+    file = FileObservation(
+        b"001.jpg",
+        receipt,
+        ArtifactSourceRole.PAGE,
+        1,
+        2,
+        3,
+        4,
+    )
     directory = DirectoryObservation(
         b"nested",
         0,
@@ -269,40 +267,32 @@ def test_public_session_is_a_neutral_primitive_receipt() -> None:
 
 def test_public_artifact_adapter_evidence_is_neutral() -> None:
     class Storage:
-        adapter_id = b"managed-filesystem"
-        producer_fingerprint_sha256 = b"p" * 32
+        adapter_id = b"test-artifact-adapter"
+        policy_fingerprint_sha256 = b"p" * 32
 
-        def render_member(
-            self,
-            source: BinaryIO,
-            transform_kind: ArtifactTransformKind,
-            destination: BinaryIO,
-        ) -> None:
-            destination.write(source.read())
+        def storage_key(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
 
-        def protect(
-            self,
-            archive: BinaryIO,
-            locator_components: tuple[str, ...],
-            protection_token: bytes,
-        ) -> ArtifactStorageEvidence:
-            return ArtifactStorageEvidence(True)
+        def open_source(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
+
+        def render_archive(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
+
+        def protect(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
+
+        def render_presentation(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
 
     class Release:
-        adapter_id = b"managed-filesystem"
+        adapter_id = b"test-artifact-adapter"
 
-        def release(
-            self,
-            locator_components: tuple[str, ...],
-            protection_token: bytes,
-        ) -> ArtifactReleaseStorageEvidence:
-            return ArtifactReleaseStorageEvidence(True)
+        def release(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("protocol shape only")
 
-    source = BytesIO(b"bytes")
-    destination = BytesIO()
-    Storage().render_member(source, ArtifactTransformKind.RAW_COPY, destination)
-
-    assert destination.getvalue() == b"bytes"
+    assert ArtifactStorageEvidence(False).storage_object is None
+    assert ArtifactReleaseStorageEvidence(True).released
     assert isinstance(Storage(), ArtifactStorageAdapter)
     assert isinstance(Release(), ArtifactReleaseAdapter)
 
@@ -316,16 +306,7 @@ def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
-    policy = VNextIngestPolicy(
-        producer=VNextArtifactProducer(
-            writer_id=b"writer",
-            python_abi=b"cp313",
-            pillow_build=b"pillow-11",
-            libjpeg_build=b"libjpeg-turbo-3",
-            zlib_build=b"zlib-1.3",
-        ),
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-    )
+    policy = _policy()
 
     created = facade.ensure_policy(session, policy)
     replayed = facade.ensure_policy(session, policy)
@@ -336,7 +317,7 @@ def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
         manifest_policy_id=created.manifest_policy_id,
         analysis_policy_id=created.analysis_policy_id,
         artifact_policy_sha256=created.artifact_policy_sha256,
-        producer_fingerprint_sha256=created.producer_fingerprint_sha256,
+        artifact_policy_fingerprint_sha256=(created.artifact_policy_fingerprint_sha256),
         display_title_policy_id=created.display_title_policy_id,
         title_sort_policy_id=created.title_sort_policy_id,
         operational_policy_id=created.operational_policy_id,
@@ -379,21 +360,12 @@ def test_ingest_policy_capacity_failure_rolls_back_all_registry_writes(
     ):
         facade.ensure_policy(
             session,
-            VNextIngestPolicy(
-                producer=VNextArtifactProducer(
-                    writer_id=b"writer",
-                    python_abi=b"cp313",
-                    pillow_build=b"pillow-11",
-                    libjpeg_build=b"libjpeg-turbo-3",
-                    zlib_build=b"zlib-1.3",
-                ),
-                storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-            ),
+            _policy(),
         )
 
     with SQLiteConnector(str(path)) as connector:
         for table in (
-            "catalog_artifact_producer_fingerprints",
+            "catalog_artifact_adapter_policy",
             "catalog_artifact_policy_semantics",
             "catalog_artifact_policies",
             "catalog_manifest_policies",
@@ -414,20 +386,11 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
-    policy = VNextIngestPolicy(
-        producer=VNextArtifactProducer(
-            writer_id=b"writer",
-            python_abi=b"cp313",
-            pillow_build=b"pillow-11",
-            libjpeg_build=b"libjpeg-turbo-3",
-            zlib_build=b"zlib-1.3",
-        ),
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-    )
+    policy = _policy()
     created = facade.ensure_policy(session, policy)
 
     measured_tables = (
-        "catalog_artifact_producer_fingerprints",
+        "catalog_artifact_adapter_policy",
         "catalog_artifact_policy_semantics",
         "catalog_artifact_policies",
         "catalog_canonical_value_identities",
@@ -451,9 +414,18 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
 
     with pytest.raises(
         policy_module.VNextIngestPolicyNotReadyError,
-        match="artifact policy semantics registry reached its recomposition capacity",
+        match="artifact adapter policy registry reached its recomposition capacity",
     ):
-        facade.ensure_policy(session, replace(policy, max_image_short_side=4096))
+        facade.ensure_policy(
+            session,
+            replace(
+                policy,
+                artifact=VNextArtifactAdapterPolicy(
+                    adapter_id=policy.artifact.adapter_id,
+                    policy_fingerprint_sha256=b"q" * 32,
+                ),
+            ),
+        )
 
     with SQLiteConnector(str(path)) as connector:
         after = {
@@ -468,49 +440,6 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
     assert allocator_after == allocator_before
 
 
-def test_artifact_policy_semantics_rejects_algorithm_different_from_producer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    policy = VNextIngestPolicy(
-        producer=VNextArtifactProducer(
-            writer_id=b"writer",
-            python_abi=b"cp313",
-            pillow_build=b"pillow-11",
-            libjpeg_build=b"libjpeg-turbo-3",
-            zlib_build=b"zlib-1.3",
-        ),
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-    )
-    fingerprint = policy.producer_fingerprint_sha256
-    producer = ArtifactProducerFingerprintRecord(
-        fingerprint,
-        policy.artifact_algorithm_version + 1,
-        identity.artifact_producer_equivalence_class(fingerprint),
-        policy.producer.writer_id,
-        policy.producer.python_abi,
-        policy.producer.pillow_build,
-        policy.producer.libjpeg_build,
-        policy.producer.zlib_build,
-    )
-    monkeypatch.setattr(
-        policy_module,
-        "load_artifact_producer_fingerprint",
-        lambda _connector, _fingerprint: producer,
-    )
-    work = cast(VNextUnitOfWork, SimpleNamespace(connector=object()))
-
-    with pytest.raises(
-        VNextIngestPolicyConflictError,
-        match="algorithm differs from its registered producer",
-    ):
-        policy_module._ensure_artifact_policy(
-            work,
-            ingest_turn=cast(Any, None),
-            policy=policy,
-            now=1,
-        )
-
-
 def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
     tmp_path: Path,
 ) -> None:
@@ -520,19 +449,16 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
-    policy = VNextIngestPolicy(
-        producer=VNextArtifactProducer(
-            writer_id=b"writer",
-            python_abi=b"cp313",
-            pillow_build=b"pillow-11",
-            libjpeg_build=b"libjpeg-turbo-3",
-            zlib_build=b"zlib-1.3",
-        ),
-        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-    )
+    policy = _policy()
     foreign = facade.ensure_policy(
         session,
-        replace(policy, max_image_short_side=4096),
+        replace(
+            policy,
+            artifact=VNextArtifactAdapterPolicy(
+                adapter_id=policy.artifact.adapter_id,
+                policy_fingerprint_sha256=b"q" * 32,
+            ),
+        ),
     )
     with SQLiteConnector(str(path)) as connector:
         assert connector.fetch_one(
@@ -879,16 +805,7 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
     assert session is not None
     policy = facade.ensure_policy(
         session,
-        VNextIngestPolicy(
-            producer=VNextArtifactProducer(
-                writer_id=b"writer",
-                python_abi=b"cp313",
-                pillow_build=b"pillow-11",
-                libjpeg_build=b"libjpeg-turbo-3",
-                zlib_build=b"zlib-1.3",
-            ),
-            storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-        ),
+        _policy(),
     )
 
     with facade.prepare_source(EmptySource()) as source:
@@ -994,16 +911,7 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
             return VNextIngestPage((), None, True)
 
     def policy() -> VNextIngestPolicy:
-        return VNextIngestPolicy(
-            producer=VNextArtifactProducer(
-                writer_id=b"writer",
-                python_abi=b"cp313",
-                pillow_build=b"pillow-11",
-                libjpeg_build=b"libjpeg-turbo-3",
-                zlib_build=b"zlib-1.3",
-            ),
-            storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-        )
+        return _policy()
 
     def drive(
         facade: VNextIngestFacade,
@@ -1190,16 +1098,7 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
     assert session is not None
     policy = facade.ensure_policy(
         session,
-        VNextIngestPolicy(
-            producer=VNextArtifactProducer(
-                writer_id=b"writer",
-                python_abi=b"cp313",
-                pillow_build=b"pillow-11",
-                libjpeg_build=b"libjpeg-turbo-3",
-                zlib_build=b"zlib-1.3",
-            ),
-            storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-        ),
+        _policy(),
     )
 
     with facade.prepare_source(EmptyGallerySource()) as source:
@@ -1233,6 +1132,7 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
         FileObservation(
             name,
             FileContentReceipt.from_parts((name,)),
+            ArtifactSourceRole.PAGE,
             index + 1,
             index + 2,
             index + 3,
@@ -1391,16 +1291,7 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
     assert session is not None
     policy = facade.ensure_policy(
         session,
-        VNextIngestPolicy(
-            producer=VNextArtifactProducer(
-                writer_id=b"writer",
-                python_abi=b"cp313",
-                pillow_build=b"pillow-11",
-                libjpeg_build=b"libjpeg-turbo-3",
-                zlib_build=b"zlib-1.3",
-            ),
-            storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
-        ),
+        _policy(),
     )
     adapter = RestartableSource()
 

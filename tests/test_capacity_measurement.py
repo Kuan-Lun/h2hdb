@@ -255,8 +255,8 @@ def test_registry_measurement_relation_dominates_closed_bounded_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     measured, measured_score, scored = receipt._registry_capacity_dominance(_plan())
-    assert measured == "artifact_producer_fingerprint"
-    assert len(scored) == 6
+    assert measured == "analysis_policy"
+    assert len(scored) == 8
     assert all(score <= measured_score for _name, score in scored)
 
     original_load = receipt._load

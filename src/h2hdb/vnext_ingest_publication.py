@@ -27,47 +27,33 @@ import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from tempfile import TemporaryFile
 from time import time_ns
-from typing import BinaryIO, Protocol, cast, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
-from . import vnext_identity as identity
 from .domain import (
     ArtifactReleaseStorageEvidence,
-    ArtifactStorageEvidence,
     VNextIngestAdvanceResult,
     VNextIngestPhase,
     VNextIngestSession,
+    VNextLibraryActivationCursor,
     VNextLibraryActivationItem,
     VNextResolvedIngestPolicy,
-    artifact_storage_key,
 )
 from .ports import ArtifactReleaseAdapter, ArtifactStorageAdapter
 from .repository import RepositoryContext
 from .sql_connector import SQLConnector
 from .vnext_artifact_family import (
     PreparedArtifactFamily,
-    load_prepared_artifact_family,
+    load_prepared_artifact_families,
 )
 from .vnext_artifact_preparation_repository import (
-    _PREPARATION_RECEIPT_TOKEN,
-    _PROTECTION_EVIDENCE_TOKEN,
-    _PROTECTION_INTENT_TOKEN,
     ArtifactInputProjectionPlan,
     ArtifactPreparationAuthority,
-    ArtifactPreparationConflictError,
-    ArtifactPreparationContractUnavailableError,
-    ArtifactPreparationInputAudit,
-    ArtifactPreparationNotReadyError,
     ArtifactPreparationReceipt,
     ArtifactPreparationRepository,
     ArtifactProtectionEvidence,
     ArtifactProtectionIntent,
-    _ArchiveSourcePlan,
-    _hash_stream,
-    _prepare_archive_source_plan,
-    _validate_canonical_archive,
-    _write_canonical_archive,
+    _protection_intent_from_family,
 )
 from .vnext_canonical_value_family import (
     load_page_family,
@@ -96,8 +82,7 @@ from .vnext_download_ingest_repository import (
 )
 from .vnext_ingest_fence_repository import IngestTurn
 from .vnext_library_activation_repository import (
-    LibraryActivationArtifactItem,
-    LibraryActivationArtifactRepository,
+    LibraryActivationResourceRepository,
 )
 from .vnext_maintenance_gate_repository import (
     GateLease,
@@ -172,7 +157,7 @@ class LibraryActivationCheckpoint:
     revision: int
     receipt_id: bytes
     status: LibraryActivationStatus
-    cursor: bytes | None
+    cursor: VNextLibraryActivationCursor | None
 
     def __post_init__(self) -> None:
         require_positive_int63(
@@ -186,8 +171,12 @@ class LibraryActivationCheckpoint:
         if not isinstance(self.status, LibraryActivationStatus):
             raise TypeError("library activation status is not registered")
         cursor = self.cursor
+        if cursor is not None and not isinstance(cursor, VNextLibraryActivationCursor):
+            raise TypeError(
+                "library activation adapter cursor must be VNextLibraryActivationCursor"
+            )
         if cursor is not None:
-            require_digest32(cursor, field="library activation adapter cursor")
+            cursor.__post_init__()
         if (
             self.status
             in {
@@ -291,15 +280,15 @@ class _OperationalWork:
 class _ArtifactWork:
     authority: ArtifactPreparationAuthority
     effect_seal: OperationalEffectSeal
-    intent: ArtifactProtectionIntent | None
+    families: tuple[PreparedArtifactFamily, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
 class _ArtifactPrepared:
     receipt: ArtifactPreparationReceipt = field(repr=False, compare=False)
     effect_seal: OperationalEffectSeal
-    intent: ArtifactProtectionIntent | None
-    evidence: ArtifactProtectionEvidence | None
+    intents: tuple[ArtifactProtectionIntent, ...]
+    evidence: tuple[ArtifactProtectionEvidence, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,9 +629,8 @@ class VNextIngestPublication:
         adapters: Mapping[bytes, ArtifactStorageAdapter],
     ) -> _ArtifactPrepared:
         authority = work.authority
-        adapter_id = authority.storage_codec[1]
         try:
-            adapter = adapters[adapter_id]
+            adapter = adapters[authority.adapter_id]
         except KeyError as error:
             raise RuntimeError("artifact storage adapter is not installed") from error
         # Immutable reads are fully spooled before renderer/protection I/O.
@@ -653,27 +641,44 @@ class VNextIngestPublication:
                 authority=authority,
             )
         with self.__context.SQLConnector() as connector:
-            archive_plan = _prepare_archive_source_plan(
+            receipt = ArtifactPreparationRepository.prepare_with_storage_adapter(
                 connector,
                 backend=self.__backend,
                 audit=audit,
+                adapter=adapter,
             )
-        receipt = _render_prepared_artifact(audit, archive_plan, adapter)
         try:
-            evidence = (
-                None
-                if work.intent is None
-                else _protect_prepared_artifact_local(
-                    receipt,
-                    work.intent,
-                    adapter,
-                )
-            )
+            families = work.families
+            if families is None:
+                return _ArtifactPrepared(receipt, work.effect_seal, (), ())
+            with self.__context.SQLConnector() as connector:
+                with connector.read_transaction():
+                    intents = tuple(
+                        _protection_intent_from_family(
+                            connector,
+                            receipt,
+                            family,
+                            replayed=True,
+                        )
+                        for family in families
+                    )
+            evidence: list[ArtifactProtectionEvidence] = []
+            for intent in intents:
+                with self.__context.SQLConnector() as connector:
+                    evidence.append(
+                        ArtifactPreparationRepository.protect_prepared_artifact(
+                            connector,
+                            backend=self.__backend,
+                            receipt=receipt,
+                            intent=intent,
+                            adapter=adapter,
+                        )
+                    )
             return _ArtifactPrepared(
                 receipt,
                 work.effect_seal,
-                work.intent,
-                evidence,
+                intents,
+                tuple(evidence),
             )
         except BaseException:
             receipt.close()
@@ -750,13 +755,13 @@ class VNextIngestPublication:
         if exact.status is not LibraryActivationStatus.SPOOL:
             raise RuntimeError("issued library activation page is not a spool page")
         with self.__context.SQLConnector() as connector:
-            page = LibraryActivationArtifactRepository.list_page(
+            page = LibraryActivationResourceRepository.list_page(
                 connector,
                 receipt_id=work.receipt_id,
                 cursor=exact.cursor,
                 page_limit=_MAX_PAGE_ROWS,
             )
-        items = tuple(_to_library_activation_item(item) for item in page.items)
+        items = page.items
         adapter.activate_page(work.revision, items)
         if page.terminal:
             adapter.seal(work.revision)
@@ -811,178 +816,6 @@ class VNextIngestPublication:
         return _Action.FINALIZE, page
 
 
-def _render_prepared_artifact(
-    audit: ArtifactPreparationInputAudit,
-    archive_plan: _ArchiveSourcePlan,
-    adapter: ArtifactStorageAdapter,
-) -> ArtifactPreparationReceipt:
-    """Render only from an already-detached immutable source spool."""
-
-    authority = audit.authority
-    if (
-        require_bounded_bytes(
-            adapter.adapter_id,
-            field="artifact adapter_id",
-            minimum=1,
-            maximum=64,
-        )
-        != authority.storage_codec[1]
-        or require_digest32(
-            adapter.producer_fingerprint_sha256,
-            field="artifact adapter producer fingerprint",
-        )
-        != authority.producer_fingerprint_sha256
-    ):
-        archive_plan.close()
-        raise ArtifactPreparationContractUnavailableError(
-            "artifact adapter differs from the sealed producer contract"
-        )
-    archive = cast(BinaryIO, TemporaryFile(mode="w+b"))
-    archive_owned = True
-    try:
-        _write_canonical_archive(archive_plan, archive, audit, adapter)
-        artifact_sha256, size_bytes = _hash_stream(archive)
-        _validate_canonical_archive(
-            archive_plan,
-            archive,
-            audit,
-            expected_size=size_bytes,
-        )
-        storage_key = artifact_storage_key(authority.gid)
-        storage_key_sha256 = identity.artifact_storage_key_digest(storage_key.segments)
-        receipt = ArtifactPreparationReceipt(
-            audit=audit,
-            artifact_sha256=artifact_sha256,
-            size_bytes=size_bytes,
-            storage_key=storage_key,
-            artifact_storage_key_sha256=storage_key_sha256,
-            storage_codec_version=authority.storage_codec[0],
-            archive=archive,
-            _capability=_PREPARATION_RECEIPT_TOKEN,
-        )
-        archive_owned = False
-        return receipt
-    finally:
-        archive_plan.close()
-        if archive_owned:
-            archive.close()
-
-
-def _protect_prepared_artifact_local(
-    receipt: ArtifactPreparationReceipt,
-    intent: ArtifactProtectionIntent,
-    adapter: ArtifactStorageAdapter,
-) -> ArtifactProtectionEvidence:
-    """Protect exact durable PENDING facts without reopening the database."""
-
-    intent.__post_init__()
-    authority = receipt.audit.authority
-    expected = (
-        authority.candidate_id,
-        authority.publication_key,
-        receipt.artifact_sha256,
-        receipt.size_bytes,
-        receipt.storage_key,
-        receipt.artifact_storage_key_sha256,
-        receipt.storage_codec_version,
-    )
-    actual = (
-        intent.candidate_id,
-        intent.publication_key,
-        intent.artifact_sha256,
-        intent.size_bytes,
-        intent.storage_key,
-        intent.artifact_storage_key_sha256,
-        intent.storage_codec_version,
-    )
-    if intent.state != "PENDING" or actual != expected:
-        raise ArtifactPreparationConflictError(
-            "durable protection intent differs from rendered artifact facts"
-        )
-    adapter_id = require_bounded_bytes(
-        adapter.adapter_id,
-        field="artifact adapter_id",
-        minimum=1,
-        maximum=64,
-    )
-    producer = require_digest32(
-        adapter.producer_fingerprint_sha256,
-        field="artifact adapter producer fingerprint",
-    )
-    if (
-        adapter_id != authority.storage_codec[1]
-        or producer != authority.producer_fingerprint_sha256
-    ):
-        raise ArtifactPreparationContractUnavailableError(
-            "artifact adapter differs from the durable protection contract"
-        )
-    before = _hash_stream(receipt._archive)
-    if before != (receipt.artifact_sha256, receipt.size_bytes):
-        raise ArtifactPreparationConflictError(
-            "rendered artifact changed before external protection"
-        )
-    receipt._archive.seek(0)
-    evidence = adapter.protect(
-        receipt._archive,
-        intent.storage_key,
-        intent.artifact_sha256,
-        intent.size_bytes,
-        intent.protection_token,
-    )
-    if type(evidence) is not ArtifactStorageEvidence or not evidence.stored:
-        raise ArtifactPreparationNotReadyError(
-            "artifact storage did not acknowledge exact protection"
-        )
-    if _hash_stream(receipt._archive) != before:
-        raise ArtifactPreparationConflictError(
-            "artifact storage changed the rendered archive"
-        )
-    return ArtifactProtectionEvidence(
-        intent,
-        adapter_id,
-        producer,
-        _capability=_PROTECTION_EVIDENCE_TOKEN,
-    )
-
-
-def _intent_from_durable_family(
-    family: PreparedArtifactFamily,
-    *,
-    gid: int,
-) -> ArtifactProtectionIntent:
-    family.__post_init__()
-    token = identity.decode_artifact_protection_token(family.protection_token)
-    storage_key = artifact_storage_key(gid)
-    return ArtifactProtectionIntent(
-        family.candidate_id,
-        family.publication_key,
-        family.artifact_sha256,
-        token.size_bytes,
-        storage_key,
-        token.artifact_storage_key_sha256,
-        family.storage_codec_version,
-        family.storage_generation,
-        family.protection_token,
-        family.state,
-        True,
-        _capability=_PROTECTION_INTENT_TOKEN,
-    )
-
-
-def _to_library_activation_item(
-    item: LibraryActivationArtifactItem,
-) -> VNextLibraryActivationItem:
-    return VNextLibraryActivationItem(
-        item.publication_key,
-        item.gid,
-        item.source_gallery_name,
-        item.upload_time,
-        item.storage_key,
-        item.artifact_sha256,
-        item.size_bytes,
-    )
-
-
 def _release_finalization_page(
     page: PublicationFinalizationPage,
     adapters: Mapping[bytes, ArtifactReleaseAdapter],
@@ -991,10 +824,11 @@ def _release_finalization_page(
 
     resolved = _resolve_adapters(adapters, page.items)
     for item in page.items:
+        descriptor = item.storage_object
         evidence = resolved[item.adapter_id].release(
-            item.storage_key,
-            item.artifact_sha256,
-            item.size_bytes,
+            descriptor.key,
+            bytes.fromhex(descriptor.sha256),
+            descriptor.size_bytes,
             item.protection_token,
         )
         if (
@@ -1172,14 +1006,17 @@ def _issue_artifact_or_operational(
         build_id=build_id,
     )
     row = work.connector.fetch_one(
-        "SELECT operation.publication_key, prepared.state "
+        "SELECT operation.publication_key "
         "FROM catalog_artifact_operations AS operation "
-        "LEFT JOIN catalog_prepared_artifacts AS prepared "
-        "ON prepared.candidate_id = operation.candidate_id "
-        "AND prepared.publication_key = operation.publication_key "
         "WHERE operation.candidate_id = %s "
         "AND operation.operation IN ('CREATE', 'REBUILD') "
-        "AND (prepared.publication_key IS NULL OR prepared.state = 'PENDING') "
+        "AND (NOT EXISTS (SELECT 1 FROM catalog_prepared_artifacts prepared "
+        "WHERE prepared.candidate_id = operation.candidate_id "
+        "AND prepared.publication_key = operation.publication_key) "
+        "OR EXISTS (SELECT 1 FROM catalog_prepared_artifacts prepared "
+        "WHERE prepared.candidate_id = operation.candidate_id "
+        "AND prepared.publication_key = operation.publication_key "
+        "AND prepared.state = 'PENDING')) "
         "ORDER BY operation.publication_key LIMIT 1",
         (candidate_id,),
     )
@@ -1192,23 +1029,18 @@ def _issue_artifact_or_operational(
             generation=generation,
             now=now,
         )
-        family = load_prepared_artifact_family(
+        families = load_prepared_artifact_families(
             work.connector,
             candidate_id=candidate_id,
             publication_key=publication,
             backend=work.backend,
         )
-        intent = (
-            None
-            if family is None
-            else _intent_from_durable_family(family, gid=authority.gid)
-        )
-        if intent is not None and intent.state != "PENDING":
-            raise RuntimeError("next artifact durable intent is not PENDING")
+        if families and any(family.state != "PENDING" for family in families):
+            raise RuntimeError("next artifact resource bundle has mixed states")
         return _Action.PREPARE_ARTIFACT, _ArtifactWork(
             authority,
             effect_seal,
-            intent,
+            None if not families else families,
         )
     binding = work.connector.fetch_one(
         "SELECT preparation_id FROM operational_publication_candidate_preparations "
@@ -1345,8 +1177,8 @@ def _commit_action(
         )
     if action is _Action.PREPARE_ARTIFACT:
         prepared = cast(_ArtifactPrepared, payload)
-        if prepared.intent is None:
-            if prepared.evidence is not None:
+        if not prepared.intents:
+            if prepared.evidence:
                 raise RuntimeError("unpersisted artifact has protection evidence")
             return ArtifactPreparationRepository.persist_prepared_artifact(
                 work,
@@ -1355,14 +1187,14 @@ def _commit_action(
                 receipt=prepared.receipt,
                 now=now,
             )
-        if prepared.evidence is None:
+        if len(prepared.evidence) != len(prepared.intents):
             raise RuntimeError("durable artifact intent lacks storage evidence")
         return ArtifactPreparationRepository.confirm_prepared_artifact(
             work,
             gate_lease=gate,
             ingest_turn=turn,
             receipt=prepared.receipt,
-            intent=prepared.intent,
+            intents=prepared.intents,
             evidence=prepared.evidence,
             effect_seal=prepared.effect_seal,
             now=now,

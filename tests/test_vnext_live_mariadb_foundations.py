@@ -7,6 +7,7 @@ from vnext_catalog_registry_fixtures import seed_manifest_policy
 
 from h2hdb import CoreConfig
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.domain import ArtifactSourceRole
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
@@ -286,6 +287,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 FileObservation(
                     file_name,
                     FileContentReceipt.from_parts(()),
+                    ArtifactSourceRole.OTHER,
                     100,
                     1_000,
                     0,

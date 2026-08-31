@@ -13,7 +13,6 @@ from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import seed_gallery_identity
 from vnext_catalog_registry_fixtures import (
     seed_artifact_policy_semantics,
-    seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_source_scope,
     seed_title_sort_policy,
@@ -28,18 +27,21 @@ from vnext_publication_fixtures import (
 )
 
 from h2hdb import (
+    CatalogDiscoveryPage,
     CatalogRecentOrder,
+    StorageObjectKey,
     VNextCatalogFacade,
     VNextDatabaseAdminFacade,
     VNextDownloadQueueFacade,
     open_database,
 )
+from h2hdb.catalog_search import iter_search_lexemes
 from h2hdb.config_loader import (
     CoreConfig,
     DatabaseAccessMode,
     DatabaseConfig,
 )
-from h2hdb.domain import CatalogPage, CatalogRevision
+from h2hdb.domain import CatalogRevision
 from h2hdb.ports import CatalogReader
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import SchemaEpochAdmissionError, SchemaEpochDefinition
@@ -51,6 +53,7 @@ from h2hdb.vnext_artifact_family import (
     ensure_artifact_semantic_input_family,
     ensure_catalog_artifact_family,
 )
+from h2hdb.vnext_catalog_reader_repository import VNextCatalogReadError
 from h2hdb.vnext_download_ingest_repository import DownloadIngestRepository
 from h2hdb.vnext_identity import (
     CanonicalValueChunk,
@@ -58,8 +61,8 @@ from h2hdb.vnext_identity import (
     GalleryObservationNodeKind,
     artifact_id,
     artifact_policy_digest,
-    artifact_producer_fingerprint_sha256,
     artifact_semantics_digest,
+    artifact_storage_key_digest,
     canonical_value_digest,
     canonical_value_page_digest,
     encode_artifact_policy,
@@ -439,34 +442,50 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         source_title_sha256=source_title,
         source_gallery_name=b"gallery-one",
     )
-    producer_tuple = (b"writer", b"python", b"pillow", b"jpeg", b"zlib")
-    producer = artifact_producer_fingerprint_sha256(*producer_tuple)
-    producer_record = seed_artifact_producer_fingerprint(
-        connector,
-        artifact_algorithm_version=1,
-        writer_id=producer_tuple[0],
-        python_abi=producer_tuple[1],
-        pillow_build=producer_tuple[2],
-        libjpeg_build=producer_tuple[3],
-        zlib_build=producer_tuple[4],
+    search_lexemes = tuple(dict.fromkeys(iter_search_lexemes((b"Display", b"Source"))))
+    connector.execute(
+        "INSERT INTO catalog_search_documents "
+        "(revision, publication_key, row_count) VALUES (1, %s, %s)",
+        (publication_key_value, len(search_lexemes)),
     )
-    assert producer_record.producer_fingerprint_sha256 == producer
+    for lexeme in search_lexemes:
+        lexeme_sha256 = _canonical(connector, "search_lexeme_utf8_v1", lexeme)
+        connector.execute(
+            "INSERT INTO catalog_search_lexemes (value_sha256) VALUES (%s)",
+            (lexeme_sha256,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_search_postings "
+            "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+            (lexeme_sha256, publication_key_value),
+        )
+    connector.execute(
+        "INSERT INTO catalog_language_facet_order "
+        "(revision, position, language_sha256, occurrence_count) "
+        "VALUES (1, 0, %s, 1)",
+        (language,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+    )
+    adapter_id = b"facade-test-adapter"
+    policy_fingerprint = sha256(b"facade-test-artifact-policy").digest()
     policy = _canonical(
         connector,
-        "artifact_policy_v2",
-        encode_artifact_policy(1, 1600, producer),
+        "artifact_policy_v3",
+        encode_artifact_policy(2, adapter_id, policy_fingerprint),
     )
-    assert policy == artifact_policy_digest(1, 1600, producer)
+    assert policy == artifact_policy_digest(2, adapter_id, policy_fingerprint)
     semantics_record = seed_artifact_policy_semantics(
         connector,
-        artifact_algorithm_version=1,
-        max_image_short_side=1600,
-        producer_fingerprint_sha256=producer,
+        artifact_algorithm_version=2,
+        adapter_id=adapter_id,
+        policy_fingerprint_sha256=policy_fingerprint,
     )
     assert semantics_record.policy_component_sha256 == policy
     component_specs = (
         ("artifact_source_manifest_v1", b"source"),
-        ("artifact_member_plan_v1", b"members"),
+        ("artifact_effective_content_v1", b"members"),
         ("artifact_effective_content_v1", b"content"),
         ("artifact_selected_v1", b"selected"),
         ("artifact_owner_v1", b"owner"),
@@ -523,6 +542,39 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
             publication_key_value,
             artifact_sha256,
             semantics,
+            b"download-123.bin",
+            b"application/octet-stream",
+            0,
+        ),
+    )
+    storage_key = StorageObjectKey("facade-v2", ("acquisition", "123"))
+    storage_key_sha256 = artifact_storage_key_digest(
+        storage_key.codec,
+        storage_key.segments,
+    )
+    connector.execute(
+        "INSERT INTO catalog_storage_object_key_identities "
+        "(storage_object_key_sha256, key_codec, segment_count) VALUES (%s, %s, 2)",
+        (storage_key_sha256, storage_key.codec.encode("ascii")),
+    )
+    for position, segment in enumerate(storage_key.segments):
+        connector.execute(
+            "INSERT INTO catalog_storage_object_key_segments "
+            "(storage_object_key_sha256, segment_position, key_segment) "
+            "VALUES (%s, %s, %s)",
+            (storage_key_sha256, position, segment.encode("utf-8")),
+        )
+    connector.execute(
+        "INSERT INTO catalog_storage_objects "
+        "(revision, publication_key, resource_kind, storage_object_key_sha256, "
+        "storage_object_sha256, size_bytes, modified_at) "
+        "VALUES (1, %s, %s, %s, %s, %s, 3000000)",
+        (
+            publication_key_value,
+            b"acquisition",
+            storage_key_sha256,
+            artifact_sha256,
+            len(artifact_bytes),
         ),
     )
     return {
@@ -546,8 +598,8 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
 
     facade = VNextCatalogFacade(_config(path, read_only=True))
     revision = facade.get_catalog_revision()
-    page = facade.list_publications(revision=revision, limit=10)
-    recent = facade.list_recent_artifact_publications(
+    page = facade.discover_publications(revision=revision, limit=10)
+    recent = facade.list_recent_publications(
         order=CatalogRecentOrder.DOWNLOADED,
         revision=revision,
     )
@@ -556,7 +608,7 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
         revision=revision,
     )
     by_name = facade.get_publications_by_artifact_names(
-        ["h2h-123.cbz", "h2h-999.cbz", "h2h-123.cbz"],
+        ["download-123.bin", "missing.bin", "download-123.bin"],
         revision=revision,
     )
     artifact = facade.get_artifact(
@@ -570,15 +622,21 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
         1,
         1,
     )
-    assert isinstance(page, CatalogPage)
+    assert isinstance(page, CatalogDiscoveryPage)
     assert page.publications == (publication,)
     assert recent.order is CatalogRecentOrder.DOWNLOADED
     assert recent.publications == (publication,)
-    assert by_name == {"h2h-123.cbz": publication}
+    assert by_name == {"download-123.bin": publication}
     assert publication is not None
     assert publication.artifacts == (artifact,)
     assert artifact is not None
-    assert artifact.sha256 == cast(bytes, values["artifact_sha256"]).hex()
+    assert (
+        artifact.storage_object.sha256
+        == cast(
+            bytes,
+            values["artifact_sha256"],
+        ).hex()
+    )
 
 
 class _CountingClock:
@@ -815,35 +873,52 @@ class _MariaRecorder:
 
 
 class _FacadeContext:
-    def __init__(self, recorder: _MariaRecorder) -> None:
+    def __init__(self, *recorders: _MariaRecorder) -> None:
         self.sql_type = "mariadb"
-        self.SQLConnector: Callable[[], _MariaRecorder] = lambda: recorder
+        remaining = iter(recorders)
+        self.SQLConnector: Callable[[], _MariaRecorder] = lambda: next(remaining)
 
 
 def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(Path("unused"), backend="mariadb")
-    catalog_recorder = _MariaRecorder([(7, 0, 0, 1_000_000, 1)])
+    catalog_snapshot = _MariaRecorder(
+        [
+            (7, 0, 0, 1_000_000, 1),
+            (7, 0, 0, 1_000_000, 1),
+        ]
+    )
+    catalog_fence = _MariaRecorder([(7, 0, 0, 1_000_000, 1)])
     monkeypatch.setattr(
         RepositoryContext,
         "from_config",
-        classmethod(lambda cls, value: _FacadeContext(catalog_recorder)),
+        classmethod(lambda cls, value: _FacadeContext(catalog_snapshot, catalog_fence)),
     )
     revision = VNextCatalogFacade(config).get_catalog_revision()
 
     assert revision.revision == 7
-    assert catalog_recorder.events == [
+    assert catalog_snapshot.events == [
         "connect",
         "begin-read-only-snapshot",
         "commit",
         "close",
     ]
-    assert all(" FOR UPDATE" not in query for query, _data in catalog_recorder.selects)
-    assert len(catalog_recorder.selects) == 1
-    assert "catalog_publication_commit_head_receipts" in catalog_recorder.selects[0][0]
+    assert catalog_fence.events == [
+        "connect",
+        "begin-read-only-snapshot",
+        "commit",
+        "close",
+    ]
+    catalog_selects = (*catalog_snapshot.selects, *catalog_fence.selects)
+    assert all(" FOR UPDATE" not in query for query, _data in catalog_selects)
+    assert len(catalog_selects) == 3
+    assert all(
+        "catalog_publication_commit_head_receipts" in query
+        for query, _data in catalog_selects
+    )
     assert not any(
-        "maintenance" in query.casefold() for query, _data in catalog_recorder.selects
+        "maintenance" in query.casefold() for query, _data in catalog_selects
     )
 
     queue_recorder = _MariaRecorder([(), ()])
@@ -864,6 +939,62 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
     assert all(query.endswith(" FOR UPDATE") for query, _data in queue_recorder.selects)
     assert len(queue_recorder.mutations) == 1
     assert "INSERT INTO operational_download_requests" in queue_recorder.mutations[0][0]
+
+
+def test_catalog_facade_rejects_a_head_change_seen_by_the_fresh_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(Path("unused"), backend="mariadb")
+    snapshot = _MariaRecorder(
+        [
+            (7, 0, 0, 1_000_000, 1),
+            (7, 0, 0, 1_000_000, 1),
+        ]
+    )
+    advanced = _MariaRecorder([(8, 0, 0, 2_000_000, 2)])
+    monkeypatch.setattr(
+        RepositoryContext,
+        "from_config",
+        classmethod(lambda cls, value: _FacadeContext(snapshot, advanced)),
+    )
+
+    with pytest.raises(VNextCatalogReadError, match="head advanced"):
+        VNextCatalogFacade(config).get_catalog_revision()
+
+    assert snapshot.events == [
+        "connect",
+        "begin-read-only-snapshot",
+        "commit",
+        "close",
+    ]
+    assert advanced.events == [
+        "connect",
+        "begin-read-only-snapshot",
+        "rollback",
+        "close",
+    ]
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    (
+        "get_catalog_revision",
+        "discover_publications",
+        "list_publication_facets",
+        "list_recent_publications",
+        "get_publication",
+        "get_publication_presentation",
+        "get_publication_page",
+        "get_publications_by_artifact_names",
+        "get_artifact",
+    ),
+)
+def test_every_catalog_facade_read_uses_the_shared_fresh_head_fence(
+    method_name: str,
+) -> None:
+    source = inspect.getsource(getattr(VNextCatalogFacade, method_name))
+
+    assert "return self.__read(" in source
 
 
 @pytest.mark.parametrize(

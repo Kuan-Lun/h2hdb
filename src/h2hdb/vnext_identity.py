@@ -10,13 +10,13 @@ the currently deployed schema.
 from __future__ import annotations
 
 import codecs
+from unicodedata import category
 
 __all__ = [
     "ARTIFACT_COMPONENT_KINDS",
     "ARTIFACT_MEMBER_PLAN_VERSION",
     "ARTIFACT_COMPONENT_CODEC_VERSION",
     "ARTIFACT_POLICY_CODEC_VERSION",
-    "ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION",
     "ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION",
     "ARTIFACT_SEMANTICS_CODEC_VERSION",
     "ARTIFACT_STORAGE_KEY_CODEC_VERSION",
@@ -43,7 +43,6 @@ __all__ = [
     "GALLERY_OBSERVATION_DURABLE_PARSER_PHASES",
     "SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION",
     "SOURCE_SCOPE_KEY_ALGORITHM_VERSION",
-    "ZIP_COMMENT_CODEC_VERSION",
     "SOURCE_PROVIDERS",
     "CANONICAL_DIGEST_CODEC_VERSION",
     "CANONICAL_VALUE_PAGE_CODEC_VERSION",
@@ -61,11 +60,8 @@ __all__ = [
     "IntegerDomainError",
     "RegisteredIdentifierError",
     "VNextIdentityError",
-    "ArtifactMemberEntryKind",
+    "ArtifactMemberSourceRole",
     "ArtifactMemberPlanEntry",
-    "ArtifactProtectionToken",
-    "ArtifactSourceRole",
-    "ArtifactTransformKind",
     "AnalysisTitleScalarReceipt",
     "StrictUtf8ScalarCounter",
     "GalleryObservationComponent",
@@ -104,16 +100,10 @@ __all__ = [
     "artifact_effective_content_digest_ordered",
     "artifact_owner_digest",
     "artifact_policy_digest",
-    "artifact_producer_equivalence_class",
-    "artifact_producer_fingerprint_sha256",
-    "artifact_storage_receipt_id",
-    "artifact_name",
-    "artifact_archive_member_name",
     "artifact_selected_digest",
     "artifact_semantics_digest",
     "artifact_source_manifest_digest",
     "artifact_storage_key_digest",
-    "artifact_storage_key_components",
     "analysis_candidate_has_already_uploaded",
     "count_analysis_title_scalars",
     "catalog_summary_digest",
@@ -132,7 +122,6 @@ __all__ = [
     "decode_source_relative_locator",
     "validate_source_relative_locator_parts",
     "decode_artifact_id",
-    "decode_artifact_name",
     "decode_artifact_storage_key",
     "decode_artifact_protection_token",
     "iter_decode_artifact_storage_key",
@@ -148,7 +137,6 @@ __all__ = [
     "encode_source_relative_locator",
     "encode_artifact_storage_key",
     "encode_artifact_protection_token",
-    "encode_artifact_producer_fingerprint",
     "iter_artifact_storage_key_payload",
     "iter_source_relative_locator_payload",
     "encode_source_root",
@@ -177,7 +165,6 @@ __all__ = [
     "encode_artifact_selected",
     "encode_artifact_semantics",
     "encode_artifact_source_manifest",
-    "encode_zip_comment",
     "encode_effective_content",
     "iter_effective_content_payload_ordered",
     "encode_source_snapshot_manifest",
@@ -213,7 +200,7 @@ __all__ = [
 ]
 
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 from hashlib import sha256
 
@@ -241,15 +228,13 @@ CANONICAL_VALUE_CHUNK_BYTES = 32768
 CANONICAL_VALUE_BRANCH_CAPACITY = 256
 FILESYSTEM_STAT_FINGERPRINT_BYTES = 40
 EFFECTIVE_CONTENT_ENCODING_VERSION = 1
-ARTIFACT_MEMBER_PLAN_VERSION = 1
+ARTIFACT_MEMBER_PLAN_VERSION = 2
 ARTIFACT_COMPONENT_CODEC_VERSION = 1
-ARTIFACT_POLICY_CODEC_VERSION = 2
-ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION = 1
-ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION = 1
+ARTIFACT_POLICY_CODEC_VERSION = 3
+ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION = 2
 ARTIFACT_SEMANTICS_CODEC_VERSION = 1
-ARTIFACT_STORAGE_KEY_CODEC_VERSION = 1
+ARTIFACT_STORAGE_KEY_CODEC_VERSION = 2
 ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES = 4096
-ZIP_COMMENT_CODEC_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION = 1
 GALLERY_OBSERVATION_DESCRIPTOR_CODEC_VERSION = 1
 GALLERY_OBSERVATION_METADATA_CODEC_VERSION = 1
@@ -289,15 +274,23 @@ ARTIFACT_SOURCE_MANIFEST_DIGEST_DOMAIN = "artifact_source_manifest_v1"
 ARTIFACT_EFFECTIVE_CONTENT_DIGEST_DOMAIN = "artifact_effective_content_v1"
 ARTIFACT_SELECTED_DIGEST_DOMAIN = "artifact_selected_v1"
 ARTIFACT_OWNER_DIGEST_DOMAIN = "artifact_owner_v1"
-ARTIFACT_POLICY_DIGEST_DOMAIN = "artifact_policy_v2"
+ARTIFACT_POLICY_DIGEST_DOMAIN = "artifact_policy_v3"
 ARTIFACT_SEMANTICS_DIGEST_DOMAIN = "artifact_semantics_v1"
 GALLERY_OBSERVATION_DIGEST_DOMAIN = "gallery_observation_v1"
 CATALOG_SUMMARY_DIGEST_DOMAIN = "catalog_summary_utf8_v1"
 CATALOG_LANGUAGE_DIGEST_DOMAIN = "catalog_language_utf8_v1"
-ARTIFACT_STORAGE_KEY_DIGEST_DOMAIN = "artifact_storage_key_bytes_v1"
+ARTIFACT_STORAGE_KEY_DIGEST_DOMAIN = "storage_object_key_v2"
 CONTENT_FILE_ROLE = b"CONTENT"
 METADATA_FILE_ROLE = b"METADATA"
 METADATA_FILE_NAME = b"galleryinfo.txt"
+_ARTIFACT_SOURCE_ROLE_TO_TAG = {
+    b"metadata": 0,
+    b"page": 1,
+    b"other": 2,
+}
+_ARTIFACT_SOURCE_ROLE_FROM_TAG = {
+    tag: role for role, tag in _ARTIFACT_SOURCE_ROLE_TO_TAG.items()
+}
 ANALYSIS_ALREADY_UPLOADED_MARKER = b"already uploaded"
 
 _EFFECTIVE_CONTENT_PREFIX = b"h2hdb-vnext-effective-content\0"
@@ -308,30 +301,18 @@ _ARTIFACT_EFFECTIVE_CONTENT_PREFIX = b"h2hdb-vnext-artifact-effective-content\0"
 _ARTIFACT_SELECTED_PREFIX = b"h2hdb-vnext-artifact-selected\0"
 _ARTIFACT_OWNER_PREFIX = b"h2hdb-vnext-artifact-owner\0"
 _ARTIFACT_POLICY_PREFIX = b"h2hdb-vnext-artifact-policy\0"
-_ARTIFACT_PRODUCER_FINGERPRINT_PREFIX = b"h2hdb-vnext-artifact-producer\0"
-_ARTIFACT_PRODUCER_EQUIVALENCE_PREFIX = (
-    b"h2hdb-vnext-artifact-producer-exact-equivalence-v1\0"
-)
-_ARTIFACT_STORAGE_RECEIPT_PREFIX = b"h2hdb-vnext-artifact-storage-receipt\0"
-_ARTIFACT_PROTECTION_PREFIX = b"h2hdb-vnext-artifact-protection\0"
-_ARTIFACT_STORAGE_SHARD_PREFIX = b"h2hdb-media-gid-shard-v1\0"
+_ARTIFACT_PROTECTION_PREFIX = b"h2hdb-vnext-artifact-protection-v2\0"
+_ARTIFACT_STORAGE_KEY_PREFIX = b"h2hdb-storage-object-key\0"
 _ARTIFACT_SEMANTICS_PREFIX = b"h2hdb-vnext-artifact-semantics\0"
 _PUBLICATION_ID_PREFIX = b"urn:h2h:gallery:"
-_ARTIFACT_ID_PREFIX = b"urn:h2h:artifact:cbz:"
+_ARTIFACT_ID_PREFIX = b"urn:h2h:artifact:acquisition:"
 _ARTIFACT_ID_DIGEST_SEPARATOR = b":sha256:"
-_ARTIFACT_NAME_PREFIX = b"h2h-"
-_ARTIFACT_NAME_SUFFIX = b".cbz"
-_ZIP_COMMENT_PREFIX = b"H2HDB-ZIP-COMMENT\0"
 _GALLERY_OBSERVATION_PAGE_PREFIX = b"h2hdb-vnext-gallery-observation-page\0"
 _CANONICAL_VALUE_PAGE_PREFIX = b"h2hdb-vnext-canonical-value-page\0"
 _GALLERY_OBSERVATION_METADATA_PREFIX = b"h2hdb-vnext-gallery-observation-metadata\0"
 _GALLERY_DIRECTORY_AUDIT_PREFIX = b"h2hdb-vnext-directory-observation-audit-v1\0"
 _GALLERY_METADATA_AUDIT_PREFIX = b"h2hdb-vnext-metadata-observation-audit-v1\0"
 _GALLERY_SCAN_AUDIT_PREFIX = b"h2hdb-vnext-scan-observation-audit-v1\0"
-_JPEG_NORMALIZED_SUFFIXES = frozenset(
-    {b".avif", b".bmp", b".jpeg", b".jpg", b".png", b".webp"}
-)
-
 ANALYSIS_STATE_COMPONENTS = frozenset(
     {
         "file_hash_decision",
@@ -354,25 +335,11 @@ ARTIFACT_COMPONENT_KINDS = frozenset(
 )
 
 
-class ArtifactMemberEntryKind(IntEnum):
-    """Closed v1 member-plan entry-kind registry."""
-
-    SOURCE_FILE = 0
-
-
-class ArtifactSourceRole(IntEnum):
-    """Closed v1 source-role registry."""
+class ArtifactMemberSourceRole(IntEnum):
+    """Closed neutral v2 render-input role registry."""
 
     METADATA = 0
-    CONTENT = 1
-
-
-class ArtifactTransformKind(IntEnum):
-    """Closed v1 byte-transform registry."""
-
-    RAW_COPY = 0
-    GIF_NORMALIZE = 1
-    JPEG_NORMALIZE = 2
+    PAGE = 1
 
 
 class GalleryObservationComponent(IntEnum):
@@ -501,6 +468,7 @@ class GalleryObservationFileEntry:
     file_key: bytes
     file_sha256: bytes
     size_bytes: int
+    artifact_role: bytes
     device: int
     inode: int
     modified_ns: int
@@ -511,6 +479,8 @@ class GalleryObservationFileEntry:
         _require_digest(self.file_key, field_name="file_key")
         _require_digest(self.file_sha256, field_name="file_sha256")
         _require_int63(self.size_bytes, field_name="size_bytes")
+        if self.artifact_role not in _ARTIFACT_SOURCE_ROLE_TO_TAG:
+            raise ByteDomainError("artifact_role is not registered")
         _require_uint(self.device, bits=64, field_name="device")
         _require_uint(self.inode, bits=64, field_name="inode")
         _require_int64(self.modified_ns, field_name="modified_ns")
@@ -1252,112 +1222,24 @@ class GalleryObservationMetadataDecoder:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactMemberPlanEntry:
-    """One source-file row in the closed artifact member-plan v1 protocol.
+    """One immutable adapter-classified render input in neutral plan v2."""
 
-    ``source_role`` and ``transform_kind`` are deliberately derived rather
-    than accepted from the caller.  They remain explicit dataclass fields so a
-    decoded plan exposes every encoded semantic field without allowing the
-    duplicated tags to disagree with the exact source filename.
-    """
-
-    entry_position: int
+    source_position: int
     source_name_bytes: bytes
     source_file_sha256: bytes
     source_size_bytes: int
-    excluded_flag: bool
-    entry_kind: ArtifactMemberEntryKind = field(init=False)
-    source_role: ArtifactSourceRole = field(init=False)
-    transform_kind: ArtifactTransformKind = field(init=False)
-    archive_member_name_bytes: bytes | None = field(init=False)
+    source_role: ArtifactMemberSourceRole
 
     def __post_init__(self) -> None:
-        _require_int63(self.entry_position, field_name="entry_position")
+        _require_int63(self.source_position, field_name="source_position")
         validate_file_name(self.source_name_bytes)
         _require_digest(
             self.source_file_sha256,
             field_name="source_file_sha256",
         )
         _require_int63(self.source_size_bytes, field_name="source_size_bytes")
-        if type(self.excluded_flag) is not bool:
-            raise ByteDomainError("excluded_flag must be exactly bool")
-        object.__setattr__(
-            self,
-            "entry_kind",
-            ArtifactMemberEntryKind.SOURCE_FILE,
-        )
-        object.__setattr__(
-            self,
-            "source_role",
-            _source_role_for_name(self.source_name_bytes),
-        )
-        object.__setattr__(
-            self,
-            "transform_kind",
-            _transform_kind_for_name(self.source_name_bytes),
-        )
-        object.__setattr__(
-            self,
-            "archive_member_name_bytes",
-            artifact_archive_member_name(
-                self.entry_position,
-                self.source_role,
-                self.transform_kind,
-                self.excluded_flag,
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactProtectionToken:
-    """Decoded, exact artifact-storage protection-token v1 fields."""
-
-    codec_version: int
-    storage_codec_version: int
-    candidate_id: bytes
-    publication_key: bytes
-    artifact_sha256: bytes
-    artifact_storage_key_sha256: bytes
-    receipt_id: bytes
-    storage_generation: int
-    size_bytes: int
-
-    def __post_init__(self) -> None:
-        _require_registered_version(
-            self.codec_version,
-            registered=ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION,
-            field_name="artifact protection codec_version",
-        )
-        _require_positive_uint(
-            self.storage_codec_version,
-            bits=32,
-            field_name="storage_codec_version",
-        )
-        candidate = _require_bytes(self.candidate_id, field_name="candidate_id")
-        if len(candidate) != 16:
-            raise ByteDomainError("candidate_id must contain exactly 16 bytes")
-        _require_digest(self.publication_key, field_name="publication_key")
-        _require_digest(self.artifact_sha256, field_name="artifact_sha256")
-        _require_digest(
-            self.artifact_storage_key_sha256,
-            field_name="artifact_storage_key_sha256",
-        )
-        receipt = _require_bytes(self.receipt_id, field_name="receipt_id")
-        if len(receipt) != 16:
-            raise ByteDomainError("receipt_id must contain exactly 16 bytes")
-        _require_int63(self.storage_generation, field_name="storage_generation")
-        _require_int63(self.size_bytes, field_name="size_bytes")
-        expected_receipt = artifact_storage_receipt_id(
-            candidate,
-            self.publication_key,
-            self.artifact_sha256,
-            self.artifact_storage_key_sha256,
-            self.storage_generation,
-            self.size_bytes,
-        )
-        if receipt != expected_receipt:
-            raise DigestMismatchError(
-                "artifact protection receipt_id does not match exact fields"
-            )
+        if type(self.source_role) is not ArtifactMemberSourceRole:
+            raise ByteDomainError("source_role must be ArtifactMemberSourceRole")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2252,12 +2134,12 @@ def artifact_owner_digest(
 
 def encode_artifact_policy(
     artifact_algorithm_version: int,
-    max_image_short_side: int,
-    producer_fingerprint_sha256: bytes,
+    adapter_id: bytes,
+    policy_fingerprint_sha256: bytes,
     *,
     codec_version: int = ARTIFACT_POLICY_CODEC_VERSION,
 ) -> bytes:
-    """Encode the complete natural policy tuple for artifact byte semantics."""
+    """Encode the neutral core protocol plus adapter-owned policy identity."""
 
     version = _require_registered_version(
         codec_version,
@@ -2269,30 +2151,38 @@ def encode_artifact_policy(
         bits=32,
         field_name="artifact_algorithm_version",
     )
-    short_side = _require_positive_uint(
-        max_image_short_side,
-        bits=32,
-        field_name="max_image_short_side",
+    adapter_octets = _require_bytes(adapter_id, field_name="artifact adapter_id")
+    try:
+        adapter_text = adapter_octets.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ByteDomainError("artifact adapter_id must be exact ASCII") from error
+    adapter = _validate_ascii_identifier_bytes(
+        adapter_text,
+        field_name="artifact adapter_id",
+        maximum_bytes=64,
     )
-    producer = _require_digest(
-        producer_fingerprint_sha256,
-        field_name="producer_fingerprint_sha256",
+    if adapter != adapter_octets:  # pragma: no cover - ASCII is uniquely encoded
+        raise ByteDomainError("artifact adapter_id is not canonical ASCII")
+    fingerprint = _require_digest(
+        policy_fingerprint_sha256,
+        field_name="policy_fingerprint_sha256",
     )
     return b"".join(
         (
             _ARTIFACT_POLICY_PREFIX,
             version.to_bytes(4, "big"),
             algorithm.to_bytes(4, "big"),
-            short_side.to_bytes(4, "big"),
-            producer,
+            len(adapter).to_bytes(4, "big"),
+            adapter,
+            fingerprint,
         )
     )
 
 
 def artifact_policy_digest(
     artifact_algorithm_version: int,
-    max_image_short_side: int,
-    producer_fingerprint_sha256: bytes,
+    adapter_id: bytes,
+    policy_fingerprint_sha256: bytes,
     *,
     codec_version: int = ARTIFACT_POLICY_CODEC_VERSION,
 ) -> bytes:
@@ -2302,84 +2192,11 @@ def artifact_policy_digest(
         ARTIFACT_POLICY_DIGEST_DOMAIN,
         encode_artifact_policy(
             artifact_algorithm_version,
-            max_image_short_side,
-            producer_fingerprint_sha256,
+            adapter_id,
+            policy_fingerprint_sha256,
             codec_version=codec_version,
         ),
     )
-
-
-def encode_artifact_producer_fingerprint(
-    writer_id: bytes,
-    python_abi: bytes,
-    pillow_build: bytes,
-    libjpeg_build: bytes,
-    zlib_build: bytes,
-    *,
-    codec_version: int = ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION,
-) -> bytes:
-    """Encode the exact closed producer/build fingerprint preimage."""
-
-    version = _require_registered_version(
-        codec_version,
-        registered=ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION,
-        field_name="artifact producer codec_version",
-    )
-    parts = [_ARTIFACT_PRODUCER_FINGERPRINT_PREFIX, version.to_bytes(4, "big")]
-    for field_name, value in (
-        ("writer_id", writer_id),
-        ("python_abi", python_abi),
-        ("pillow_build", pillow_build),
-        ("libjpeg_build", libjpeg_build),
-        ("zlib_build", zlib_build),
-    ):
-        exact = _require_bytes(value, field_name=field_name)
-        if not exact:
-            raise ByteDomainError(f"{field_name} must not be empty")
-        if len(exact) > _UINT32_MAX:  # pragma: no cover - impossible in CPython
-            raise ByteDomainError(f"{field_name} exceeds u32 framing")
-        parts.extend((len(exact).to_bytes(4, "big"), exact))
-    return b"".join(parts)
-
-
-def artifact_producer_fingerprint_sha256(
-    writer_id: bytes,
-    python_abi: bytes,
-    pillow_build: bytes,
-    libjpeg_build: bytes,
-    zlib_build: bytes,
-    *,
-    codec_version: int = ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION,
-) -> bytes:
-    """Return raw SHA-256 of one exact producer fingerprint frame."""
-
-    return sha256(
-        encode_artifact_producer_fingerprint(
-            writer_id,
-            python_abi,
-            pillow_build,
-            libjpeg_build,
-            zlib_build,
-            codec_version=codec_version,
-        )
-    ).digest()
-
-
-def artifact_producer_equivalence_class(
-    producer_fingerprint_sha256: bytes,
-) -> bytes:
-    """Return the repository-certified exact producer equivalence class.
-
-    vNext does not accept a caller's claim that two distinct producer builds
-    emit identical bytes.  Until an independently certified equivalence
-    protocol exists, every complete producer fingerprint is its own class.
-    """
-
-    fingerprint = _require_digest(
-        producer_fingerprint_sha256,
-        field_name="producer_fingerprint_sha256",
-    )
-    return _ARTIFACT_PRODUCER_EQUIVALENCE_PREFIX + fingerprint
 
 
 def encode_artifact_semantics(
@@ -2445,37 +2262,6 @@ def artifact_semantics_digest(
             policy_component_sha256,
             codec_version=codec_version,
         ),
-    )
-
-
-def encode_zip_comment(
-    source_manifest_component_sha256: bytes,
-    effective_content_component_sha256: bytes,
-    *,
-    codec_version: int = ZIP_COMMENT_CODEC_VERSION,
-) -> bytes:
-    """Encode the one exact composite ZIP comment envelope."""
-
-    version = _require_registered_version(
-        codec_version,
-        registered=ZIP_COMMENT_CODEC_VERSION,
-        field_name="codec_version",
-    )
-    source = _require_digest(
-        source_manifest_component_sha256,
-        field_name="source_manifest_component_sha256",
-    )
-    effective = _require_digest(
-        effective_content_component_sha256,
-        field_name="effective_content_component_sha256",
-    )
-    return b"".join(
-        (
-            _ZIP_COMMENT_PREFIX,
-            version.to_bytes(4, "big"),
-            source,
-            effective,
-        )
     )
 
 
@@ -2912,7 +2698,7 @@ def encode_artifact_member_plan(
     *,
     plan_version: int = ARTIFACT_MEMBER_PLAN_VERSION,
 ) -> bytes:
-    """Materialize the reference source-only member-plan v1 payload."""
+    """Materialize the reference neutral render-input member-plan v2 payload."""
 
     version = _require_registered_version(
         plan_version,
@@ -2934,7 +2720,7 @@ def iter_artifact_member_plan_payload(
     *,
     plan_version: int = ARTIFACT_MEMBER_PLAN_VERSION,
 ) -> Iterator[bytes]:
-    """Yield an already-positioned member plan with bounded codec memory."""
+    """Yield a validated neutral render-input plan with bounded memory."""
 
     version = _require_registered_version(
         plan_version,
@@ -2946,6 +2732,8 @@ def iter_artifact_member_plan_payload(
     yield version.to_bytes(4, "big")
     yield count.to_bytes(8, "big")
     emitted = 0
+    previous_position: int | None = None
+    metadata_count = 0
     for entry in entries:
         if type(entry) is not ArtifactMemberPlanEntry:
             raise ByteDomainError(
@@ -2953,61 +2741,34 @@ def iter_artifact_member_plan_payload(
             )
         if emitted >= count:
             raise ByteDomainError("artifact member plan exceeds declared entry_count")
-        if entry.entry_position != emitted:
+        if previous_position is not None and entry.source_position <= previous_position:
             raise ByteDomainError(
-                "entry_position must equal its zero-based contiguous array index"
+                "render-input source_position values must be strictly increasing"
             )
-        if entry.entry_kind is not ArtifactMemberEntryKind.SOURCE_FILE:
-            raise ByteDomainError("v1 admits only SOURCE_FILE member-plan entries")
-        if entry.source_role is not _source_role_for_name(entry.source_name_bytes):
-            raise ByteDomainError(
-                "source_role does not match the exact source filename"
-            )
-        if entry.transform_kind is not _transform_kind_for_name(
-            entry.source_name_bytes
-        ):
-            raise ByteDomainError(
-                "transform_kind does not match the exact ASCII-casefolded suffix"
-            )
-        archive_name = entry.archive_member_name_bytes
-        _validate_archive_member_presence(
-            excluded_flag=entry.excluded_flag,
-            archive_member_name_bytes=archive_name,
-        )
-        if archive_name != artifact_archive_member_name(
-            entry.entry_position,
-            entry.source_role,
-            entry.transform_kind,
-            entry.excluded_flag,
-        ):
-            raise ByteDomainError(
-                "archive member name does not match position/role/transform"
-            )
-        # Cross-entry archive-name uniqueness is proved by the ordered source
-        # projection/DB constraint before this O(1)-memory framing iterator.
-        yield entry.entry_position.to_bytes(8, "big")
-        yield bytes((int(entry.entry_kind),))
+        previous_position = entry.source_position
+        if entry.source_role is ArtifactMemberSourceRole.METADATA:
+            metadata_count += 1
+        elif entry.source_role is not ArtifactMemberSourceRole.PAGE:
+            raise ByteDomainError("render input role is not registered")
+        yield entry.source_position.to_bytes(8, "big")
         yield len(entry.source_name_bytes).to_bytes(4, "big")
         yield entry.source_name_bytes
         yield entry.source_file_sha256
         yield entry.source_size_bytes.to_bytes(8, "big")
-        yield bytes((int(entry.source_role), 1 if entry.excluded_flag else 0))
-        if archive_name is None:
-            yield b"\0"
-        else:
-            yield b"\1"
-            yield len(archive_name).to_bytes(4, "big")
-            yield archive_name
-        yield bytes((int(entry.transform_kind),))
+        yield bytes((int(entry.source_role),))
         emitted += 1
     if emitted != count:
         raise ByteDomainError(
             "artifact member plan does not equal declared entry_count"
         )
+    if metadata_count != 1:
+        raise ByteDomainError(
+            "artifact member plan requires exactly one METADATA entry"
+        )
 
 
 def decode_artifact_member_plan(payload: bytes) -> tuple[ArtifactMemberPlanEntry, ...]:
-    """Decode and fully revalidate one canonical member-plan v1 payload."""
+    """Decode and fully revalidate one canonical member-plan v2 payload."""
 
     encoded = _require_bytes(payload, field_name="artifact member-plan payload")
     if not encoded.startswith(_ARTIFACT_MEMBER_PLAN_PREFIX):
@@ -3032,23 +2793,14 @@ def decode_artifact_member_plan(payload: bytes) -> tuple[ArtifactMemberPlanEntry
         field_name="plan_version",
     )
     entry_count = take_uint(8, field_name="entry_count")
-    # Every entry has at least 58 bytes (one-byte source and no archive name).
+    # Every entry has at least 53 bytes plus one nonempty source-name byte.
     # Reject impossible counts before iterating over attacker-controlled u64s.
-    if entry_count > (len(encoded) - offset) // 58:
+    if entry_count > 4097 or entry_count > (len(encoded) - offset) // 54:
         raise ByteDomainError("artifact member-plan entries are truncated")
 
     entries: list[ArtifactMemberPlanEntry] = []
-    for expected_position in range(entry_count):
-        entry_position = take_uint(8, field_name="entry_position")
-        if entry_position != expected_position:
-            raise ByteDomainError(
-                "entry_position must equal its zero-based contiguous array index"
-            )
-
-        entry_kind_tag = take_uint(1, field_name="entry_kind")
-        if entry_kind_tag != int(ArtifactMemberEntryKind.SOURCE_FILE):
-            raise ByteDomainError(f"entry_kind tag {entry_kind_tag} is not registered")
-
+    for _ in range(entry_count):
+        source_position = take_uint(8, field_name="source_position")
         source_name_length = take_uint(4, field_name="source_name_length")
         source_name_bytes = take(
             source_name_length,
@@ -3059,65 +2811,19 @@ def decode_artifact_member_plan(payload: bytes) -> tuple[ArtifactMemberPlanEntry
 
         source_role_tag = take_uint(1, field_name="source_role")
         if source_role_tag not in {
-            int(ArtifactSourceRole.METADATA),
-            int(ArtifactSourceRole.CONTENT),
+            int(ArtifactMemberSourceRole.METADATA),
+            int(ArtifactMemberSourceRole.PAGE),
         }:
             raise ByteDomainError(
                 f"source_role tag {source_role_tag} is not registered"
             )
-
-        excluded_tag = take_uint(1, field_name="excluded_flag")
-        if excluded_tag not in {0, 1}:
-            raise ByteDomainError(
-                f"excluded_flag tag {excluded_tag} is not exactly zero or one"
-            )
-        excluded_flag = bool(excluded_tag)
-
-        archive_presence = take_uint(1, field_name="archive_name_presence")
-        if archive_presence not in {0, 1}:
-            raise ByteDomainError(
-                "archive_name_presence tag must be exactly zero or one"
-            )
-        archive_member_name_bytes: bytes | None = None
-        if archive_presence == 1:
-            archive_name_length = take_uint(
-                4,
-                field_name="archive_name_length",
-            )
-            archive_member_name_bytes = take(
-                archive_name_length,
-                field_name="archive_member_name_bytes",
-            )
-
-        transform_kind_tag = take_uint(1, field_name="transform_kind")
-        if transform_kind_tag not in {
-            int(ArtifactTransformKind.RAW_COPY),
-            int(ArtifactTransformKind.GIF_NORMALIZE),
-            int(ArtifactTransformKind.JPEG_NORMALIZE),
-        }:
-            raise ByteDomainError(
-                f"transform_kind tag {transform_kind_tag} is not registered"
-            )
-
         entry = ArtifactMemberPlanEntry(
-            entry_position=entry_position,
+            source_position=source_position,
             source_name_bytes=source_name_bytes,
             source_file_sha256=source_file_sha256,
             source_size_bytes=source_size_bytes,
-            excluded_flag=excluded_flag,
+            source_role=ArtifactMemberSourceRole(source_role_tag),
         )
-        if int(entry.source_role) != source_role_tag:
-            raise ByteDomainError(
-                "source_role tag does not match the exact source filename"
-            )
-        if int(entry.transform_kind) != transform_kind_tag:
-            raise ByteDomainError(
-                "transform_kind tag does not match the exact ASCII-casefolded suffix"
-            )
-        if entry.archive_member_name_bytes != archive_member_name_bytes:
-            raise ByteDomainError(
-                "archive member name does not match position/role/transform"
-            )
         entries.append(entry)
 
     if offset != len(encoded):
@@ -3130,14 +2836,12 @@ def artifact_member_plan_digest(
     *,
     plan_version: int = ARTIFACT_MEMBER_PLAN_VERSION,
 ) -> bytes:
-    """Return the reference ``artifact_member_plan_v1`` component digest."""
+    """Return the reference ``artifact_member_plan_v2`` component digest."""
 
     validated = _validate_artifact_member_plan_entries(entries)
     payload_byte_count = len(_ARTIFACT_MEMBER_PLAN_PREFIX) + 12
     for entry in validated:
-        payload_byte_count += 57 + len(entry.source_name_bytes)
-        if entry.archive_member_name_bytes is not None:
-            payload_byte_count += 4 + len(entry.archive_member_name_bytes)
+        payload_byte_count += 53 + len(entry.source_name_bytes)
     return artifact_member_plan_digest_ordered(
         len(validated),
         payload_byte_count,
@@ -3424,23 +3128,9 @@ def source_relative_locator_digest(
     )
 
 
-def artifact_storage_key_components(gid: int) -> tuple[str, str, str, str]:
-    """Derive the stable v1 storage segments for one immutable gallery GID."""
-
-    exact_gid = _require_positive_int63(gid, field_name="artifact storage GID")
-    shard = sha256(
-        _ARTIFACT_STORAGE_SHARD_PREFIX + exact_gid.to_bytes(8, "big")
-    ).hexdigest()
-    return (
-        "hash-v1",
-        shard[:2],
-        shard[2],
-        artifact_name(exact_gid).decode("ascii"),
-    )
-
-
 def encode_artifact_storage_key(
-    components: Sequence[str],
+    codec: str,
+    segments: Sequence[str],
     *,
     codec_version: int = ARTIFACT_STORAGE_KEY_CODEC_VERSION,
 ) -> bytes:
@@ -3452,25 +3142,28 @@ def encode_artifact_storage_key(
     """
 
     return b"".join(
-        iter_artifact_storage_key_payload(components, codec_version=codec_version)
+        iter_artifact_storage_key_payload(codec, segments, codec_version=codec_version)
     )
 
 
 def iter_artifact_storage_key_payload(
-    components: Sequence[str],
+    codec: str,
+    segments: Sequence[str],
     *,
     codec_version: int = ARTIFACT_STORAGE_KEY_CODEC_VERSION,
 ) -> Iterator[bytes]:
     """Validate the complete bounded storage key, then yield its pieces."""
 
     yield from _artifact_storage_key_payload_parts(
-        components,
+        codec,
+        segments,
         codec_version=codec_version,
     )
 
 
 def _artifact_storage_key_payload_parts(
-    components: Sequence[str],
+    codec: str,
+    segments: Sequence[str],
     *,
     codec_version: int,
 ) -> tuple[bytes, ...]:
@@ -3480,22 +3173,34 @@ def _artifact_storage_key_payload_parts(
         registered=ARTIFACT_STORAGE_KEY_CODEC_VERSION,
         field_name="artifact storage key codec_version",
     )
-    if isinstance(components, (str, bytes, bytearray)):
+    encoded_codec = _validate_storage_key_codec(
+        codec,
+        field_name="artifact storage key codec",
+        maximum_bytes=64,
+    )
+    if isinstance(segments, (str, bytes, bytearray)):
         raise ByteDomainError(
             "artifact storage key components must be a segment sequence"
         )
-    if not components:
+    if not segments or len(segments) > 16:
         raise ByteDomainError("artifact storage key must contain a component")
-    if len(components) > _UINT32_MAX:
-        raise ByteDomainError("artifact storage key has too many components")
-    if 8 + 5 * len(components) > ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES:
+    if (
+        12 + len(_ARTIFACT_STORAGE_KEY_PREFIX) + len(encoded_codec) + 5 * len(segments)
+        > ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES
+    ):
         raise ByteDomainError(
             f"artifact storage key exceeds {ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES} bytes"
         )
-    output = [version.to_bytes(4, "big"), len(components).to_bytes(4, "big")]
-    byte_count = 8
-    for component in components:
-        encoded = _validate_utf8_leaf(
+    output = [
+        _ARTIFACT_STORAGE_KEY_PREFIX,
+        version.to_bytes(4, "big"),
+        len(encoded_codec).to_bytes(4, "big"),
+        encoded_codec,
+        len(segments).to_bytes(4, "big"),
+    ]
+    byte_count = sum(len(part) for part in output)
+    for component in segments:
+        encoded = _validate_storage_key_segment(
             component,
             field_name="artifact storage key component",
             maximum_bytes=255,
@@ -3510,141 +3215,61 @@ def _artifact_storage_key_payload_parts(
     return tuple(output)
 
 
-def decode_artifact_storage_key(payload: bytes) -> tuple[str, ...]:
+def decode_artifact_storage_key(payload: bytes) -> tuple[str, tuple[str, ...]]:
     """Materialize one decoded storage key (convenience/oracle API)."""
 
-    return tuple(iter_decode_artifact_storage_key((payload,)))
-
-
-def artifact_storage_receipt_id(
-    candidate_id: bytes,
-    publication_key_value: bytes,
-    artifact_sha256: bytes,
-    artifact_storage_key_sha256: bytes,
-    storage_generation: int,
-    size_bytes: int,
-) -> bytes:
-    """Derive the fixed 16-byte storage receipt bound into protection v1."""
-
-    candidate = _require_bytes(candidate_id, field_name="candidate_id")
-    if len(candidate) != 16:
-        raise ByteDomainError("candidate_id must contain exactly 16 bytes")
-    publication = _require_digest(
-        publication_key_value,
-        field_name="publication_key",
-    )
-    artifact = _require_digest(artifact_sha256, field_name="artifact_sha256")
-    storage_key = _require_digest(
-        artifact_storage_key_sha256,
-        field_name="artifact_storage_key_sha256",
-    )
-    generation = _require_int63(
-        storage_generation,
-        field_name="storage_generation",
-    )
-    size = _require_int63(size_bytes, field_name="size_bytes")
-    return sha256(
-        b"".join(
-            (
-                _ARTIFACT_STORAGE_RECEIPT_PREFIX,
-                candidate,
-                publication,
-                artifact,
-                storage_key,
-                generation.to_bytes(8, "big"),
-                size.to_bytes(8, "big"),
-            )
-        )
-    ).digest()[:16]
+    return _decode_artifact_storage_key_payload(payload)
 
 
 def encode_artifact_protection_token(
-    storage_codec_version: int,
     candidate_id: bytes,
     publication_key_value: bytes,
-    artifact_sha256: bytes,
-    artifact_storage_key_sha256: bytes,
+    resource_kind: str,
+    storage_object_key_sha256: bytes,
     storage_generation: int,
-    size_bytes: int,
     *,
     codec_version: int = ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION,
 ) -> bytes:
-    """Encode one exact 184-byte protection token; no caller receipt is accepted."""
+    """Derive one fixed neutral protection token from locked intent facts."""
 
-    receipt = artifact_storage_receipt_id(
-        candidate_id,
-        publication_key_value,
-        artifact_sha256,
-        artifact_storage_key_sha256,
-        storage_generation,
-        size_bytes,
+    version = _require_registered_version(
+        codec_version,
+        registered=ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION,
+        field_name="artifact protection codec_version",
     )
-    token = ArtifactProtectionToken(
-        codec_version=codec_version,
-        storage_codec_version=storage_codec_version,
-        candidate_id=candidate_id,
-        publication_key=publication_key_value,
-        artifact_sha256=artifact_sha256,
-        artifact_storage_key_sha256=artifact_storage_key_sha256,
-        receipt_id=receipt,
-        storage_generation=storage_generation,
-        size_bytes=size_bytes,
+    candidate = _require_bytes(candidate_id, field_name="candidate_id")
+    if len(candidate) != 16:
+        raise ByteDomainError("candidate_id must contain exactly 16 bytes")
+    publication = _require_digest(publication_key_value, field_name="publication_key")
+    if resource_kind not in {"acquisition", "thumbnail"}:
+        raise ByteDomainError("resource_kind is not registered")
+    kind_tag = b"\x00" if resource_kind == "acquisition" else b"\x01"
+    storage_key = _require_digest(
+        storage_object_key_sha256,
+        field_name="storage_object_key_sha256",
     )
-    return b"".join(
-        (
-            _ARTIFACT_PROTECTION_PREFIX,
-            token.codec_version.to_bytes(4, "big"),
-            token.storage_codec_version.to_bytes(4, "big"),
-            token.candidate_id,
-            token.publication_key,
-            token.artifact_sha256,
-            token.artifact_storage_key_sha256,
-            token.receipt_id,
-            token.storage_generation.to_bytes(8, "big"),
-            token.size_bytes.to_bytes(8, "big"),
-        )
-    )
+    generation = _require_int63(storage_generation, field_name="storage_generation")
+    return sha256(
+        _ARTIFACT_PROTECTION_PREFIX
+        + version.to_bytes(4, "big")
+        + candidate
+        + publication
+        + kind_tag
+        + storage_key
+        + generation.to_bytes(8, "big")
+    ).digest()
 
 
-def decode_artifact_protection_token(payload: bytes) -> ArtifactProtectionToken:
-    """Decode and revalidate one protection token with exact 184-byte EOF."""
-
+def decode_artifact_protection_token(payload: bytes) -> bytes:
+    """Validate one opaque fixed-length v2 protection digest."""
     exact = _require_bytes(payload, field_name="artifact protection token")
-    if len(exact) != 184:
-        raise ByteDomainError(
-            "artifact protection token must contain exactly 184 bytes"
-        )
-    prefix_length = len(_ARTIFACT_PROTECTION_PREFIX)
-    if prefix_length != 32:  # pragma: no cover - fixed module constant
-        raise AssertionError("artifact protection prefix must contain 32 bytes")
-    if exact[:prefix_length] != _ARTIFACT_PROTECTION_PREFIX:
-        raise ByteDomainError("artifact protection token prefix is invalid")
-    offset = prefix_length
-
-    def take(size: int) -> bytes:
-        nonlocal offset
-        value = exact[offset : offset + size]
-        offset += size
-        return value
-
-    token = ArtifactProtectionToken(
-        codec_version=int.from_bytes(take(4), "big"),
-        storage_codec_version=int.from_bytes(take(4), "big"),
-        candidate_id=take(16),
-        publication_key=take(32),
-        artifact_sha256=take(32),
-        artifact_storage_key_sha256=take(32),
-        receipt_id=take(16),
-        storage_generation=int.from_bytes(take(8), "big"),
-        size_bytes=int.from_bytes(take(8), "big"),
-    )
-    if offset != len(exact):  # pragma: no cover - fixed frame arithmetic
-        raise ByteDomainError("artifact protection token has trailing bytes")
-    return token
+    if len(exact) != 32:
+        raise ByteDomainError("artifact protection token must contain exactly 32 bytes")
+    return exact
 
 
 def iter_decode_artifact_storage_key(parts: Iterable[bytes]) -> Iterator[str]:
-    """Validate exact EOF within the v1 cap before exposing any component."""
+    """Validate exact EOF before exposing codec followed by segments."""
 
     payload = bytearray()
     for part in parts:
@@ -3655,85 +3280,84 @@ def iter_decode_artifact_storage_key(parts: Iterable[bytes]) -> Iterator[str]:
                 f"{ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES} bytes"
             )
         payload.extend(exact)
-    yield from _decode_artifact_storage_key_payload(bytes(payload))
+    codec, segments = _decode_artifact_storage_key_payload(bytes(payload))
+    yield codec
+    yield from segments
 
 
-def _decode_artifact_storage_key_payload(payload: bytes) -> tuple[str, ...]:
+def _decode_artifact_storage_key_payload(
+    payload: bytes,
+) -> tuple[str, tuple[str, ...]]:
     """Decode one fully buffered, bounded storage key after exact EOF."""
 
-    phase = "VERSION"
-    carry = bytearray()
-    component_count = 0
-    emitted = 0
-    segment_size = 0
-    components: list[str] = []
-    for part in (payload,):
-        exact = _require_bytes(part, field_name="artifact storage key part")
-        offset = 0
-        while offset < len(exact):
-            if phase == "DONE":
-                raise ByteDomainError(
-                    "artifact storage key payload contains trailing bytes"
-                )
-            required = segment_size if phase == "SEGMENT" else 4
-            amount = min(required - len(carry), len(exact) - offset)
-            carry.extend(exact[offset : offset + amount])
-            offset += amount
-            if len(carry) != required:
-                continue
-            value = bytes(carry)
-            carry.clear()
-            if phase == "VERSION":
-                version = int.from_bytes(value, "big")
-                if version != ARTIFACT_STORAGE_KEY_CODEC_VERSION:
-                    raise IntegerDomainError(
-                        "artifact storage key codec_version "
-                        f"{version} is not registered"
-                    )
-                phase = "COUNT"
-            elif phase == "COUNT":
-                component_count = int.from_bytes(value, "big")
-                if component_count == 0:
-                    raise ByteDomainError(
-                        "artifact storage key must contain a component"
-                    )
-                phase = "LENGTH"
-            elif phase == "LENGTH":
-                segment_size = int.from_bytes(value, "big")
-                if not 1 <= segment_size <= 255:
-                    raise ByteDomainError(
-                        "artifact storage key component length must be in [1, 255]"
-                    )
-                phase = "SEGMENT"
-            else:
-                try:
-                    component = value.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ByteDomainError(
-                        "artifact storage key component must be exact UTF-8"
-                    ) from error
-                validated = _validate_utf8_leaf(
-                    component,
-                    field_name="artifact storage key component",
-                    maximum_bytes=255,
-                )
-                if validated != value:  # pragma: no cover - strict UTF-8 is unique
-                    raise ByteDomainError(
-                        "artifact storage key component is not canonical UTF-8"
-                    )
-                emitted += 1
-                phase = "DONE" if emitted == component_count else "LENGTH"
-                components.append(component)
-    if phase != "DONE" or carry:
-        raise ByteDomainError("artifact storage key payload is truncated")
-    return tuple(components)
+    exact = _require_bytes(payload, field_name="artifact storage key payload")
+    if not exact.startswith(_ARTIFACT_STORAGE_KEY_PREFIX):
+        raise ByteDomainError("artifact storage key prefix is invalid")
+    offset = len(_ARTIFACT_STORAGE_KEY_PREFIX)
+
+    def take(size: int, *, field_name: str) -> bytes:
+        nonlocal offset
+        if size < 0 or len(exact) - offset < size:
+            raise ByteDomainError(f"{field_name} is truncated")
+        value = exact[offset : offset + size]
+        offset += size
+        return value
+
+    version = int.from_bytes(take(4, field_name="key codec version"), "big")
+    _require_registered_version(
+        version,
+        registered=ARTIFACT_STORAGE_KEY_CODEC_VERSION,
+        field_name="artifact storage key codec_version",
+    )
+    codec_size = int.from_bytes(take(4, field_name="codec length"), "big")
+    codec_bytes = take(codec_size, field_name="codec")
+    try:
+        codec = codec_bytes.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ByteDomainError("artifact storage key codec must be ASCII") from error
+    if (
+        _validate_storage_key_codec(
+            codec,
+            field_name="artifact storage key codec",
+            maximum_bytes=64,
+        )
+        != codec_bytes
+    ):
+        raise ByteDomainError("artifact storage key codec is not canonical")
+    count = int.from_bytes(take(4, field_name="segment count"), "big")
+    if not 1 <= count <= 16:
+        raise ByteDomainError("artifact storage key must contain 1..16 segments")
+    segments: list[str] = []
+    for _ in range(count):
+        size = int.from_bytes(take(4, field_name="segment length"), "big")
+        raw = take(size, field_name="segment")
+        try:
+            segment = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise ByteDomainError(
+                "artifact storage key segment must be UTF-8"
+            ) from error
+        if (
+            _validate_storage_key_segment(
+                segment,
+                field_name="artifact storage key segment",
+                maximum_bytes=255,
+            )
+            != raw
+        ):
+            raise ByteDomainError("artifact storage key segment is not canonical")
+        segments.append(segment)
+    if offset != len(exact):
+        raise ByteDomainError("artifact storage key payload contains trailing bytes")
+    return codec, tuple(segments)
 
 
-def artifact_storage_key_digest(components: Sequence[str]) -> bytes:
+def artifact_storage_key_digest(codec: str, segments: Sequence[str]) -> bytes:
     """Stream the canonical digest of exact neutral storage-key bytes."""
 
     parts = _artifact_storage_key_payload_parts(
-        components,
+        codec,
+        segments,
         codec_version=ARTIFACT_STORAGE_KEY_CODEC_VERSION,
     )
     return canonical_value_digest_parts(
@@ -4504,73 +4128,6 @@ def gallery_scan_audit_digest(
     return sha256(payload).digest()
 
 
-def artifact_name(gid: int) -> bytes:
-    """Derive the sole artifact leaf name for one positive GID."""
-
-    validated_gid = _require_positive_int63(gid, field_name="gid")
-    return (
-        _ARTIFACT_NAME_PREFIX
-        + str(validated_gid).encode("ascii")
-        + _ARTIFACT_NAME_SUFFIX
-    )
-
-
-def decode_artifact_name(value: bytes) -> int:
-    """Decode one exact canonical artifact leaf name into its positive GID."""
-
-    encoded = _require_bytes(value, field_name="artifact_name")
-    maximum_bytes = (
-        len(_ARTIFACT_NAME_PREFIX) + len(str(_INT63_MAX)) + len(_ARTIFACT_NAME_SUFFIX)
-    )
-    if len(encoded) > maximum_bytes:
-        raise ByteDomainError(f"artifact_name exceeds {maximum_bytes} bytes")
-    if not encoded.startswith(_ARTIFACT_NAME_PREFIX):
-        raise ByteDomainError("artifact_name has the wrong registered prefix")
-    if not encoded.endswith(_ARTIFACT_NAME_SUFFIX):
-        raise ByteDomainError("artifact_name has the wrong registered suffix")
-
-    gid_ascii = encoded[len(_ARTIFACT_NAME_PREFIX) : -len(_ARTIFACT_NAME_SUFFIX)]
-    gid = _decode_canonical_positive_int63_ascii(
-        gid_ascii,
-        field_name="artifact_name gid",
-    )
-    if artifact_name(gid) != encoded:  # defensive canonicality closure
-        raise ByteDomainError("artifact_name is not in canonical encoded form")
-    return gid
-
-
-def artifact_archive_member_name(
-    entry_position: int,
-    source_role: ArtifactSourceRole,
-    transform_kind: ArtifactTransformKind,
-    excluded_flag: bool,
-) -> bytes | None:
-    """Derive the sole archive member name from the closed semantic tags."""
-
-    position = _require_int63(entry_position, field_name="entry_position")
-    if type(source_role) is not ArtifactSourceRole:
-        raise ByteDomainError("source_role must be ArtifactSourceRole")
-    if type(transform_kind) is not ArtifactTransformKind:
-        raise ByteDomainError("transform_kind must be ArtifactTransformKind")
-    if type(excluded_flag) is not bool:
-        raise ByteDomainError("excluded_flag must be exactly bool")
-    if source_role is ArtifactSourceRole.METADATA:
-        if transform_kind is not ArtifactTransformKind.RAW_COPY:
-            raise ByteDomainError("METADATA archive members must use RAW_COPY")
-        leaf = b"metadata.txt"
-    elif transform_kind is ArtifactTransformKind.RAW_COPY:
-        leaf = b"content.bin"
-    elif transform_kind is ArtifactTransformKind.GIF_NORMALIZE:
-        leaf = b"content.gif"
-    elif transform_kind is ArtifactTransformKind.JPEG_NORMALIZE:
-        leaf = b"content.jpg"
-    else:  # pragma: no cover - closed enum
-        raise AssertionError("unreachable artifact transform")
-    if excluded_flag:
-        return None
-    return f"{position:016x}".encode("ascii") + b"__" + leaf
-
-
 def validate_namespace(value: str) -> bytes:
     """Validate one exact UTF-8 tag namespace without normalization."""
 
@@ -4751,7 +4308,7 @@ def catalog_publication_occurrence_sha256(
 
 
 def artifact_id(gid: int, artifact_sha256: bytes) -> bytes:
-    """Construct the registered CBZ artifact URN from binary identity inputs."""
+    """Construct the registered immutable-artifact URN from binary inputs."""
 
     validated_gid = _require_positive_int63(gid, field_name="gid")
     validated_digest = _require_digest(artifact_sha256, field_name="artifact_sha256")
@@ -4769,7 +4326,7 @@ def artifact_id(gid: int, artifact_sha256: bytes) -> bytes:
 
 
 def decode_artifact_id(value: bytes) -> tuple[int, bytes]:
-    """Decode one exact canonical CBZ artifact URN into its binary authority.
+    """Decode one exact canonical immutable-artifact URN into its authority.
 
     The GID grammar is deliberately narrower than Python's integer parser: it
     is one or more ASCII decimal digits, has no leading zero, and lies in the
@@ -5139,6 +4696,9 @@ def _append_gallery_observation_page_entry(
         payload.extend(entry.file_key)
         payload.extend(entry.file_sha256)
         payload.extend(entry.size_bytes.to_bytes(8, "big"))
+        payload.extend(
+            _ARTIFACT_SOURCE_ROLE_TO_TAG[entry.artifact_role].to_bytes(1, "big")
+        )
         payload.extend(entry.device.to_bytes(8, "big"))
         payload.extend(entry.inode.to_bytes(8, "big"))
         payload.extend(entry.modified_ns.to_bytes(8, "big", signed=True))
@@ -5186,6 +4746,11 @@ def _decode_gallery_observation_page_entry(
         file_key_value, offset = _take_exact(payload, offset, 32, "file_key")
         file_digest, offset = _take_exact(payload, offset, 32, "file_sha256")
         size, offset = _take_uint(payload, offset, 8, "size_bytes")
+        role_tag, offset = _take_uint(payload, offset, 1, "artifact_role")
+        try:
+            artifact_role = _ARTIFACT_SOURCE_ROLE_FROM_TAG[role_tag]
+        except KeyError as error:
+            raise ByteDomainError("artifact_role is not registered") from error
         device, offset = _take_uint(payload, offset, 8, "device")
         inode, offset = _take_uint(payload, offset, 8, "inode")
         modified, offset = _take_int64(payload, offset, "modified_ns")
@@ -5196,6 +4761,7 @@ def _decode_gallery_observation_page_entry(
                 file_key_value,
                 file_digest,
                 size,
+                artifact_role,
                 device,
                 inode,
                 modified,
@@ -5534,102 +5100,40 @@ def _take_int64(
     return int.from_bytes(value, "big", signed=True), next_offset
 
 
-def _source_role_for_name(name_bytes: bytes) -> ArtifactSourceRole:
-    return (
-        ArtifactSourceRole.METADATA
-        if name_bytes == METADATA_FILE_NAME
-        else ArtifactSourceRole.CONTENT
-    )
-
-
-def _transform_kind_for_name(name_bytes: bytes) -> ArtifactTransformKind:
-    _, separator, suffix = name_bytes.rpartition(b".")
-    if not separator:
-        return ArtifactTransformKind.RAW_COPY
-    exact_suffix = b"." + suffix
-    ascii_casefolded_suffix = exact_suffix.translate(
-        bytes.maketrans(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz")
-    )
-    if ascii_casefolded_suffix == b".gif":
-        return ArtifactTransformKind.GIF_NORMALIZE
-    if ascii_casefolded_suffix in _JPEG_NORMALIZED_SUFFIXES:
-        return ArtifactTransformKind.JPEG_NORMALIZE
-    return ArtifactTransformKind.RAW_COPY
-
-
-def _validate_archive_member_presence(
-    *,
-    excluded_flag: bool,
-    archive_member_name_bytes: bytes | None,
-) -> None:
-    if excluded_flag:
-        if archive_member_name_bytes is not None:
-            raise ByteDomainError(
-                "excluded member-plan entries must not have an archive member name"
-            )
-        return
-    if archive_member_name_bytes is None:
-        raise ByteDomainError(
-            "non-excluded member-plan entries must have an archive member name"
-        )
-    name = _require_bytes(
-        archive_member_name_bytes,
-        field_name="archive_member_name_bytes",
-    )
-    if not name:
-        raise ByteDomainError("archive_member_name_bytes must not be empty")
-    if len(name) > _UINT32_MAX:  # pragma: no cover - impossible in CPython
-        raise ByteDomainError("archive_member_name_bytes exceeds u32 framing")
-
-
 def _validate_artifact_member_plan_entries(
     entries: Sequence[ArtifactMemberPlanEntry],
 ) -> tuple[ArtifactMemberPlanEntry, ...]:
-    if len(entries) > _UINT64_MAX:  # pragma: no cover - impossible in CPython
-        raise ByteDomainError("artifact member plan has too many entries")
+    if not entries:
+        raise ByteDomainError("artifact member plan requires one METADATA entry")
+    if len(entries) > 4097:
+        raise ByteDomainError("artifact member plan exceeds 4096 PAGE entries")
     validated: list[ArtifactMemberPlanEntry] = []
-    emitted_names: set[bytes] = set()
-    for expected_position, entry in enumerate(entries):
+    previous_position: int | None = None
+    metadata_count = 0
+    page_count = 0
+    for entry in entries:
         if type(entry) is not ArtifactMemberPlanEntry:
             raise ByteDomainError(
                 "artifact member plan entries must be ArtifactMemberPlanEntry"
             )
-        if entry.entry_position != expected_position:
+        if previous_position is not None and entry.source_position <= previous_position:
             raise ByteDomainError(
-                "entry_position must equal its zero-based contiguous array index"
+                "render-input source_position values must be strictly increasing"
             )
-        if entry.entry_kind is not ArtifactMemberEntryKind.SOURCE_FILE:
-            raise ByteDomainError("v1 admits only SOURCE_FILE member-plan entries")
-        if entry.source_role is not _source_role_for_name(entry.source_name_bytes):
-            raise ByteDomainError(
-                "source_role does not match the exact source filename"
-            )
-        if entry.transform_kind is not _transform_kind_for_name(
-            entry.source_name_bytes
-        ):
-            raise ByteDomainError(
-                "transform_kind does not match the exact ASCII-casefolded suffix"
-            )
-        _validate_archive_member_presence(
-            excluded_flag=entry.excluded_flag,
-            archive_member_name_bytes=entry.archive_member_name_bytes,
-        )
-        if entry.archive_member_name_bytes != artifact_archive_member_name(
-            entry.entry_position,
-            entry.source_role,
-            entry.transform_kind,
-            entry.excluded_flag,
-        ):
-            raise ByteDomainError(
-                "archive member name does not match position/role/transform"
-            )
-        if entry.archive_member_name_bytes is not None:
-            if entry.archive_member_name_bytes in emitted_names:
-                raise ByteDomainError(
-                    "emitted archive member names must be unique exact bytes"
-                )
-            emitted_names.add(entry.archive_member_name_bytes)
+        previous_position = entry.source_position
+        if entry.source_role is ArtifactMemberSourceRole.METADATA:
+            metadata_count += 1
+        elif entry.source_role is ArtifactMemberSourceRole.PAGE:
+            page_count += 1
+        else:  # pragma: no cover - closed enum
+            raise ByteDomainError("render input role is not registered")
         validated.append(entry)
+    if metadata_count != 1:
+        raise ByteDomainError(
+            "artifact member plan requires exactly one METADATA entry"
+        )
+    if page_count > 4096:
+        raise ByteDomainError("artifact member plan exceeds 4096 PAGE entries")
     return tuple(validated)
 
 
@@ -5873,6 +5377,43 @@ def _validate_utf8_leaf(
         field_name=field_name,
         maximum_bytes=maximum_bytes,
     )
+
+
+def _validate_storage_key_codec(
+    value: str,
+    *,
+    field_name: str,
+    maximum_bytes: int,
+) -> bytes:
+    encoded = _validate_ascii_identifier_bytes(
+        value,
+        field_name=field_name,
+        maximum_bytes=maximum_bytes,
+    )
+    allowed = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-"
+    if not chr(encoded[0]).isalnum() or any(
+        byte not in allowed for byte in encoded[1:]
+    ):
+        raise RegisteredIdentifierError(
+            f"{field_name} must be a bounded ASCII storage-key token"
+        )
+    return encoded
+
+
+def _validate_storage_key_segment(
+    value: str,
+    *,
+    field_name: str,
+    maximum_bytes: int,
+) -> bytes:
+    encoded = _validate_utf8_leaf(
+        value,
+        field_name=field_name,
+        maximum_bytes=maximum_bytes,
+    )
+    if any(category(character).startswith("C") for character in value):
+        raise ByteDomainError(f"{field_name} must not contain Unicode controls")
+    return encoded
 
 
 def _validate_utf8_bytes(

@@ -7,7 +7,9 @@ import asyncio
 import importlib.metadata
 import sqlite3
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import h2h_galleryinfo_parser
 import h2hdb_downloader
@@ -27,6 +29,7 @@ from h2hdb import (
     VNextDownloadQueueFacade,
     open_database,
 )
+from h2hdb._generated_vnext_schema import ARTIFACT
 
 
 async def _exercise_empty_opds(application: FastAPI) -> None:
@@ -51,7 +54,7 @@ def _assert_no_legacy_migration_ledger(database_path: Path) -> None:
     assert row is None
 
 
-def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
+def _assert_schema_v2_surface(database_path: Path) -> None:
     required = {
         "catalog_analysis_batch_receipt_stored",
         "catalog_analysis_checkpoints",
@@ -60,14 +63,32 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "catalog_analysis_run_descriptor",
         "catalog_analysis_stages",
         "catalog_analysis_state_component_seals",
+        "catalog_artifact_adapter_policy",
         "catalog_artifact_semantic_inputs",
         "catalog_artifact_policy_semantics",
-        "catalog_artifact_producer_fingerprints",
-        "catalog_artifact_storage_codecs",
-        "catalog_artifact_zip_writer_policies",
+        "catalog_artifact_policies",
+        "catalog_candidate_artifact_inputs",
         "catalog_prepared_artifacts",
+        "catalog_prepared_resource_blob",
+        "catalog_prepared_storage_objects",
+        "catalog_prepared_artifact_descriptors",
+        "catalog_prepared_pages",
+        "catalog_prepared_thumbnails",
         "catalog_artifacts",
         "catalog_artifact_blobs",
+        "catalog_storage_object_key_identities",
+        "catalog_storage_object_key_segments",
+        "catalog_storage_objects",
+        "catalog_pages",
+        "catalog_thumbnails",
+        "catalog_search_policies",
+        "catalog_search_lexemes",
+        "catalog_search_documents",
+        "catalog_search_postings",
+        "catalog_discovery_seals",
+        "catalog_language_facet_order",
+        "catalog_subject_facet_order",
+        "catalog_contributor_facet_order",
         "catalog_build_manifest_core",
         "catalog_display_title_policies",
         "catalog_gallery_observation_metadata_locals",
@@ -97,6 +118,9 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "catalog_title_sort_policy",
     }
     removed = {
+        "catalog_artifact_producer_fingerprints",
+        "catalog_artifact_storage_codecs",
+        "catalog_artifact_zip_writer_policies",
         "catalog_gallery_identity_anchors",
         "catalog_gallery_identity_coordinates",
         "catalog_gallery_identity_gallery_keys",
@@ -173,15 +197,29 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "operational_operational_event_ack_heads",
         "operational_removed_gid_acks",
     }
+    backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
+    sqlite_backend = backends["sqlite"]
+    expected_object_payload = cast(
+        tuple[tuple[str, str], ...],
+        sqlite_backend["expected_objects"],
+    )
+    expected_objects = {
+        (str(kind), str(name))
+        for kind, name in expected_object_payload
+        if kind in {"table", "view"}
+    }
+    epoch_control = cast(Mapping[str, object], sqlite_backend["epoch_control"])
+    epoch_table = cast(str, epoch_control["table"])
+    expected_objects.add(("table", epoch_table))
     with sqlite3.connect(database_path) as connection:
-        relation_types = {
-            str(row[0]): str(row[1])
+        actual_objects = {
+            (str(row[1]), str(row[0]))
             for row in connection.execute(
                 "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
             )
         }
-    assert sum(kind == "table" for kind in relation_types.values()) == 217
-    assert sum(kind == "view" for kind in relation_types.values()) == 33
+    assert actual_objects == expected_objects
+    relation_types = {name: kind for kind, name in actual_objects}
     assert required <= relation_types.keys()
     assert removed.isdisjoint(relation_types)
     assert relation_types["catalog_analysis_impacted_gid"] == "view"
@@ -223,7 +261,7 @@ def main() -> None:
         readiness = admin.check_readiness()
         assert readiness.state == "READY"
         _assert_no_legacy_migration_ledger(database_path)
-        _assert_wide_bcnf_recompositions(database_path)
+        _assert_schema_v2_surface(database_path)
 
         queue = VNextDownloadQueueFacade(writer_config, clock=lambda: 1)
         request = queue.request_download(101, "https://example.invalid/g/101")
@@ -232,9 +270,15 @@ def main() -> None:
         assert queue.complete_download_request(request)
         assert queue.list_download_requests() == ()
 
+        library_root = root / "current"
+        coordination_root = root / "coordination"
+        library_root.mkdir()
+        coordination_root.mkdir()
+        (coordination_root / "publication.lock").touch()
         opds_config = OPDSConfig(
             core=writer_config,
-            artifact_root=root / "artifacts",
+            library_root=library_root,
+            coordination_root=coordination_root,
             public_base_url="http://integration.test",
         )
         assert opds_config.core.database.access_mode is DatabaseAccessMode.read_only

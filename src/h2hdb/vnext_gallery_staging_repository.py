@@ -2643,6 +2643,7 @@ def _prepare_leaf(
                     key,
                     source.content.file_sha256,
                     source.content.size_bytes,
+                    source.artifact_role.value.encode("ascii"),
                     source.device,
                     source.inode,
                     source.modified_ns,
@@ -3610,6 +3611,7 @@ def _require_exact_normalized_leaf_facts(
                     page_entry.file_no,
                     page_entry.file_key,
                     source.content.file_sha256,
+                    source.artifact_role.value.encode("ascii"),
                 )
             )
             expected_names.append(
@@ -3860,6 +3862,7 @@ def _persist_normalized_leaf_facts(
                     page_entry.file_no,
                     page_entry.file_key,
                     source.content.file_sha256,
+                    source.artifact_role.value.encode("ascii"),
                 )
             )
         try:

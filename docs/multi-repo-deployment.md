@@ -2,32 +2,25 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-3 catalog facade; ingest uses the transaction-owning ingest
-facade and downloader uses the queue facade. No sibling may query `catalog_*`
-or operational tables directly.
+consume the epoch-3/schema-v2 catalog facade; ingest uses the
+transaction-owning ingest facade and downloader uses the queue facade. No
+sibling may query `catalog_*` or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-3/version-1 database. Its 152 catalog BCNF base relations and
-46 logical catalog projections are generated for both SQLite and MariaDB from
-the same logical manifests; 33 projections are SQL views and 13 are inline.
-The operational manifest has 66 BCNF base relations, including the separately
-created epoch-control relation, plus one inline activation projection and no
-operational SQL view. The database therefore has 218 base tables and 33 SQL
-views, or 251 SQL objects. The catalog graph has 8 sealed vertical families,
-29 checked decompositions, 113 narrow bases plus 39 reviewed-wide BCNF
-relations, and an exact 128-relation physical authority closure (106 mutation
-relations plus 22 read-only relations). Thirty selected capacity families
-replace 190 former physical relations with 36 bases. Each backend receives
-exactly 5,833 typed bootstrap rows.
+There is one epoch-3/schema-v2 database. Catalog and operational relations are
+generated for both SQLite and MariaDB from the same closed-world logical
+manifests. Those manifests and their executable schema reports are the
+authority for relation shapes, projections, bootstrap facts, decompositions,
+and semantic obligations; deployment documentation intentionally does not copy
+counts that would drift as the schema evolves.
 
-Operational events are publication-owned current/retry state, not OPDS history
-or a durable delivery queue. Bounded current-only cleanup retires each
-unreachable finalized non-head preparation/event/commit snapshot; there is no
-event-consumer registry or per-event acknowledgement retention contract.
-The operational count changes from 75 to 66 bases: the capacity plan recomposes
-selected owner, staging-request, and bounded-cleanup families, while unreachable
-delivery scaffold relations remain absent.
+Schema v2 includes revision-scoped discovery order, normalized search postings,
+facet order/count authority, acquisition descriptors, and presentation
+descriptors. Operational events remain publication-owned current/retry state,
+not OPDS history or a durable delivery queue. Bounded current-only cleanup
+retires unreachable finalized non-head state while retaining identities and
+objects protected by live work or published revisions.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
@@ -46,16 +39,17 @@ full check at startup and may use the lightweight readiness probe separately.
 
 ## Fresh initialization
 
-The greenfield schema has no v1-v7 upgrade/adoption path, compatibility view,
-or dual-write period. Before replacing any earlier database, stop all writers
-and take the backups required by that deployment. Point the current services at
-a truly empty database, then run:
+The greenfield schema has no upgrade/adoption path, compatibility view, legacy
+read API, or dual-write period. Schema v1 cannot be opened or migrated in place
+by schema v2. Before replacing any earlier database, stop all writers and take
+the backups required by that deployment. Create a truly empty database, rebuild
+it from source through the current ingest integration, and run:
 
 ```bash
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=1`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=2`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -82,9 +76,9 @@ name, `migrate` constructs or resumes the single manifest-bound greenfield
 epoch; it does not execute numbered historical migrations.
 
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
-no numbered-migration module or legacy hand-written schema repositories. Do not
-work around that boundary by pinning an epoch-3 deployment to a mixed set of
-core versions.
+no numbered-migration module, old list API, or legacy hand-written schema
+repository. All producers and consumers in one deployment must use the same
+schema-v2 public contract; mixed schema versions are unsupported.
 
 ## Consumer boundaries
 
@@ -92,7 +86,10 @@ Applications import these public entry points from `h2hdb`:
 
 - `VNextDatabaseAdminFacade` for initialization, full checks, and readiness.
 - `VNextCatalogFacade` for current-head catalog reads; a descriptor is accepted
-  only while it still exactly equals that head.
+  only while it still exactly equals that head. Its public discovery surface is
+  `discover_publications()`, `list_publication_facets()`,
+  `list_recent_publications()`, single-publication reads, and presentation/page
+  reads.
 - `VNextDownloadQueueFacade` for normalized request/list/complete operations.
 - `VNextIngestFacade.drain_current_only_maintenance()` after ingest completion
   for renewable, response-loss-safe current-catalog cleanup. Its typed outcome
@@ -103,39 +100,40 @@ Repository classes that accept a connector or unit of work are internal
 coordination surfaces. A sibling repository must not depend on physical table
 names, generated SQL, or a private repository method.
 
-The integration boundary has three explicit limits:
+Catalog discovery is SQL-indexed and revision-scoped. Nonblank search uses the
+pinned normalization/token policy and AND-matches its lexemes; exact language,
+subject, and contributor filters can be combined with it. Facet pages report
+exact publication counts under search and the other active facet families.
+Recent uploaded and downloaded reads return a complete fixed window of at most
+128 acquisition-bearing publications and do not accept a caller limit or
+cursor.
 
-- Nonblank search fails closed until a normalized current-head search index
-  is part of the schema and reader contract.
-- `CatalogPublication.redownload_required` has no closed durable
-  revision-scoped derivation contract, so consumers must not infer it from
-  transient operational state.
-- Core provides typed artifact preparation and storage protocols, while the
-  concrete filesystem/object-storage adapter remains a consumer
-  responsibility. Core alone does not perform filesystem or artifact I/O.
+`CatalogPublication.redownload_required` still has no closed durable
+revision-scoped derivation contract, so consumers must not infer it from
+transient operational state.
 
-## Artifact storage and mounts
+## Acquisition and presentation storage
 
-An ingest integration that publishes artifacts must implement the registered
-typed storage and library-activation adapters. Core derives one neutral stable
-storage key from each GID (`hash-v1/<12-bit shard>/h2h-<gid>.cbz`) and verifies
-the archive digest and size independently. The adapter joins those neutral
-segments beneath its configured library root and must acknowledge exact byte
-protection without changing the verified archive.
+Core stores immutable, format-neutral descriptors. An acquisition descriptor
+contains its download name, media type, digest-bound opaque storage-object key,
+size, and modification time. Presentation descriptors identify cover,
+thumbnail, and ordered page resources using the same opaque storage-object
+identity plus byte extents, media types, digests, and image dimensions. A key's
+codec and segments belong to the adapter; core does not turn them into a path.
 
-If a filesystem-backed adapter is used, the configured library root is the one
-public CBZ authority shared by Komga and OPDS/download serving. Private bounded
-staging, journals, and tombstones may exist while an activation is incomplete,
-but a second permanent content-addressed or friendly-name CBZ tree is neither
-required nor part of the contract. Ingest needs write access to the shared
-library; catalog-serving consumers and Komga need read access to that same
-tree. Mount paths, permissions, atomic replacement, reconciliation, and
-recovery remain concrete consumer-adapter responsibilities; core never joins
-segments into a filesystem path.
+The ingest integration owns the concrete archive and artwork bytes. Its
+adapters render, store, protect, resolve, reconcile, and release those bytes.
+They may choose CBZ, another archive format, standalone images, packed objects,
+a filesystem, or object storage without changing the core schema. Core never
+opens ZIP/CBZ files, decodes images, requires a shared mount, or makes a
+filesystem/object-storage call inside a database transaction.
 
-Back up the database and shared protected library as one publication set. An
-adapter must not delete content still retained by a catalog revision or a
-durable protection claim.
+Catalog-serving consumers receive neutral descriptors and resolve them through
+the deployment's storage adapter. Mount paths, permissions, atomic replacement,
+recovery, HTTP delivery, and range serving remain integration concerns. Back up
+the database and adapter-owned protected objects as one publication set; an
+adapter must not delete bytes retained by a published revision or durable
+protection claim.
 
 ## Startup sequence
 
@@ -144,15 +142,16 @@ A deployment integration follows this order:
 1. Create a truly empty SQLite database or MariaDB schema.
 2. Run core `migrate` with read-write credentials.
 3. Run core `check` with the same read-only configuration consumers will use.
-4. Run the ingest consumer with its concrete source/artifact adapters to
-   populate and publish data through bounded vNext workflows.
+4. Run the ingest consumer with its concrete source, acquisition, and
+   presentation adapters to populate and publish data through bounded vNext
+   workflows.
 5. Start catalog readers, download workers, and other consumers only after the
    required initial publication exists.
 6. Use core `ready` for frequent liveness/readiness probes; keep full `check`
    as the stronger startup or deployment audit.
 
 Schema `READY` means the exact database contract is present; it does not mean
-source data or artifacts have already been ingested.
+source data or acquisition/presentation bytes have already been ingested.
 
 ## Local multi-repository verification
 

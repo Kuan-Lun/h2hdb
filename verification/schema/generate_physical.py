@@ -28,6 +28,16 @@ def runtime_obligation_records(
 ) -> tuple[tuple[str, str, str], ...]:
     """Bind every prose runtime premise to exactly one machine obligation."""
 
+    relations = {value["name"]: value for value in catalog.get("relation", [])}
+
+    def materialization_obligation(relation_name: str) -> str:
+        materialization = relations[relation_name]["materialization"]
+        return (
+            f"{materialization['rationale']} Derived from exactly "
+            f"{', '.join(materialization['derived_from'])}. "
+            f"{materialization['refresh_strategy']}"
+        )
+
     path_and_text = [
         (
             "canonical_digest_contract.write_obligation",
@@ -170,8 +180,8 @@ def runtime_obligation_records(
             catalog["artifact_delta_contract"]["rename_rule"],
         ),
         (
-            "artifact_byte_producer_contract.runtime_obligation",
-            catalog["artifact_byte_producer_contract"]["runtime_obligation"],
+            "artifact_adapter_policy_contract.runtime_obligation",
+            catalog["artifact_adapter_policy_contract"]["runtime_obligation"],
         ),
         (
             "artifact_member_plan_contract.runtime_obligation",
@@ -180,10 +190,6 @@ def runtime_obligation_records(
         (
             "artifact_member_plan_contract.ready_obligation",
             catalog["artifact_member_plan_contract"]["ready_obligation"],
-        ),
-        (
-            "artifact_name_contract.runtime_obligation",
-            catalog["artifact_name_contract"]["runtime_obligation"],
         ),
         (
             "artifact_storage_key_contract.runtime_obligation",
@@ -224,6 +230,25 @@ def runtime_obligation_records(
         (
             "publication_commit_contract.ready_obligation",
             catalog["publication_commit_contract"]["ready_obligation"],
+        ),
+        (
+            "search_policy.rationale",
+            relations["search_policy"]["rationale"],
+        ),
+        *(
+            (
+                f"{relation_name}.materialization",
+                materialization_obligation(relation_name),
+            )
+            for relation_name in (
+                "search_lexeme",
+                "search_document",
+                "search_posting",
+                "discovery_seal",
+                "language_facet_order",
+                "subject_facet_order",
+                "contributor_facet_order",
+            )
         ),
         *(
             (
@@ -343,6 +368,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "algorithm_version": U32,
     "artist_count": U64,
     "artist_tag_id": U64,
+    "artifact_role": shape("BLOB", "VARBINARY(8)"),
     "base_source_revision": U64,
     "base_source_generation": U64,
     "base_catalog_generation": U64,
@@ -371,7 +397,10 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "inode": RAW_U64_BYTES,
     "manifest_algorithm_version": U32,
     "manifest_policy_id": U64,
-    "max_image_short_side": U32,
+    "maximum_field_nfd_bytes": U32,
+    "maximum_query_nfd_bytes": U32,
+    "maximum_lexeme_bytes": U32,
+    "maximum_query_lexemes": U32,
     "maximum_gallery_artist_count": U64,
     "modified_ns": SIGNED_I64_BYTES,
     "modified_time": UNIX_MICROSECONDS,
@@ -381,6 +410,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "old_excluded": shape("INTEGER", "TINYINT UNSIGNED"),
     "owner_gallery_id": U64,
     "page_count": U32,
+    "page_index": U32,
     "page_limit": U64,
     "policy_id": U64,
     "position": U64,
@@ -418,30 +448,9 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "ancestor_analysis_id": UUID_BYTES,
     "ancestor_depth": U32,
     "anchor_analysis_id": UUID_BYTES,
-    "archive_format": ASCII_32_TEXT,
     "artifact_algorithm_version": U32,
-    "zip_codec_version": U32,
-    "compression_method": U32,
-    "compression_level": U32,
-    "dos_date": U32,
-    "dos_time": U32,
-    "unix_mode": U32,
-    "general_purpose_flags": U32,
-    "create_system": U32,
-    "archive_name_codec_version": U32,
-    "artifact_name_codec_version": U32,
-    "producer_fingerprint_sha256": DIGEST_BYTES,
-    "producer_equivalence_class": shape("BLOB", "VARBINARY(128)"),
-    "writer_id": shape("BLOB", "VARBINARY(128)"),
-    "python_abi": shape("BLOB", "VARBINARY(128)"),
-    "pillow_build": shape("BLOB", "VARBINARY(128)"),
-    "libjpeg_build": shape("BLOB", "VARBINARY(128)"),
-    "zlib_build": shape("BLOB", "VARBINARY(128)"),
-    "storage_codec_version": U32,
     "storage_generation": U64,
     "adapter_id": shape("BLOB", "VARBINARY(64)"),
-    "storage_key_codec_version": U32,
-    "protection_token_codec_version": U32,
     "artifact_input_count": U64,
     "artifact_count": U64,
     "artifact_name": shape("BLOB", "VARBINARY(255)"),
@@ -474,7 +483,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "next_state": ASCII_32_TEXT,
     "operation": ASCII_32_TEXT,
     "overlay_depth": U32,
-    "protection_token": shape("BLOB", "BINARY(184)"),
+    "protection_token": shape("BLOB", "BINARY(32)"),
     "prepared_artifact_count": U64,
     "processed_count": U64,
     "publication_count": U64,
@@ -517,6 +526,16 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "role": shape("BLOB", "VARBINARY(64)"),
     "metadata_fingerprint": shape("BLOB", "BINARY(40)"),
     "cursor": shape("BLOB", "VARBINARY(2048)"),
+    "key_codec": shape("BLOB", "VARBINARY(64)"),
+    "key_segment": shape("BLOB", "VARBINARY(255)"),
+    "media_type": shape("BLOB", "VARBINARY(127)"),
+    "resource_kind": shape("BLOB", "VARBINARY(11)"),
+    "segment_count": U32,
+    "segment_position": U32,
+    "extent_offset": U64,
+    "extent_length": U64,
+    "width": U64,
+    "height": U64,
 }
 
 UUID_ATTRIBUTES = {
@@ -693,9 +712,6 @@ TABLE_NAMES = {
     "publication_finalization_batch_receipt_stored": "catalog_publication_finalization_batch_stored",
     "publication_finalization_batch_receipt": "catalog_publication_finalization_batch_receipts",
     "artifact_policy": "catalog_artifact_policies",
-    "artifact_zip_writer_policy": "catalog_artifact_zip_writer_policies",
-    "artifact_producer_fingerprint": "catalog_artifact_producer_fingerprints",
-    "artifact_storage_codec": "catalog_artifact_storage_codecs",
     "artifact_semantic_input": "catalog_artifact_semantic_inputs",
     "artifact_input": "catalog_candidate_artifact_inputs",
     "artifact_delta_old": "catalog_artifact_delta_old",
@@ -703,6 +719,16 @@ TABLE_NAMES = {
     "artifact_operation": "catalog_artifact_operations",
     "artifact_blob": "catalog_artifact_blobs",
     "prepared_artifact": "catalog_prepared_artifacts",
+    "catalog_resource_kind": "catalog_resource_kinds",
+    "storage_object_key_identity": "catalog_storage_object_key_identities",
+    "storage_object_key_segment": "catalog_storage_object_key_segments",
+    "prepared_storage_object": "catalog_prepared_storage_objects",
+    "prepared_artifact_descriptor": "catalog_prepared_artifact_descriptors",
+    "prepared_page": "catalog_prepared_pages",
+    "prepared_thumbnail": "catalog_prepared_thumbnails",
+    "catalog_storage_object": "catalog_storage_objects",
+    "catalog_page": "catalog_pages",
+    "catalog_thumbnail": "catalog_thumbnails",
     "catalog_revision": "catalog_revisions",
     "catalog_revision_descriptor": "catalog_revision_descriptors",
     "catalog_revision_generation": "catalog_revision_generations",
@@ -722,6 +748,14 @@ TABLE_NAMES = {
     "catalog_contributor": "catalog_contributors",
     "catalog_subject": "catalog_subjects",
     "catalog_artifact": "catalog_artifacts",
+    "search_policy": "catalog_search_policies",
+    "search_lexeme": "catalog_search_lexemes",
+    "search_document": "catalog_search_documents",
+    "search_posting": "catalog_search_postings",
+    "discovery_seal": "catalog_discovery_seals",
+    "language_facet_order": "catalog_language_facet_order",
+    "subject_facet_order": "catalog_subject_facet_order",
+    "contributor_facet_order": "catalog_contributor_facet_order",
     "publication_receipt": "catalog_publication_receipts",
     "publication_commit_anchor": "catalog_publication_commit_anchors",
     "publication_commit": "catalog_publication_commits",
@@ -766,6 +800,13 @@ OVERLAY_RUNTIME_OBLIGATIONS = (
 
 
 INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
+    "search_posting": [
+        (
+            "ix_search_posting_document",
+            ["revision", "publication_key", "value_sha256"],
+            False,
+        ),
+    ],
     "gallery_observation_allocation_page": [
         ("ix_gallery_observation_allocation_page_digest", ["page_sha256"], False),
     ],
@@ -872,12 +913,7 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
     "prepared_artifact": [
         (
             "ix_prepared_artifact_state",
-            ["candidate_id", "state", "publication_key"],
-            False,
-        ),
-        (
-            "ix_prepared_artifact_blob",
-            ["artifact_sha256", "candidate_id", "publication_key"],
+            ["candidate_id", "state", "publication_key", "resource_kind"],
             False,
         ),
     ],
@@ -938,13 +974,6 @@ def relation_checks(
             "removed_galleries",
             "duplicate_losers",
             "base_source_revision",
-            "compression_method",
-            "compression_level",
-            "dos_date",
-            "dos_time",
-            "unix_mode",
-            "general_purpose_flags",
-            "create_system",
         }
     }
     positive = {
@@ -964,7 +993,6 @@ def relation_checks(
             "gid",
             "reserved_revision",
             "manifest_policy_id",
-            "max_image_short_side",
             "policy_id",
             "tag_id",
             "observation_id",
@@ -976,6 +1004,10 @@ def relation_checks(
             "revision",
             "generation",
             "successor_generation",
+            "segment_count",
+            "extent_length",
+            "width",
+            "height",
         }
     }
     if name == "publication_generation_node":
@@ -1066,6 +1098,10 @@ def relation_checks(
     if "artifacts_required" in attributes:
         sqlite.append("artifacts_required IN (0, 1)")
         maria.append("artifacts_required IN (0, 1)")
+    if "resource_kind" in attributes:
+        resource_kinds = "(X'6163717569736974696F6E', X'7468756D626E61696C')"
+        sqlite.append(f"resource_kind IN {resource_kinds}")
+        maria.append(f"resource_kind IN {resource_kinds}")
     if name == "source_build_state":
         sqlite.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
         maria.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
@@ -1079,9 +1115,9 @@ def relation_checks(
         sqlite.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
         maria.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
         sqlite.append(
-            "typeof(protection_token) = 'blob' AND length(protection_token) = 184"
+            "typeof(protection_token) = 'blob' AND length(protection_token) = 32"
         )
-        maria.append("octet_length(protection_token) = 184")
+        maria.append("octet_length(protection_token) = 32")
     elif name == "publication_receipt":
         sqlite.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
         maria.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
@@ -1150,6 +1186,18 @@ def relation_checks(
     if "page_limit" in attributes:
         sqlite.append("page_limit BETWEEN 1 AND 128")
         maria.append("page_limit BETWEEN 1 AND 128")
+    if "page_count" in attributes:
+        sqlite.append("page_count BETWEEN 0 AND 4096")
+        maria.append("page_count BETWEEN 0 AND 4096")
+    if "page_index" in attributes:
+        sqlite.append("page_index BETWEEN 0 AND 4095")
+        maria.append("page_index BETWEEN 0 AND 4095")
+    if "segment_count" in attributes:
+        sqlite.append("segment_count BETWEEN 1 AND 16")
+        maria.append("segment_count BETWEEN 1 AND 16")
+    if "segment_position" in attributes:
+        sqlite.append("segment_position BETWEEN 0 AND 15")
+        maria.append("segment_position BETWEEN 0 AND 15")
     if "excluded_flag" in attributes:
         sqlite.append("excluded_flag IN (0, 1)")
         maria.append("excluded_flag IN (0, 1)")
@@ -1168,14 +1216,7 @@ def relation_checks(
         "operation",
         "component_kind",
         "state_component",
-        "archive_format",
         "adapter_id",
-        "producer_equivalence_class",
-        "writer_id",
-        "python_abi",
-        "pillow_build",
-        "libjpeg_build",
-        "zlib_build",
     ):
         if attribute in attributes:
             sqlite.append(f"length({attribute}) > 0")
@@ -1194,19 +1235,15 @@ def relation_checks(
         "component_kind": 32,
         "file_role": 8,
         "role": 64,
-        "archive_format": 32,
         "batch_key": 512,
         "digest_domain": 64,
         "metadata_fingerprint": 40,
         "cursor": 2048,
-        "protection_token": 184,
+        "protection_token": 32,
         "adapter_id": 64,
-        "producer_equivalence_class": 128,
-        "writer_id": 128,
-        "python_abi": 128,
-        "pillow_build": 128,
-        "libjpeg_build": 128,
-        "zlib_build": 128,
+        "key_codec": 64,
+        "key_segment": 255,
+        "media_type": 127,
     }
     for attribute, maximum in byte_bounds.items():
         if attribute in attributes:
@@ -1215,6 +1252,19 @@ def relation_checks(
             )
             maria_attribute = f"`{attribute}`" if attribute == "cursor" else attribute
             maria.append(f"octet_length({maria_attribute}) <= {maximum}")
+
+    for attribute in ("key_codec", "key_segment", "media_type"):
+        if attribute in attributes:
+            sqlite.append(f"length({attribute}) > 0")
+            maria.append(f"octet_length({attribute}) > 0")
+
+    if name in {
+        "artifact_blob",
+        "prepared_storage_object",
+        "catalog_storage_object",
+    }:
+        sqlite.append("size_bytes > 0")
+        maria.append("size_bytes > 0")
 
     if "metadata_fingerprint" in attributes:
         sqlite.append(
@@ -2092,14 +2142,14 @@ def render() -> str:
     }
     expected_logical_seeded_relations = {
         "analysis_stage",
-        "artifact_storage_codec",
-        "artifact_zip_writer_policy",
         "canonical_digest_policy",
+        "catalog_resource_kind",
         "channel_registry",
         "contributor_role_registry",
         "publication_generation_node",
         "publication_stage",
         "source_provider_registry",
+        "search_policy",
     }
     if logical_seeded_relation_set != expected_logical_seeded_relations:
         raise RuntimeError(
