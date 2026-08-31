@@ -2981,10 +2981,10 @@ def _catalog_storage_objects(
     rows = connector.fetch_all(
         "SELECT stored.resource_kind, stored.storage_object_key_sha256, "
         "stored.storage_object_sha256, stored.size_bytes, stored.modified_at, "
-        "blob.size_bytes "
+        "blob_row.size_bytes "
         "FROM catalog_storage_objects AS stored "
-        "LEFT JOIN catalog_artifact_blobs AS blob "
-        "ON blob.artifact_sha256 = stored.storage_object_sha256 "
+        "LEFT JOIN catalog_artifact_blobs AS blob_row "
+        "ON blob_row.artifact_sha256 = stored.storage_object_sha256 "
         "WHERE stored.revision = %s AND stored.publication_key = %s "
         "ORDER BY stored.resource_kind LIMIT 3",
         (revision, publication_key),
@@ -3110,12 +3110,12 @@ def _validate_active_catalog_resources(
         rows = connector.fetch_all(
             "SELECT artifact.publication_key, identity_row.gid, "
             "artifact.artifact_sha256, artifact.artifact_name, "
-            "artifact.media_type, artifact.page_count, blob.size_bytes "
+            "artifact.media_type, artifact.page_count, blob_row.size_bytes "
             "FROM catalog_artifacts AS artifact "
             "LEFT JOIN catalog_publication_identities AS identity_row "
             "ON identity_row.publication_key = artifact.publication_key "
-            "LEFT JOIN catalog_artifact_blobs AS blob "
-            "ON blob.artifact_sha256 = artifact.artifact_sha256 "
+            "LEFT JOIN catalog_artifact_blobs AS blob_row "
+            "ON blob_row.artifact_sha256 = artifact.artifact_sha256 "
             "WHERE artifact.revision = %s AND artifact.publication_key > %s "
             "ORDER BY artifact.publication_key LIMIT %s",
             (revision, after, _CATALOG_RESOURCE_PAGE_LIMIT),
@@ -4149,7 +4149,7 @@ def _prepared_storage_objects(
         "SELECT prepared.resource_kind, prepared.storage_object_key_sha256, "
         "prepared.storage_generation, prepared.protection_token, prepared.state, "
         "binding.storage_object_sha256, stored.storage_object_sha256, "
-        "stored.size_bytes, stored.modified_at, blob.size_bytes "
+        "stored.size_bytes, stored.modified_at, blob_row.size_bytes "
         "FROM catalog_prepared_artifacts AS prepared "
         "LEFT JOIN catalog_prepared_resource_blob AS binding "
         "ON binding.candidate_id = prepared.candidate_id "
@@ -4159,8 +4159,8 @@ def _prepared_storage_objects(
         "ON stored.candidate_id = prepared.candidate_id "
         "AND stored.publication_key = prepared.publication_key "
         "AND stored.resource_kind = prepared.resource_kind "
-        "LEFT JOIN catalog_artifact_blobs AS blob "
-        "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+        "LEFT JOIN catalog_artifact_blobs AS blob_row "
+        "ON blob_row.artifact_sha256 = binding.storage_object_sha256 "
         "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s "
         "ORDER BY prepared.resource_kind LIMIT 3",
         (candidate_id, publication_key),
@@ -4259,12 +4259,12 @@ def _validate_prepared_resource_families(
         rows = connector.fetch_all(
             "SELECT descriptor.publication_key, identity_row.gid, "
             "descriptor.artifact_sha256, descriptor.artifact_name, "
-            "descriptor.media_type, descriptor.page_count, blob.size_bytes "
+            "descriptor.media_type, descriptor.page_count, blob_row.size_bytes "
             "FROM catalog_prepared_artifact_descriptors AS descriptor "
             "LEFT JOIN catalog_publication_identities AS identity_row "
             "ON identity_row.publication_key = descriptor.publication_key "
-            "LEFT JOIN catalog_artifact_blobs AS blob "
-            "ON blob.artifact_sha256 = descriptor.artifact_sha256 "
+            "LEFT JOIN catalog_artifact_blobs AS blob_row "
+            "ON blob_row.artifact_sha256 = descriptor.artifact_sha256 "
             "WHERE descriptor.candidate_id = %s "
             "AND descriptor.publication_key > %s "
             "ORDER BY descriptor.publication_key LIMIT %s",

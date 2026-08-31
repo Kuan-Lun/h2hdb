@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
+import re
 import sys
 import tarfile
 import zipfile
@@ -27,6 +29,23 @@ def _load_module(name: str, path: Path) -> ModuleType:
 
 gate = _load_module("h2hdb_schema_surface_gate", SCHEMA_SURFACE_GATE)
 distribution_gate = _load_module("h2hdb_distribution_gate", DISTRIBUTION_GATE)
+
+
+def test_production_sql_does_not_use_mariadb_blob_reserved_alias() -> None:
+    offenders = tuple(
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((ROOT / "src" / "h2hdb").glob("*.py"))
+        if any(
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and re.search(r"\bAS\s+blob\b", node.value, flags=re.IGNORECASE)
+            for node in ast.walk(
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            )
+        )
+    )
+
+    assert offenders == ()
 
 
 def test_physical_manifests_are_the_only_relation_allowlist() -> None:

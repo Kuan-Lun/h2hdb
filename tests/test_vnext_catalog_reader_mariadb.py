@@ -19,6 +19,7 @@ from h2hdb import (
     CoreConfig,
     StorageObjectDescriptor,
     StorageObjectKey,
+    catalog_refinement,
 )
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
@@ -77,6 +78,43 @@ def _canonical(connector: MariaDBConnector, domain: str, payload: bytes) -> byte
         allocated_at=1,
     )
     return value_sha256
+
+
+def test_mariadb_ready_resource_queries_compile_without_reserved_aliases(
+    mariadb_config: CoreConfig,
+) -> None:
+    connector = _generated_mariadb(mariadb_config)
+    publication_key = identity.publication_key(1)
+    try:
+        with connector.read_transaction():
+            assert (
+                catalog_refinement._catalog_storage_objects(
+                    connector,
+                    revision=1,
+                    publication_key=publication_key,
+                )
+                == {}
+            )
+            catalog_refinement._validate_active_catalog_resources(
+                connector,
+                revision=1,
+                expected_artifact_count=0,
+            )
+            assert (
+                catalog_refinement._prepared_storage_objects(
+                    connector,
+                    candidate_id=b"c" * 16,
+                    publication_key=publication_key,
+                )
+                == {}
+            )
+            catalog_refinement._validate_prepared_resource_families(
+                connector,
+                candidate_id=b"c" * 16,
+                expected_publication_count=0,
+            )
+    finally:
+        connector.close()
 
 
 def test_mariadb_selected_cte_preserves_binary_publication_keys(

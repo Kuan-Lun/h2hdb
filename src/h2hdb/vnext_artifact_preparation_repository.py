@@ -3731,10 +3731,10 @@ def _validate_prepared_row(
                 "prepared resource lacks its sealed storage object"
             )
         resource_blob = work.connector.fetch_all(
-            "SELECT binding.storage_object_sha256, blob.size_bytes "
+            "SELECT binding.storage_object_sha256, blob_row.size_bytes "
             "FROM catalog_prepared_resource_blob AS binding "
-            "JOIN catalog_artifact_blobs AS blob "
-            "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+            "JOIN catalog_artifact_blobs AS blob_row "
+            "ON blob_row.artifact_sha256 = binding.storage_object_sha256 "
             "WHERE binding.candidate_id = %s AND binding.publication_key = %s "
             "AND binding.resource_kind = %s LIMIT 2",
             (
@@ -4228,10 +4228,10 @@ def _validate_prepared_resource_blob(
     family.__post_init__()
     digest, size_bytes = _resource_blob_facts(receipt, family.resource_kind)
     rows = connector.fetch_all(
-        "SELECT binding.storage_object_sha256, blob.size_bytes "
+        "SELECT binding.storage_object_sha256, blob_row.size_bytes "
         "FROM catalog_prepared_resource_blob AS binding "
-        "JOIN catalog_artifact_blobs AS blob "
-        "ON blob.artifact_sha256 = binding.storage_object_sha256 "
+        "JOIN catalog_artifact_blobs AS blob_row "
+        "ON blob_row.artifact_sha256 = binding.storage_object_sha256 "
         "WHERE binding.candidate_id = %s AND binding.publication_key = %s "
         "AND binding.resource_kind = %s LIMIT 2",
         (
