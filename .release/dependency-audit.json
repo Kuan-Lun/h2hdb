@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-01T05:50:53+00:00",
+  "checked_at": "2026-09-01T18:08:04+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.28.2",
+  "project_version": "0.28.3",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional-development, and Node dependencies for the compatible 0.28.2 canonical facet-retention cleanup fix. The dependency manifest is unchanged from 0.28.1. The SQLite cleanup, manifest-conformance, and historical-publication regression set passed 193 tests with two live-MariaDB cases skipped because H2HDB_TEST_MARIADB was not enabled; a focused MariaDB 10.11.11 regression is included for the exact contributor-facet FK shape. Registry candidates and Python 3.14 compatibility are recorded in this receipt and require no dependency-bound change for this release. The exact candidate remains subject to the full release gate.",
+    "note": "Reviewed every direct build, runtime, optional-development, and Node dependency for the compatible 0.28.3 publication canonical-plan linearization and claim-lifecycle fix. Dependency manifests are unchanged from 0.28.2 and the runtime adds no dependency. Registry candidates and Python 3.14 compatibility were reviewed; no dependency-bound change is required. Targeted SQLite and MariaDB 10.11.11 production-path fencing tests, differential tests, Lean proofs, and the finite TLA+ CanonicalPlanCursor profile pass. The exact candidate remains subject to the repository full release gate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
