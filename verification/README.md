@@ -70,8 +70,9 @@ The layers prove different things and are not interchangeable.
   exact generated FD contracts; the data-plane proof also establishes the
   unbounded minimum-witness, greater-only provenance append, exact replay, and
   child-first cleanup theorems for both impacted-key families.
-  `lean/ArtifactDelta.lean` and `GalleryDeduplication.lean` prove the listed
-  abstract delta and deduplication theorems.
+  `lean/ArtifactDelta.lean`, `lean/CanonicalPlanCursor.lean`, and
+  `GalleryDeduplication.lean` prove the listed abstract delta, canonical
+  selector equivalence and linear-work, and deduplication theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
   SQLite and MariaDB realizations. The refinement code introspects object kind,
   columns, types, nullability, collation, keys, FKs, checks, indexes, and view
@@ -80,6 +81,10 @@ The layers prove different things and are not interchangeable.
   publication, artifacts, and GC. `tla/GalleryStaging.tla` finitely explores
   gallery staging, exact-request replay, takeover, bounded carry, canonical
   upload handoff, maintenance exclusion, and phased cleanup.
+  `tla/CanonicalPlanCursor.tla` finitely explores stage-plan cache reset,
+  first-consumer claim handoff, transaction-prefix rollback, response loss,
+  stale fencing, same-receipt preimage corruption, and delayed concurrent
+  allocate rejection after durable consumption.
 - `invariants.toml` indexes evidence for every semantic-obligation ID. Missing
   production refinement, fault, or cross-backend integration evidence is a
   machine-readable blocker, not an implicit success.
