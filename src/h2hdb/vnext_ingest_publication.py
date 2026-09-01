@@ -33,6 +33,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from .domain import (
     ArtifactReleaseStorageEvidence,
+    CatalogResourceKind,
     VNextIngestAdvanceResult,
     VNextIngestPhase,
     VNextIngestSession,
@@ -121,6 +122,7 @@ from .vnext_transaction import VNextUnitOfWork
 _STEP_TOKEN = object()
 _PREPARED_TOKEN = object()
 _MAX_PAGE_ROWS = 128
+_MAX_CACHED_ARTIFACT_RESOURCE_BYTES = 256 * 1024 * 1024
 
 _CANDIDATE_STAGES = (
     b"BUILD_SELECTION",
@@ -309,12 +311,95 @@ class _ArtifactWork:
     families: tuple[PreparedArtifactFamily, ...] | None
 
 
+class _ArtifactReceiptOwner:
+    """Exclusive owner for one disposable rendered artifact receipt."""
+
+    __slots__ = ("__receipt",)
+
+    def __init__(self, receipt: ArtifactPreparationReceipt) -> None:
+        self.__receipt: ArtifactPreparationReceipt | None = receipt
+
+    @property
+    def receipt(self) -> ArtifactPreparationReceipt:
+        receipt = self.__receipt
+        if receipt is None:
+            raise RuntimeError("artifact preparation receipt ownership was transferred")
+        return receipt
+
+    def detach(self) -> ArtifactPreparationReceipt:
+        receipt = self.receipt
+        self.__receipt = None
+        return receipt
+
+    def close(self) -> None:
+        receipt = self.__receipt
+        if receipt is None:
+            return
+        self.__receipt = None
+        receipt.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
+class _ArtifactReceiptCache:
+    """Facade-owned optional spool for one exact durable PENDING bundle."""
+
+    __slots__ = ("authority", "families", "__receipt")
+
+    def __init__(
+        self,
+        *,
+        authority: ArtifactPreparationAuthority,
+        families: tuple[PreparedArtifactFamily, ...],
+        receipt: ArtifactPreparationReceipt,
+    ) -> None:
+        self.authority = authority
+        self.families = families
+        self.__receipt: ArtifactPreparationReceipt | None = receipt
+
+    def matches(
+        self,
+        authority: ArtifactPreparationAuthority,
+        families: tuple[PreparedArtifactFamily, ...],
+    ) -> bool:
+        return self.authority == authority and self.families == families
+
+    def take(self) -> _ArtifactReceiptOwner:
+        receipt = self.__receipt
+        if receipt is None:
+            raise RuntimeError("artifact receipt cache is already consumed")
+        owner = _ArtifactReceiptOwner(receipt)
+        self.__receipt = None
+        return owner
+
+    def close(self) -> None:
+        receipt = self.__receipt
+        if receipt is None:
+            return
+        self.__receipt = None
+        receipt.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
 @dataclass(frozen=True, slots=True)
 class _ArtifactPrepared:
-    receipt: ArtifactPreparationReceipt = field(repr=False, compare=False)
+    receipt_owner: _ArtifactReceiptOwner = field(repr=False, compare=False)
     effect_seal: OperationalEffectSeal
     intents: tuple[ArtifactProtectionIntent, ...]
     evidence: tuple[ArtifactProtectionEvidence, ...]
+
+    @property
+    def receipt(self) -> ArtifactPreparationReceipt:
+        return self.receipt_owner.receipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -677,6 +762,8 @@ class VNextIngestPublication:
         "__context",
         "__activation_checkpoints",
         "__activation_ready",
+        "__artifact_receipt",
+        "__artifact_receipt_lock",
         "__publication_plan",
         "__publication_plan_lock",
     )
@@ -698,6 +785,8 @@ class VNextIngestPublication:
         # library adapter before it performs any irreversible work.
         self.__activation_checkpoints: dict[bytes, LibraryActivationCheckpoint] = {}
         self.__activation_ready: set[bytes] = set()
+        self.__artifact_receipt: _ArtifactReceiptCache | None = None
+        self.__artifact_receipt_lock = Lock()
         self.__publication_plan: _PublicationPlanCache | None = None
         self.__publication_plan_lock = Lock()
 
@@ -739,6 +828,8 @@ class VNextIngestPublication:
 
         with self.__publication_plan_lock:
             self.__retire_mismatched_plan(action, payload)
+        with self.__artifact_receipt_lock:
+            self.__retire_mismatched_artifact_receipt(action, payload)
 
         return VNextIssuedPublicationStep(
             action=action,
@@ -892,7 +983,15 @@ class VNextIngestPublication:
             ):
                 with self.__publication_plan_lock:
                     self.__retire_committed_plan(cast(_CandidateWork, exact._payload))
-            return _advance_result(exact._action, outcome)
+            result = _advance_result(exact._action, outcome)
+            if exact._action is _Action.PREPARE_ARTIFACT:
+                artifact = cast(_ArtifactPrepared, exact._payload)
+                if not artifact.intents:
+                    # Transfer only after the transaction context reported a
+                    # successful PENDING commit.  Commit response loss keeps
+                    # ownership on the prepared step and therefore rerenders.
+                    self.__retain_persisted_artifact_receipt(artifact, outcome)
+            return result
         finally:
             exact.close()
 
@@ -1022,17 +1121,45 @@ class VNextIngestPublication:
                 backend=self.__backend,
                 authority=authority,
             )
-        with self.__context.SQLConnector() as connector:
-            receipt = ArtifactPreparationRepository.prepare_with_storage_adapter(
-                connector,
-                backend=self.__backend,
-                audit=audit,
-                adapter=adapter,
-            )
+        families = work.families
+        # A cache hit never replaces the fresh durable input audit above.
+        owner = (
+            None
+            if families is None
+            else self.__take_artifact_receipt(authority, families)
+        )
+        if owner is not None and owner.receipt.audit != audit:
+            # The durable authority/family key still matches, but the cached
+            # receipt no longer refines the freshly audited inputs.  Dispose
+            # the hint and take the same renderer path as a cache miss.
+            owner.close()
+            owner = None
+        if owner is not None:
+            try:
+                ArtifactPreparationRepository.revalidate_cached_sources(
+                    audit=audit,
+                    adapter=adapter,
+                )
+            except BaseException:
+                owner.close()
+                raise
+        if owner is None:
+            with self.__context.SQLConnector() as connector:
+                receipt = ArtifactPreparationRepository.prepare_with_storage_adapter(
+                    connector,
+                    backend=self.__backend,
+                    audit=audit,
+                    adapter=adapter,
+                )
+            owner = _ArtifactReceiptOwner(receipt)
         try:
-            families = work.families
+            receipt = owner.receipt
+            if receipt.audit != audit:
+                raise RuntimeError(
+                    "artifact receipt differs from its fresh input audit"
+                )
             if families is None:
-                return _ArtifactPrepared(receipt, work.effect_seal, (), ())
+                return _ArtifactPrepared(owner, work.effect_seal, (), ())
             with self.__context.SQLConnector() as connector:
                 with connector.read_transaction():
                     intents = tuple(
@@ -1057,14 +1184,77 @@ class VNextIngestPublication:
                         )
                     )
             return _ArtifactPrepared(
-                receipt,
+                owner,
                 work.effect_seal,
                 intents,
                 tuple(evidence),
             )
         except BaseException:
-            receipt.close()
+            owner.close()
             raise
+
+    def __take_artifact_receipt(
+        self,
+        authority: ArtifactPreparationAuthority,
+        families: tuple[PreparedArtifactFamily, ...],
+    ) -> _ArtifactReceiptOwner | None:
+        with self.__artifact_receipt_lock:
+            cached = self.__artifact_receipt
+            if cached is None:
+                return None
+            self.__artifact_receipt = None
+            if cached.matches(authority, families):
+                return cached.take()
+            cached.close()
+            return None
+
+    def __retain_persisted_artifact_receipt(
+        self,
+        prepared: _ArtifactPrepared,
+        outcome: object,
+    ) -> None:
+        families = _pending_artifact_families(outcome, receipt=prepared.receipt)
+        if families is None:
+            return
+        if not _artifact_receipt_fits_cache(prepared.receipt):
+            # The optimization is optional.  Large receipts keep reference
+            # restart behavior instead of pinning a multi-gigabyte temp spool
+            # inside a long-lived publication facade.
+            return
+        receipt = prepared.receipt_owner.detach()
+        cached = _ArtifactReceiptCache(
+            authority=receipt.audit.authority,
+            families=families,
+            receipt=receipt,
+        )
+        try:
+            with self.__artifact_receipt_lock:
+                current = self.__artifact_receipt
+                self.__artifact_receipt = None
+                if current is not None:
+                    current.close()
+                self.__artifact_receipt = cached
+        except BaseException:
+            cached.close()
+            raise
+
+    def __retire_mismatched_artifact_receipt(
+        self,
+        action: _Action,
+        payload: object,
+    ) -> None:
+        cached = self.__artifact_receipt
+        if cached is None:
+            return
+        if (
+            action is _Action.PREPARE_ARTIFACT
+            and isinstance(payload, _ArtifactWork)
+            and payload.families is not None
+            and cached.matches(payload.authority, payload.families)
+        ):
+            return
+        self.__artifact_receipt = None
+        cached.close()
 
     def __prepare_library_activation(
         self,
@@ -2335,6 +2525,52 @@ def _require_prepared(
     return prepared
 
 
+def _pending_artifact_families(
+    outcome: object,
+    *,
+    receipt: ArtifactPreparationReceipt,
+) -> tuple[PreparedArtifactFamily, ...] | None:
+    if not isinstance(outcome, tuple) or not outcome:
+        raise RuntimeError("persisted artifact did not return its resource intents")
+    authority = receipt.audit.authority
+    families: list[PreparedArtifactFamily] = []
+    all_pending = True
+    for item in outcome:
+        if not isinstance(item, ArtifactProtectionIntent):
+            raise RuntimeError("persisted artifact returned a foreign resource intent")
+        item.__post_init__()
+        if (
+            item.candidate_id != authority.candidate_id
+            or item.publication_key != authority.publication_key
+        ):
+            raise RuntimeError("persisted artifact intent belongs to another authority")
+        all_pending = all_pending and item.state == "PENDING"
+        families.append(
+            PreparedArtifactFamily(
+                item.candidate_id,
+                item.publication_key,
+                item.resource_kind,
+                item.storage_object_key_sha256,
+                item.storage_generation,
+                item.protection_token,
+                item.state,
+            )
+        )
+    exact = tuple(families)
+    if tuple(family.resource_kind for family in exact) != receipt.resource_kinds:
+        raise RuntimeError("persisted artifact intents do not cover its receipt bundle")
+    return exact if all_pending else None
+
+
+def _artifact_receipt_fits_cache(receipt: ArtifactPreparationReceipt) -> bool:
+    cached_resource_bytes = receipt.size_bytes
+    if CatalogResourceKind.THUMBNAIL in receipt.resource_kinds:
+        cached_resource_bytes += receipt.resource_descriptor(
+            CatalogResourceKind.THUMBNAIL
+        ).size_bytes
+    return cached_resource_bytes <= _MAX_CACHED_ARTIFACT_RESOURCE_BYTES
+
+
 def _owned_resource(payload: object) -> object:
     if isinstance(payload, _CanonicalWork):
         return payload.owner
@@ -2346,7 +2582,7 @@ def _owned_resource(payload: object) -> object:
             return payload.resource_owner
         return payload.payload
     if isinstance(payload, _ArtifactPrepared):
-        return payload.receipt
+        return payload.receipt_owner
     return payload
 
 

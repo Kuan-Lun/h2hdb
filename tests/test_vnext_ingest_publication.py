@@ -1222,6 +1222,9 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
     class Receipt:
         locator_plan = object()
 
+        def __init__(self, audit: object) -> None:
+            self.audit = audit
+
         def close(self) -> None:
             pass
 
@@ -1241,7 +1244,7 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
     monkeypatch.setattr(
         ArtifactPreparationRepository,
         "prepare_with_storage_adapter",
-        staticmethod(lambda *_args, **_kwargs: Receipt()),
+        staticmethod(lambda *_args, **kwargs: Receipt(kwargs["audit"])),
     )
     monkeypatch.setattr(
         publication,

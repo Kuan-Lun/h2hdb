@@ -13,6 +13,7 @@ __all__ = [
     "ArtifactSourceReference",
     "RenderedArtifact",
     "render_artifact",
+    "verify_artifact_sources",
 ]
 
 from collections.abc import Iterable
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from io import UnsupportedOperation
 from tempfile import TemporaryFile
+from threading import Lock
 from typing import BinaryIO, cast
 
 from .domain import (
@@ -177,10 +179,25 @@ class _BoundedRandomAccessWriter:
 class _ReadOnlySlice:
     """Read/seek facade for one immutable extent in an aggregate verified spool."""
 
-    __slots__ = ("_closed", "_delegate", "_length", "_offset", "_position")
+    __slots__ = (
+        "_closed",
+        "_delegate",
+        "_delegate_lock",
+        "_length",
+        "_offset",
+        "_position",
+    )
 
-    def __init__(self, delegate: BinaryIO, *, offset: int, length: int) -> None:
+    def __init__(
+        self,
+        delegate: BinaryIO,
+        *,
+        delegate_lock: Lock,
+        offset: int,
+        length: int,
+    ) -> None:
         self._delegate = delegate
+        self._delegate_lock = delegate_lock
         self._offset = require_int63(offset, field="verified source spool offset")
         self._length = require_int63(length, field="verified source spool length")
         self._position = 0
@@ -191,40 +208,46 @@ class _ReadOnlySlice:
         return self._closed
 
     def read(self, size: int = -1) -> bytes:
-        self._require_open()
-        remaining = self._length - self._position
-        requested = remaining if size < 0 else min(size, remaining)
-        self._delegate.seek(self._offset + self._position)
-        result = self._delegate.read(requested)
-        if not isinstance(result, bytes):
-            raise ArtifactRenderConflictError(
-                "verified artifact spool returned a non-bytes chunk"
-            )
-        if len(result) != requested:
-            raise ArtifactRenderConflictError(
-                "verified artifact spool ended within a sealed extent"
-            )
-        self._position += len(result)
-        return result
+        # Every slice has an independent logical cursor, but all slices share
+        # one aggregate spool.  Keep the physical seek+read indivisible while
+        # page decoding and encoding remain fully parallel outside this lock.
+        with self._delegate_lock:
+            self._require_open()
+            remaining = self._length - self._position
+            requested = remaining if size < 0 else min(size, remaining)
+            self._delegate.seek(self._offset + self._position)
+            result = self._delegate.read(requested)
+            if not isinstance(result, bytes):
+                raise ArtifactRenderConflictError(
+                    "verified artifact spool returned a non-bytes chunk"
+                )
+            if len(result) != requested:
+                raise ArtifactRenderConflictError(
+                    "verified artifact spool ended within a sealed extent"
+                )
+            self._position += len(result)
+            return result
 
     def seek(self, offset: int, whence: int = 0) -> int:
-        self._require_open()
-        if whence == 0:
-            position = offset
-        elif whence == 1:
-            position = self._position + offset
-        elif whence == 2:
-            position = self._length + offset
-        else:
-            raise ValueError("invalid seek whence")
-        if position < 0 or position > self._length:
-            raise ValueError("verified artifact source seek is outside its extent")
-        self._position = position
-        return position
+        with self._delegate_lock:
+            self._require_open()
+            if whence == 0:
+                position = offset
+            elif whence == 1:
+                position = self._position + offset
+            elif whence == 2:
+                position = self._length + offset
+            else:
+                raise ValueError("invalid seek whence")
+            if position < 0 or position > self._length:
+                raise ValueError("verified artifact source seek is outside its extent")
+            self._position = position
+            return position
 
     def tell(self) -> int:
-        self._require_open()
-        return self._position
+        with self._delegate_lock:
+            self._require_open()
+            return self._position
 
     def readable(self) -> bool:
         return True
@@ -242,7 +265,8 @@ class _ReadOnlySlice:
         raise UnsupportedOperation("verified artifact source is read-only")
 
     def close(self) -> None:
-        self._closed = True
+        with self._delegate_lock:
+            self._closed = True
 
     def _require_open(self) -> None:
         if self._closed:
@@ -316,6 +340,29 @@ def render_artifact(
         staged.close()
         if archive_owned:
             archive.close()
+
+
+def verify_artifact_sources(
+    adapter: ArtifactStorageAdapter,
+    *,
+    source_root_components: tuple[str, ...],
+    gallery_locator_components: tuple[str, ...],
+    references: Iterable[ArtifactSourceReference],
+) -> None:
+    """Re-read one sealed source observation without repeating byte rendering."""
+
+    selected, _page_positions = _preflight_references(tuple(references))
+    for row in selected:
+        source = _open_verified_source(
+            adapter,
+            row,
+            source_root_components=source_root_components,
+            gallery_locator_components=gallery_locator_components,
+        )
+        try:
+            _read_verified_source(row, source, destination=None)
+        finally:
+            source.close()
 
 
 def _preflight_references(
@@ -401,21 +448,18 @@ def _stage_verified_members(
     gallery_locator_components: tuple[str, ...],
 ) -> _StagedMembers:
     spool = cast(BinaryIO, TemporaryFile(mode="w+b"))
+    spool_lock = Lock()
     members: list[ArtifactSourceMember] = []
     owned = True
     try:
         offset = 0
         for row in rows:
-            try:
-                source = adapter.open_source(
-                    source_root_components=source_root_components,
-                    gallery_locator_components=gallery_locator_components,
-                    source_name=row.source_name,
-                )
-            except (OSError, RuntimeError, ValueError) as error:
-                raise ArtifactRenderNotReadyError(
-                    "artifact adapter could not open a sealed source member"
-                ) from error
+            source = _open_verified_source(
+                adapter,
+                row,
+                source_root_components=source_root_components,
+                gallery_locator_components=gallery_locator_components,
+            )
             try:
                 _copy_verified_source(row, source, spool)
             finally:
@@ -424,6 +468,7 @@ def _stage_verified_members(
                 BinaryIO,
                 _ReadOnlySlice(
                     spool,
+                    delegate_lock=spool_lock,
                     offset=offset,
                     length=row.expected_size_bytes,
                 ),
@@ -453,10 +498,38 @@ def _stage_verified_members(
             spool.close()
 
 
+def _open_verified_source(
+    adapter: ArtifactStorageAdapter,
+    row: ArtifactSourceReference,
+    *,
+    source_root_components: tuple[str, ...],
+    gallery_locator_components: tuple[str, ...],
+) -> BinaryIO:
+    try:
+        return adapter.open_source(
+            source_root_components=source_root_components,
+            gallery_locator_components=gallery_locator_components,
+            source_name=row.source_name,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ArtifactRenderNotReadyError(
+            "artifact adapter could not open a sealed source member"
+        ) from error
+
+
 def _copy_verified_source(
     row: ArtifactSourceReference,
     source: BinaryIO,
     destination: BinaryIO,
+) -> None:
+    _read_verified_source(row, source, destination=destination)
+
+
+def _read_verified_source(
+    row: ArtifactSourceReference,
+    source: BinaryIO,
+    *,
+    destination: BinaryIO | None,
 ) -> None:
     remaining = row.expected_size_bytes
     digest = sha256()
@@ -474,11 +547,12 @@ def _copy_verified_source(
             raise ArtifactRenderConflictError(
                 "artifact source read exceeded its sealed size"
             )
-        written = destination.write(part)
-        if written != len(part):
-            raise ArtifactRenderConflictError(
-                "artifact source spool accepted a partial write"
-            )
+        if destination is not None:
+            written = destination.write(part)
+            if written != len(part):
+                raise ArtifactRenderConflictError(
+                    "artifact source spool accepted a partial write"
+                )
         digest.update(part)
         remaining -= len(part)
     trailing = source.read(1)

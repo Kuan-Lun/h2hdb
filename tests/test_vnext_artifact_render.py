@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from hashlib import sha256
 from io import BytesIO
+from threading import Barrier, Lock
+from time import sleep
 from typing import BinaryIO
 
 import pytest
@@ -23,7 +26,9 @@ from h2hdb.vnext_artifact_render import (
     ArtifactRenderNotReadyError,
     ArtifactSourceReference,
     RenderedArtifact,
+    _ReadOnlySlice,
     render_artifact,
+    verify_artifact_sources,
 )
 
 
@@ -151,6 +156,69 @@ def _render(
     )
 
 
+def _verify(
+    adapter: _Adapter,
+    references: tuple[ArtifactSourceReference, ...],
+) -> None:
+    verify_artifact_sources(
+        adapter,
+        source_root_components=("root",),
+        gallery_locator_components=("gallery",),
+        references=references,
+    )
+
+
+class _OverlapDetectingSpool(BytesIO):
+    """Expose a shared physical seek/read overlap deterministically."""
+
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self._state_lock = Lock()
+        self._seek_pending = False
+        self.overlapped = False
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        with self._state_lock:
+            if self._seek_pending:
+                self.overlapped = True
+            self._seek_pending = True
+        sleep(0.02)
+        return super().seek(offset, whence)
+
+    def read(self, size: int | None = -1) -> bytes:
+        result = super().read(size)
+        with self._state_lock:
+            self._seek_pending = False
+        return result
+
+
+def test_verified_source_slices_serialize_shared_spool_seek_and_read() -> None:
+    first = b"first-extent" * 1_024
+    second = b"second-extent" * 1_024
+    spool = _OverlapDetectingSpool(first + second)
+    spool_lock = Lock()
+    slices = (
+        _ReadOnlySlice(spool, delegate_lock=spool_lock, offset=0, length=len(first)),
+        _ReadOnlySlice(
+            spool,
+            delegate_lock=spool_lock,
+            offset=len(first),
+            length=len(second),
+        ),
+    )
+    ready = Barrier(2)
+
+    def consume(source: _ReadOnlySlice) -> bytes:
+        ready.wait()
+        return source.read()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        actual = tuple(executor.map(consume, slices))
+
+    assert actual == (first, second)
+    assert not spool.overlapped
+
+
 def test_render_spools_exact_selected_sources_and_never_opens_other() -> None:
     metadata = b"metadata"
     page = b"page"
@@ -173,6 +241,43 @@ def test_render_spools_exact_selected_sources_and_never_opens_other() -> None:
 
     assert adapter.opened == [b"metadata.txt", b"page.jpg"]
     assert adapter.rendered == [(0, metadata), (1, page)]
+
+
+def test_source_revalidation_reads_exact_selected_sources_without_rendering() -> None:
+    metadata = b"metadata"
+    page = b"page"
+    adapter = _Adapter({b"metadata.txt": metadata, b"page.jpg": page})
+    references = (
+        _reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", metadata),
+        _reference(1, ArtifactSourceRole.PAGE, b"page.jpg", page),
+        ArtifactSourceReference(
+            2,
+            ArtifactSourceRole.OTHER,
+            b"irrelevant.bin",
+            b"x" * 32,
+            33 * 1024 * 1024,
+        ),
+    )
+
+    _verify(adapter, references)
+
+    assert adapter.opened == [b"metadata.txt", b"page.jpg"]
+    assert adapter.rendered == []
+
+
+def test_source_revalidation_uses_reference_digest_error_boundary() -> None:
+    adapter = _Adapter({b"metadata.txt": b"change"})
+    reference = _reference(
+        0,
+        ArtifactSourceRole.METADATA,
+        b"metadata.txt",
+        b"sealed",
+    )
+
+    with pytest.raises(ArtifactRenderConflictError, match="digest differs"):
+        _verify(adapter, (reference,))
+
+    assert adapter.rendered == []
 
 
 def test_render_preserves_sparse_original_positions_with_late_metadata() -> None:

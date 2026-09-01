@@ -77,6 +77,7 @@ from .vnext_artifact_presentation import (
 from .vnext_artifact_render import (
     ArtifactSourceReference,
     render_artifact,
+    verify_artifact_sources,
 )
 from .vnext_canonical_value_family import (
     load_sealed_value_identities,
@@ -1251,6 +1252,30 @@ class ArtifactPreparationRepository:
                 )
             _validate_fixed_components(work, authority)
             return _audit_member_and_effective_components(work, authority)
+
+    @staticmethod
+    def revalidate_cached_sources(
+        *,
+        audit: ArtifactPreparationInputAudit,
+        adapter: ArtifactStorageAdapter,
+    ) -> None:
+        """Re-read every executable sealed source before consuming cached bytes."""
+
+        if not isinstance(audit, ArtifactPreparationInputAudit):
+            raise TypeError("audit must be ArtifactPreparationInputAudit")
+        audit.__post_init__()
+        _require_authority(audit.authority)
+        if audit._capability is not _AUDIT_TOKEN:
+            raise TypeError("artifact input audit is not repository-issued")
+        if not isinstance(adapter, ArtifactStorageAdapter):
+            raise TypeError("adapter must implement ArtifactStorageAdapter")
+        _require_matching_adapter(audit.authority, adapter)
+        verify_artifact_sources(
+            adapter,
+            source_root_components=audit.source_root_components,
+            gallery_locator_components=audit.gallery_locator_components,
+            references=audit.references,
+        )
 
     @staticmethod
     def prepare_with_storage_adapter(
