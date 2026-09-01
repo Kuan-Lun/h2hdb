@@ -22,6 +22,7 @@ from .domain import (
     ArtifactSourceMember,
     ArtifactStorageEvidence,
     CatalogArtifact,
+    CatalogDiscoveryBundle,
     CatalogDiscoveryCursor,
     CatalogDiscoveryPage,
     CatalogDiscoveryQuery,
@@ -56,6 +57,16 @@ class CatalogReader(Protocol):
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogDiscoveryPage: ...
+
+    def discover_publications_with_facets(
+        self,
+        *,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogDiscoveryCursor | None = None,
+        limit: int = 50,
+        facet_limit: int = 128,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogDiscoveryBundle: ...
 
     def list_publication_facets(
         self,

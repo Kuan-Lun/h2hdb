@@ -36,9 +36,11 @@ __all__ = [
 import re
 import sqlite3
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from tempfile import TemporaryFile
 from types import MappingProxyType
 from typing import Any, BinaryIO
@@ -67,6 +69,13 @@ from .vnext_canonical_value_repository import (
 from .vnext_domains import require_ascii_bytes, require_digest32
 
 type SemanticValidator = Callable[[SQLConnector], None]
+
+_CANONICAL_VALIDATION_CACHE_MAX_ENTRIES = 128
+_CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES = 64 * 1024
+_CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES = (
+    _CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    * _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES
+)
 
 
 class BuiltinSemanticRegistryError(RuntimeError):
@@ -3249,13 +3258,82 @@ def _validate_active_catalog_resources(
         )
 
 
+class _CanonicalValidationCache:
+    """Bound successful canonical reads to one READY-audit snapshot.
+
+    The caller owns this cache for exactly one discovery refinement pass inside
+    the schema validator's read transaction.  Values too large for the fixed
+    memory budget retain the original streaming path, and eviction only
+    removes an optimization: a later access validates the canonical tree
+    again.
+    """
+
+    __slots__ = ("_byte_count", "_values")
+
+    def __init__(self) -> None:
+        self._values: OrderedDict[tuple[bytes, bytes], bytes] = OrderedDict()
+        self._byte_count = 0
+
+    def open(
+        self,
+        value_sha256: bytes,
+        expected_domain: bytes,
+    ) -> tuple[BinaryIO, int] | None:
+        key = (value_sha256, expected_domain)
+        payload = self._values.pop(key, None)
+        if payload is None:
+            return None
+        self._values[key] = payload
+        return BytesIO(payload), len(payload)
+
+    def remember(
+        self,
+        value_sha256: bytes,
+        expected_domain: bytes,
+        spool: BinaryIO,
+        *,
+        byte_count: int,
+    ) -> None:
+        if byte_count > _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES:
+            return
+        spool.seek(0)
+        payload = spool.read(byte_count + 1)
+        spool.seek(0)
+        if not isinstance(payload, bytes) or len(payload) != byte_count:
+            raise CatalogSemanticValidationError(
+                "validated canonical spool changed before bounded caching"
+            )
+        key = (value_sha256, expected_domain)
+        previous = self._values.pop(key, None)
+        if previous is not None:
+            self._byte_count -= len(previous)
+        while self._values and (
+            len(self._values) >= _CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+            or self._byte_count + byte_count
+            > _CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES
+        ):
+            _evicted_key, evicted = self._values.popitem(last=False)
+            self._byte_count -= len(evicted)
+        self._values[key] = payload
+        self._byte_count += byte_count
+
+
 def _validated_canonical_spool(
     connector: SQLConnector,
     value_sha256: bytes,
     *,
     expected_domain: bytes,
     detail: str,
+    cache: _CanonicalValidationCache | None = None,
 ) -> tuple[BinaryIO, int]:
+    if (
+        cache is not None
+        and type(value_sha256) is bytes
+        and type(expected_domain) is bytes
+    ):
+        cached = cache.open(value_sha256, expected_domain)
+        if cached is not None:
+            return cached
     spool = TemporaryFile(mode="w+b")
     written = 0
 
@@ -3277,6 +3355,13 @@ def _validated_canonical_spool(
             )
         spool.flush()
         spool.seek(0)
+        if cache is not None:
+            cache.remember(
+                value_sha256,
+                expected_domain,
+                spool,
+                byte_count=receipt.byte_count,
+            )
         return spool, receipt.byte_count
     except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
         spool.close()
@@ -3311,6 +3396,7 @@ def _register_expected_search_field(
     *,
     publication_key: bytes,
     parts: Iterable[bytes],
+    cache: _CanonicalValidationCache,
 ) -> None:
     try:
         for lexeme in iter_search_field_lexemes(parts):
@@ -3337,6 +3423,7 @@ def _register_expected_search_field(
                     value_sha256,
                     expected_domain=b"search_lexeme_utf8_v1",
                     detail="derived search lexeme",
+                    cache=cache,
                 )
                 try:
                     if (
@@ -3383,6 +3470,7 @@ def _validate_one_publication_search_projection(
     source_title_sha256: bytes,
     display_title_sha256: bytes,
     source_gallery_name: bytes,
+    cache: _CanonicalValidationCache,
 ) -> None:
     try:
         expected.execute(
@@ -3404,6 +3492,7 @@ def _validate_one_publication_search_projection(
         source_title_sha256,
         expected_domain=b"source_title_utf8_v1",
         detail="active publication source title",
+        cache=cache,
     )
     try:
         _register_expected_search_field(
@@ -3411,6 +3500,7 @@ def _validate_one_publication_search_projection(
             expected,
             publication_key=publication_key,
             parts=_iter_spool_chunks(title_spool, byte_count=title_byte_count),
+            cache=cache,
         )
     finally:
         title_spool.close()
@@ -3419,6 +3509,7 @@ def _validate_one_publication_search_projection(
         display_title_sha256,
         expected_domain=b"display_title_utf8_v1",
         detail="active publication display title",
+        cache=cache,
     )
     try:
         if display_title_byte_count == 0:
@@ -3433,6 +3524,7 @@ def _validate_one_publication_search_projection(
                 display_title_spool,
                 byte_count=display_title_byte_count,
             ),
+            cache=cache,
         )
     finally:
         display_title_spool.close()
@@ -3482,6 +3574,7 @@ def _validate_one_publication_search_projection(
                 digest,
                 expected_domain=b"contributor_name_utf8_v1",
                 detail="active contributor name",
+                cache=cache,
             )
             try:
                 if not 1 <= byte_count <= 65_536:
@@ -3493,6 +3586,7 @@ def _validate_one_publication_search_projection(
                     expected,
                     publication_key=publication_key,
                     parts=_iter_spool_chunks(spool, byte_count=byte_count),
+                    cache=cache,
                 )
             finally:
                 spool.close()
@@ -3554,6 +3648,7 @@ def _validate_one_publication_search_projection(
                 digest,
                 expected_domain=b"tag_value_utf8_v1",
                 detail="active subject value",
+                cache=cache,
             )
             try:
                 if byte_count > 65_536:
@@ -3565,6 +3660,7 @@ def _validate_one_publication_search_projection(
                     expected,
                     publication_key=publication_key,
                     parts=_iter_spool_chunks(spool, byte_count=byte_count),
+                    cache=cache,
                 )
             finally:
                 spool.close()
@@ -3653,6 +3749,7 @@ def _validate_language_facet_order(
     expected: sqlite3.Connection,
     *,
     revision: int,
+    cache: _CanonicalValidationCache,
 ) -> None:
     after = -1
     expected_position = 0
@@ -3707,6 +3804,7 @@ def _validate_language_facet_order(
                     digest,
                     expected_domain=b"catalog_language_utf8_v1",
                     detail="active language facet value",
+                    cache=cache,
                 )
                 if not 1 <= byte_count <= 65_536:
                     spool.close()
@@ -3745,6 +3843,7 @@ def _validate_subject_facet_order(
     expected: sqlite3.Connection,
     *,
     revision: int,
+    cache: _CanonicalValidationCache,
 ) -> None:
     after = -1
     expected_position = 0
@@ -3809,6 +3908,7 @@ def _validate_subject_facet_order(
                     digest,
                     expected_domain=b"tag_value_utf8_v1",
                     detail="active subject facet value",
+                    cache=cache,
                 )
                 if previous is not None:
                     if previous[0] < namespace:
@@ -3842,6 +3942,7 @@ def _validate_contributor_facet_order(
     expected: sqlite3.Connection,
     *,
     revision: int,
+    cache: _CanonicalValidationCache,
 ) -> None:
     after = -1
     expected_position = 0
@@ -3904,6 +4005,7 @@ def _validate_contributor_facet_order(
                     digest,
                     expected_domain=b"contributor_name_utf8_v1",
                     detail="active contributor facet value",
+                    cache=cache,
                 )
                 if previous is not None:
                     if previous[0] < role:
@@ -3992,6 +4094,7 @@ def _validate_active_discovery_projection(
             "active search documents do not exactly cover current publications"
         )
 
+    cache = _CanonicalValidationCache()
     expected = sqlite3.connect("")
     try:
         expected.executescript("""
@@ -4103,6 +4206,7 @@ def _validate_active_discovery_projection(
                     source_title_sha256=source_title_sha256,
                     display_title_sha256=display_title_sha256,
                     source_gallery_name=source_gallery_name,
+                    cache=cache,
                 )
                 publication_count += 1
                 if publication_count > (1 << 63) - 1:
@@ -4114,9 +4218,24 @@ def _validate_active_discovery_projection(
             raise CatalogSemanticValidationError(
                 "active search source count differs from catalog revision"
             )
-        _validate_language_facet_order(connector, expected, revision=revision)
-        _validate_subject_facet_order(connector, expected, revision=revision)
-        _validate_contributor_facet_order(connector, expected, revision=revision)
+        _validate_language_facet_order(
+            connector,
+            expected,
+            revision=revision,
+            cache=cache,
+        )
+        _validate_subject_facet_order(
+            connector,
+            expected,
+            revision=revision,
+            cache=cache,
+        )
+        _validate_contributor_facet_order(
+            connector,
+            expected,
+            revision=revision,
+            cache=cache,
+        )
     finally:
         expected.close()
 

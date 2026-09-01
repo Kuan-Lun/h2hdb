@@ -63,6 +63,7 @@ from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
     CanonicalValueRepository,
+    load_and_validate_single_page_canonical_values,
 )
 from .vnext_domains import (
     require_ascii_bytes,
@@ -77,6 +78,7 @@ _DEFAULT_CHANNEL = b"default"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _EFFECTIVE_CONTENT_PREFIX = b"h2hdb-vnext-effective-content\0"
 _EFFECTIVE_CONTENT_HEADER_BYTES = len(_EFFECTIVE_CONTENT_PREFIX) + 12
+_CANONICAL_PREFETCH_BATCH_LIMIT = 128
 
 
 class VNextCatalogReadError(RuntimeError):
@@ -116,7 +118,35 @@ class _DiscoverySQLFilter:
 class _CanonicalLoader:
     def __init__(self, connector: SQLConnector, *, backend: str) -> None:
         self._work = VNextUnitOfWork(connector, backend=backend)
+        self._connector = connector
         self._cache: dict[tuple[bytes, bytes], bytes] = {}
+
+    def prefetch(self, references: Sequence[tuple[object, bytes]]) -> None:
+        pending: dict[tuple[bytes, bytes], None] = {}
+        for value_sha256, domain in references:
+            value = require_digest32(value_sha256, field="canonical value_sha256")
+            expected_domain = require_ascii_bytes(
+                domain,
+                field="canonical digest domain",
+                minimum=1,
+                maximum=64,
+            )
+            key = (value, expected_domain)
+            if key not in self._cache:
+                pending[key] = None
+        selected = tuple(pending)
+        for offset in range(0, len(selected), _CANONICAL_PREFETCH_BATCH_LIMIT):
+            batch = selected[offset : offset + _CANONICAL_PREFETCH_BATCH_LIMIT]
+            try:
+                loaded = load_and_validate_single_page_canonical_values(
+                    self._connector,
+                    references=batch,
+                )
+            except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
+                raise VNextCatalogReadError(
+                    "canonical reference failed exact page-tree validation"
+                ) from error
+            self._cache.update(loaded)
 
     def load(self, value_sha256: object, *, domain: bytes) -> bytes:
         value = require_digest32(value_sha256, field="canonical value_sha256")
@@ -150,6 +180,10 @@ class _CanonicalLoader:
             minimum=1,
             maximum=64,
         )
+        cached = self._cache.get((value, expected_domain))
+        if cached is not None:
+            consume(cached)
+            return len(cached)
         try:
             receipt = CanonicalValueRepository.stream_and_validate(
                 self._work,
@@ -525,6 +559,7 @@ class VNextCatalogReaderRepository:
                 raise CatalogCursorError(
                     "facet cursor is not a member of the filtered facet"
                 )
+            loader.prefetch((_facet_canonical_reference(facet, cursor_row),))
             cursor_position, _cursor_value, actual_digest = _catalog_facet_value(
                 loader,
                 facet=facet,
@@ -551,6 +586,7 @@ class VNextCatalogReaderRepository:
                 page_limit + 1,
             ),
         )
+        loader.prefetch(tuple(_facet_canonical_reference(facet, row) for row in rows))
         parsed = tuple(
             _catalog_facet_value(loader, facet=facet, row=row) for row in rows
         )
@@ -1193,6 +1229,20 @@ class VNextCatalogReaderRepository:
         visible = tuple(sorted(scalar_by_key))
         if not visible:
             return {}
+        scalar_references: list[tuple[object, bytes]] = []
+        for row in scalar_by_key.values():
+            scalar_references.extend(
+                (
+                    (row[2], b"catalog_summary_utf8_v1"),
+                    (row[3], b"catalog_language_utf8_v1"),
+                    (row[7], b"source_title_utf8_v1"),
+                    (row[9], b"display_title_utf8_v1"),
+                    (row[10], b"title_sort_utf8_v1"),
+                )
+            )
+            if row[11] is not None:
+                scalar_references.append((row[11], b"effective_content_v1"))
+        loader.prefetch(scalar_references)
         contributors = self._contributors_for_publications(
             connector, loader, revision=revision, publication_keys=visible
         )
@@ -1318,6 +1368,13 @@ class VNextCatalogReaderRepository:
             "ORDER BY contributor.publication_key, contributor.position",
             (*publication_keys, revision),
         )
+        loader.prefetch(
+            tuple(
+                (row[2], b"contributor_name_utf8_v1")
+                for row in rows
+                if len(row) == 5 and row[2] is not None
+            )
+        )
         grouped: dict[bytes, list[CatalogContributor]] = {}
         for row in rows:
             if len(row) != 5 or any(value is None for value in row[2:]):
@@ -1366,6 +1423,13 @@ class VNextCatalogReaderRepository:
             f"WHERE s.revision = %s AND s.publication_key IN ({placeholders}) "
             "ORDER BY s.publication_key, s.position",
             (revision, *publication_keys),
+        )
+        loader.prefetch(
+            tuple(
+                (row[5], b"tag_value_utf8_v1")
+                for row in rows
+                if len(row) == 6 and row[5] is not None
+            )
         )
         grouped: dict[bytes, list[CatalogSubject]] = {}
         for row in rows:
@@ -2384,6 +2448,23 @@ def _catalog_facet_value(
         ),
         _facet_identity_sha256(facet, value_sha256, role_bytes),
     )
+
+
+def _facet_canonical_reference(
+    facet: CatalogFacetKind,
+    row: tuple[object, ...],
+) -> tuple[object, bytes]:
+    if facet is CatalogFacetKind.LANGUAGE:
+        if len(row) != 3:
+            raise VNextCatalogReadError("language facet row is malformed")
+        return row[1], b"catalog_language_utf8_v1"
+    if facet is CatalogFacetKind.SUBJECT:
+        if len(row) != 5:
+            raise VNextCatalogReadError("subject facet row is malformed")
+        return row[3], b"tag_value_utf8_v1"
+    if len(row) != 4:
+        raise VNextCatalogReadError("contributor facet row is malformed")
+    return row[1], b"contributor_name_utf8_v1"
 
 
 def _datetime_from_microseconds(value: object, *, field: str) -> datetime:

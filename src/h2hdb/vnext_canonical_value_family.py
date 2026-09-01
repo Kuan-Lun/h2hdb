@@ -23,6 +23,7 @@ __all__ = [
     "ensure_exact_page_parent_edges",
     "ensure_page_family",
     "load_allocation_family",
+    "load_page_families",
     "load_page_family",
     "load_page_family_by_coordinate",
     "load_sealed_allocation_allocated_at",
@@ -35,6 +36,7 @@ __all__ = [
     "load_sealed_value_identity",
     "persist_in_memory_canonical_value",
     "validate_exact_page_parent_edges",
+    "validate_exact_page_parent_edges_batched",
 ]
 
 from collections.abc import Sequence
@@ -75,6 +77,7 @@ _UPLOAD = "operational_canonical_value_uploads"
 
 _PAGE_RECEIPT_TOKEN = object()
 _IN_MEMORY_VALUE_MAXIMUM_BYTES = 64 * 1024
+_READ_BATCH_LIMIT = 128
 
 
 class CanonicalValueCollisionError(RuntimeError):
@@ -359,6 +362,80 @@ def load_page_family(
         ) from error
 
 
+def load_page_families(
+    connector: Any,
+    *,
+    page_sha256s: Sequence[bytes],
+) -> dict[bytes, CanonicalValuePageFamily]:
+    """Load at most 128 complete page families in one bounded query."""
+
+    if len(page_sha256s) > _READ_BATCH_LIMIT:
+        raise ValueError("canonical page-family batch is limited to 128 pages")
+    digests = tuple(
+        sorted(
+            {
+                require_digest32(page_sha256, field="page_sha256")
+                for page_sha256 in page_sha256s
+            }
+        )
+    )
+    if not digests:
+        return {}
+    placeholders = ", ".join("%s" for _ in digests)
+    rows = connector.fetch_all(
+        f"WITH family_keys(page_sha256) AS ("
+        f"SELECT page_sha256 FROM {_PAGE_ANCHOR} "
+        f"WHERE page_sha256 IN ({placeholders}) UNION "
+        f"SELECT page_sha256 FROM {_PAGE_PAYLOAD} "
+        f"WHERE page_sha256 IN ({placeholders}) UNION "
+        f"SELECT page_sha256 FROM {_PAGE_COORDINATE} "
+        f"WHERE page_sha256 IN ({placeholders}) UNION "
+        f"SELECT page_sha256 FROM {_PAGE_COUNT} "
+        f"WHERE page_sha256 IN ({placeholders}) UNION "
+        f"SELECT page_sha256 FROM {_PAGE_SEAL} "
+        f"WHERE page_sha256 IN ({placeholders})) "
+        "SELECT k.page_sha256, a.page_sha256, p.page_sha256, p.page_bytes, "
+        "c.page_sha256, c.value_sha256, c.level, c.page_position, "
+        "n.page_sha256, n.subtree_item_count, s.page_sha256 "
+        "FROM family_keys k "
+        f"LEFT JOIN {_PAGE_ANCHOR} a ON a.page_sha256 = k.page_sha256 "
+        f"LEFT JOIN {_PAGE_PAYLOAD} p ON p.page_sha256 = k.page_sha256 "
+        f"LEFT JOIN {_PAGE_COORDINATE} c ON c.page_sha256 = k.page_sha256 "
+        f"LEFT JOIN {_PAGE_COUNT} n ON n.page_sha256 = k.page_sha256 "
+        f"LEFT JOIN {_PAGE_SEAL} s ON s.page_sha256 = k.page_sha256 "
+        "ORDER BY k.page_sha256",
+        digests * 5,
+    )
+    expected = set(digests)
+    result: dict[bytes, CanonicalValuePageFamily] = {}
+    for row in rows:
+        if len(row) != 11:
+            raise CanonicalValuePartialFamilyError(
+                "canonical page has an invalid physical shape"
+            )
+        digest = require_digest32(row[0], field="page_sha256")
+        if digest not in expected or digest in result:
+            raise CanonicalValueCollisionError(
+                "canonical page-family batch returned an unexpected duplicate"
+            )
+        if any(row[index] != digest for index in (1, 2, 4, 8, 10)):
+            raise CanonicalValuePartialFamilyError(
+                "canonical page has an existing incomplete sealed family"
+            )
+        try:
+            result[digest] = CanonicalValuePageFamily(
+                digest,
+                row[3],
+                CanonicalValuePageCoordinate(row[5], row[6], row[7]),
+                row[9],
+            )
+        except (TypeError, ValueError) as error:
+            raise CanonicalValueCollisionError(
+                "canonical page facts do not recompute their digest and coordinate"
+            ) from error
+    return result
+
+
 def load_page_family_by_coordinate(
     connector: Any,
     *,
@@ -478,6 +555,58 @@ def validate_exact_page_parent_edges(
         raise CanonicalValueCollisionError(
             "canonical page has a missing, changed, or extra parent edge"
         )
+
+
+def validate_exact_page_parent_edges_batched(
+    connector: Any,
+    *,
+    pages: Sequence[CanonicalValuePageFamily],
+) -> None:
+    """Validate complete outgoing edge sets for at most 128 sealed pages."""
+
+    if len(pages) > _READ_BATCH_LIMIT:
+        raise ValueError("canonical parent-edge batch is limited to 128 pages")
+    exact_pages: dict[bytes, CanonicalValuePageFamily] = {}
+    for page in pages:
+        if type(page) is not CanonicalValuePageFamily:
+            raise TypeError("page must be an exact CanonicalValuePageFamily")
+        page.__post_init__()
+        if page.page_sha256 in exact_pages:
+            raise ValueError("canonical parent-edge batch contains a duplicate page")
+        exact_pages[page.page_sha256] = page
+    if not exact_pages:
+        return
+    digests = tuple(sorted(exact_pages))
+    rows = connector.fetch_all(
+        f"SELECT parent_sha256, position, child_sha256 FROM {_PAGE_PARENT} "
+        f"WHERE parent_sha256 IN ({', '.join('%s' for _ in digests)}) "
+        "ORDER BY parent_sha256, position",
+        digests,
+    )
+    actual: dict[bytes, list[tuple[bytes, int, bytes]]] = {}
+    for row in rows:
+        if len(row) != 3:
+            raise CanonicalValueCollisionError(
+                "canonical parent edge has an invalid physical shape"
+            )
+        try:
+            parent = require_digest32(row[0], field="parent_sha256")
+            position = require_int63(row[1], field="parent edge position")
+            child = require_digest32(row[2], field="child_sha256")
+        except (TypeError, ValueError) as error:
+            raise CanonicalValueCollisionError(
+                "canonical parent edge contains an invalid immutable fact"
+            ) from error
+        if parent not in exact_pages:
+            raise CanonicalValueCollisionError(
+                "canonical parent-edge batch returned an unexpected parent"
+            )
+        actual.setdefault(parent, []).append((parent, position, child))
+    for digest, page in exact_pages.items():
+        if tuple(actual.get(digest, ())) != _expected_page_parent_rows(page):
+            raise CanonicalValueCollisionError(
+                "canonical page has a missing, changed, or extra parent edge"
+            )
 
 
 def ensure_exact_page_parent_edges(

@@ -23,10 +23,11 @@ __all__ = [
     "CanonicalValueTreeReceipt",
     "CanonicalValueUploadPlan",
     "PreparedCanonicalPage",
+    "load_and_validate_single_page_canonical_values",
     "stream_and_validate_canonical_value",
 ]
 
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from tempfile import TemporaryFile
 from typing import Any, BinaryIO
@@ -44,9 +45,12 @@ from .vnext_canonical_value_family import (
     ensure_exact_page_parent_edges,
     ensure_page_family,
     load_allocation_family,
+    load_page_families,
     load_page_family,
+    load_sealed_value_identities,
     load_sealed_value_identity,
     validate_exact_page_parent_edges,
+    validate_exact_page_parent_edges_batched,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -80,6 +84,7 @@ from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 _STREAM_READ_BYTES = 64 * 1024
 _DESCRIPTOR_BYTES = 40
 _PLAN_CONSTRUCTOR_TOKEN = object()
+_CANONICAL_READ_BATCH_LIMIT = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,6 +684,129 @@ def stream_and_validate_canonical_value(
             "canonical tree does not recompute its value identity"
         )
     return CanonicalValueReadReceipt(value, domain, byte_count, root)
+
+
+def load_and_validate_single_page_canonical_values(
+    connector: SQLConnector,
+    *,
+    references: Sequence[tuple[bytes, bytes]],
+) -> dict[tuple[bytes, bytes], bytes]:
+    """Batch-validate and return the single-page subset of sealed values.
+
+    Every call is hard-capped at 128 requested references. Multi-page values
+    are intentionally omitted so callers can retain the existing bounded
+    streaming path for arbitrary-length payloads.
+    """
+
+    if len(references) > _CANONICAL_READ_BATCH_LIMIT:
+        raise ValueError("canonical read batch is limited to 128 references")
+    expected: dict[bytes, bytes] = {}
+    for value_sha256, digest_domain in references:
+        value = require_digest32(value_sha256, field="value_sha256")
+        domain = require_ascii_bytes(
+            digest_domain,
+            field="digest_domain",
+            minimum=1,
+            maximum=64,
+        )
+        previous = expected.setdefault(value, domain)
+        if previous != domain:
+            raise CanonicalValueCollisionError(
+                "one canonical digest was requested under conflicting domains"
+            )
+    if not expected:
+        return {}
+    identities = load_sealed_value_identities(
+        connector,
+        value_sha256s=tuple(expected),
+    )
+    if set(identities) != set(expected):
+        raise CanonicalValueNotReadyError(
+            "canonical read batch contains an unsealed identity"
+        )
+    single_page = {
+        value: receipt
+        for value, receipt in identities.items()
+        if receipt.byte_count <= CANONICAL_VALUE_CHUNK_BYTES
+    }
+    for value, receipt in identities.items():
+        if receipt.digest_domain != expected[value]:
+            raise CanonicalValueCollisionError(
+                "canonical reference uses the wrong registered digest domain"
+            )
+    if not single_page:
+        return {}
+    pages = load_page_families(
+        connector,
+        page_sha256s=tuple(
+            receipt.root_page_sha256 for receipt in single_page.values()
+        ),
+    )
+    expected_roots = {receipt.root_page_sha256 for receipt in single_page.values()}
+    if set(pages) != expected_roots:
+        raise CanonicalValueNotReadyError(
+            "canonical read batch contains an incomplete root page"
+        )
+    validate_exact_page_parent_edges_batched(
+        connector,
+        pages=tuple(pages.values()),
+    )
+
+    result: dict[tuple[bytes, bytes], bytes] = {}
+    for value, receipt in single_page.items():
+        family = pages[receipt.root_page_sha256]
+        page = decode_canonical_value_page(family.page_bytes)
+        _require_exact(
+            "canonical batched root page",
+            (
+                family.coordinate.value_sha256,
+                family.coordinate.level,
+                family.coordinate.page_position,
+                family.subtree_item_count,
+                page.owner_value_sha256,
+                page.level,
+                page.page_position,
+                page.subtree_byte_count,
+            ),
+            (
+                value,
+                0,
+                0,
+                receipt.byte_count,
+                value,
+                0,
+                0,
+                receipt.byte_count,
+            ),
+        )
+        _validate_page_shape(page, receipt.byte_count)
+        if not page.entries:
+            payload = b""
+        else:
+            entry = page.entries[0]
+            if not isinstance(entry, CanonicalValueChunk):
+                raise CanonicalValueCollisionError(
+                    "canonical single-page value contains a branch descriptor"
+                )
+            if entry.byte_offset != 0:
+                raise CanonicalValueCollisionError(
+                    "canonical single-page value has a nonzero byte offset"
+                )
+            payload = entry.chunk_bytes
+        if (
+            len(payload) != receipt.byte_count
+            or canonical_value_digest_parts(
+                receipt.digest_domain.decode("ascii"),
+                receipt.byte_count,
+                (payload,),
+            )
+            != value
+        ):
+            raise CanonicalValueCollisionError(
+                "canonical batched payload does not recompute its identity"
+            )
+        result[(value, receipt.digest_domain)] = payload
+    return result
 
 
 def _require_upload_plan(value: object) -> CanonicalValueUploadPlan:

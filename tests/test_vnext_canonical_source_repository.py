@@ -19,15 +19,21 @@ from vnext_manifest_fixtures import seed_source_build
 import h2hdb.vnext_source_build_repository as source_build_module
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_family import (
+    CanonicalValuePageCoordinate,
+    CanonicalValuePageFamily,
     load_allocation_family,
+    load_page_families,
     load_page_family,
     load_sealed_value_identity,
+    validate_exact_page_parent_edges,
+    validate_exact_page_parent_edges_batched,
 )
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValuePartialFamilyError,
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
+    load_and_validate_single_page_canonical_values,
 )
 from h2hdb.vnext_catalog_registry_repository import (
     CatalogRegistryConflictError,
@@ -251,14 +257,134 @@ def test_canonical_family_queries_keep_mariadb_placeholders_and_narrow_tables() 
     digest = b"d" * 32
     assert load_allocation_family(connector, value_sha256=digest) is None
     assert load_page_family(connector, page_sha256=digest) is None
+    assert (
+        load_page_families(
+            connector,
+            page_sha256s=(digest, b"e" * 32),
+        )
+        == {}
+    )
     assert load_sealed_value_identity(connector, value_sha256=digest) is None
-    assert len(connector.queries) == 3
+    assert len(connector.queries) == 4
     for query, parameters in connector.queries:
         assert "?" not in query
         assert query.count("%s") == len(parameters)
         assert "catalog_canonical_value_allocations" not in query
         assert "catalog_canonical_value_pages " not in query
         assert "catalog_canonical_value_page_descriptors" not in query
+
+
+def test_batched_single_page_read_matches_streaming_and_omits_large_values(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "canonical-batch.sqlite3")
+    root_command = SourceRootBuildCommand(
+        ("canonical-batch",),
+        SourceBuildManifestSummary.empty(),
+    )
+    root_plan = root_command.prepare_root_upload()
+    plans = (
+        CanonicalValueUploadPlan.from_parts("source_title_utf8_v1", (b"alpha",)),
+        CanonicalValueUploadPlan.from_parts("catalog_summary_utf8_v1", (b"beta",)),
+        CanonicalValueUploadPlan.from_parts(
+            "catalog_summary_utf8_v1",
+            (b"x" * (CANONICAL_VALUE_CHUNK_BYTES + 1),),
+        ),
+    )
+    try:
+        gate, turn = _authorities(connector)
+        _put_plan(connector, gate, turn, root_plan)
+        with connector.transaction():
+            SourceBuildRepository.handoff_root(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                command=root_command,
+                root_plan=root_plan,
+                now=23,
+            )
+        for plan in plans:
+            _put_plan(connector, gate, turn, plan)
+        references = tuple((plan.value_sha256, plan.digest_domain) for plan in plans)
+        with connector.read_transaction():
+            batched = load_and_validate_single_page_canonical_values(
+                connector,
+                references=references,
+            )
+            streamed: dict[tuple[bytes, bytes], bytes] = {}
+            for plan in plans:
+                payload = bytearray()
+                receipt = CanonicalValueRepository.stream_and_validate(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    value_sha256=plan.value_sha256,
+                    consume_provisional=payload.extend,
+                )
+                streamed[(plan.value_sha256, receipt.digest_domain)] = bytes(payload)
+
+        assert batched == {
+            key: payload
+            for key, payload in streamed.items()
+            if len(payload) <= CANONICAL_VALUE_CHUNK_BYTES
+        }
+        assert references[-1] not in batched
+        with pytest.raises(ValueError, match="limited to 128"):
+            load_and_validate_single_page_canonical_values(
+                connector,
+                references=(references[0],) * 129,
+            )
+    finally:
+        root_plan.close()
+        for plan in plans:
+            plan.close()
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "malformed_edge",
+    [
+        pytest.param("invalid-position", id="position"),
+        pytest.param("invalid-child", id="child"),
+    ],
+)
+def test_batched_parent_edge_decode_preserves_collision_error_boundary(
+    malformed_edge: str,
+) -> None:
+    plan = CanonicalValueUploadPlan.from_parts("catalog_summary_utf8_v1", (b"x",))
+    pages = plan.iter_pages()
+    try:
+        prepared = next(pages)
+        page = CanonicalValuePageFamily(
+            prepared.page_sha256,
+            prepared.page_bytes,
+            CanonicalValuePageCoordinate(plan.value_sha256, 0, 0),
+            1,
+        )
+    finally:
+        pages.close()
+        plan.close()
+
+    edge = (
+        page.page_sha256,
+        "zero" if malformed_edge == "invalid-position" else 0,
+        b"short" if malformed_edge == "invalid-child" else b"c" * 32,
+    )
+
+    class MalformedEdgeConnector:
+        def fetch_all(
+            self,
+            _query: str,
+            _data: tuple[object, ...] = (),
+        ) -> list[tuple[object, ...]]:
+            return [edge]
+
+    connector = MalformedEdgeConnector()
+    with pytest.raises(CanonicalValueCollisionError) as reference_error:
+        validate_exact_page_parent_edges(connector, page=page)
+    with pytest.raises(CanonicalValueCollisionError) as batched_error:
+        validate_exact_page_parent_edges_batched(connector, pages=(page,))
+
+    assert type(reference_error.value) is CanonicalValueCollisionError
+    assert type(batched_error.value) is CanonicalValueCollisionError
 
 
 def test_mariadb_source_scope_registry_replay_uses_plain_wide_reads() -> None:

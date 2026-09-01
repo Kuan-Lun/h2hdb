@@ -25,6 +25,7 @@ from .config_loader import CoreConfig
 from .domain import (
     DEFAULT_CATALOG_DISCOVERY_QUERY,
     CatalogArtifact,
+    CatalogDiscoveryBundle,
     CatalogDiscoveryCursor,
     CatalogDiscoveryPage,
     CatalogDiscoveryQuery,
@@ -129,6 +130,40 @@ class VNextCatalogFacade:
                 limit=limit,
             )
         )
+
+    def discover_publications_with_facets(
+        self,
+        *,
+        query: CatalogDiscoveryQuery = DEFAULT_CATALOG_DISCOVERY_QUERY,
+        after: CatalogDiscoveryCursor | None = None,
+        limit: int = 50,
+        facet_limit: int = 128,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogDiscoveryBundle:
+        """Read discovery and all first facet pages from one pinned snapshot."""
+
+        def operation(connector: SQLConnector) -> CatalogDiscoveryBundle:
+            page = self.__reader.discover_publications(
+                connector,
+                query=query,
+                after=after,
+                revision=revision,
+                limit=limit,
+            )
+            facets = tuple(
+                self.__reader.list_publication_facets(
+                    connector,
+                    facet=facet,
+                    query=query,
+                    after=None,
+                    limit=facet_limit,
+                    revision=page.revision,
+                )
+                for facet in CatalogFacetKind
+            )
+            return CatalogDiscoveryBundle(page=page, facets=facets)
+
+        return self.__read(operation)
 
     def list_publication_facets(
         self,
@@ -241,7 +276,6 @@ class VNextCatalogFacade:
             with connector.read_transaction():
                 pinned = self.__reader.get_catalog_revision(connector)
                 result = operation(connector)
-        with self.__context.SQLConnector() as connector:
             with connector.read_transaction():
                 current = self.__reader.get_catalog_revision(connector)
                 if current != pinned:

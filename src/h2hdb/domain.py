@@ -41,6 +41,7 @@ __all__ = [
     "CatalogContributorFilter",
     "CatalogSubjectFilter",
     "CatalogDiscoveryCursor",
+    "CatalogDiscoveryBundle",
     "CatalogDiscoveryPage",
     "CatalogDiscoveryQuery",
     "DEFAULT_CATALOG_DISCOVERY_QUERY",
@@ -2305,6 +2306,25 @@ class CatalogFacetPage:
         limit = require_positive_int63(self.limit, field="facet page limit")
         if limit > 128 or len(self.values) > limit:
             raise ValueError("facet page must honor its limit in 1..128")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogDiscoveryBundle:
+    """One revision-pinned discovery page and every first facet page."""
+
+    page: CatalogDiscoveryPage
+    facets: tuple[CatalogFacetPage, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "facets", tuple(self.facets))
+        expected = tuple(CatalogFacetKind)
+        actual = tuple(facet.facet for facet in self.facets)
+        if actual != expected:
+            raise ValueError(
+                "discovery bundle must contain each facet family in canonical order"
+            )
+        if any(facet.revision != self.page.revision for facet in self.facets):
+            raise ValueError("discovery bundle revisions must be identical")
 
 
 @dataclass(frozen=True, slots=True)

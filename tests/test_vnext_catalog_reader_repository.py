@@ -1094,6 +1094,42 @@ def test_discovery_and_facets_include_a_zero_acquisition_catalog(
         connector.close()
 
 
+def test_batched_hydration_matches_streaming_reference_with_fewer_queries(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-hydration-differential.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+
+        with (
+            patch(
+                "h2hdb.vnext_catalog_reader_repository._CanonicalLoader.prefetch",
+                autospec=True,
+                return_value=None,
+            ),
+            patch.object(connector, "fetch_one", wraps=connector.fetch_one) as one,
+            patch.object(connector, "fetch_all", wraps=connector.fetch_all) as all_rows,
+            connector.read_transaction(),
+        ):
+            streaming_reference = reader.discover_publications(connector, limit=1)
+            streaming_query_count = one.call_count + all_rows.call_count
+
+        with (
+            patch.object(connector, "fetch_one", wraps=connector.fetch_one) as one,
+            patch.object(connector, "fetch_all", wraps=connector.fetch_all) as all_rows,
+            connector.read_transaction(),
+        ):
+            batched = reader.discover_publications(connector, limit=1)
+            batched_query_count = one.call_count + all_rows.call_count
+
+        assert batched == streaming_reference
+        assert batched_query_count < streaming_query_count
+    finally:
+        connector.close()
+
+
 def test_metadata_only_publication_rejects_every_stray_presentation_family(
     tmp_path: Path,
 ) -> None:

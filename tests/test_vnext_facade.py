@@ -27,7 +27,9 @@ from vnext_publication_fixtures import (
 )
 
 from h2hdb import (
+    CatalogDiscoveryBundle,
     CatalogDiscoveryPage,
+    CatalogFacetKind,
     CatalogRecentOrder,
     StorageObjectKey,
     VNextCatalogFacade,
@@ -599,6 +601,11 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
     facade = VNextCatalogFacade(_config(path, read_only=True))
     revision = facade.get_catalog_revision()
     page = facade.discover_publications(revision=revision, limit=10)
+    bundle = facade.discover_publications_with_facets(
+        revision=revision,
+        limit=10,
+        facet_limit=10,
+    )
     recent = facade.list_recent_publications(
         order=CatalogRecentOrder.DOWNLOADED,
         revision=revision,
@@ -623,6 +630,21 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
         1,
     )
     assert isinstance(page, CatalogDiscoveryPage)
+    assert isinstance(bundle, CatalogDiscoveryBundle)
+    assert bundle.page == page
+    assert tuple(facet.facet for facet in bundle.facets) == tuple(CatalogFacetKind)
+    assert all(facet.revision == revision for facet in bundle.facets)
+    with pytest.raises(ValueError, match="canonical order"):
+        CatalogDiscoveryBundle(page=page, facets=tuple(reversed(bundle.facets)))
+    mismatched_facets = (
+        replace(
+            bundle.facets[0],
+            revision=replace(revision, revision=revision.revision + 1),
+        ),
+        *bundle.facets[1:],
+    )
+    with pytest.raises(ValueError, match="revisions must be identical"):
+        CatalogDiscoveryBundle(page=page, facets=mismatched_facets)
     assert page.publications == (publication,)
     assert recent.order is CatalogRecentOrder.DOWNLOADED
     assert recent.publications == (publication,)
@@ -637,6 +659,52 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
             values["artifact_sha256"],
         ).hex()
     )
+
+
+def test_catalog_bundle_uses_one_connection_and_two_fresh_read_transactions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "catalog-bundle-connections.sqlite3"
+    connector = _generated_database(path)
+    try:
+        _catalog_fixture(connector)
+    finally:
+        connector.close()
+
+    events: list[str] = []
+
+    class CountingReadOnlySQLiteConnector(SQLiteConnector):
+        def connect(self) -> None:
+            events.append("connect")
+            super().connect()
+
+        def begin_read(self) -> None:
+            events.append("begin-read")
+            super().begin_read()
+
+        def close(self) -> None:
+            events.append("close")
+            super().close()
+
+    config = _config(path, read_only=True)
+    context = replace(
+        RepositoryContext.from_config(config),
+        SQLConnector=lambda: CountingReadOnlySQLiteConnector(
+            database=str(path),
+            read_only=True,
+        ),
+    )
+    monkeypatch.setattr(
+        RepositoryContext,
+        "from_config",
+        classmethod(lambda cls, value: context),
+    )
+
+    bundle = VNextCatalogFacade(config).discover_publications_with_facets()
+
+    assert len(bundle.page.publications) == 1
+    assert events == ["connect", "begin-read", "begin-read", "close"]
 
 
 class _CountingClock:
@@ -887,13 +955,13 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
         [
             (7, 0, 0, 1_000_000, 1),
             (7, 0, 0, 1_000_000, 1),
+            (7, 0, 0, 1_000_000, 1),
         ]
     )
-    catalog_fence = _MariaRecorder([(7, 0, 0, 1_000_000, 1)])
     monkeypatch.setattr(
         RepositoryContext,
         "from_config",
-        classmethod(lambda cls, value: _FacadeContext(catalog_snapshot, catalog_fence)),
+        classmethod(lambda cls, value: _FacadeContext(catalog_snapshot)),
     )
     revision = VNextCatalogFacade(config).get_catalog_revision()
 
@@ -902,15 +970,11 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
         "connect",
         "begin-read-only-snapshot",
         "commit",
-        "close",
-    ]
-    assert catalog_fence.events == [
-        "connect",
         "begin-read-only-snapshot",
         "commit",
         "close",
     ]
-    catalog_selects = (*catalog_snapshot.selects, *catalog_fence.selects)
+    catalog_selects = catalog_snapshot.selects
     assert all(" FOR UPDATE" not in query for query, _data in catalog_selects)
     assert len(catalog_selects) == 3
     assert all(
@@ -949,13 +1013,13 @@ def test_catalog_facade_rejects_a_head_change_seen_by_the_fresh_fence(
         [
             (7, 0, 0, 1_000_000, 1),
             (7, 0, 0, 1_000_000, 1),
+            (8, 0, 0, 2_000_000, 2),
         ]
     )
-    advanced = _MariaRecorder([(8, 0, 0, 2_000_000, 2)])
     monkeypatch.setattr(
         RepositoryContext,
         "from_config",
-        classmethod(lambda cls, value: _FacadeContext(snapshot, advanced)),
+        classmethod(lambda cls, value: _FacadeContext(snapshot)),
     )
 
     with pytest.raises(VNextCatalogReadError, match="head advanced"):
@@ -965,10 +1029,6 @@ def test_catalog_facade_rejects_a_head_change_seen_by_the_fresh_fence(
         "connect",
         "begin-read-only-snapshot",
         "commit",
-        "close",
-    ]
-    assert advanced.events == [
-        "connect",
         "begin-read-only-snapshot",
         "rollback",
         "close",
@@ -980,6 +1040,7 @@ def test_catalog_facade_rejects_a_head_change_seen_by_the_fresh_fence(
     (
         "get_catalog_revision",
         "discover_publications",
+        "discover_publications_with_facets",
         "list_publication_facets",
         "list_recent_publications",
         "get_publication",

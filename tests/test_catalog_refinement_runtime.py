@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +12,9 @@ from h2hdb import catalog_refinement, vnext_identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.catalog_search import iter_search_lexemes
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_canonical_value_repository import (
+    stream_and_validate_canonical_value,
+)
 
 
 def _generated_catalog_database(path: Path) -> SQLiteConnector:
@@ -1608,6 +1612,102 @@ def test_ready_accepts_exact_nonempty_discovery_projection(tmp_path: Path) -> No
         _insert_nonempty_discovery_projection(connector)
 
         catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_canonical_cache_is_exact_bounded_and_evictable() -> None:
+    cache = catalog_refinement._CanonicalValidationCache()
+    domains: list[tuple[bytes, bytes, bytes]] = []
+    for index in range(catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES + 1):
+        digest = index.to_bytes(32, "big")
+        domain = b"source_title_utf8_v1"
+        payload = f"payload-{index}".encode()
+        cache.remember(
+            digest,
+            domain,
+            BytesIO(payload),
+            byte_count=len(payload),
+        )
+        domains.append((digest, domain, payload))
+
+    assert cache.open(domains[0][0], domains[0][1]) is None
+    latest = cache.open(domains[-1][0], domains[-1][1])
+    assert latest is not None
+    latest_spool, latest_count = latest
+    assert latest_count == len(domains[-1][2])
+    assert latest_spool.read() == domains[-1][2]
+
+    oversized = b"x" * (
+        catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES + 1
+    )
+    oversized_digest = b"z" * 32
+    cache.remember(
+        oversized_digest,
+        b"source_title_utf8_v1",
+        BytesIO(oversized),
+        byte_count=len(oversized),
+    )
+    assert cache.open(oversized_digest, b"source_title_utf8_v1") is None
+
+
+def test_ready_canonical_cache_hit_matches_streaming_and_failures_are_not_cached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "ready-cache.sqlite3")
+    calls = 0
+    original = stream_and_validate_canonical_value
+
+    def observed_stream(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        catalog_refinement,
+        "stream_and_validate_canonical_value",
+        observed_stream,
+    )
+    try:
+        values = _insert_nonempty_discovery_projection(connector)
+        cache = catalog_refinement._CanonicalValidationCache()
+        first, first_count = catalog_refinement._validated_canonical_spool(
+            connector,
+            values["source_title"],
+            expected_domain=b"source_title_utf8_v1",
+            detail="cache differential",
+            cache=cache,
+        )
+        second, second_count = catalog_refinement._validated_canonical_spool(
+            connector,
+            values["source_title"],
+            expected_domain=b"source_title_utf8_v1",
+            detail="cache differential",
+            cache=cache,
+        )
+        try:
+            assert first_count == second_count == len(b"source")
+            assert first.read() == second.read() == b"source"
+            assert calls == 1
+        finally:
+            first.close()
+            second.close()
+
+        for _ in range(2):
+            with pytest.raises(
+                catalog_refinement.CatalogSemanticValidationError,
+                match="wrong domain",
+            ):
+                invalid, _count = catalog_refinement._validated_canonical_spool(
+                    connector,
+                    values["source_title"],
+                    expected_domain=b"display_title_utf8_v1",
+                    detail="wrong domain",
+                    cache=cache,
+                )
+                invalid.close()
+        assert calls == 3
     finally:
         connector.close()
 
