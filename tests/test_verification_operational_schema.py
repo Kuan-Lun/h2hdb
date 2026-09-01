@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import re
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from typing import Any
 
 import pytest
 
+import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import CoreConfig
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.vnext_identity import (
@@ -26,6 +28,7 @@ from h2hdb.vnext_identity import (
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = ROOT / "verification" / "schema" / "check_contract.py"
 CATALOG_PATH = ROOT / "verification" / "schema" / "catalog.toml"
+CATALOG_PHYSICAL_PATH = ROOT / "verification" / "schema" / "physical.toml"
 LOGICAL_PATH = ROOT / "verification" / "schema" / "operational.toml"
 PHYSICAL_PATH = ROOT / "verification" / "schema" / "operational_physical.toml"
 
@@ -1437,6 +1440,39 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
                 missing_recovery_root,
                 physical,
             )
+
+
+def test_static_cleanup_eligibility_mentions_every_declared_blocker_relation() -> None:
+    with LOGICAL_PATH.open("rb") as stream:
+        operational = tomllib.load(stream)
+    table_by_relation: dict[str, str] = {}
+    for path in (CATALOG_PHYSICAL_PATH, PHYSICAL_PATH):
+        with path.open("rb") as stream:
+            physical = tomllib.load(stream)
+        table_by_relation.update(
+            {str(item["name"]): str(item["table"]) for item in physical["relation"]}
+        )
+    target_by_kind = {
+        str(item["target_kind"]): item for item in operational["cleanup_target"]
+    }
+    missing_by_kind: dict[str, set[str]] = {}
+    for kind, plan in cleanup_module._STATIC_PLANS.items():
+        target = target_by_kind[kind.value]
+        blockers = (
+            *target.get("retained_fk_edges", ()),
+            *target.get("operational_blockers", ()),
+        )
+        expected = {table_by_relation[str(blocker["relation"])] for blocker in blockers}
+        mentioned = set(
+            re.findall(
+                r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)",
+                plan.eligibility,
+                flags=re.IGNORECASE,
+            )
+        )
+        if missing := expected - mentioned:
+            missing_by_kind[kind.value] = missing
+    assert missing_by_kind == {}
 
 
 def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:

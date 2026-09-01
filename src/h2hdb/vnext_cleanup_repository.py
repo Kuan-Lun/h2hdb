@@ -5877,6 +5877,14 @@ AND NOT EXISTS (SELECT 1 FROM catalog_artifacts x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_search_postings x
                 WHERE x.value_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_language_facet_order x
+                WHERE x.language_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_contributor_facet_order x
+                WHERE x.contributor_name_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_subject_facet_order x
+    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
+    WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_contributors x

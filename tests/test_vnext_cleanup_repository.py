@@ -15,6 +15,7 @@ from vnext_canonical_value_fixtures import (
 from vnext_catalog_identity_fixtures import (
     seed_file_name_identity,
     seed_gallery_identity,
+    seed_tag_term,
 )
 from vnext_catalog_registry_fixtures import (
     seed_analysis_policy,
@@ -5746,6 +5747,122 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
                 )
                 == []
             )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "facet_family",
+    ("language", "contributor", "subject"),
+)
+def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
+    tmp_path: Path,
+    facet_family: str,
+) -> None:
+    connector = _database(tmp_path / f"retained-{facet_family}-facet.sqlite3")
+    try:
+        value_sha256 = b"y" + facet_family.encode().ljust(31, b"-")
+        digest_domain = {
+            "language": b"catalog_language_utf8_v1",
+            "contributor": b"contributor_name_utf8_v1",
+            "subject": b"tag_value_utf8_v1",
+        }[facet_family]
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=value_sha256,
+            page_sha256=b"p" + facet_family.encode().ljust(31, b"-"),
+            digest_domain=digest_domain,
+        )
+
+        facet_insert: tuple[str, tuple[object, ...]]
+        facet_delete: tuple[str, tuple[object, ...]]
+        if facet_family == "language":
+            facet_insert = (
+                "INSERT INTO catalog_language_facet_order "
+                "(revision, position, language_sha256, occurrence_count) "
+                "VALUES (99, 0, %s, 1)",
+                (value_sha256,),
+            )
+            facet_delete = (
+                "DELETE FROM catalog_language_facet_order WHERE revision = 99",
+                (),
+            )
+        elif facet_family == "contributor":
+            facet_insert = (
+                "INSERT INTO catalog_contributor_facet_order "
+                "(revision, position, contributor_name_sha256, role, "
+                "occurrence_count) VALUES (99, 0, %s, %s, 1)",
+                (value_sha256, b"author"),
+            )
+            facet_delete = (
+                "DELETE FROM catalog_contributor_facet_order WHERE revision = 99",
+                (),
+            )
+        else:
+            seed_tag_term(
+                connector,
+                tag_id=99,
+                namespace=b"genre",
+                tag_value_sha256=value_sha256,
+            )
+            facet_insert = (
+                "INSERT INTO catalog_subject_facet_order "
+                "(revision, position, tag_id, occurrence_count) "
+                "VALUES (99, 0, 99, 1)",
+                (),
+            )
+            facet_delete = (
+                "DELETE FROM catalog_subject_facet_order WHERE revision = 99",
+                (),
+            )
+
+        connector.execute(
+            "INSERT INTO catalog_revision_descriptors "
+            "(revision, publication_count, artifact_count) VALUES (99, 1, 0)"
+        )
+        connector.execute(*facet_insert)
+        gate = _exclusive(connector)
+        retained_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            value_sha256[0],
+            max_rows=32,
+        )
+        retained_results = _drain(connector, gate, retained_cycle)
+        assert retained_results[-1].cycle_complete
+        assert retained_results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
+            "WHERE value_sha256 = %s",
+            (value_sha256,),
+        ) == (1,)
+
+        connector.execute(*facet_delete)
+        released_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            value_sha256[0],
+            max_rows=32,
+            now=1_000,
+        )
+        released_results = _drain(connector, gate, released_cycle, now=1_001)
+        assert released_results[-1].cycle_complete
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
+                "WHERE value_sha256 = %s",
+                (value_sha256,),
+            )
+            == ()
+        )
+        if facet_family == "subject":
+            assert (
+                connector.fetch_one("SELECT 1 FROM catalog_tag_terms WHERE tag_id = 99")
+                == ()
+            )
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
     finally:
         connector.close()
 

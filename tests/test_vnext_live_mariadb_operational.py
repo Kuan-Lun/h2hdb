@@ -678,6 +678,100 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
     )
 
 
+def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
+    generated_mariadb: _LiveMariaDBConnector,
+) -> None:
+    connector = generated_mariadb
+    with connector.transaction():
+        contributor = _seed_live_canonical_value(
+            connector,
+            digest_domain="contributor_name_utf8_v1",
+            payload=b"retained contributor",
+            now=10,
+        )
+        connector.execute(
+            "INSERT INTO catalog_revision_descriptors "
+            "(revision, publication_count, artifact_count) VALUES (99, 1, 0)"
+        )
+        connector.execute(
+            "INSERT INTO catalog_contributor_facet_order "
+            "(revision, position, contributor_name_sha256, role, occurrence_count) "
+            "VALUES (99, 0, %s, %s, 1)",
+            (contributor, b"author"),
+        )
+
+    gate = _claim_exclusive(
+        connector,
+        b"facet-retention1",
+        now=20,
+        duration=10_000,
+    )
+
+    def drain(cycle: Any, *, now: int) -> Any:
+        generation = 1
+        for attempt in range(64):
+            with connector.transaction():
+                result = VNextCleanupRepository.advance(
+                    _work(connector),
+                    gate_lease=gate,
+                    cycle=cycle,
+                    command=CleanupBatchCommand(
+                        attempt.to_bytes(32, "big"),
+                        generation,
+                    ),
+                    now=now + attempt,
+                )
+            if result.cycle_complete:
+                return result
+            assert result.generation is not None
+            generation = result.generation
+        raise AssertionError("canonical cleanup did not terminate")
+
+    with connector.transaction():
+        retained_cycle = VNextCleanupRepository.begin_cycle(
+            _work(connector),
+            gate_lease=gate,
+            target_kind=CleanupTargetKind.CANONICAL_VALUE,
+            shard_no=contributor[0],
+            cycle_cutoff_at=100,
+            max_rows_per_transaction=32,
+            now=21,
+        )
+    retained = drain(retained_cycle, now=22)
+    assert retained.deleted_count == 0
+    assert _read_one(
+        connector,
+        "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
+        "WHERE value_sha256 = %s",
+        (contributor,),
+    ) == (1,)
+
+    with connector.transaction():
+        connector.execute(
+            "DELETE FROM catalog_contributor_facet_order WHERE revision = 99"
+        )
+        released_cycle = VNextCleanupRepository.begin_cycle(
+            _work(connector),
+            gate_lease=gate,
+            target_kind=CleanupTargetKind.CANONICAL_VALUE,
+            shard_no=contributor[0],
+            cycle_cutoff_at=200,
+            max_rows_per_transaction=32,
+            now=100,
+        )
+    released = drain(released_cycle, now=101)
+    assert released.cycle_complete
+    assert (
+        _read_one(
+            connector,
+            "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
+            "WHERE value_sha256 = %s",
+            (contributor,),
+        )
+        == ()
+    )
+
+
 def test_live_mariadb_operational_writer_workflows(
     generated_mariadb: _LiveMariaDBConnector,
     mariadb_config: CoreConfig,
