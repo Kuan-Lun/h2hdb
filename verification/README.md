@@ -70,9 +70,18 @@ The layers prove different things and are not interchangeable.
   exact generated FD contracts; the data-plane proof also establishes the
   unbounded minimum-witness, greater-only provenance append, exact replay, and
   child-first cleanup theorems for both impacted-key families.
-  `lean/ArtifactDelta.lean`, `lean/CanonicalPlanCursor.lean`, and
-  `GalleryDeduplication.lean` prove the listed abstract delta, canonical
-  selector equivalence and linear-work, and deduplication theorems.
+  `lean/ArtifactDelta.lean`, `lean/ArtifactReceiptCache.lean`,
+  `lean/ArtifactSourceSliceIsolation.lean`,
+  `lean/CanonicalBatchHydration.lean`, `lean/CanonicalPlanCursor.lean`,
+  `lean/CatalogReadBundle.lean`, `lean/ReadyAuditCanonicalCache.lean`,
+  `lean/SchemaBootstrapBatch.lean`, and `GalleryDeduplication.lean` prove the
+  listed abstract delta, source-revalidated and capacity-bounded disposable
+  receipt-cache observational equivalence,
+  shared-spool slice versus independent-source byte equivalence,
+  scalar-versus-batched canonical hydration equivalence, canonical selector
+  and catalog connector-layout equivalence, stable-head discovery-bundle
+  equivalence, snapshot-scoped READY-audit cache equivalence and hard bounds,
+  bounded-bootstrap result/replay equivalence, and deduplication theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
   SQLite and MariaDB realizations. The refinement code introspects object kind,
   columns, types, nullability, collation, keys, FKs, checks, indexes, and view
@@ -85,6 +94,12 @@ The layers prove different things and are not interchangeable.
   first-consumer claim handoff, transaction-prefix rollback, response loss,
   stale fencing, same-receipt preimage corruption, and delayed concurrent
   allocate rejection after durable consumption.
+  `tla/CatalogReadBundle.tla` finitely explores reused versus separate catalog
+  read connectors, one-snapshot discovery bundles, stable independent reads,
+  and zero stale success across head advancement.
+  `tla/SchemaBootstrapBatch.tla` finitely explores bounded, statement-aligned
+  bootstrap batches through rollback, crash, lost commit responses, replay,
+  and the exact durable-fact precondition for `READY`.
 - `invariants.toml` indexes evidence for every semantic-obligation ID. Missing
   production refinement, fault, or cross-backend integration evidence is a
   machine-readable blocker, not an implicit success.
