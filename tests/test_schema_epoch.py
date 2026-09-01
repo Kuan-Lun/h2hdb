@@ -253,11 +253,23 @@ class FaultAtProviderStatementConnector(SQLiteConnector):
 
     def execute(self, query: str, data: tuple[object, ...] = ()) -> None:
         if any(name in query for name in (PARENT.name, CHILD.name, CHILD_INDEX.name)):
-            self._provider_statement_count += 1
-            if not self._failed and self._provider_statement_count == self._fail_at:
-                self._failed = True
-                raise RuntimeError(f"fault at provider statement {self._fail_at}")
+            self._maybe_fail()
         super().execute(query, data)
+
+    def execute_many(
+        self,
+        query: str,
+        data: list[tuple[object, ...]],
+    ) -> None:
+        if any(name in query for name in (PARENT.name, CHILD.name, CHILD_INDEX.name)):
+            self._maybe_fail()
+        super().execute_many(query, data)
+
+    def _maybe_fail(self) -> None:
+        self._provider_statement_count += 1
+        if not self._failed and self._provider_statement_count == self._fail_at:
+            self._failed = True
+            raise RuntimeError(f"fault at provider statement {self._fail_at}")
 
 
 class NoOpReadyCASConnector(SQLiteConnector):

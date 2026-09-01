@@ -93,6 +93,11 @@ _SELECT_SIDE_EFFECT = re.compile(
     re.IGNORECASE,
 )
 
+# Bootstrap facts are checksum-bound generated input, but the manifest can grow
+# with the closed-world cleanup registry.  Keep each executemany request hard
+# bounded while avoiding one durable MariaDB commit per immutable seed row.
+_SCHEMA_SEED_BATCH_ROWS = 256
+
 
 class SchemaEpochError(RuntimeError):
     """Base error for greenfield schema-epoch orchestration."""
@@ -1106,8 +1111,7 @@ class SchemaEpochRunner:
                         )
                 provider.validate_slice(connector, schema_slice)
 
-            for seed in definition.bootstrap_seeds:
-                connector.execute(seed.sql, seed.parameters)
+            _execute_bootstrap_seeds(connector, definition.bootstrap_seeds)
 
             obligation_ids = self._validate_ready_schema(
                 connector,
@@ -1347,6 +1351,42 @@ class SchemaEpochRunner:
                 "The closed-world object set changed during final validation"
             )
         return reported_ids
+
+
+def _execute_bootstrap_seeds(
+    connector: SQLConnector,
+    seeds: Sequence[SchemaSeedStatement],
+) -> None:
+    """Execute ordered, idempotent bootstrap facts in bounded SQL batches.
+
+    Only adjacent statements with byte-identical SQL are combined.  This keeps
+    the generated manifest's dependency order intact.  MariaDB commits each
+    successful bounded batch, so interruption leaves an idempotent prefix that
+    the BUILDING replay path can resume.  SQLite already holds the epoch-wide
+    ``BEGIN IMMEDIATE`` transaction and therefore retains its all-or-nothing
+    construction behavior.
+    """
+
+    current_sql: str | None = None
+    parameters: list[tuple[Any, ...]] = []
+
+    def flush() -> None:
+        nonlocal current_sql, parameters
+        if current_sql is None:
+            return
+        connector.execute_many(current_sql, parameters)
+        current_sql = None
+        parameters = []
+
+    for seed in seeds:
+        if current_sql is not None and (
+            seed.sql != current_sql or len(parameters) == _SCHEMA_SEED_BATCH_ROWS
+        ):
+            flush()
+        if current_sql is None:
+            current_sql = seed.sql
+        parameters.append(seed.parameters)
+    flush()
 
 
 def run_sqlite_schema_epoch(
