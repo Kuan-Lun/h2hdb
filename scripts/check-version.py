@@ -30,6 +30,7 @@ _IGNORED_PATHS = (
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
+    "benchmarks/**",
     "docs/**",
     "lean-toolchain",
     "mypy.ini",
