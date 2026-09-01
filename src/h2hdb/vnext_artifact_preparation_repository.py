@@ -707,6 +707,24 @@ class ArtifactInputProjectionPlan:
                     )
                 yield plan
 
+    def _canonical_consumer_cursor(self, value_sha256: bytes) -> bytes:
+        """Return the immutable first-consumer key for restart recovery."""
+
+        self._require_open()
+        value = require_digest32(
+            value_sha256,
+            field="artifact canonical consumer value_sha256",
+        )
+        row = self._database.execute(
+            "SELECT consumer_key FROM canonical_values WHERE value_sha256 = ?",
+            (sqlite3.Binary(value),),
+        ).fetchone()
+        if row is None or len(row) != 1:
+            raise ArtifactPreparationConflictError(
+                "artifact canonical plan lacks its first consumer"
+            )
+        return require_digest32(row[0], field="artifact canonical consumer key")
+
     def _page_after(self, cursor: bytes) -> tuple[tuple[Any, ...], ...]:
         self._require_open()
         _validate_publication_cursor(cursor)
@@ -1785,7 +1803,10 @@ def _prepare_artifact_input_plan(
     if authority._capability is not _INPUT_AUTHORITY_TOKEN:
         raise TypeError("artifact input authority is not repository-issued")
     temporary = TemporaryDirectory(prefix="h2hdb-artifact-input-")
-    database = sqlite3.connect(Path(temporary.name) / "plan.sqlite3")
+    database = sqlite3.connect(
+        Path(temporary.name) / "plan.sqlite3",
+        check_same_thread=False,
+    )
     payload = TemporaryFile(mode="w+b")
     try:
         _create_input_plan_schema(database)

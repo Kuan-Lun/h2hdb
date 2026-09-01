@@ -460,73 +460,12 @@ class CanonicalValueRepository:
         exact_plan = _require_upload_plan(plan)
         timestamp = require_int63(now, field="now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
-        connector = work.connector
-        preparation = exact_plan.preparation_receipt
-        _require_exact(
-            "canonical preparation receipt",
-            (
-                preparation.value_sha256,
-                preparation.digest_domain,
-                preparation.byte_count,
-            ),
-            (
-                exact_plan.value_sha256,
-                exact_plan.digest_domain,
-                exact_plan.byte_count,
-            ),
+        return _allocate_authorized(
+            work,
+            generation=generation,
+            plan=exact_plan,
+            now=timestamp,
         )
-        if exact_plan.digest_domain == b"source_root_v1":
-            root_receipt = exact_plan.source_root_receipt
-            if root_receipt.payload_byte_count != exact_plan.byte_count:
-                raise CanonicalValueCollisionError(
-                    "source-root frame does not reach exact EOF"
-                )
-
-        if not connector.fetch_one(
-            "SELECT digest_domain FROM catalog_canonical_digest_policies "
-            "WHERE digest_domain = %s",
-            (exact_plan.digest_domain,),
-        ):
-            raise CanonicalValueNotReadyError(
-                "canonical digest domain is not registered"
-            )
-
-        if exact_plan.digest_domain != b"source_root_v1" and not connector.fetch_one(
-            "SELECT build_id FROM operational_source_build_generations "
-            "WHERE generation = %s",
-            (generation,),
-        ):
-            raise CanonicalValueNotReadyError(
-                "non-root canonical upload requires a durable build generation"
-            )
-
-        allocation = ensure_allocation_family(
-            connector,
-            value_sha256=exact_plan.value_sha256,
-            digest_domain=exact_plan.digest_domain,
-            byte_count=exact_plan.byte_count,
-            allocated_at=timestamp,
-        )
-
-        claim = connector.fetch_one(
-            "SELECT generation, value_sha256 "
-            "FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, exact_plan.value_sha256),
-        )
-        if claim:
-            _require_exact(
-                "canonical upload claim",
-                claim,
-                (generation, exact_plan.value_sha256),
-            )
-        else:
-            connector.execute(
-                "INSERT INTO operational_canonical_value_uploads "
-                "(generation, value_sha256) VALUES (%s, %s)",
-                (generation, exact_plan.value_sha256),
-            )
-        return allocation
 
     @staticmethod
     def put_page(
@@ -823,6 +762,91 @@ def _authorize(
         )
     live_turn = IngestFenceRepository.lock_and_require_live(work, ingest_turn, now=now)
     return require_int63(live_turn.generation, field="generation")
+
+
+def _allocate_authorized(
+    work: VNextUnitOfWork,
+    *,
+    generation: int,
+    plan: CanonicalValueUploadPlan,
+    now: int,
+) -> CanonicalValueAllocation:
+    """Allocate after the caller has locked the exact write authorities.
+
+    Publication orchestration uses this internal split to lock its durable
+    candidate checkpoint between the common ingest authorization and the
+    claim insert.  That ordering prevents a delayed prepared allocation from
+    recreating a claim after its first consumer has advanced atomically.
+    """
+
+    exact_plan = _require_upload_plan(plan)
+    exact_generation = require_int63(generation, field="generation")
+    timestamp = require_int63(now, field="now")
+    connector = work.connector
+    preparation = exact_plan.preparation_receipt
+    _require_exact(
+        "canonical preparation receipt",
+        (
+            preparation.value_sha256,
+            preparation.digest_domain,
+            preparation.byte_count,
+        ),
+        (
+            exact_plan.value_sha256,
+            exact_plan.digest_domain,
+            exact_plan.byte_count,
+        ),
+    )
+    if exact_plan.digest_domain == b"source_root_v1":
+        root_receipt = exact_plan.source_root_receipt
+        if root_receipt.payload_byte_count != exact_plan.byte_count:
+            raise CanonicalValueCollisionError(
+                "source-root frame does not reach exact EOF"
+            )
+
+    if not connector.fetch_one(
+        "SELECT digest_domain FROM catalog_canonical_digest_policies "
+        "WHERE digest_domain = %s",
+        (exact_plan.digest_domain,),
+    ):
+        raise CanonicalValueNotReadyError("canonical digest domain is not registered")
+
+    if exact_plan.digest_domain != b"source_root_v1" and not connector.fetch_one(
+        "SELECT build_id FROM operational_source_build_generations "
+        "WHERE generation = %s",
+        (exact_generation,),
+    ):
+        raise CanonicalValueNotReadyError(
+            "non-root canonical upload requires a durable build generation"
+        )
+
+    allocation = ensure_allocation_family(
+        connector,
+        value_sha256=exact_plan.value_sha256,
+        digest_domain=exact_plan.digest_domain,
+        byte_count=exact_plan.byte_count,
+        allocated_at=timestamp,
+    )
+
+    claim = connector.fetch_one(
+        "SELECT generation, value_sha256 "
+        "FROM operational_canonical_value_uploads "
+        "WHERE generation = %s AND value_sha256 = %s",
+        (exact_generation, exact_plan.value_sha256),
+    )
+    if claim:
+        _require_exact(
+            "canonical upload claim",
+            claim,
+            (exact_generation, exact_plan.value_sha256),
+        )
+    else:
+        connector.execute(
+            "INSERT INTO operational_canonical_value_uploads "
+            "(generation, value_sha256) VALUES (%s, %s)",
+            (exact_generation, exact_plan.value_sha256),
+        )
+    return allocation
 
 
 def _lock_claim(work: VNextUnitOfWork, generation: int, value_sha256: bytes) -> None:

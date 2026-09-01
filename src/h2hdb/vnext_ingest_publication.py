@@ -27,6 +27,7 @@ import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from threading import Lock
 from time import time_ns
 from typing import Protocol, cast, runtime_checkable
 
@@ -67,6 +68,10 @@ from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
+    _allocate_authorized,
+)
+from .vnext_canonical_value_repository import (
+    _authorize as _authorize_canonical_write,
 )
 from .vnext_domains import (
     require_bounded_bytes,
@@ -249,6 +254,26 @@ class _Action(StrEnum):
     CANONICAL_SEAL = "CANONICAL_SEAL"
 
 
+_PLAN_ACTIONS = {
+    _Action.BUILD_CATALOG,
+    _Action.VALIDATE_CATALOG,
+    _Action.BUILD_ARTIFACT_INPUT,
+    _Action.VALIDATE_ARTIFACT_INPUT,
+}
+
+_PLAN_STAGE_BY_ACTION = {
+    _Action.BUILD_CATALOG: b"BUILD_CATALOG_PROJECTION",
+    _Action.VALIDATE_CATALOG: b"VALIDATE_CATALOG_PROJECTION",
+    _Action.BUILD_ARTIFACT_INPUT: b"BUILD_ARTIFACT_INPUT",
+    _Action.VALIDATE_ARTIFACT_INPUT: b"VALIDATE_ARTIFACT_INPUT_DELTA",
+}
+
+_PLAN_BUILD_ACTIONS = {
+    _Action.BUILD_CATALOG,
+    _Action.BUILD_ARTIFACT_INPUT,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class _Root:
     build_id: bytes
@@ -265,6 +290,7 @@ class _CandidateWork:
     candidate_id: bytes
     batch_key: bytes
     payload: object | None = None
+    resource_owner: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,10 +327,267 @@ class _LibraryActivationWork:
 
 
 @dataclass(frozen=True, slots=True)
+class _CanonicalStageFence:
+    candidate_id: bytes
+    stage_action: _Action
+    first_consumer_cursor: bytes
+    ingest_generation: int
+
+
+@dataclass(frozen=True, slots=True)
 class _CanonicalWork:
     plan: CanonicalValueUploadPlan
     owner: object
     page: PreparedCanonicalPage | None = None
+    stage_fence: _CanonicalStageFence | None = None
+
+
+class _PublicationPlanLease:
+    """Keep one retired plan alive until its prepared step is closed."""
+
+    __slots__ = ("__cache", "__closed")
+
+    def __init__(self, cache: _PublicationPlanCache) -> None:
+        self.__cache: _PublicationPlanCache | None = cache
+        self.__closed = False
+
+    def close(self) -> None:
+        if self.__closed:
+            return
+        cache = self.__cache
+        if cache is None:
+            raise RuntimeError("publication plan cache lease lost its owner")
+        cache.release()
+        self.__cache = None
+        self.__closed = True
+
+    @property
+    def cache(self) -> _PublicationPlanCache:
+        cache = self.__cache
+        if cache is None:
+            raise RuntimeError("publication plan cache lease is closed")
+        return cache
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
+class _PublicationPlanCache:
+    """Disposable stage-local plan with a monotone canonical validation cursor."""
+
+    __slots__ = (
+        "action",
+        "authority",
+        "plan",
+        "__active",
+        "__borrowers",
+        "__closed",
+        "__iterator",
+        "__lock",
+        "__observed_sealed",
+        "__page_iterator",
+        "__pending_page",
+        "__retired",
+    )
+
+    def __init__(
+        self,
+        *,
+        action: _Action,
+        authority: object,
+        plan: PublicationCatalogProjectionPlan | ArtifactInputProjectionPlan,
+    ) -> None:
+        if action not in _PLAN_ACTIONS:
+            raise ValueError("publication plan cache action is not plan-backed")
+        self.action = action
+        self.authority = authority
+        self.plan = plan
+        self.__active: CanonicalValueUploadPlan | None = None
+        self.__borrowers = 0
+        self.__closed = False
+        self.__iterator: Iterator[CanonicalValueUploadPlan] | None = (
+            plan.iter_canonical_value_plans()
+        )
+        self.__lock = Lock()
+        self.__observed_sealed: CanonicalValueReadReceipt | None = None
+        self.__page_iterator: Iterator[PreparedCanonicalPage] | None = None
+        self.__pending_page: PreparedCanonicalPage | None = None
+        self.__retired = False
+
+    @property
+    def available(self) -> bool:
+        with self.__lock:
+            return not self.__retired and not self.__closed and self.__borrowers == 0
+
+    def matches(self, action: _Action, authority: object) -> bool:
+        return self.action is action and self.authority == authority
+
+    def borrow(self) -> _PublicationPlanLease:
+        with self.__lock:
+            if self.__retired or self.__closed:
+                raise RuntimeError("publication plan cache is retired")
+            if self.__borrowers != 0:
+                raise RuntimeError("publication plan cache already has a borrower")
+            self.__borrowers = 1
+        return _PublicationPlanLease(self)
+
+    def release(self) -> None:
+        with self.__lock:
+            if self.__borrowers != 1:
+                raise RuntimeError("publication plan cache lease is unbalanced")
+            self.__borrowers = 0
+            if self.__retired:
+                self.__close()
+
+    def current_canonical_plan(self) -> CanonicalValueUploadPlan | None:
+        if self.__retired or self.__closed:
+            raise RuntimeError("publication plan cache is retired")
+        active = self.__active
+        if active is not None:
+            return active
+        iterator = self.__iterator
+        if iterator is None:
+            return None
+        try:
+            active = next(iterator)
+        except StopIteration:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+            self.__iterator = None
+            return None
+        if not isinstance(active, CanonicalValueUploadPlan):
+            raise TypeError("projection yielded a non-canonical upload plan")
+        self.__active = active
+        return active
+
+    def advance_canonical_plan(self, plan: CanonicalValueUploadPlan) -> None:
+        if self.__active is not plan:
+            raise RuntimeError("canonical cursor cannot skip its active upload plan")
+        self.__close_page_iterator()
+        plan.close()
+        self.__active = None
+        self.__observed_sealed = None
+
+    def require_stable_sealed_observation(
+        self,
+        plan: CanonicalValueUploadPlan,
+        sealed: CanonicalValueReadReceipt | None,
+    ) -> None:
+        if self.__active is not plan:
+            raise RuntimeError("sealed observation lacks its active upload plan")
+        observed = self.__observed_sealed
+        if observed is not None and sealed != observed:
+            raise RuntimeError("sealed canonical identity changed after observation")
+
+    def record_sealed_observation(
+        self,
+        plan: CanonicalValueUploadPlan,
+        sealed: CanonicalValueReadReceipt,
+    ) -> None:
+        if self.__active is not plan:
+            raise RuntimeError("sealed canonical observation cursor is inconsistent")
+        observed = self.__observed_sealed
+        if observed is not None and observed != sealed:
+            raise RuntimeError("sealed canonical identity changed after observation")
+        self.__observed_sealed = sealed
+
+    def current_canonical_page(
+        self,
+        plan: CanonicalValueUploadPlan,
+    ) -> PreparedCanonicalPage | None:
+        if self.__active is not plan:
+            raise RuntimeError("canonical page cursor lacks its active upload plan")
+        pending = self.__pending_page
+        if pending is not None:
+            return pending
+        iterator = self.__page_iterator
+        if iterator is None:
+            iterator = plan.iter_pages()
+            self.__page_iterator = iterator
+        try:
+            pending = next(iterator)
+        except StopIteration:
+            self.__close_page_iterator()
+            return None
+        self.__pending_page = pending
+        return pending
+
+    def advance_canonical_page(self, page: PreparedCanonicalPage) -> None:
+        if self.__pending_page is not page:
+            raise RuntimeError("canonical page cursor cannot skip its pending page")
+        self.__pending_page = None
+
+    def canonical_consumer_cursor(
+        self,
+        plan: CanonicalValueUploadPlan,
+    ) -> bytes:
+        if self.__active is not plan:
+            raise RuntimeError("canonical consumer cursor lacks its active upload plan")
+        return self.plan._canonical_consumer_cursor(plan.value_sha256)
+
+    def claim_required(
+        self,
+        *,
+        consumer_cursor: bytes,
+        checkpoint_cursor: bytes,
+        checkpoint_state: str,
+    ) -> bool:
+        if self.action not in _PLAN_BUILD_ACTIONS:
+            return False
+        if checkpoint_state == "COMPLETE":
+            return False
+        return consumer_cursor > checkpoint_cursor
+
+    def retire(self) -> None:
+        with self.__lock:
+            if self.__retired:
+                return
+            self.__retired = True
+            if self.__borrowers == 0:
+                self.__close()
+
+    def __close(self) -> None:
+        if self.__closed:
+            return
+        self.__closed = True
+        iterator = self.__iterator
+        self.__iterator = None
+        try:
+            if iterator is not None:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+        finally:
+            try:
+                self.__close_page_iterator()
+            finally:
+                active = self.__active
+                self.__active = None
+                self.__observed_sealed = None
+                try:
+                    if active is not None:
+                        active.close()
+                finally:
+                    self.plan.close()
+
+    def __close_page_iterator(self) -> None:
+        iterator = self.__page_iterator
+        self.__page_iterator = None
+        self.__pending_page = None
+        if iterator is not None:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+
+    def __del__(self) -> None:
+        try:
+            self.retire()
+        except BaseException:
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +677,8 @@ class VNextIngestPublication:
         "__context",
         "__activation_checkpoints",
         "__activation_ready",
+        "__publication_plan",
+        "__publication_plan_lock",
     )
 
     def __init__(
@@ -413,6 +698,8 @@ class VNextIngestPublication:
         # library adapter before it performs any irreversible work.
         self.__activation_checkpoints: dict[bytes, LibraryActivationCheckpoint] = {}
         self.__activation_ready: set[bytes] = set()
+        self.__publication_plan: _PublicationPlanCache | None = None
+        self.__publication_plan_lock = Lock()
 
     def issue_step(
         self,
@@ -450,6 +737,9 @@ class VNextIngestPublication:
                 if checkpoint is not None:
                     payload = replace(activation, checkpoint=checkpoint)
 
+        with self.__publication_plan_lock:
+            self.__retire_mismatched_plan(action, payload)
+
         return VNextIssuedPublicationStep(
             action=action,
             payload=payload,
@@ -474,60 +764,60 @@ class VNextIngestPublication:
         payload: object = exact._payload
 
         if action in {_Action.BUILD_CATALOG, _Action.VALIDATE_CATALOG}:
-            work = cast(_CandidateWork, payload)
-            authority = work.payload
-            with self.__context.SQLConnector() as connector:
-                if action is _Action.BUILD_CATALOG:
-                    catalog_plan = (
-                        PublicationCandidateRepository.prepare_catalog_projection(
-                            connector,
-                            backend=self.__backend,
-                            authority=authority,  # type: ignore[arg-type]
-                        )
-                    )
-                else:
-                    catalog_plan = PublicationCandidateRepository.prepare_catalog_projection_validation(
-                        connector,
-                        backend=self.__backend,
-                        authority=authority,  # type: ignore[arg-type]
-                    )
-            payload, action = self.__prepare_plan_action(
-                issued_session,
-                plan=catalog_plan,
-                owner=catalog_plan,
-                fallback=work,
-                fallback_action=action,
-            )
+            with self.__publication_plan_lock:
+                work = cast(_CandidateWork, payload)
+                authority = work.payload
+                cached = self.__reusable_plan(action, authority)
+                if cached is None:
+                    with self.__context.SQLConnector() as connector:
+                        if action is _Action.BUILD_CATALOG:
+                            catalog_plan = PublicationCandidateRepository.prepare_catalog_projection(
+                                connector,
+                                backend=self.__backend,
+                                authority=authority,  # type: ignore[arg-type]
+                            )
+                        else:
+                            catalog_plan = PublicationCandidateRepository.prepare_catalog_projection_validation(
+                                connector,
+                                backend=self.__backend,
+                                authority=authority,  # type: ignore[arg-type]
+                            )
+                    cached = self.__install_plan(action, authority, catalog_plan)
+                payload, action = self.__prepare_plan_action(
+                    issued_session,
+                    cached=cached,
+                    fallback=work,
+                    fallback_action=action,
+                )
         elif action in {
             _Action.BUILD_ARTIFACT_INPUT,
             _Action.VALIDATE_ARTIFACT_INPUT,
         }:
-            work = cast(_CandidateWork, payload)
-            authority = work.payload
-            with self.__context.SQLConnector() as connector:
-                if action is _Action.BUILD_ARTIFACT_INPUT:
-                    input_plan = (
-                        ArtifactPreparationRepository.prepare_artifact_input_projection(
-                            connector,
-                            backend=self.__backend,
-                            authority=authority,  # type: ignore[arg-type]
-                        )
-                    )
-                else:
-                    input_plan = (
-                        ArtifactPreparationRepository.prepare_artifact_input_validation(
-                            connector,
-                            backend=self.__backend,
-                            authority=authority,  # type: ignore[arg-type]
-                        )
-                    )
-            payload, action = self.__prepare_plan_action(
-                issued_session,
-                plan=input_plan,
-                owner=input_plan,
-                fallback=work,
-                fallback_action=action,
-            )
+            with self.__publication_plan_lock:
+                work = cast(_CandidateWork, payload)
+                authority = work.payload
+                cached = self.__reusable_plan(action, authority)
+                if cached is None:
+                    with self.__context.SQLConnector() as connector:
+                        if action is _Action.BUILD_ARTIFACT_INPUT:
+                            input_plan = ArtifactPreparationRepository.prepare_artifact_input_projection(
+                                connector,
+                                backend=self.__backend,
+                                authority=authority,  # type: ignore[arg-type]
+                            )
+                        else:
+                            input_plan = ArtifactPreparationRepository.prepare_artifact_input_validation(
+                                connector,
+                                backend=self.__backend,
+                                authority=authority,  # type: ignore[arg-type]
+                            )
+                    cached = self.__install_plan(action, authority, input_plan)
+                payload, action = self.__prepare_plan_action(
+                    issued_session,
+                    cached=cached,
+                    fallback=work,
+                    fallback_action=action,
+                )
         elif action is _Action.PREPARE_ARTIFACT:
             prepared_artifact = self.__prepare_artifact(
                 cast(_ArtifactWork, payload),
@@ -597,6 +887,11 @@ class VNextIngestPublication:
                     exact._payload,
                 )
                 self.__activation_ready.discard(acknowledgement.page.receipt_id)
+            if exact._action in _PLAN_ACTIONS and bool(
+                getattr(outcome, "terminal", False)
+            ):
+                with self.__publication_plan_lock:
+                    self.__retire_committed_plan(cast(_CandidateWork, exact._payload))
             return _advance_result(exact._action, outcome)
         finally:
             exact.close()
@@ -605,23 +900,110 @@ class VNextIngestPublication:
         self,
         session: VNextIngestSession,
         *,
-        plan: PublicationCatalogProjectionPlan | ArtifactInputProjectionPlan,
-        owner: object,
+        cached: _PublicationPlanCache,
         fallback: _CandidateWork,
         fallback_action: _Action,
     ) -> tuple[object, _Action]:
-        with self.__context.SQLConnector() as connector:
-            with connector.read_transaction():
-                selected = _next_canonical_work(
-                    connector,
-                    backend=self.__backend,
-                    session=session,
-                    plans=tuple(plan.iter_canonical_value_plans()),
-                    owner=owner,
+        lease = cached.borrow()
+        try:
+            with self.__context.SQLConnector() as connector:
+                with connector.read_transaction():
+                    checkpoint_cursor, checkpoint_state = _load_plan_checkpoint(
+                        connector,
+                        candidate_id=fallback.candidate_id,
+                        action=fallback_action,
+                    )
+                    selected = _next_cached_canonical_work(
+                        connector,
+                        backend=self.__backend,
+                        session=session,
+                        cached=cached,
+                        owner=lease,
+                        candidate_id=fallback.candidate_id,
+                        checkpoint_cursor=checkpoint_cursor,
+                        checkpoint_state=checkpoint_state,
+                    )
+            if selected is None:
+                return (
+                    replace(
+                        fallback,
+                        payload=cached.plan,
+                        resource_owner=lease,
+                    ),
+                    fallback_action,
                 )
-        if selected is None:
-            return replace(fallback, payload=plan), fallback_action
-        return selected
+            return selected
+        except BaseException:
+            lease.close()
+            if self.__publication_plan is cached:
+                self.__publication_plan = None
+            cached.retire()
+            raise
+
+    def __reusable_plan(
+        self,
+        action: _Action,
+        authority: object,
+    ) -> _PublicationPlanCache | None:
+        cached = self.__publication_plan
+        if (
+            cached is not None
+            and cached.matches(action, authority)
+            and cached.available
+        ):
+            return cached
+        if cached is not None:
+            self.__publication_plan = None
+            cached.retire()
+        return None
+
+    def __install_plan(
+        self,
+        action: _Action,
+        authority: object,
+        plan: PublicationCatalogProjectionPlan | ArtifactInputProjectionPlan,
+    ) -> _PublicationPlanCache:
+        try:
+            cached = _PublicationPlanCache(
+                action=action,
+                authority=authority,
+                plan=plan,
+            )
+        except BaseException:
+            plan.close()
+            raise
+        self.__publication_plan = cached
+        return cached
+
+    def __retire_mismatched_plan(self, action: _Action, payload: object) -> None:
+        cached = self.__publication_plan
+        if cached is None:
+            return
+        if (
+            action in _PLAN_ACTIONS
+            and isinstance(payload, _CandidateWork)
+            and cached.matches(action, payload.payload)
+        ):
+            return
+        self.__publication_plan = None
+        cached.retire()
+
+    def __retire_committed_plan(self, candidate: _CandidateWork) -> None:
+        owner = candidate.resource_owner
+        if not isinstance(owner, _PublicationPlanLease):
+            raise RuntimeError("terminal plan action lacks its cache lease")
+        committed = owner.cache
+        committed.retire()
+        current = self.__publication_plan
+        if current is committed:
+            self.__publication_plan = None
+            return
+        if current is not None and current.matches(
+            committed.action,
+            committed.authority,
+        ):
+            self.__publication_plan = None
+            current.retire()
 
     def __prepare_artifact(
         self,
@@ -1251,10 +1633,27 @@ def _commit_canonical_work(
     now: int,
 ) -> object:
     if action is _Action.CANONICAL_ALLOCATE:
-        return CanonicalValueRepository.allocate(
+        fence = canonical.stage_fence
+        if fence is None or fence.stage_action not in _PLAN_BUILD_ACTIONS:
+            raise RuntimeError("canonical allocation lacks its publication fence")
+        generation = _authorize_canonical_write(
             work,
-            gate_lease=gate,
-            ingest_turn=turn,
+            gate,
+            turn,
+            now=now,
+        )
+        if generation != fence.ingest_generation:
+            raise RuntimeError("canonical allocation ingest generation changed")
+        stage = _PLAN_STAGE_BY_ACTION[fence.stage_action]
+        PublicationCandidateRepository._lock_canonical_allocation_fence_authorized(
+            work,
+            candidate_id=fence.candidate_id,
+            stage=stage,
+            first_consumer_cursor=fence.first_consumer_cursor,
+        )
+        return _allocate_authorized(
+            work,
+            generation=generation,
             plan=canonical.plan,
             now=now,
         )
@@ -1417,6 +1816,34 @@ def _load_checkpoints(
     return result
 
 
+def _load_plan_checkpoint(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+    action: _Action,
+) -> tuple[bytes, str]:
+    stage = _PLAN_STAGE_BY_ACTION.get(action)
+    if stage is None:
+        raise ValueError("publication plan action has no durable stage")
+    candidate = require_uuid16(candidate_id, field="publication plan candidate_id")
+    row = connector.fetch_one(
+        "SELECT `cursor`, state FROM catalog_publication_checkpoints "
+        "WHERE candidate_id = %s AND stage = %s",
+        (candidate, stage),
+    )
+    if len(row) != 2:
+        raise RuntimeError("publication plan checkpoint is missing or malformed")
+    cursor = require_bounded_bytes(
+        row[0],
+        field="publication plan checkpoint cursor",
+        maximum=2048,
+    )
+    state = str(row[1])
+    if state not in {"OPEN", "COMPLETE"}:
+        raise RuntimeError("publication plan checkpoint has an invalid state")
+    return cursor, state
+
+
 def _next_canonical_work(
     connector: SQLConnector,
     *,
@@ -1424,38 +1851,60 @@ def _next_canonical_work(
     session: VNextIngestSession,
     plans: tuple[CanonicalValueUploadPlan, ...],
     owner: object,
+    claim_required: Callable[[CanonicalValueUploadPlan], bool] | None = None,
 ) -> tuple[_CanonicalWork, _Action] | None:
     generation = require_positive_int63(
         session.ingest_generation,
         field="canonical upload generation",
     )
     for plan in plans:
-        value = require_digest32(
-            plan.value_sha256,
-            field="canonical upload plan value_sha256",
-        )
-        try:
-            sealed = load_sealed_value_identity(
-                connector,
-                value_sha256=value,
-            )
-        except (
-            CanonicalValueCollisionError,
-            CanonicalValuePartialFamilyError,
-        ) as error:
-            raise RuntimeError(
-                "canonical sealed identity is partial or corrupt"
-            ) from error
-        claim_row = connector.fetch_one(
-            "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, value),
-        )
-        claim = _require_canonical_claim(
-            claim_row,
+        selected = _next_canonical_plan_work(
+            connector,
+            backend=backend,
             generation=generation,
-            value_sha256=value,
+            plan=plan,
+            owner=owner,
+            claim_required=(True if claim_required is None else claim_required(plan)),
         )
+        if selected is not None:
+            return selected
+    return None
+
+
+def _next_cached_canonical_work(
+    connector: SQLConnector,
+    *,
+    backend: str,
+    session: VNextIngestSession,
+    cached: _PublicationPlanCache,
+    owner: object,
+    candidate_id: bytes,
+    checkpoint_cursor: bytes,
+    checkpoint_state: str,
+) -> tuple[_CanonicalWork, _Action] | None:
+    generation = require_positive_int63(
+        session.ingest_generation,
+        field="canonical upload generation",
+    )
+    while (plan := cached.current_canonical_plan()) is not None:
+        consumer_cursor = cached.canonical_consumer_cursor(plan)
+        required = cached.claim_required(
+            consumer_cursor=consumer_cursor,
+            checkpoint_cursor=checkpoint_cursor,
+            checkpoint_state=checkpoint_state,
+        )
+        fence = _CanonicalStageFence(
+            candidate_id,
+            cached.action,
+            consumer_cursor,
+            generation,
+        )
+        sealed, claim = _load_canonical_plan_state(
+            connector,
+            generation=generation,
+            plan=plan,
+        )
+        cached.require_stable_sealed_observation(plan, sealed)
         if sealed is not None:
             _compare_sealed_canonical_plan(
                 connector,
@@ -1463,34 +1912,121 @@ def _next_canonical_work(
                 plan=plan,
                 sealed=sealed,
             )
-            if claim is None:
-                # Allocation is a response-loss-safe replay for a sealed value;
-                # it installs this generation's first-consumer claim.
-                return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
+            cached.record_sealed_observation(plan, sealed)
+            if required and claim is None:
+                return (
+                    _CanonicalWork(plan, owner, stage_fence=fence),
+                    _Action.CANONICAL_ALLOCATE,
+                )
+            cached.advance_canonical_plan(plan)
             continue
+        if not required:
+            raise RuntimeError("consumed canonical value is no longer exactly sealed")
         if claim is None:
-            return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
-        for page in plan.iter_pages():
-            try:
-                family = load_page_family(
-                    connector,
-                    page_sha256=page.page_sha256,
+            return (
+                _CanonicalWork(plan, owner, stage_fence=fence),
+                _Action.CANONICAL_ALLOCATE,
+            )
+        while (page := cached.current_canonical_page(plan)) is not None:
+            if not _canonical_page_is_exact(connector, page):
+                return (
+                    _CanonicalWork(plan, owner, page, fence),
+                    _Action.CANONICAL_PAGE,
                 )
-            except (
-                CanonicalValueCollisionError,
-                CanonicalValuePartialFamilyError,
-            ) as error:
-                raise RuntimeError(
-                    "canonical page family is partial or corrupt"
-                ) from error
-            if family is None:
-                return _CanonicalWork(plan, owner, page), _Action.CANONICAL_PAGE
-            if family.page_bytes != page.page_bytes:
-                raise RuntimeError(
-                    "canonical page digest collides with another exact preimage"
-                )
-        return _CanonicalWork(plan, owner), _Action.CANONICAL_SEAL
+            cached.advance_canonical_page(page)
+        return (
+            _CanonicalWork(plan, owner, stage_fence=fence),
+            _Action.CANONICAL_SEAL,
+        )
     return None
+
+
+def _next_canonical_plan_work(
+    connector: SQLConnector,
+    *,
+    backend: str,
+    generation: int,
+    plan: CanonicalValueUploadPlan,
+    owner: object,
+    claim_required: bool,
+) -> tuple[_CanonicalWork, _Action] | None:
+    sealed, claim = _load_canonical_plan_state(
+        connector,
+        generation=generation,
+        plan=plan,
+    )
+    if sealed is not None:
+        _compare_sealed_canonical_plan(
+            connector,
+            backend=backend,
+            plan=plan,
+            sealed=sealed,
+        )
+        if claim_required and claim is None:
+            return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
+        return None
+    if not claim_required:
+        raise RuntimeError("consumed canonical value is no longer exactly sealed")
+    if claim is None:
+        return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
+    for page in plan.iter_pages():
+        if not _canonical_page_is_exact(connector, page):
+            return _CanonicalWork(plan, owner, page), _Action.CANONICAL_PAGE
+    return _CanonicalWork(plan, owner), _Action.CANONICAL_SEAL
+
+
+def _load_canonical_plan_state(
+    connector: SQLConnector,
+    *,
+    generation: int,
+    plan: CanonicalValueUploadPlan,
+) -> tuple[CanonicalValueReadReceipt | None, tuple[int, bytes] | None]:
+    value = require_digest32(
+        plan.value_sha256,
+        field="canonical upload plan value_sha256",
+    )
+    try:
+        sealed = load_sealed_value_identity(
+            connector,
+            value_sha256=value,
+        )
+    except (
+        CanonicalValueCollisionError,
+        CanonicalValuePartialFamilyError,
+    ) as error:
+        raise RuntimeError("canonical sealed identity is partial or corrupt") from error
+    claim_row = connector.fetch_one(
+        "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
+        "WHERE generation = %s AND value_sha256 = %s",
+        (generation, value),
+    )
+    claim = _require_canonical_claim(
+        claim_row,
+        generation=generation,
+        value_sha256=value,
+    )
+    return sealed, claim
+
+
+def _canonical_page_is_exact(
+    connector: SQLConnector,
+    page: PreparedCanonicalPage,
+) -> bool:
+    try:
+        family = load_page_family(
+            connector,
+            page_sha256=page.page_sha256,
+        )
+    except (
+        CanonicalValueCollisionError,
+        CanonicalValuePartialFamilyError,
+    ) as error:
+        raise RuntimeError("canonical page family is partial or corrupt") from error
+    if family is None:
+        return False
+    if family.page_bytes != page.page_bytes:
+        raise RuntimeError("canonical page digest collides with another exact preimage")
+    return True
 
 
 def _require_canonical_claim(
@@ -1806,6 +2342,8 @@ def _owned_resource(payload: object) -> object:
         payload.payload,
         (PublicationCatalogProjectionPlan, ArtifactInputProjectionPlan),
     ):
+        if payload.resource_owner is not None:
+            return payload.resource_owner
         return payload.payload
     if isinstance(payload, _ArtifactPrepared):
         return payload.receipt

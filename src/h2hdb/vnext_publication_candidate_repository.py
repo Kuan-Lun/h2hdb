@@ -542,6 +542,26 @@ class PublicationCatalogProjectionPlan:
                     _iter_file_range(self._payload, exact_offset, exact_count),
                 )
 
+    def _canonical_consumer_cursor(self, value_sha256: bytes) -> bytes:
+        """Return the immutable first-consumer cursor for restart recovery."""
+
+        self._require_open()
+        value = require_digest32(
+            value_sha256,
+            field="catalog canonical consumer value_sha256",
+        )
+        row = self._database.execute(
+            "SELECT consumer_cursor FROM canonical_values WHERE value_sha256 = ?",
+            (sqlite3.Binary(value),),
+        ).fetchone()
+        if row is None or len(row) != 1 or row[0] is None:
+            raise PublicationCandidateConflictError(
+                "catalog canonical plan lacks its first consumer"
+            )
+        cursor = bytes(row[0])
+        _validate_stage_cursor(_CURSOR_CATALOG_CHILD, cursor)
+        return cursor
+
     def _page_after(self, cursor: bytes) -> tuple[_ProjectionChild, ...]:
         self._require_open()
         _validate_stage_cursor(_CURSOR_CATALOG_CHILD, cursor)
@@ -586,6 +606,50 @@ class _Head:
 
 class PublicationCandidateRepository:
     """Reserve or exactly resume the sole invisible publication candidate."""
+
+    @staticmethod
+    def _lock_canonical_allocation_fence_authorized(
+        work: VNextUnitOfWork,
+        *,
+        candidate_id: bytes,
+        stage: bytes,
+        first_consumer_cursor: bytes,
+    ) -> None:
+        """Reject a delayed claim allocation after its consumer advanced.
+
+        The caller must already hold the live maintenance/ingest authorities.
+        This method then follows the publication writer's normal lock order:
+        working root, candidate checkpoint, and finally (in the canonical
+        repository) the upload-claim insert.
+        """
+
+        candidate = require_uuid16(
+            candidate_id,
+            field="canonical allocation candidate_id",
+        )
+        if stage not in {
+            b"BUILD_CATALOG_PROJECTION",
+            b"BUILD_ARTIFACT_INPUT",
+        }:
+            raise ValueError("canonical allocation fence selected a non-build stage")
+        spec = _CANDIDATE_STAGE_BY_NAME[stage]
+        consumer = require_bounded_bytes(
+            first_consumer_cursor,
+            field="canonical allocation first-consumer cursor",
+            minimum=1,
+            maximum=2048,
+        )
+        _validate_stage_cursor(spec.cursor_codec, consumer)
+        working = _lock_catalog_working(work)
+        if working is None or working[1] != candidate:
+            raise PublicationCandidateNotReadyError(
+                "canonical allocation candidate no longer owns the working root"
+            )
+        checkpoint = _lock_publication_checkpoint(work, candidate, spec)
+        if checkpoint.state != _CHECKPOINT_OPEN or checkpoint.cursor >= consumer:
+            raise PublicationCandidateNotReadyError(
+                "canonical allocation first consumer already advanced"
+            )
 
     @staticmethod
     def begin(
@@ -1689,6 +1753,7 @@ def _prepare_catalog_plan(
     database = sqlite3.connect(
         f"{temporary_directory.name}/projection.sqlite3",
         isolation_level=None,
+        check_same_thread=False,
     )
     try:
         database.execute("PRAGMA temp_store = FILE")
