@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-01T18:08:04+00:00",
+  "checked_at": "2026-09-01T21:07:39+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.28.3",
+  "project_version": "0.29.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, optional-development, and Node dependency for the compatible 0.28.3 publication canonical-plan linearization and claim-lifecycle fix. Dependency manifests are unchanged from 0.28.2 and the runtime adds no dependency. Registry candidates and Python 3.14 compatibility were reviewed; no dependency-bound change is required. Targeted SQLite and MariaDB 10.11.11 production-path fencing tests, differential tests, Lean proofs, and the finite TLA+ CanonicalPlanCursor profile pass. The exact candidate remains subject to the repository full release gate.",
+    "note": "Reviewed all build, runtime, optional, development, and Node direct dependencies for the 0.29.0 catalog, schema-bootstrap, and artifact-pipeline performance release; no dependency change is required, and recorded registry candidates remain subject to the full release gate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
