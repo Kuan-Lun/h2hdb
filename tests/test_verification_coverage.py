@@ -61,12 +61,9 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    assert len(report.blockers) == 49
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 22
-    assert (
-        sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 27
-    )
+    # Every production-evidence layer of every required invariant is covered
+    # by direct evidence; the strict gate reports no blocker.
+    assert report.blockers == ()
 
 
 def test_missing_required_invariant_is_rejected(tmp_path: Path) -> None:
@@ -155,7 +152,7 @@ def test_vertical_family_small_declares_bounded_safety_scope() -> None:
 def test_runtime_obligation_cannot_hide_missing_fault_coverage(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production operational fault matrix injects every invalid physical value at a real writer boundary and proves transaction rollback." }',
+        'fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.pipeline.physical-domains"] }',
         'fault = { status = "not_applicable", rationale = "This runtime invariant deliberately has no injected fault evidence yet." }',
     )
 
@@ -179,8 +176,8 @@ def test_stale_evidence_symbol_is_rejected(tmp_path: Path) -> None:
 def test_blocked_layer_requires_an_explicit_machine_blocker(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'blocker = "No production cross-backend fault matrix injects every invalid width, storage class, counter, timestamp, enum, and collation-sensitive value."',
-        'blocker = "unknown"',
+        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.physical-domains"] }',
+        'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "unknown" }',
     )
 
     with pytest.raises(
@@ -248,34 +245,44 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
         text=True,
     )
 
-    assert result.returncode == 1, result.stderr
-    assert "formal coverage blocked: invariants=31" in result.stdout
-    assert "catalog.identity-codecs.v1:fault:" in result.stdout
-    assert "catalog.retention.v2:integration:" in result.stdout
-    assert "h2hdb.operational.gallery-staging.v1:fault:" in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert "formal coverage valid: invariants=31 evidence=135" in result.stdout
 
 
-def test_coverage_validate_only_reports_production_blockers() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "verify-formal.py"),
-            "coverage",
-            "--validate-only",
-        ],
+def test_coverage_validate_only_reports_production_blockers(tmp_path: Path) -> None:
+    """A manifest that declares a blocked layer is still contract-valid under
+    ``--validate-only`` and lists the blocker; the strict gate rejects it."""
+
+    blocked = _write_mutation(
+        tmp_path,
+        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.bootstrap-matrix"] }',
+        'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No data-specific fault test corrupts, omits, duplicates, or partially commits each generated bootstrap registry row and proves convergence." }',
+    )
+    validate_only = subprocess.run(
+        [sys.executable, str(COVERAGE_CHECKER), str(blocked), "--validate-only"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-
-    assert result.returncode == 0, result.stderr
+    assert validate_only.returncode == 0, validate_only.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=31 evidence=124 blockers=49"
-    ) in result.stdout
-    assert "catalog.identity-codecs.v1:fault:" in result.stdout
-    assert "h2hdb.operational.gallery-staging.v1:integration:" in result.stdout
+        "invariants=31 evidence=135 blockers=1"
+    ) in validate_only.stdout
+    assert "catalog.bootstrap.v1:fault:" in validate_only.stdout
+    strict = subprocess.run(
+        [sys.executable, str(COVERAGE_CHECKER), str(blocked)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert strict.returncode == 1
+    assert (
+        "formal coverage blocked: invariants=31 evidence=135 blockers=1"
+        in strict.stdout
+    )
 
 
 def test_coverage_validate_only_still_rejects_invalid_manifest(

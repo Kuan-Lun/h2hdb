@@ -236,40 +236,71 @@ and no live candidate/build predecessor pins it.
 
 ## Honest production boundary
 
-The closed-world coverage command still exits nonzero, but production evidence
-is no longer absent. The index names exact vNext repository entrypoints, direct
-SQLite workflows, focused rollback and corruption tests, two live MariaDB
-workflows, and MariaDB SQL-shape recorders. Each recorder is explicitly only
-supporting evidence; it is never described as live MariaDB execution.
+The strict closed-world coverage command (`scripts/verify-formal.py coverage`)
+exits zero: every production-evidence layer of every required invariant cites
+direct evidence, and `scripts/check-full.sh` runs that strict gate. The
+evidence is executable, runs only through the public facades on a fresh
+temporary database per case, and is exact about what it does and does not
+prove.
 
-The 28 installed writer bindings close runtime ownership for every declared
-repository family. Nine physical-boundary tests verify the exact production
-families and reject representative forged values before SQL or event derivation.
-They do not erase the remaining exhaustive fault and cross-backend gaps.
+Executable evidence added for the production blockers:
 
-The default generated provider now completes initialize, replay, read-only full
-check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 5,833 bootstrap rows per backend. This closes the catalog and operational
-bootstrap
-runtime/integration claims, while their row-by-row corruption and partial-commit
-fault matrices remain explicit blockers.
+- A statement-fault and response-loss matrix interrupts every distinct write
+  transaction shape of a production turn (fresh, incremental with a pending
+  deletion request and a download handoff, and a cleanup-heavy 300-page
+  removal) before each mutation and after each commit, proves exact rollback
+  against a full snapshot, and proves that a restarted owner converges to the
+  byte-identical catalog under the full READY audit.
+- A takeover and generation-interference matrix takes the expired maintenance
+  gate and ingest generation over before every fenced boundary and races
+  every boundary against a concurrent deletion-request writer.
+- Per-stage analysis authority (rollback, stored `page_limit` replay,
+  corrupted-limit rejection), bootstrap seed omission/corruption/foreign-row
+  and interrupted-batch resume, a SHA-256 collision fixture at every digest
+  seam, a physical-domain matrix over every manifest column on both backends,
+  an identity-corruption matrix with the production audit and the production
+  turns as oracles, and authority exhaustion, expiry-takeover, response-loss
+  and policy-replacement races through the facades.
+- Live MariaDB 10.11.11 runs the same facade workflows, the liveness
+  regressions, the authority races, the interrupted seed batch, the physical
+  matrix and six sampled statement faults, only under `H2HDB_TEST_MARIADB=1`.
 
-In particular, schema/Lean/TLC success does not by itself authorize `READY`.
-The generated provider authorizes it only after its exact wheel-owned validators
-and all 28 production method families resolve and pass bounded checks. The
-strict evidence gate separately remains nonzero until its reported fault and
-integration blockers are discharged.
+Explicit assumptions and limits (each is also recorded on the evidence):
 
-FD completeness is also a domain-audit assumption. The checker and Lean can
+- SHA-256 collision resistance is assumed only for file content blobs, whose
+  identity is digest plus byte count; every other stored identity is accepted
+  only after full preimage comparison, and the collision fixture proves those
+  writers fail closed. Nothing claims SHA-256 is collision-free.
+- SQLite has no strict storage classes and no unsigned integers. The physical
+  matrix pins an exact inventory (282 of 4668 injected classes) of manifest
+  domains that the rendered SQLite checks do not enforce; the installed
+  writer-binding guards refuse those values before a production writer binds
+  them. Rendering those checks is a schema decision left to the owner.
+- The READY audit is bounded: it does not recompute every derived digest of
+  retained history or published data. Corruption of such a row is refused by
+  the next production turn or reader that consumes it, or stays inert for
+  the ingest (the public catalog is unchanged); for seven published and
+  analysis-history columns that nothing re-derives it is reader-visible, and
+  the corruption matrix pins exactly those columns instead of counting them
+  as refusals.
+- Sixteen of the twenty-three cleanup strategies never become eligible from
+  any facade-reachable state, because the published head's candidate-base
+  chain retains every committed revision by manifest design; only their
+  direct repository tests interrupt their phases. Whether committed history
+  should ever be reclaimed is an owner decision.
+- Orphaned artifact protections of a candidate abandoned mid-publication can
+  only be released by the artifact-release reconciliation, which no
+  maintenance entry point drives yet; maintenance reports `BLOCKED` until it
+  is wired (owner decision).
+- Three manifest relations have no production writer and rest in no corpus.
+- Every TLC result is a finite model check of the declared small profile; the
+  Lean theorems are unbounded only for the abstract models they state.
+
+FD completeness remains a domain-audit assumption. The checker and Lean can
 prove consequences of the declared FD set; they cannot infer an omitted real
 FD from a column name, digest rationale, or business policy. A semantic design
 change must first declare all resulting FDs, then regenerate and recheck both
 logical and physical artifacts.
-
-That limitation also applies to schema coverage: the manifest proof alone does
-not prove that a Python package contains no second hand-written schema. The
-source and wheel schema-surface gate separately rejects production SQL relation
-identifiers outside the physical manifests and the epoch-control relation.
 
 ## Commands
 
