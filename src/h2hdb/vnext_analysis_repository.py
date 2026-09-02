@@ -7842,6 +7842,16 @@ def _impacted_gallery_rows(
     boundary = (
         0 if after is None else require_positive_int63(after, field="impact cursor")
     )
+    if authority.overlay_depth == 0:
+        # A depth-zero analysis (the first one, or a self-only compaction after
+        # a policy change or a depth-16 parent) materializes every key of its
+        # build; the validators expect a shadow for each of them.
+        return work.connector.fetch_all(
+            "SELECT gallery_id FROM catalog_source_build_galleries "
+            "WHERE build_id = %s AND gallery_id > %s "
+            "ORDER BY gallery_id LIMIT %s",
+            (authority.build_id, boundary, limit),
+        )
     subqueries = [
         "SELECT gallery_id FROM catalog_analysis_changed_galleries "
         "WHERE analysis_id = %s"
@@ -7862,6 +7872,31 @@ def _impacted_gallery_rows(
             "WHERE delta.analysis_id = %s AND member.build_id = %s"
         )
         parameters.extend((authority.analysis_id, build_id))
+    # The owner group of every content a changed gallery contributed (through
+    # its old or its new observation) can change: an unchanged gallery that
+    # shares those file hashes may gain or lose content ownership and GID
+    # candidacy when its co-owners are added, modified, or removed.
+    for changed_build_id in build_ids:
+        for member_build_id in build_ids:
+            subqueries.append(
+                "SELECT member.gallery_id AS gallery_id "
+                "FROM catalog_analysis_changed_galleries AS changed "
+                "JOIN catalog_source_build_galleries AS changed_member "
+                "ON changed_member.gallery_id = changed.gallery_id "
+                "AND changed_member.build_id = %s "
+                "JOIN catalog_gallery_observation_file_hash_occurrences AS shared "
+                "ON shared.gallery_id = changed_member.gallery_id "
+                "AND shared.observation_id = changed_member.observation_id "
+                "JOIN catalog_gallery_observation_file_hash_occurrences AS other "
+                "ON other.file_sha256 = shared.file_sha256 "
+                "JOIN catalog_source_build_galleries AS member "
+                "ON member.gallery_id = other.gallery_id "
+                "AND member.observation_id = other.observation_id "
+                "WHERE changed.analysis_id = %s AND member.build_id = %s"
+            )
+            parameters.extend(
+                (changed_build_id, authority.analysis_id, member_build_id)
+            )
     parameters.extend((boundary, limit))
     return work.connector.fetch_all(
         "SELECT impact.gallery_id FROM ("
