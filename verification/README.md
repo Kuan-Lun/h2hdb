@@ -275,7 +275,10 @@ Explicit assumptions and limits (each is also recorded on the evidence):
   matrix pins an exact inventory (282 of 4668 injected classes) of manifest
   domains that the rendered SQLite checks do not enforce; the installed
   writer-binding guards refuse those values before a production writer binds
-  them. Rendering those checks is a schema decision left to the owner.
+  them. Rendering those checks is a schema decision left to the owner. Live
+  MariaDB enforces every rendered check; its only leniency, pinned by class
+  (about forty columns, depending on the sampled row), is that fixed-width
+  `BINARY(n)` columns pad a shorter value with zero bytes.
 - The READY audit is bounded: it does not recompute every derived digest of
   retained history or published data. Corruption of such a row is refused by
   the next production turn or reader that consumes it, or stays inert for

@@ -291,15 +291,17 @@ def test_sqlite_every_transaction_shape_rolls_back_exactly_and_replays_to_the_sa
     assert {kind for kind, _shape in covered} == {"before_mutation", "after_commit"}
 
 
-SHORT_LEASE_MICROSECONDS = 8_000_000
+# Live MariaDB turns take several times longer than SQLite ones; the lease
+# must outlive the interrupted turn and expire before the takeover.
+SHORT_LEASE_MICROSECONDS = 45_000_000
 
 
 def _short_lease_turn(
     config: CoreConfig, source: MemorySource, library: MemoryLibrary
 ) -> None:
-    """One turn under an eight-second lease so a later real-clock owner can
-    take the interrupted authority over (a future clock would poison later
-    real-time turns on the same database)."""
+    """One turn under a short lease so a later real-clock owner can take the
+    interrupted authority over (a future clock would poison later real-time
+    turns on the same database)."""
 
     facade = VNextIngestFacade(config, clock=Clock())
     try:
