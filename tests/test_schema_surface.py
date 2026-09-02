@@ -8,7 +8,6 @@ import re
 import sys
 import tarfile
 import zipfile
-import zlib
 from pathlib import Path
 from types import ModuleType
 
@@ -37,17 +36,15 @@ distribution_gate = _load_module("h2hdb_distribution_gate", DISTRIBUTION_GATE)
 
 def _artifact_members(value: object) -> tuple[str, bytes, str]:
     raw = encode_schema_artifact(value)
-    compressed = zlib.compress(raw, level=9)
     loader = f'''_RESOURCE_NAME = "_generated_vnext_schema.bin"
-_COMPRESSED_SIZE = {len(compressed)}
-_COMPRESSED_SHA256 = "{hashlib.sha256(compressed).hexdigest()}"
+_PICKLE_PROTOCOL = 5
 _RAW_SIZE = {len(raw)}
 _RAW_SHA256 = "{hashlib.sha256(raw).hexdigest()}"
 '''
     codec_source = (ROOT / "src" / "h2hdb" / "_schema_artifact_codec.py").read_text(
         encoding="utf-8"
     )
-    return loader, compressed, codec_source
+    return loader, raw, codec_source
 
 
 def test_production_sql_does_not_use_mariadb_blob_reserved_alias() -> None:
@@ -307,11 +304,11 @@ def test_wheel_schema_gate_rejects_packaged_view_mutation(tmp_path: Path) -> Non
 def test_source_schema_gate_scans_embedded_binary_ddl(tmp_path: Path) -> None:
     package = tmp_path / "h2hdb"
     package.mkdir()
-    loader, compressed, codec_source = _artifact_members(
+    loader, raw, codec_source = _artifact_members(
         {"sql": "SELECT 1 FROM catalog_unmanifested_binary_relation"}
     )
     (package / "_generated_vnext_schema.py").write_text(loader, encoding="utf-8")
-    (package / "_generated_vnext_schema.bin").write_bytes(compressed)
+    (package / "_generated_vnext_schema.bin").write_bytes(raw)
     (package / "_schema_artifact_codec.py").write_text(codec_source, encoding="utf-8")
 
     references = gate.source_references(package)
@@ -326,12 +323,12 @@ def test_wheel_schema_gate_scans_binary_artifact_with_packaged_decoder(
     tmp_path: Path,
 ) -> None:
     wheel = tmp_path / "binary-view-mutation.whl"
-    loader, compressed, codec_source = _artifact_members(
+    loader, raw, codec_source = _artifact_members(
         {"sql": "UPDATE catalog_read_projection SET value = 1"}
     )
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("h2hdb/_generated_vnext_schema.py", loader)
-        archive.writestr("h2hdb/_generated_vnext_schema.bin", compressed)
+        archive.writestr("h2hdb/_generated_vnext_schema.bin", raw)
         archive.writestr("h2hdb/_schema_artifact_codec.py", codec_source)
 
     mutations = gate.wheel_mutations(wheel)
@@ -354,12 +351,34 @@ def test_schema_surface_rejects_incomplete_or_corrupt_artifact_boundary(
 
     corrupt = tmp_path / "corrupt" / "h2hdb"
     corrupt.mkdir(parents=True)
-    loader, compressed, codec_source = _artifact_members({"sql": "SELECT 1"})
+    loader, raw, codec_source = _artifact_members({"sql": "SELECT 1"})
     (corrupt / "_generated_vnext_schema.py").write_text(loader, encoding="utf-8")
-    (corrupt / "_generated_vnext_schema.bin").write_bytes(compressed + b"corrupt")
+    (corrupt / "_generated_vnext_schema.bin").write_bytes(raw + b"corrupt")
     (corrupt / "_schema_artifact_codec.py").write_text(codec_source, encoding="utf-8")
     with pytest.raises(gate.SchemaSurfaceError, match="cannot decode"):
         gate.source_references(corrupt)
+
+
+def test_schema_surface_runs_full_preflight_after_exact_authentication(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "h2hdb"
+    package.mkdir()
+    raw = b"\x80\x05cbuiltins\nlist\n."
+    loader = f'''_RESOURCE_NAME = "_generated_vnext_schema.bin"
+_PICKLE_PROTOCOL = 5
+_RAW_SIZE = {len(raw)}
+_RAW_SHA256 = "{hashlib.sha256(raw).hexdigest()}"
+'''
+    codec_source = (ROOT / "src" / "h2hdb" / "_schema_artifact_codec.py").read_text(
+        encoding="utf-8"
+    )
+    (package / "_generated_vnext_schema.py").write_text(loader, encoding="utf-8")
+    (package / "_generated_vnext_schema.bin").write_bytes(raw)
+    (package / "_schema_artifact_codec.py").write_text(codec_source, encoding="utf-8")
+
+    with pytest.raises(gate.SchemaSurfaceError, match="forbidden.*GLOBAL"):
+        gate.source_references(package)
 
 
 def test_sdist_archive_rejects_removed_legacy_modules(tmp_path: Path) -> None:

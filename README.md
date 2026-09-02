@@ -122,15 +122,26 @@ the public administration API does not accept a substitute provider. `check`
 holds a read transaction while validating the complete `READY` schema;
 `ready` validates only the exact epoch/version/manifest marker.
 
-The generated schema is shipped as a small Python loader plus a bounded zlib
-resource containing canonical JSON. Dictionaries and lists use native JSON;
-tuples and bytes use reserved collision-free tags. The loader verifies exact
-compressed/raw sizes and SHA-256 digests, zlib EOF, canonical syntax, the
-closed primitive type surface, and hard byte/node/depth caps before exposing
-the eager `ARTIFACT` dictionary. A plain `import h2hdb` does not load this
-resource; explicit schema-provider use decodes it once per process. The
-generator preserves an existing valid blob when its canonical logical payload
-is unchanged, so a local zlib-version difference alone does not create drift.
+The generated schema is shipped as a small Python loader plus a raw, bounded
+protocol-5 pickle resource; the wheel or sdist compressor handles distribution
+compression. The resource is part of the same trusted code cohort as the
+loader, which authenticates its fixed name, exact size, and SHA-256 digest
+before parsing it. Generator drift checks, schema-surface scans, and fresh
+distribution gates apply a bounded abstract opcode interpreter to that exact
+digest; the interpreter excludes globals, callables, classes, persistent IDs,
+extensions, out-of-band buffers, mutable aliases, non-string dictionary keys,
+and memo graphs whose unfolded tree exceeds the byte/node/depth caps. The
+production loader does not repeat that development-time opcode proof after the
+fixed resource has matched its loader-pinned identity, size, and digest. It
+still uses a restricted unpickler followed by closed
+type/order/node/depth/cycle/ownership validation. This fixed, wheel-owned path
+is not a generic untrusted-pickle API. The eager `ARTIFACT` contract
+preserves exact values, dictionary order, and list/tuple/bytes/bool/int types;
+deduplicated immutable object identity is only a storage optimization and is
+not an API guarantee. A plain `import h2hdb` does not load this resource;
+explicit schema-provider use decodes it once per process. The generator
+preserves an existing authenticated blob when its canonical logical payload is
+unchanged, insulating committed output from compatible pickler differences.
 
 Applications can use the same administration boundary directly:
 

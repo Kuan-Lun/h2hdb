@@ -2,22 +2,24 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import pickletools
 import re
 import runpy
 import subprocess
 import sys
 import tomllib
-import zlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from h2hdb import _schema_artifact_codec as codec
 from h2hdb import vnext_schema_provider as provider_module
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb._schema_artifact_codec import (
-    decode_schema_artifact_raw,
+    SCHEMA_ARTIFACT_PICKLE_PROTOCOL,
+    decode_schema_artifact,
     encode_schema_artifact,
 )
 from h2hdb.schema_epoch import SchemaEpochValidationError, SchemaSeedStatement
@@ -78,11 +80,47 @@ def test_generated_provider_artifact_is_deterministic_and_current() -> None:
 def test_decoded_artifact_exactly_matches_the_generator_logical_payload() -> None:
     generator = runpy.run_path(str(GENERATOR))
     logical_payload = cast(dict[str, Any], generator["_provider_payload"]())
-    canonical_payload = decode_schema_artifact_raw(
-        encode_schema_artifact(logical_payload)
+    raw = encode_schema_artifact(logical_payload)
+    canonical_payload = decode_schema_artifact(
+        raw,
+        pickle_protocol=SCHEMA_ARTIFACT_PICKLE_PROTOCOL,
+        raw_size=len(raw),
+        raw_sha256=hashlib.sha256(raw).hexdigest(),
     )
 
     _assert_structurally_identical(ARTIFACT_DATA, canonical_payload)
+
+
+def test_committed_resource_passes_the_full_generic_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = ast.parse(GENERATED.read_text(encoding="utf-8"), filename=str(GENERATED))
+    values = {
+        target.id: ast.literal_eval(statement.value)
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance((target := statement.targets[0]), ast.Name)
+        and target.id in {"_PICKLE_PROTOCOL", "_RAW_SIZE", "_RAW_SHA256"}
+    }
+    original_preflight = codec._preflight_pickle
+    preflight_calls = 0
+
+    def record_preflight(raw: bytes) -> None:
+        nonlocal preflight_calls
+        preflight_calls += 1
+        original_preflight(raw)
+
+    monkeypatch.setattr(codec, "_preflight_pickle", record_preflight)
+    decoded = codec.decode_schema_artifact(
+        GENERATED_RESOURCE.read_bytes(),
+        pickle_protocol=cast(int, values["_PICKLE_PROTOCOL"]),
+        raw_size=cast(int, values["_RAW_SIZE"]),
+        raw_sha256=cast(str, values["_RAW_SHA256"]),
+    )
+
+    assert preflight_calls == 1
+    _assert_structurally_identical(decoded, ARTIFACT_DATA)
 
 
 def test_generation_is_multiprocess_deterministic_and_preserves_valid_blob(
@@ -119,23 +157,22 @@ def test_generation_is_multiprocess_deterministic_and_preserves_valid_blob(
     assert len(set(loader_payloads)) == 1
     assert len(set(resource_payloads)) == 1
     assert len(loader_payloads[0]) < 1024 * 1024
-    assert len(resource_payloads[0]) < 2 * 1024 * 1024
+    assert len(resource_payloads[0]) < 8 * 1024 * 1024
 
     preserved_directory = output_directories[0]
     loader_path = preserved_directory / GENERATED.name
     resource_path = preserved_directory / GENERATED_RESOURCE.name
-    canonical_raw = zlib.decompress(resource_path.read_bytes())
-    alternate_resource = zlib.compress(canonical_raw, level=1)
+    alternate_resource = pickletools.optimize(resource_path.read_bytes())
     assert alternate_resource != resource_path.read_bytes()
     loader = loader_path.read_text(encoding="utf-8")
     loader = re.sub(
-        r"(?m)^_COMPRESSED_SIZE = [0-9]+$",
-        f"_COMPRESSED_SIZE = {len(alternate_resource)}",
+        r"(?m)^_RAW_SIZE = [0-9]+$",
+        f"_RAW_SIZE = {len(alternate_resource)}",
         loader,
     )
     loader = re.sub(
-        r'(?m)^_COMPRESSED_SHA256 = "[0-9a-f]{64}"$',
-        '_COMPRESSED_SHA256 = "' + hashlib.sha256(alternate_resource).hexdigest() + '"',
+        r'(?m)^_RAW_SHA256 = "[0-9a-f]{64}"$',
+        '_RAW_SHA256 = "' + hashlib.sha256(alternate_resource).hexdigest() + '"',
         loader,
     )
     loader_path.write_text(loader, encoding="utf-8")

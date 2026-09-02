@@ -99,10 +99,9 @@ class MutationReference:
 class _ArtifactDecoder(Protocol):
     def __call__(
         self,
-        compressed: bytes,
+        raw: bytes,
         *,
-        compressed_size: int,
-        compressed_sha256: str,
+        pickle_protocol: int,
         raw_size: int,
         raw_sha256: str,
     ) -> dict[str, Any]: ...
@@ -518,8 +517,7 @@ def _mutations_for_member(
 
 _ARTIFACT_LOADER_CONSTANTS = (
     "_RESOURCE_NAME",
-    "_COMPRESSED_SIZE",
-    "_COMPRESSED_SHA256",
+    "_PICKLE_PROTOCOL",
     "_RAW_SIZE",
     "_RAW_SHA256",
 )
@@ -527,7 +525,7 @@ _ARTIFACT_LOADER_CONSTANTS = (
 
 def _artifact_loader_metadata(
     loader_source: str, *, source: str
-) -> tuple[int, str, int, str]:
+) -> tuple[int, int, str]:
     try:
         tree = ast.parse(loader_source, filename=source)
     except SyntaxError as error:
@@ -558,20 +556,18 @@ def _artifact_loader_metadata(
         raise SchemaSurfaceError(
             f"generated artifact loader names an unexpected resource in {source}"
         )
-    compressed_size = values["_COMPRESSED_SIZE"]
-    compressed_sha256 = values["_COMPRESSED_SHA256"]
+    pickle_protocol = values["_PICKLE_PROTOCOL"]
     raw_size = values["_RAW_SIZE"]
     raw_sha256 = values["_RAW_SHA256"]
     if (
-        type(compressed_size) is not int
-        or type(compressed_sha256) is not str
+        type(pickle_protocol) is not int
         or type(raw_size) is not int
         or type(raw_sha256) is not str
     ):
         raise SchemaSurfaceError(
             f"generated artifact loader metadata has invalid types in {source}"
         )
-    return compressed_size, compressed_sha256, raw_size, raw_sha256
+    return pickle_protocol, raw_size, raw_sha256
 
 
 def _artifact_decoder(codec_source: str, *, source: str) -> _ArtifactDecoder:
@@ -597,18 +593,17 @@ def _decode_artifact(
     *,
     loader_source: str,
     codec_source: str,
-    compressed: bytes,
+    raw: bytes,
     source: str,
 ) -> dict[str, Any]:
-    compressed_size, compressed_sha256, raw_size, raw_sha256 = (
-        _artifact_loader_metadata(loader_source, source=source)
+    pickle_protocol, raw_size, raw_sha256 = _artifact_loader_metadata(
+        loader_source, source=source
     )
     decoder = _artifact_decoder(codec_source, source=source)
     try:
         return decoder(
-            compressed,
-            compressed_size=compressed_size,
-            compressed_sha256=compressed_sha256,
+            raw,
+            pickle_protocol=pickle_protocol,
             raw_size=raw_size,
             raw_sha256=raw_sha256,
         )
@@ -665,7 +660,7 @@ def _source_artifact(package_root: Path) -> dict[str, Any] | None:
     return _decode_artifact(
         loader_source=loader.read_text(encoding="utf-8"),
         codec_source=codec.read_text(encoding="utf-8"),
-        compressed=resource.read_bytes(),
+        raw=resource.read_bytes(),
         source=resource.as_posix(),
     )
 
@@ -751,7 +746,7 @@ def _wheel_artifact(archive: zipfile.ZipFile) -> dict[str, Any] | None:
     return _decode_artifact(
         loader_source=loader_source,
         codec_source=codec_source,
-        compressed=archive.read(resource_name),
+        raw=archive.read(resource_name),
         source=resource_name,
     )
 

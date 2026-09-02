@@ -14,14 +14,24 @@ def test_formal_models_state_the_exact_decode_boundary() -> None:
     configuration = TLA_SMALL.read_text(encoding="utf-8")
 
     assert "reference_codec_roundtrip" in lean
-    assert "list_and_tuple_tags_are_distinct" in lean
+    assert "list_and_tuple_wires_are_distinct" in lean
     assert "successful_exact_decode_preserves_projection" in lean
     assert "admitted_decode_preserves_schema_projection" in lean
-    assert "do not prove that Python's JSON parser, zlib" in lean
+    assert "pinned_runtime_decode_preserves_schema_projection" in lean
+    assert "ExactPinnedResource" in lean
+    assert "do not prove that Python's pickle implementation" in lean
     assert "InvalidNeverAccepted" in tla
     assert "AcceptanceMatchesChecks" in tla
-    assert "RawDigestOK" in tla
+    assert "DigestOK" in tla
+    assert "OpcodeSurfaceOK" in tla
     assert "NodeBoundOK" in tla
+    assert '"memo-dag-overflow"' in tla
+    assert '"dictionary-key-invalid"' in tla
     assert "ClosedTypeSurface" in tla
-    assert "does not prove Python, JSON, SHA-256, zlib" in tla
+    assert "FullPreflightChecksPass" in tla
+    assert "RuntimeAcceptanceRequiresPinnedCohort" in tla
+    assert "production runtime may omit" in tla
+    assert "does not prove Python" in tla
+    assert "pickletools, SHA-256" in tla
+    assert "RuntimeAcceptanceRequiresPinnedCohort" in configuration
     assert "ValidAcceptedAtCompletion" in configuration

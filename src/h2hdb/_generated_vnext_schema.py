@@ -6,21 +6,19 @@ This module and its binary resource have no verification-package dependency.
 
 from __future__ import annotations
 
-from ._schema_artifact_codec import load_schema_artifact_resource
+from ._schema_artifact_codec import _load_pinned_schema_artifact_resource
 
 _RESOURCE_NAME = "_generated_vnext_schema.bin"
-_COMPRESSED_SIZE = 539204
-_COMPRESSED_SHA256 = "92e1c2950a918a96952152c2a511c1b5cf122606b461356dff2dc728db304701"
-_RAW_SIZE = 18822523
-_RAW_SHA256 = "eec722071b467101d1dc747681efb976a7ff0c3a650411dc359eb5d7e3480126"
+_PICKLE_PROTOCOL = 5
+_RAW_SIZE = 4074728
+_RAW_SHA256 = "558869b012a6f87ab834e05190aa05564a02ed76ec42bd4c1212ca1fa47f48f5"
 
-ARTIFACT = load_schema_artifact_resource(
+ARTIFACT = _load_pinned_schema_artifact_resource(
     package=__package__,
     resource_name=_RESOURCE_NAME,
-    compressed_size=_COMPRESSED_SIZE,
-    compressed_sha256=_COMPRESSED_SHA256,
+    pickle_protocol=_PICKLE_PROTOCOL,
     raw_size=_RAW_SIZE,
     raw_sha256=_RAW_SHA256,
 )
 
-del load_schema_artifact_resource
+del _load_pinned_schema_artifact_resource

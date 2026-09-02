@@ -47,10 +47,9 @@ SOURCE_PATHS = (
 class _DecodeSchemaArtifact(Protocol):
     def __call__(
         self,
-        compressed: bytes,
+        raw: bytes,
         *,
-        compressed_size: int,
-        compressed_sha256: str,
+        pickle_protocol: int,
         raw_size: int,
         raw_sha256: str,
     ) -> dict[str, Any]: ...
@@ -60,14 +59,14 @@ _CODEC_NAMESPACE = runpy.run_path(str(CODEC_SOURCE))
 _encode_schema_artifact = cast(
     Callable[[object], bytes], _CODEC_NAMESPACE["encode_schema_artifact"]
 )
-_compress_schema_artifact = cast(
-    Callable[[bytes], bytes], _CODEC_NAMESPACE["compress_schema_artifact"]
-)
 _decode_schema_artifact = cast(
     _DecodeSchemaArtifact, _CODEC_NAMESPACE["decode_schema_artifact"]
 )
 _SchemaArtifactCodecError = cast(
     type[Exception], _CODEC_NAMESPACE["SchemaArtifactCodecError"]
+)
+_SCHEMA_ARTIFACT_PICKLE_PROTOCOL = cast(
+    int, _CODEC_NAMESPACE["SCHEMA_ARTIFACT_PICKLE_PROTOCOL"]
 )
 
 
@@ -3308,14 +3307,13 @@ def _provider_payload() -> dict[str, Any]:
 
 _LOADER_CONSTANTS = (
     "_RESOURCE_NAME",
-    "_COMPRESSED_SIZE",
-    "_COMPRESSED_SHA256",
+    "_PICKLE_PROTOCOL",
     "_RAW_SIZE",
     "_RAW_SHA256",
 )
 
 
-def _loader_metadata(module_path: Path) -> tuple[str, int, str, int, str]:
+def _loader_metadata(module_path: Path) -> tuple[str, int, int, str]:
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
     values: dict[str, object] = {}
     for statement in tree.body:
@@ -3328,22 +3326,19 @@ def _loader_metadata(module_path: Path) -> tuple[str, int, str, int, str]:
     if set(values) != set(_LOADER_CONSTANTS):
         raise ValueError("generated schema loader metadata is incomplete")
     resource_name = values["_RESOURCE_NAME"]
-    compressed_size = values["_COMPRESSED_SIZE"]
-    compressed_sha256 = values["_COMPRESSED_SHA256"]
+    pickle_protocol = values["_PICKLE_PROTOCOL"]
     raw_size = values["_RAW_SIZE"]
     raw_sha256 = values["_RAW_SHA256"]
     if (
         type(resource_name) is not str
-        or type(compressed_size) is not int
-        or type(compressed_sha256) is not str
+        or type(pickle_protocol) is not int
         or type(raw_size) is not int
         or type(raw_sha256) is not str
     ):
         raise ValueError("generated schema loader metadata has invalid types")
     return (
         resource_name,
-        compressed_size,
-        compressed_sha256,
+        pickle_protocol,
         raw_size,
         raw_sha256,
     )
@@ -3357,18 +3352,16 @@ def _matching_existing_resource(
     try:
         (
             resource_name,
-            compressed_size,
-            compressed_sha256,
+            pickle_protocol,
             raw_size,
             raw_sha256,
         ) = _loader_metadata(module_path)
         if resource_name != resource_path.name:
             return None
-        compressed = resource_path.read_bytes()
+        raw = resource_path.read_bytes()
         decoded = _decode_schema_artifact(
-            compressed,
-            compressed_size=compressed_size,
-            compressed_sha256=compressed_sha256,
+            raw,
+            pickle_protocol=pickle_protocol,
             raw_size=raw_size,
             raw_sha256=raw_sha256,
         )
@@ -3376,12 +3369,11 @@ def _matching_existing_resource(
             return None
     except OSError, SyntaxError, ValueError, _SchemaArtifactCodecError:
         return None
-    return compressed
+    return raw
 
 
-def _render_loader(*, compressed: bytes, canonical_raw: bytes) -> str:
-    compressed_digest = hashlib.sha256(compressed).hexdigest()
-    raw_digest = hashlib.sha256(canonical_raw).hexdigest()
+def _render_loader(*, raw: bytes) -> str:
+    raw_digest = hashlib.sha256(raw).hexdigest()
     return f'''"""Generated vNext schema-provider loader; do not edit by hand.
 
 Regenerate with ``python scripts/generate-vnext-schema-provider.py``.
@@ -3390,24 +3382,22 @@ This module and its binary resource have no verification-package dependency.
 
 from __future__ import annotations
 
-from ._schema_artifact_codec import load_schema_artifact_resource
+from ._schema_artifact_codec import _load_pinned_schema_artifact_resource
 
 _RESOURCE_NAME = "_generated_vnext_schema.bin"
-_COMPRESSED_SIZE = {len(compressed)}
-_COMPRESSED_SHA256 = "{compressed_digest}"
-_RAW_SIZE = {len(canonical_raw)}
+_PICKLE_PROTOCOL = {_SCHEMA_ARTIFACT_PICKLE_PROTOCOL}
+_RAW_SIZE = {len(raw)}
 _RAW_SHA256 = "{raw_digest}"
 
-ARTIFACT = load_schema_artifact_resource(
+ARTIFACT = _load_pinned_schema_artifact_resource(
     package=__package__,
     resource_name=_RESOURCE_NAME,
-    compressed_size=_COMPRESSED_SIZE,
-    compressed_sha256=_COMPRESSED_SHA256,
+    pickle_protocol=_PICKLE_PROTOCOL,
     raw_size=_RAW_SIZE,
     raw_sha256=_RAW_SHA256,
 )
 
-del load_schema_artifact_resource
+del _load_pinned_schema_artifact_resource
 '''
 
 
@@ -3415,16 +3405,16 @@ def render(
     *, module_path: Path = GENERATED, resource_path: Path = GENERATED_RESOURCE
 ) -> tuple[str, bytes]:
     canonical_raw = _encode_schema_artifact(_provider_payload())
-    compressed = _matching_existing_resource(
+    raw = _matching_existing_resource(
         module_path=module_path,
         resource_path=resource_path,
         canonical_raw=canonical_raw,
     )
-    if compressed is None:
-        compressed = _compress_schema_artifact(canonical_raw)
+    if raw is None:
+        raw = canonical_raw
     return (
-        _render_loader(compressed=compressed, canonical_raw=canonical_raw),
-        compressed,
+        _render_loader(raw=raw),
+        raw,
     )
 
 

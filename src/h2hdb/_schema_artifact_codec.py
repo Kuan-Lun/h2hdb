@@ -1,49 +1,100 @@
-"""Bounded canonical codec for the wheel-resident schema artifact.
+"""Authenticated, bounded codec for the wheel-resident schema artifact.
 
-Only primitive immutable/schema-description values cross this boundary.  The
-wire form is canonical JSON with native dictionaries/lists and collision-free
-reserved tags for tuples/bytes, then zlib compression.  Decoding is
-deliberately fail closed and does not import any verification-only package.
+The generated payload uses protocol-5 pickle only as a compact Python-native
+value encoding. Generic decoding first authenticates caller-supplied bytes and
+then runs a bounded abstract stack/memo interpreter before restricted
+unpickling. The interpreter admits only primitive values and containers,
+rejects every executable or externally resolved operation, and saturates the
+unfolded tree's resource bounds.
+
+The private production loader has a narrower trust boundary: it reads only the
+fixed resource in the ``h2hdb`` package and authenticates it against size and
+SHA-256 literals shipped in the same generated loader. Build, drift,
+schema-surface, and distribution gates have already applied the full abstract
+preflight to that exact digest, so production avoids repeating it on every
+short-lived readiness process. Restricted unpickling and closed post-decode
+validation remain mandatory at runtime. This is not a generic untrusted-pickle
+API.
 """
 
 from __future__ import annotations
 
 __all__ = [
-    "MAX_SCHEMA_ARTIFACT_COMPRESSED_BYTES",
+    "MAX_SCHEMA_ARTIFACT_BYTES",
     "MAX_SCHEMA_ARTIFACT_DEPTH",
+    "MAX_SCHEMA_ARTIFACT_EXPANDED_BYTES",
     "MAX_SCHEMA_ARTIFACT_NODES",
-    "MAX_SCHEMA_ARTIFACT_RAW_BYTES",
+    "MAX_SCHEMA_ARTIFACT_OPCODES",
+    "SCHEMA_ARTIFACT_PICKLE_PROTOCOL",
     "SchemaArtifactCodecError",
-    "compress_schema_artifact",
     "decode_schema_artifact",
-    "decode_schema_artifact_raw",
     "encode_schema_artifact",
-    "load_schema_artifact_resource",
 ]
 
 import hashlib
 import hmac
-import json
+import io
+import pickle
 import re
-import zlib
 from importlib.resources import files
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn, cast
 
-MAX_SCHEMA_ARTIFACT_COMPRESSED_BYTES: Final = 2 * 1024 * 1024
-MAX_SCHEMA_ARTIFACT_RAW_BYTES: Final = 32 * 1024 * 1024
+MAX_SCHEMA_ARTIFACT_BYTES: Final = 8 * 1024 * 1024
+MAX_SCHEMA_ARTIFACT_EXPANDED_BYTES: Final = 32 * 1024 * 1024
 MAX_SCHEMA_ARTIFACT_NODES: Final = 1_000_000
 MAX_SCHEMA_ARTIFACT_DEPTH: Final = 64
+MAX_SCHEMA_ARTIFACT_OPCODES: Final = 2_000_000
+SCHEMA_ARTIFACT_PICKLE_PROTOCOL: Final = 5
 
-_MAX_JSON_DEPTH: Final = 2 * MAX_SCHEMA_ARTIFACT_DEPTH + 8
-_MAX_INTEGER_DIGITS: Final = 128
+_MAX_SCHEMA_ARTIFACT_FRAMES: Final = 256
+_MAX_SCHEMA_ARTIFACT_SCALAR_BYTES: Final = 256 * 1024
+_MAX_SCHEMA_ARTIFACT_WORK_BYTES: Final = 128 * 1024 * 1024
+_MAX_INTEGER_BITS: Final = 426
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
-_BYTE_HEX_PATTERN = re.compile(r"(?:[0-9a-f]{2})*")
-_INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)")
-_UNICODE_ESCAPE_PATTERN = re.compile(r"[0-9a-f]{4}")
+_SCHEMA_ARTIFACT_PACKAGE: Final = "h2hdb"
 _SCHEMA_ARTIFACT_RESOURCE: Final = "_generated_vnext_schema.bin"
-_RESERVED_KEY_PREFIX: Final = "\x00"
-_BYTES_TAG: Final = f"{_RESERVED_KEY_PREFIX}bytes"
-_TUPLE_TAG: Final = f"{_RESERVED_KEY_PREFIX}tuple"
+
+# No opcode in this set can resolve a global, invoke a callable, construct a
+# class, load persistent state, or consume an out-of-band buffer. The list is
+# deliberately the exact primitive/container surface emitted by CPython's
+# protocol-5 pickler for the supported logical tree.
+_ALLOWED_PICKLE_OPCODES: Final = frozenset(
+    {
+        "APPEND",
+        "APPENDS",
+        "BINGET",
+        "BINBYTES",
+        "BINBYTES8",
+        "BININT",
+        "BININT1",
+        "BININT2",
+        "BINUNICODE",
+        "BINUNICODE8",
+        "EMPTY_DICT",
+        "EMPTY_LIST",
+        "EMPTY_TUPLE",
+        "FRAME",
+        "LONG1",
+        "LONG4",
+        "LONG_BINGET",
+        "MARK",
+        "MEMOIZE",
+        "NEWFALSE",
+        "NEWTRUE",
+        "NONE",
+        "PROTO",
+        "SETITEM",
+        "SETITEMS",
+        "SHORT_BINBYTES",
+        "SHORT_BINUNICODE",
+        "STOP",
+        "TUPLE",
+        "TUPLE1",
+        "TUPLE2",
+        "TUPLE3",
+    }
+)
+type _ExactInternKey = tuple[str, object]
 
 
 class SchemaArtifactCodecError(ValueError):
@@ -61,109 +112,14 @@ class _Budget:
             raise SchemaArtifactCodecError(
                 "schema artifact exceeds the maximum semantic depth"
             )
-        self.nodes += 1
+        self.add(1)
+
+    def add(self, count: int) -> None:
+        self.nodes += count
         if self.nodes > MAX_SCHEMA_ARTIFACT_NODES:
             raise SchemaArtifactCodecError(
                 "schema artifact exceeds the maximum semantic node count"
             )
-
-
-class _CanonicalEncoder:
-    __slots__ = ("_active_containers", "_budget", "_output")
-
-    def __init__(self) -> None:
-        self._active_containers: set[int] = set()
-        self._budget = _Budget()
-        self._output = bytearray()
-
-    def encode(self, value: object) -> bytes:
-        self._node(value, depth=0)
-        return bytes(self._output)
-
-    def _write(self, value: bytes) -> None:
-        if len(self._output) + len(value) > MAX_SCHEMA_ARTIFACT_RAW_BYTES:
-            raise SchemaArtifactCodecError(
-                "schema artifact exceeds the maximum uncompressed size"
-            )
-        self._output.extend(value)
-
-    def _container(self, value: object) -> int:
-        identity = id(value)
-        if identity in self._active_containers:
-            raise SchemaArtifactCodecError("schema artifact contains a container cycle")
-        self._active_containers.add(identity)
-        return identity
-
-    def _node(self, value: object, *, depth: int) -> None:
-        self._budget.visit(depth)
-        value_type = type(value)
-        if value is None:
-            self._write(b"null")
-            return
-        if value_type is bool:
-            self._write(b"true" if value else b"false")
-            return
-        if value_type is int:
-            rendered = str(value)
-            if len(rendered.removeprefix("-")) > _MAX_INTEGER_DIGITS:
-                raise SchemaArtifactCodecError(
-                    "schema artifact integer exceeds the digit bound"
-                )
-            self._write(rendered.encode("ascii"))
-            return
-        if value_type is str:
-            string = cast(str, value)
-            _validate_unicode(string)
-            rendered = json.dumps(string, ensure_ascii=False, separators=(",", ":"))
-            self._write(rendered.encode("utf-8"))
-            return
-        if value_type is bytes:
-            byte_value = cast(bytes, value)
-            self._write(b'{"\\u0000bytes":"')
-            self._write(byte_value.hex().encode("ascii"))
-            self._write(b'"}')
-            return
-        if value_type not in {dict, list, tuple}:
-            raise SchemaArtifactCodecError(
-                f"schema artifact contains unsupported type {value_type.__name__!r}"
-            )
-
-        identity = self._container(value)
-        try:
-            if value_type is dict:
-                mapping = cast(dict[object, object], value)
-                if not all(type(key) is str for key in mapping):
-                    raise SchemaArtifactCodecError(
-                        "schema artifact dictionaries require string keys"
-                    )
-                string_mapping = cast(dict[str, object], mapping)
-                if any(key.startswith(_RESERVED_KEY_PREFIX) for key in string_mapping):
-                    raise SchemaArtifactCodecError(
-                        "schema artifact dictionary uses a reserved codec key"
-                    )
-                self._write(b"{")
-                for index, key in enumerate(sorted(string_mapping)):
-                    if index:
-                        self._write(b",")
-                    self._node(key, depth=depth + 1)
-                    self._write(b":")
-                    self._node(string_mapping[key], depth=depth + 1)
-                self._write(b"}")
-                return
-
-            sequence = cast(list[object] | tuple[object, ...], value)
-            if value_type is tuple:
-                self._write(b'{"\\u0000tuple":')
-            self._write(b"[")
-            for index, item in enumerate(sequence):
-                if index:
-                    self._write(b",")
-                self._node(item, depth=depth + 1)
-            self._write(b"]")
-            if value_type is tuple:
-                self._write(b"}")
-        finally:
-            self._active_containers.remove(identity)
 
 
 def _validate_unicode(value: str) -> None:
@@ -173,328 +129,715 @@ def _validate_unicode(value: str) -> None:
         )
 
 
-def _validate_sha256(value: object, *, field: str) -> str:
+def _validate_integer(value: int) -> None:
+    if value.bit_length() > _MAX_INTEGER_BITS:
+        raise SchemaArtifactCodecError("schema artifact integer exceeds its bound")
+
+
+class _Canonicalizer:
+    __slots__ = (
+        "_active_containers",
+        "_budget",
+        "_bytes",
+        "_strings",
+        "_tuples",
+    )
+
+    def __init__(self) -> None:
+        self._active_containers: set[int] = set()
+        self._budget = _Budget()
+        self._bytes: dict[bytes, bytes] = {}
+        self._strings: dict[str, str] = {}
+        self._tuples: dict[_ExactInternKey, tuple[object, ...]] = {}
+
+    def normalize(self, value: object) -> object:
+        normalized, _key = self._node(value, depth=0)
+        if type(normalized) is not dict:
+            raise SchemaArtifactCodecError(
+                "schema artifact root must be a dictionary with string keys"
+            )
+        return normalized
+
+    def _enter_container(self, value: object) -> int:
+        identity = id(value)
+        if identity in self._active_containers:
+            raise SchemaArtifactCodecError("schema artifact contains a container cycle")
+        self._active_containers.add(identity)
+        return identity
+
+    def _node(
+        self, value: object, *, depth: int
+    ) -> tuple[object, _ExactInternKey | None]:
+        self._budget.visit(depth)
+        value_type = type(value)
+        if value is None:
+            return None, ("none", None)
+        if value_type is bool:
+            return value, ("bool", value)
+        if value_type is int:
+            integer = cast(int, value)
+            _validate_integer(integer)
+            return integer, ("int", integer)
+        if value_type is str:
+            string = cast(str, value)
+            _validate_unicode(string)
+            canonical = self._strings.setdefault(string, string)
+            return canonical, ("str", canonical)
+        if value_type is bytes:
+            byte_value = cast(bytes, value)
+            canonical_bytes = self._bytes.setdefault(byte_value, byte_value)
+            return canonical_bytes, ("bytes", canonical_bytes)
+        if value_type not in {dict, list, tuple}:
+            raise SchemaArtifactCodecError(
+                f"schema artifact contains unsupported type {value_type.__name__!r}"
+            )
+
+        identity = self._enter_container(value)
+        try:
+            if value_type is dict:
+                mapping = cast(dict[object, object], value)
+                if not all(type(key) is str for key in mapping):
+                    raise SchemaArtifactCodecError(
+                        "schema artifact dictionaries require string keys"
+                    )
+                string_mapping = cast(dict[str, object], mapping)
+                normalized_mapping: dict[str, object] = {}
+                for key in sorted(string_mapping):
+                    normalized_key, _ = self._node(key, depth=depth + 1)
+                    normalized_value, _ = self._node(
+                        string_mapping[key], depth=depth + 1
+                    )
+                    normalized_mapping[cast(str, normalized_key)] = normalized_value
+                return normalized_mapping, None
+
+            sequence = cast(list[object] | tuple[object, ...], value)
+            normalized_items: list[object] = []
+            item_keys: list[_ExactInternKey] = []
+            hashable_tuple = value_type is tuple
+            for item in sequence:
+                normalized_item, item_key = self._node(item, depth=depth + 1)
+                normalized_items.append(normalized_item)
+                if item_key is None:
+                    hashable_tuple = False
+                else:
+                    item_keys.append(item_key)
+            if value_type is list:
+                return normalized_items, None
+            candidate = tuple(normalized_items)
+            if not hashable_tuple:
+                return candidate, None
+            exact_key: _ExactInternKey = ("tuple", tuple(item_keys))
+            canonical_tuple = self._tuples.setdefault(exact_key, candidate)
+            return canonical_tuple, exact_key
+        finally:
+            self._active_containers.remove(identity)
+
+
+class _DecodedValidator:
+    __slots__ = (
+        "_active_containers",
+        "_budget",
+        "_completed_tuples",
+        "_mutable_containers",
+        "_validated_strings",
+    )
+
+    def __init__(self) -> None:
+        self._active_containers: set[int] = set()
+        self._budget = _Budget()
+        self._completed_tuples: dict[int, tuple[int, int, bool]] = {}
+        self._mutable_containers: set[int] = set()
+        self._validated_strings: set[int] = set()
+
+    def validate(self, value: object) -> dict[str, Any]:
+        self._node(value, depth=0)
+        if type(value) is not dict or not all(type(key) is str for key in value):
+            raise SchemaArtifactCodecError(
+                "schema artifact root must be a dictionary with string keys"
+            )
+        return cast(dict[str, Any], value)
+
+    def _node(self, value: object, *, depth: int) -> tuple[int, int, bool]:
+        self._budget.visit(depth)
+        value_type = type(value)
+        if value is None or value_type is bool:
+            return 0, 1, False
+        if value_type is int:
+            _validate_integer(cast(int, value))
+            return 0, 1, False
+        if value_type is str:
+            identity = id(value)
+            if identity not in self._validated_strings:
+                _validate_unicode(cast(str, value))
+                self._validated_strings.add(identity)
+            return 0, 1, False
+        if value_type is bytes:
+            return 0, 1, False
+        if value_type not in {dict, list, tuple}:
+            raise SchemaArtifactCodecError(
+                f"schema artifact contains unsupported decoded type "
+                f"{value_type.__name__!r}"
+            )
+
+        identity = id(value)
+        if identity in self._active_containers:
+            raise SchemaArtifactCodecError("schema artifact contains a container cycle")
+        if value_type is tuple and identity in self._completed_tuples:
+            height, nodes, contains_mutable = self._completed_tuples[identity]
+            if depth + height > MAX_SCHEMA_ARTIFACT_DEPTH:
+                raise SchemaArtifactCodecError(
+                    "schema artifact exceeds the maximum semantic depth"
+                )
+            if contains_mutable:
+                raise SchemaArtifactCodecError(
+                    "schema artifact contains a shared mutable container"
+                )
+            self._budget.add(nodes - 1)
+            return height, nodes, False
+        if value_type in {dict, list}:
+            if identity in self._mutable_containers:
+                raise SchemaArtifactCodecError(
+                    "schema artifact contains a shared mutable container"
+                )
+            self._mutable_containers.add(identity)
+
+        self._active_containers.add(identity)
+        try:
+            maximum_child_height = -1
+            subtree_nodes = 1
+            contains_mutable = value_type in {dict, list}
+            if value_type is dict:
+                mapping = cast(dict[object, object], value)
+                previous_key: str | None = None
+                for key, item in mapping.items():
+                    if type(key) is not str:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact dictionary contains a non-string key"
+                        )
+                    if previous_key is not None and key <= previous_key:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact dictionary keys are not strictly canonical"
+                        )
+                    previous_key = key
+                    key_height, key_nodes, key_mutable = self._node(
+                        key, depth=depth + 1
+                    )
+                    item_height, item_nodes, item_mutable = self._node(
+                        item, depth=depth + 1
+                    )
+                    subtree_nodes += key_nodes + item_nodes
+                    contains_mutable = contains_mutable or key_mutable or item_mutable
+                    maximum_child_height = max(
+                        maximum_child_height, key_height, item_height
+                    )
+            else:
+                sequence = cast(list[object] | tuple[object, ...], value)
+                for item in sequence:
+                    child_height, child_nodes, child_mutable = self._node(
+                        item, depth=depth + 1
+                    )
+                    subtree_nodes += child_nodes
+                    contains_mutable = contains_mutable or child_mutable
+                    maximum_child_height = max(
+                        maximum_child_height,
+                        child_height,
+                    )
+            height = 1 + maximum_child_height
+            if value_type is tuple:
+                self._completed_tuples[identity] = (
+                    height,
+                    subtree_nodes,
+                    contains_mutable,
+                )
+            return height, subtree_nodes, contains_mutable
+        finally:
+            self._active_containers.remove(identity)
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    def find_class(self, module: str, name: str) -> NoReturn:
+        raise SchemaArtifactCodecError(
+            f"schema artifact cannot resolve pickle global {module}.{name}"
+        )
+
+    def persistent_load(self, pid: object) -> NoReturn:
+        raise SchemaArtifactCodecError(
+            f"schema artifact cannot load persistent pickle id {pid!r}"
+        )
+
+
+def _validate_sha256(value: object) -> str:
     if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
-        raise SchemaArtifactCodecError(f"{field} is not a canonical SHA-256 digest")
+        raise SchemaArtifactCodecError(
+            "schema artifact digest is not a canonical SHA-256 value"
+        )
     return value
 
 
-def _validate_size(value: object, *, field: str, maximum: int) -> int:
-    if type(value) is not int or value < 0 or value > maximum:
-        raise SchemaArtifactCodecError(f"{field} is outside its hard bound")
+def _validate_size(value: object) -> int:
+    if type(value) is not int or value < 0 or value > MAX_SCHEMA_ARTIFACT_BYTES:
+        raise SchemaArtifactCodecError("schema artifact size is outside its hard bound")
     return value
+
+
+def _validate_protocol(value: object) -> int:
+    if type(value) is not int or value != SCHEMA_ARTIFACT_PICKLE_PROTOCOL:
+        raise SchemaArtifactCodecError("schema artifact pickle protocol is unsupported")
+    return value
+
+
+class _AbstractMark:
+    __slots__ = ()
+
+
+_ABSTRACT_MARK = _AbstractMark()
+
+
+class _AbstractValue:
+    __slots__ = (
+        "contains_mutable",
+        "depth",
+        "kind",
+        "last_key",
+        "nodes",
+        "string_value",
+        "weight",
+    )
+
+    def __init__(
+        self,
+        kind: str,
+        *,
+        nodes: int = 1,
+        weight: int = 1,
+        depth: int = 0,
+        contains_mutable: bool = False,
+        string_value: str | None = None,
+    ) -> None:
+        self.kind = kind
+        self.nodes = nodes
+        self.weight = weight
+        self.depth = depth
+        self.contains_mutable = contains_mutable
+        self.string_value = string_value
+        self.last_key: str | None = None
+
+
+type _AbstractStackItem = _AbstractMark | _AbstractValue
+
+
+def _require_abstract_value(
+    item: _AbstractStackItem, *, context: str
+) -> _AbstractValue:
+    if not isinstance(item, _AbstractValue):
+        raise SchemaArtifactCodecError(
+            f"schema artifact pickle has a misplaced MARK in {context}"
+        )
+    return item
+
+
+def _pop_abstract_values(
+    stack: list[_AbstractStackItem], count: int, *, context: str
+) -> list[_AbstractValue]:
+    if len(stack) < count:
+        raise SchemaArtifactCodecError(
+            f"schema artifact pickle stack underflow in {context}"
+        )
+    items = stack[-count:] if count else []
+    if count:
+        del stack[-count:]
+    return [_require_abstract_value(item, context=context) for item in items]
+
+
+def _pop_abstract_mark(
+    stack: list[_AbstractStackItem], *, context: str
+) -> list[_AbstractValue]:
+    cursor = len(stack) - 1
+    while cursor >= 0 and stack[cursor] is not _ABSTRACT_MARK:
+        cursor -= 1
+    if cursor < 0:
+        raise SchemaArtifactCodecError(
+            f"schema artifact pickle has no MARK for {context}"
+        )
+    items = stack[cursor + 1 :]
+    del stack[cursor:]
+    return [_require_abstract_value(item, context=context) for item in items]
+
+
+def _extend_abstract_container(
+    container: _AbstractValue, children: list[_AbstractValue]
+) -> int:
+    added_weight = 0
+    for child in children:
+        container.nodes += child.nodes
+        container.weight += child.weight
+        added_weight += child.weight
+        container.depth = max(container.depth, child.depth + 1)
+        container.contains_mutable = (
+            container.contains_mutable or child.contains_mutable
+        )
+        if container.nodes > MAX_SCHEMA_ARTIFACT_NODES:
+            raise SchemaArtifactCodecError(
+                "schema artifact expanded tree exceeds the maximum node count"
+            )
+        if container.weight > MAX_SCHEMA_ARTIFACT_EXPANDED_BYTES:
+            raise SchemaArtifactCodecError(
+                "schema artifact expanded tree exceeds the maximum byte weight"
+            )
+        if container.depth > MAX_SCHEMA_ARTIFACT_DEPTH:
+            raise SchemaArtifactCodecError(
+                "schema artifact exceeds the maximum semantic depth"
+            )
+    return added_weight
+
+
+def _new_abstract_tuple(children: list[_AbstractValue]) -> tuple[_AbstractValue, int]:
+    result = _AbstractValue("tuple")
+    added_weight = _extend_abstract_container(result, children)
+    return result, added_weight
+
+
+def _append_abstract_dictionary_item(
+    target: _AbstractValue, key: _AbstractValue, value: _AbstractValue
+) -> int:
+    if key.kind != "str" or key.string_value is None:
+        raise SchemaArtifactCodecError(
+            "schema artifact pickle dictionary key is not an exact string"
+        )
+    if target.last_key is not None and key.string_value <= target.last_key:
+        raise SchemaArtifactCodecError(
+            "schema artifact dictionary keys are not strictly canonical"
+        )
+    target.last_key = key.string_value
+    return _extend_abstract_container(target, [key, value])
+
+
+def _preflight_pickle(raw: bytes) -> None:
+    # Kept lazy so the already-authenticated wheel resource does not pay the
+    # development/audit parser's import cost on every short-lived READY probe.
+    import pickletools
+
+    opcode_count = 0
+    constructed_nodes = 0
+    frame_count = 0
+    stop_position: int | None = None
+    work_bytes = 0
+    stack: list[_AbstractStackItem] = []
+    memo: list[_AbstractValue] = []
+    try:
+        for opcode, argument, position in pickletools.genops(raw):
+            opcode_count += 1
+            if opcode_count > MAX_SCHEMA_ARTIFACT_OPCODES:
+                raise SchemaArtifactCodecError(
+                    "schema artifact exceeds the maximum pickle opcode count"
+                )
+            name = opcode.name
+            if name not in _ALLOWED_PICKLE_OPCODES:
+                raise SchemaArtifactCodecError(
+                    f"schema artifact contains forbidden pickle opcode {name!r}"
+                )
+            if opcode_count == 1:
+                if (
+                    name != "PROTO"
+                    or position != 0
+                    or argument != SCHEMA_ARTIFACT_PICKLE_PROTOCOL
+                ):
+                    raise SchemaArtifactCodecError(
+                        "schema artifact does not begin with pickle protocol 5"
+                    )
+            elif name == "PROTO":
+                raise SchemaArtifactCodecError(
+                    "schema artifact contains a repeated pickle protocol opcode"
+                )
+            if name == "PROTO":
+                continue
+            if name == "FRAME":
+                frame_count += 1
+                if (
+                    frame_count > _MAX_SCHEMA_ARTIFACT_FRAMES
+                    or type(argument) is not int
+                    or argument < 0
+                    or argument > MAX_SCHEMA_ARTIFACT_BYTES
+                ):
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle frame is outside its bound"
+                    )
+                continue
+            if name == "MARK":
+                stack.append(_ABSTRACT_MARK)
+                if len(stack) > MAX_SCHEMA_ARTIFACT_NODES:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle stack exceeds its bound"
+                    )
+                continue
+            if name in {"NONE", "NEWFALSE", "NEWTRUE"}:
+                stack.append(_AbstractValue(name.casefold()))
+                constructed_nodes += 1
+            elif name in {"BININT", "BININT1", "BININT2", "LONG1", "LONG4"}:
+                if type(argument) is not int:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle integer argument is invalid"
+                    )
+                _validate_integer(argument)
+                stack.append(_AbstractValue("int"))
+                constructed_nodes += 1
+            elif name in {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8"}:
+                if type(argument) is not str:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle string argument is invalid"
+                    )
+                _validate_unicode(argument)
+                encoded_size = len(argument.encode("utf-8"))
+                if encoded_size > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle string exceeds its bound"
+                    )
+                stack.append(
+                    _AbstractValue(
+                        "str", weight=encoded_size + 1, string_value=argument
+                    )
+                )
+                constructed_nodes += 1
+            elif name in {"SHORT_BINBYTES", "BINBYTES", "BINBYTES8"}:
+                if type(argument) is not bytes:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle bytes argument is invalid"
+                    )
+                if len(argument) > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle bytes value exceeds its bound"
+                    )
+                stack.append(_AbstractValue("bytes", weight=len(argument) + 1))
+                constructed_nodes += 1
+            elif name == "EMPTY_LIST":
+                stack.append(_AbstractValue("list", contains_mutable=True))
+                constructed_nodes += 1
+            elif name == "EMPTY_DICT":
+                stack.append(_AbstractValue("dict", contains_mutable=True))
+                constructed_nodes += 1
+            elif name == "EMPTY_TUPLE":
+                stack.append(_AbstractValue("tuple"))
+                constructed_nodes += 1
+            elif name in {"TUPLE1", "TUPLE2", "TUPLE3"}:
+                item_count = int(name[-1])
+                result, added = _new_abstract_tuple(
+                    _pop_abstract_values(stack, item_count, context=name)
+                )
+                stack.append(result)
+                work_bytes += added
+                constructed_nodes += 1
+            elif name == "TUPLE":
+                result, added = _new_abstract_tuple(
+                    _pop_abstract_mark(stack, context=name)
+                )
+                stack.append(result)
+                work_bytes += added
+                constructed_nodes += 1
+            elif name == "MEMOIZE":
+                if not stack:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle stack underflow in MEMOIZE"
+                    )
+                if len(memo) >= MAX_SCHEMA_ARTIFACT_NODES:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle memo exceeds its bound"
+                    )
+                memo.append(_require_abstract_value(stack[-1], context=name))
+            elif name in {"BINGET", "LONG_BINGET"}:
+                if type(argument) is not int or not 0 <= argument < len(memo):
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle memo reference is invalid"
+                    )
+                referenced = memo[argument]
+                if referenced.contains_mutable:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle aliases a mutable container"
+                    )
+                stack.append(referenced)
+            elif name == "APPEND":
+                child = _pop_abstract_values(stack, 1, context=name)[0]
+                if not stack:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle stack underflow in APPEND"
+                    )
+                target = _require_abstract_value(stack[-1], context=name)
+                if target.kind != "list":
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle APPEND target is not a list"
+                    )
+                work_bytes += _extend_abstract_container(target, [child])
+            elif name == "APPENDS":
+                children = _pop_abstract_mark(stack, context=name)
+                if not stack:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle stack underflow in APPENDS"
+                    )
+                target = _require_abstract_value(stack[-1], context=name)
+                if target.kind != "list":
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle APPENDS target is not a list"
+                    )
+                work_bytes += _extend_abstract_container(target, children)
+            elif name == "SETITEM":
+                key, value = _pop_abstract_values(stack, 2, context=name)
+                if not stack:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle stack underflow in SETITEM"
+                    )
+                target = _require_abstract_value(stack[-1], context=name)
+                if target.kind != "dict":
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle SETITEM target is not a dictionary"
+                    )
+                work_bytes += _append_abstract_dictionary_item(target, key, value)
+            elif name == "SETITEMS":
+                items = _pop_abstract_mark(stack, context=name)
+                if not stack or len(items) % 2:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle SETITEMS stack is malformed"
+                    )
+                target = _require_abstract_value(stack[-1], context=name)
+                if target.kind != "dict":
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle SETITEMS target is not a dictionary"
+                    )
+                for index in range(0, len(items), 2):
+                    work_bytes += _append_abstract_dictionary_item(
+                        target, items[index], items[index + 1]
+                    )
+            elif name == "STOP":
+                if len(stack) != 1:
+                    raise SchemaArtifactCodecError(
+                        "schema artifact pickle does not leave exactly one root"
+                    )
+                root = _require_abstract_value(stack[0], context=name)
+                if root.kind != "dict":
+                    raise SchemaArtifactCodecError(
+                        "schema artifact root must be a dictionary with string keys"
+                    )
+                stop_position = position
+            else:  # pragma: no cover - the allowlist and VM must evolve together
+                raise SchemaArtifactCodecError(
+                    f"schema artifact pickle opcode {name!r} has no abstract rule"
+                )
+            if constructed_nodes > MAX_SCHEMA_ARTIFACT_NODES:
+                raise SchemaArtifactCodecError(
+                    "schema artifact exceeds the maximum encoded node count"
+                )
+            if len(stack) > MAX_SCHEMA_ARTIFACT_NODES:
+                raise SchemaArtifactCodecError(
+                    "schema artifact pickle stack exceeds its bound"
+                )
+            if work_bytes > _MAX_SCHEMA_ARTIFACT_WORK_BYTES:
+                raise SchemaArtifactCodecError(
+                    "schema artifact pickle construction work exceeds its bound"
+                )
+    except SchemaArtifactCodecError:
+        raise
+    except (UnicodeError, ValueError) as error:
+        raise SchemaArtifactCodecError("schema artifact pickle is malformed") from error
+    if stop_position is None:
+        raise SchemaArtifactCodecError("schema artifact pickle is truncated")
+    if stop_position + 1 != len(raw):
+        raise SchemaArtifactCodecError("schema artifact pickle has trailing data")
 
 
 def encode_schema_artifact(value: object) -> bytes:
-    """Encode supported primitive containers into bounded canonical JSON."""
+    """Encode one logical schema tree as deterministic protocol-5 pickle."""
 
-    return _CanonicalEncoder().encode(value)
-
-
-def compress_schema_artifact(raw: bytes) -> bytes:
-    """Compress one already-canonical bounded artifact payload."""
-
-    if type(raw) is not bytes or len(raw) > MAX_SCHEMA_ARTIFACT_RAW_BYTES:
-        raise SchemaArtifactCodecError(
-            "schema artifact raw payload is outside its bound"
-        )
-    compressed = zlib.compress(raw, level=9)
-    if len(compressed) > MAX_SCHEMA_ARTIFACT_COMPRESSED_BYTES:
-        raise SchemaArtifactCodecError(
-            "schema artifact compressed payload is outside its bound"
-        )
-    return compressed
-
-
-def _reject_float(_value: str) -> float:
-    raise SchemaArtifactCodecError("schema artifact JSON cannot contain a float")
-
-
-def _reject_constant(value: str) -> object:
-    raise SchemaArtifactCodecError(
-        f"schema artifact JSON contains forbidden constant {value!r}"
-    )
-
-
-def _parse_integer(value: str) -> int:
-    if (
-        _INTEGER_PATTERN.fullmatch(value) is None
-        or len(value.removeprefix("-")) > _MAX_INTEGER_DIGITS
-    ):
-        raise SchemaArtifactCodecError("schema artifact JSON integer is not canonical")
-    return int(value)
-
-
-def _object_pairs(pairs: list[tuple[str, object]]) -> object:
-    result: dict[str, object] = {}
-    previous_key: str | None = None
-    for key, value in pairs:
-        if key in result:
-            raise SchemaArtifactCodecError(
-                f"schema artifact JSON contains duplicate object key {key!r}"
-            )
-        _validate_unicode(key)
-        if previous_key is not None and key <= previous_key:
-            raise SchemaArtifactCodecError(
-                "schema artifact dictionary keys are not strictly canonical"
-            )
-        result[key] = value
-        previous_key = key
-    reserved_keys = tuple(key for key in result if key.startswith(_RESERVED_KEY_PREFIX))
-    if not reserved_keys:
-        return result
-    if len(result) != 1 or len(reserved_keys) != 1:
-        raise SchemaArtifactCodecError(
-            "schema artifact dictionary uses a reserved codec key"
-        )
-    tag = reserved_keys[0]
-    payload = result[tag]
-    if tag == _TUPLE_TAG:
-        if type(payload) is not list:
-            raise SchemaArtifactCodecError(
-                "schema artifact tuple tag does not contain an array"
-            )
-        decoded_tuple = tuple(payload)
-        payload.clear()
-        return decoded_tuple
-    if tag == _BYTES_TAG:
-        if type(payload) is not str or _BYTE_HEX_PATTERN.fullmatch(payload) is None:
-            raise SchemaArtifactCodecError(
-                "schema artifact byte value is not canonical lowercase hex"
-            )
-        return bytes.fromhex(payload)
-    raise SchemaArtifactCodecError(f"schema artifact contains unknown tag {tag!r}")
-
-
-def _validate_json_string_spelling(text: str, *, start: int, end: int) -> None:
-    cursor = text.find("\\", start + 1, end)
-    while cursor >= 0:
-        if cursor + 1 >= end:
-            raise SchemaArtifactCodecError(
-                "schema artifact JSON string escape is truncated"
-            )
-        escape = text[cursor + 1]
-        if escape in {'"', "\\", "b", "f", "n", "r", "t"}:
-            cursor = text.find("\\", cursor + 2, end)
-            continue
-        if escape == "u":
-            digits = text[cursor + 2 : cursor + 6]
-            if len(digits) != 4 or _UNICODE_ESCAPE_PATTERN.fullmatch(digits) is None:
-                raise SchemaArtifactCodecError(
-                    "schema artifact JSON string has a noncanonical Unicode escape"
-                )
-            code_point = int(digits, 16)
-            if code_point > 0x1F or code_point in {0x08, 0x09, 0x0A, 0x0C, 0x0D}:
-                raise SchemaArtifactCodecError(
-                    "schema artifact JSON string has a noncanonical Unicode escape"
-                )
-            cursor = text.find("\\", cursor + 6, end)
-            continue
-        raise SchemaArtifactCodecError(
-            "schema artifact JSON string has a noncanonical escape"
-        )
-
-
-def _preflight_json(text: str) -> None:
-    depth = 0
-    index = 0
-    while index < len(text):
-        character = text[index]
-        if character == '"':
-            candidate = text.find('"', index + 1)
-            while candidate >= 0:
-                backslashes = 0
-                cursor = candidate - 1
-                while cursor > index and text[cursor] == "\\":
-                    backslashes += 1
-                    cursor -= 1
-                if backslashes % 2 == 0:
-                    break
-                candidate = text.find('"', candidate + 1)
-            if candidate < 0:
-                raise SchemaArtifactCodecError("schema artifact JSON is truncated")
-            _validate_json_string_spelling(text, start=index, end=candidate)
-            index = candidate + 1
-            continue
-        if character in "[{":
-            depth += 1
-            if depth > _MAX_JSON_DEPTH:
-                raise SchemaArtifactCodecError(
-                    "schema artifact exceeds the maximum JSON nesting depth"
-                )
-        elif character in "]}":
-            depth -= 1
-            if depth < 0:
-                raise SchemaArtifactCodecError(
-                    "schema artifact JSON closes an unopened container"
-                )
-        elif character in " \t\r\n":
-            raise SchemaArtifactCodecError(
-                "schema artifact JSON is not in canonical compact form"
-            )
-        index += 1
-    if depth != 0:
-        raise SchemaArtifactCodecError("schema artifact JSON is truncated")
-
-
-def _validate_decoded_node(value: object, *, budget: _Budget, depth: int) -> None:
-    budget.visit(depth)
-    value_type = type(value)
-    if value is None or value_type in {bool, int, bytes}:
-        return
-    if value_type is str:
-        string = cast(str, value)
-        _validate_unicode(string)
-        return
-    if value_type is dict:
-        mapping = cast(dict[object, object], value)
-        previous_key: str | None = None
-        for key, item in mapping.items():
-            if type(key) is not str:
-                raise SchemaArtifactCodecError(
-                    "schema artifact dictionary contains a non-string key"
-                )
-            if previous_key is not None and key <= previous_key:
-                raise SchemaArtifactCodecError(
-                    "schema artifact dictionary keys are not strictly canonical"
-                )
-            previous_key = key
-            _validate_decoded_node(key, budget=budget, depth=depth + 1)
-            _validate_decoded_node(item, budget=budget, depth=depth + 1)
-        return
-    if value_type in {list, tuple}:
-        sequence = cast(list[object] | tuple[object, ...], value)
-        for item in sequence:
-            _validate_decoded_node(item, budget=budget, depth=depth + 1)
-        return
-    raise SchemaArtifactCodecError(
-        f"schema artifact contains unsupported decoded type {value_type.__name__!r}"
-    )
-
-
-def _decode_schema_artifact_text(text: str) -> dict[str, Any]:
-    _preflight_json(text)
-    decoder = json.JSONDecoder(
-        object_pairs_hook=_object_pairs,
-        parse_float=_reject_float,
-        parse_int=_parse_integer,
-        parse_constant=_reject_constant,
-        strict=True,
-    )
+    normalized = _Canonicalizer().normalize(value)
     try:
-        parsed, end = decoder.raw_decode(text)
-    except (RecursionError, json.JSONDecodeError) as error:
-        raise SchemaArtifactCodecError("schema artifact JSON is malformed") from error
-    if end != len(text):
-        raise SchemaArtifactCodecError("schema artifact JSON contains trailing data")
-    del text
-    _validate_decoded_node(parsed, budget=_Budget(), depth=0)
-    if type(parsed) is not dict or not all(type(key) is str for key in parsed):
-        raise SchemaArtifactCodecError(
-            "schema artifact root must be a dictionary with string keys"
+        raw = pickle.dumps(
+            normalized,
+            protocol=SCHEMA_ARTIFACT_PICKLE_PROTOCOL,
+            fix_imports=False,
         )
-    return cast(dict[str, Any], parsed)
+    except (OverflowError, pickle.PicklingError, RecursionError, ValueError) as error:
+        raise SchemaArtifactCodecError("schema artifact cannot be encoded") from error
+    if len(raw) > MAX_SCHEMA_ARTIFACT_BYTES:
+        raise SchemaArtifactCodecError("schema artifact size is outside its hard bound")
+    _preflight_pickle(raw)
+    return raw
 
 
-def _decode_utf8(raw: bytes) -> str:
+def _unpickle_and_validate_schema_artifact(raw: bytes) -> dict[str, Any]:
+    stream = io.BytesIO(raw)
     try:
-        return raw.decode("utf-8", errors="strict")
-    except UnicodeDecodeError as error:
+        decoded = _RestrictedUnpickler(stream).load()
+    except SchemaArtifactCodecError:
+        raise
+    except (
+        EOFError,
+        IndexError,
+        MemoryError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        pickle.UnpicklingError,
+    ) as error:
         raise SchemaArtifactCodecError(
-            "schema artifact JSON is not valid UTF-8"
+            "schema artifact pickle cannot be decoded"
+        ) from error
+    if stream.tell() != len(raw):
+        raise SchemaArtifactCodecError("schema artifact pickle has trailing data")
+    try:
+        return _DecodedValidator().validate(decoded)
+    except SchemaArtifactCodecError:
+        raise
+    except RecursionError as error:  # defensive if interpreter limits are unusual
+        raise SchemaArtifactCodecError(
+            "schema artifact exceeds the maximum semantic depth"
         ) from error
 
 
-def decode_schema_artifact_raw(raw: bytes) -> dict[str, Any]:
-    """Decode one bounded canonical JSON payload without decompression."""
-
-    if type(raw) is not bytes or len(raw) > MAX_SCHEMA_ARTIFACT_RAW_BYTES:
-        raise SchemaArtifactCodecError(
-            "schema artifact raw payload is outside its bound"
-        )
-    return _decode_schema_artifact_text(_decode_utf8(raw))
+def _authenticate_schema_artifact(
+    raw: bytes, *, raw_size: int, raw_sha256: str
+) -> None:
+    expected_size = _validate_size(raw_size)
+    expected_digest = _validate_sha256(raw_sha256)
+    if type(raw) is not bytes:
+        raise SchemaArtifactCodecError("schema artifact resource must contain bytes")
+    if len(raw) != expected_size:
+        raise SchemaArtifactCodecError("schema artifact size does not match")
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_digest):
+        raise SchemaArtifactCodecError("schema artifact digest does not match")
 
 
 def decode_schema_artifact(
-    compressed: bytes,
+    raw: bytes,
     *,
-    compressed_size: int,
-    compressed_sha256: str,
+    pickle_protocol: int,
     raw_size: int,
     raw_sha256: str,
 ) -> dict[str, Any]:
-    """Authenticate, decompress, and decode one bounded artifact resource."""
+    """Authenticate and decode one generated artifact resource."""
 
-    expected_compressed_size = _validate_size(
-        compressed_size,
-        field="schema artifact compressed size",
-        maximum=MAX_SCHEMA_ARTIFACT_COMPRESSED_BYTES,
-    )
-    expected_raw_size = _validate_size(
-        raw_size,
-        field="schema artifact raw size",
-        maximum=MAX_SCHEMA_ARTIFACT_RAW_BYTES,
-    )
-    expected_compressed_digest = _validate_sha256(
-        compressed_sha256, field="schema artifact compressed digest"
-    )
-    expected_raw_digest = _validate_sha256(
-        raw_sha256, field="schema artifact raw digest"
-    )
-    if type(compressed) is not bytes:
-        raise SchemaArtifactCodecError("schema artifact resource must contain bytes")
-    if len(compressed) != expected_compressed_size:
-        raise SchemaArtifactCodecError("schema artifact compressed size does not match")
-    if not hmac.compare_digest(
-        hashlib.sha256(compressed).hexdigest(), expected_compressed_digest
-    ):
-        raise SchemaArtifactCodecError(
-            "schema artifact compressed digest does not match"
-        )
-
-    decompressor = zlib.decompressobj()
-    try:
-        raw = decompressor.decompress(compressed, MAX_SCHEMA_ARTIFACT_RAW_BYTES + 1)
-    except zlib.error as error:
-        raise SchemaArtifactCodecError(
-            "schema artifact zlib stream is invalid"
-        ) from error
-    if len(raw) > MAX_SCHEMA_ARTIFACT_RAW_BYTES or decompressor.unconsumed_tail:
-        raise SchemaArtifactCodecError(
-            "schema artifact expands beyond the uncompressed hard bound"
-        )
-    if not decompressor.eof:
-        raise SchemaArtifactCodecError("schema artifact zlib stream is truncated")
-    if decompressor.unused_data:
-        raise SchemaArtifactCodecError("schema artifact zlib stream has trailing data")
-    if len(raw) != expected_raw_size:
-        raise SchemaArtifactCodecError("schema artifact raw size does not match")
-    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_raw_digest):
-        raise SchemaArtifactCodecError("schema artifact raw digest does not match")
-    text = _decode_utf8(raw)
-    del raw
-    return _decode_schema_artifact_text(text)
+    _validate_protocol(pickle_protocol)
+    _authenticate_schema_artifact(raw, raw_size=raw_size, raw_sha256=raw_sha256)
+    _preflight_pickle(raw)
+    return _unpickle_and_validate_schema_artifact(raw)
 
 
-def load_schema_artifact_resource(
+def _load_pinned_schema_artifact_resource(
     *,
     package: str,
     resource_name: str,
-    compressed_size: int,
-    compressed_sha256: str,
+    pickle_protocol: int,
     raw_size: int,
     raw_sha256: str,
 ) -> dict[str, Any]:
-    """Read one package resource without ever buffering beyond the hard cap."""
+    """Decode the generated loader's exact wheel-owned resource.
 
-    expected_size = _validate_size(
-        compressed_size,
-        field="schema artifact compressed size",
-        maximum=MAX_SCHEMA_ARTIFACT_COMPRESSED_BYTES,
-    )
+    This private fast path is valid only because the generated caller pins the
+    metadata literals and every build/distribution gate fully preflights the
+    corresponding digest. Generic callers must use :func:`decode_schema_artifact`.
+    """
+
+    _validate_protocol(pickle_protocol)
+    expected_size = _validate_size(raw_size)
     if (
         type(package) is not str
-        or not package
+        or package != _SCHEMA_ARTIFACT_PACKAGE
         or type(resource_name) is not str
         or resource_name != _SCHEMA_ARTIFACT_RESOURCE
     ):
@@ -502,20 +845,20 @@ def load_schema_artifact_resource(
     try:
         resource = files(package).joinpath(resource_name)
         with resource.open("rb") as stream:
-            compressed = stream.read(expected_size + 1)
+            raw = stream.read(expected_size + 1)
             has_more = bool(stream.read(1))
     except (ImportError, LookupError, OSError, TypeError) as error:
         raise SchemaArtifactCodecError(
             "schema artifact resource cannot be read"
         ) from error
-    if has_more or len(compressed) > expected_size:
+    if has_more or len(raw) > expected_size:
         raise SchemaArtifactCodecError(
             "schema artifact resource exceeds its declared size"
         )
-    return decode_schema_artifact(
-        compressed,
-        compressed_size=compressed_size,
-        compressed_sha256=compressed_sha256,
-        raw_size=raw_size,
-        raw_sha256=raw_sha256,
-    )
+    _authenticate_schema_artifact(raw, raw_size=raw_size, raw_sha256=raw_sha256)
+    # This exact resource/digest pair was produced by the generator's full
+    # abstract opcode preflight and is rechecked by drift, schema-surface, and
+    # distribution gates. Once its digest matches, reparsing the same opcode
+    # proof on every process start adds no authority; an actor able to replace
+    # both this loader and its digest can already replace arbitrary wheel code.
+    return _unpickle_and_validate_schema_artifact(raw)
