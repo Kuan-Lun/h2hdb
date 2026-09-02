@@ -46,6 +46,7 @@ from typing import Any
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
 from .vnext_analysis_family import (
     AnalysisFamilyCollisionError,
+    cas_analysis_run_state,
     load_analysis_run_family,
 )
 from .vnext_canonical_value_family import load_sealed_value_identity
@@ -752,6 +753,11 @@ class SourceBuildHandoff:
     source_root_sha256: bytes
     manifest_policy_id: int
     replayed: bool
+    deferred_gallery_count: int | None = None
+    """Set only when the handoff resumes a stale SEALED build whose durable
+    publication commit still awaits finalization; the caller's own snapshot
+    is deferred to a later turn and this build's sealed discovery count is
+    reported instead."""
 
     def __post_init__(self) -> None:
         require_uuid16(self.build_id, field="build_id")
@@ -759,6 +765,10 @@ class SourceBuildHandoff:
         require_digest32(self.scope_key, field="scope_key")
         require_digest32(self.source_root_sha256, field="source_root_sha256")
         require_positive_int63(self.manifest_policy_id, field="manifest_policy_id")
+        if self.deferred_gallery_count is not None:
+            require_int63(self.deferred_gallery_count, field="deferred_gallery_count")
+            if not self.replayed:
+                raise ValueError("a deferred handoff is always a replay")
         if not isinstance(self.replayed, bool):
             raise ValueError("replayed must be bool")
 
@@ -1104,31 +1114,56 @@ class SourceBuildRepository:
                     created_at=stale_family.created_at,
                 )
             else:
-                stale_source_head = _load_finalized_source_build_publication(
+                stale_source_head = _find_finalized_source_build_publication(
                     connector,
                     expected_build_id=stale_build,
                 )
-                if (
-                    base_source is None
-                    or stale_source_head.source_revision > base_source.revision
-                    or stale_source_head.generation > base_source.generation
-                    or (
-                        stale_source_head.source_revision == base_source.revision
-                        and stale_source_head.receipt_id != base_source.receipt_id
+                if stale_source_head is None:
+                    if _pending_source_build_publication(
+                        connector, build_id=stale_build
+                    ):
+                        # The stale build's commit is durable but not yet
+                        # finalized: finish it before any new build starts.
+                        return _defer_to_pending_sealed_build(
+                            work,
+                            build_id=stale_build,
+                            generation=generation,
+                            manifest_policy_id=manifest_policy_id,
+                            expected_root=expected_root,
+                        )
+                    # Sealed, never published, and superseded by this
+                    # generation: the build can never publish now.
+                    _abandon_stale_sealed_working_build(
+                        work,
+                        current_generation=generation,
+                        build_id=stale_build,
+                        assigned_at=stale_assigned_at,
+                        catalog_working=catalog_working,
+                        now=timestamp,
                     )
-                ):
-                    raise SourceBuildConflictError(
-                        "stale finalized source working authority changed"
+                    catalog_working = ()
+                else:
+                    if (
+                        base_source is None
+                        or stale_source_head.source_revision > base_source.revision
+                        or stale_source_head.generation > base_source.generation
+                        or (
+                            stale_source_head.source_revision == base_source.revision
+                            and stale_source_head.receipt_id != base_source.receipt_id
+                        )
+                    ):
+                        raise SourceBuildConflictError(
+                            "stale finalized source working authority changed"
+                        )
+                    affected = connector.execute_affected(
+                        "DELETE FROM operational_source_working_builds "
+                        "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+                        (1, stale_build, stale_assigned_at),
                     )
-                affected = connector.execute_affected(
-                    "DELETE FROM operational_source_working_builds "
-                    "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
-                    (1, stale_build, stale_assigned_at),
-                )
-                if affected != 1:
-                    raise SourceBuildConflictError(
-                        "stale finalized source working root changed before release"
-                    )
+                    if affected != 1:
+                        raise SourceBuildConflictError(
+                            "stale finalized source working root changed before release"
+                        )
             working = ()
 
         _insert_or_validate_scope(
@@ -3685,6 +3720,241 @@ def _abandon_stale_open_working_build(
     )
 
 
+def _pending_source_build_publication(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> bytes | None:
+    """Return the durable-but-unfinalized publication commit of a build.
+
+    Such a commit is sealed and will be finalized by the publication stage
+    (library activation, then the terminal PUBLISHED head CAS); until then the
+    reader head still names its predecessor."""
+
+    build = require_uuid16(build_id, field="pending source publication build_id")
+    rows = connector.fetch_all(
+        f"SELECT committed.receipt_id, receipt.state FROM {_PUBLICATION_COMMIT_TABLE} "
+        "AS committed "
+        f"JOIN {_PUBLICATION_RECEIPT_VIEW} AS receipt "
+        "ON receipt.receipt_id = committed.receipt_id "
+        f"JOIN {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        "ON provenance.source_revision = committed.source_revision "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS analysis "
+        "ON analysis.analysis_id = provenance.analysis_id "
+        "WHERE analysis.build_id = %s LIMIT 2",
+        (build,),
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 2:
+        raise SourceBuildConflictError(
+            "stale source working build has more than one publication commit"
+        )
+    if rows[0][1] == "PUBLISHED":
+        return None
+    return require_uuid16(rows[0][0], field="pending source publication receipt_id")
+
+
+def _defer_to_pending_sealed_build(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    generation: int,
+    manifest_policy_id: int,
+    expected_root: bytes,
+) -> SourceBuildHandoff:
+    """Resume the stale SEALED build whose publication awaits finalization.
+
+    The current ingest generation is mapped to that build so the analysis and
+    publication stages resolve it, this generation's claim on the caller's
+    own root upload is consumed exactly like a replayed handoff, and the
+    handoff reports the sealed build.  The caller's snapshot is not lost: the
+    next turn re-derives it and, once this build is finalized, releases the
+    working root through the finalized-publication path."""
+
+    connector = work.connector
+    build = require_uuid16(build_id, field="deferred source build_id")
+    row = connector.fetch_one(
+        "SELECT descriptor.scope_key, descriptor.manifest_policy_id, "
+        "scope.source_root_sha256, discovery.gallery_count "
+        "FROM catalog_source_build_descriptor AS descriptor "
+        "JOIN catalog_source_scopes AS scope "
+        "ON scope.scope_key = descriptor.scope_key "
+        "JOIN catalog_source_build_discoveries AS discovery "
+        "ON discovery.build_id = descriptor.build_id "
+        "WHERE descriptor.build_id = %s",
+        (build,),
+    )
+    if len(row) != 4:
+        raise SourceBuildConflictError(
+            "deferred source build lacks its sealed scope and discovery"
+        )
+    scope_key = require_digest32(row[0], field="deferred source build scope_key")
+    if (
+        require_positive_int63(row[1], field="deferred source build policy")
+        != manifest_policy_id
+    ):
+        raise SourceBuildConflictError(
+            "deferred source build was sealed under another manifest policy"
+        )
+    root = require_digest32(row[2], field="deferred source build root")
+    gallery_count = require_int63(row[3], field="deferred source build galleries")
+    _insert_or_validate(
+        connector,
+        label="source build generation",
+        select_sql=(
+            "SELECT build_id, generation "
+            "FROM operational_source_build_generations WHERE generation = %s"
+        ),
+        select_data=(generation,),
+        insert_sql=(
+            "INSERT INTO operational_source_build_generations "
+            "(build_id, generation) VALUES (%s, %s)"
+        ),
+        expected=(build, generation),
+    )
+    affected = connector.execute_affected(
+        "DELETE FROM operational_canonical_value_uploads "
+        "WHERE generation = %s AND value_sha256 = %s",
+        (generation, expected_root),
+    )
+    if affected != 1:
+        raise SourceBuildNotReadyError(
+            "deferred source-root claim changed before release"
+        )
+    return SourceBuildHandoff(
+        build,
+        generation,
+        scope_key,
+        root,
+        manifest_policy_id,
+        True,
+        gallery_count,
+    )
+
+
+def _abandon_stale_sealed_working_build(
+    work: VNextUnitOfWork,
+    *,
+    current_generation: int,
+    build_id: bytes,
+    assigned_at: int,
+    catalog_working: tuple[Any, ...],
+    now: int,
+) -> None:
+    """Release a SEALED root that never published and is fenced behind the
+    current generation.
+
+    The build row itself stays SEALED (an immutable terminal fact with its
+    sealed_at); its working roots are released, its OPEN analysis becomes
+    ABANDONED, and its unbound uncommitted operational attempts are
+    ABANDONED, which makes the whole family reclaimable by generic cleanup
+    once nothing references it."""
+
+    generation = require_positive_int63(
+        current_generation, field="stale SEALED recovery current_generation"
+    )
+    build = require_uuid16(build_id, field="stale SEALED recovery build_id")
+    assigned = require_int63(assigned_at, field="stale SEALED recovery assigned_at")
+    connector = work.connector
+    prior = connector.fetch_one(
+        "SELECT generation FROM operational_source_build_generations "
+        "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",
+        (build,),
+    )
+    if len(prior) != 1:
+        raise SourceBuildConflictError(
+            "stale SEALED source working root has no exact generation authority"
+        )
+    if require_positive_int63(prior[0], field="stale SEALED prior_generation") >= (
+        generation
+    ):
+        raise SourceBuildConflictError(
+            "stale SEALED source working root is not fenced by this generation"
+        )
+    if catalog_working:
+        if len(catalog_working) != 3 or catalog_working[0] != 1:
+            raise SourceBuildConflictError("catalog working root is malformed")
+        candidate = require_uuid16(
+            catalog_working[1], field="stale catalog working candidate_id"
+        )
+        owner = connector.fetch_one(
+            f"SELECT run.build_id FROM {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+            f"JOIN {_ANALYSIS_RUN_DESCRIPTOR_TABLE} AS run "
+            "ON run.analysis_id = candidate.analysis_id "
+            "WHERE candidate.candidate_id = %s",
+            (candidate,),
+        )
+        if len(owner) != 1 or owner[0] != build:
+            raise SourceBuildConflictError(
+                "catalog working candidate does not belong to the stale build"
+            )
+        deleted_candidate = connector.execute_affected(
+            f"DELETE FROM {_CATALOG_WORKING_CANDIDATE_TABLE} "
+            "WHERE slot = %s AND candidate_id = %s AND assigned_at = %s",
+            (1, candidate, catalog_working[2]),
+        )
+        if deleted_candidate != 1:
+            raise SourceBuildConflictError(
+                "stale catalog working candidate changed before release"
+            )
+    deleted = connector.execute_affected(
+        "DELETE FROM operational_source_working_builds "
+        "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+        (1, build, assigned),
+    )
+    if deleted != 1:
+        raise SourceBuildConflictError(
+            "stale SEALED source working root changed before recovery"
+        )
+    for row in connector.fetch_all(
+        f"SELECT run.analysis_id, state.state FROM {_ANALYSIS_RUN_DESCRIPTOR_TABLE} "
+        "AS run JOIN catalog_analysis_run_states AS state "
+        "ON state.analysis_id = run.analysis_id WHERE run.build_id = %s",
+        (build,),
+    ):
+        if len(row) == 2 and row[1] == "OPEN":
+            cas_analysis_run_state(
+                work,
+                analysis_id=require_uuid16(row[0], field="stale analysis_id"),
+                previous="OPEN",
+                successor="ABANDONED",
+                authority="stale SEALED source build recovery",
+            )
+    for row in connector.fetch_all(
+        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
+        f"FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
+        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
+        "AND NOT EXISTS (SELECT 1 "
+        "FROM operational_publication_candidate_preparations AS bound "
+        "WHERE bound.preparation_id = p.preparation_id) "
+        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
+        "WHERE committed.preparation_id = p.preparation_id) "
+        "ORDER BY p.preparation_id",
+        (build,),
+    ):
+        if len(row) != 4:
+            raise SourceBuildConflictError(
+                "stale operational preparation facts are malformed"
+            )
+        prepared_at = require_int63(row[2], field="stale preparation prepared_at")
+        completed_at = (
+            max(prepared_at, now)
+            if row[3] is None
+            else require_int63(row[3], field="stale preparation completed_at")
+        )
+        work.compare_and_swap(
+            f"UPDATE {_OPERATIONAL_PREPARATION_TABLE} SET state = 'ABANDONED', "
+            "completed_at = %s WHERE preparation_id = %s AND state = %s",
+            (
+                completed_at,
+                require_uuid16(row[0], field="stale preparation_id"),
+                str(row[1]),
+            ),
+            authority="stale SEALED build operational preparation",
+        )
+
+
 def _matching_working_snapshot_build(
     connector: Any,
     *,
@@ -4475,12 +4745,24 @@ def _find_finalized_source_build_publication(
         raise SourceBuildConflictError(
             "stale source working build lacks one exact publication provenance proof"
         )
+    receipt_id = require_uuid16(
+        rows[0][0],
+        field="finalized source publication receipt_id",
+    )
+    receipt_state = connector.fetch_one(
+        f"SELECT state FROM {_PUBLICATION_RECEIPT_VIEW} WHERE receipt_id = %s",
+        (receipt_id,),
+    )
+    if not receipt_state or receipt_state[0] != "PUBLISHED":
+        # The commit is durable but its library activation or finalization
+        # has not completed (the reader head still names the predecessor).
+        # The build is therefore not finalized yet: the caller keeps its
+        # sealed working build and the publication step resumes the pending
+        # receipt instead of the source handoff failing closed forever.
+        return None
     return _load_finalized_source_publication_by_receipt(
         connector,
-        receipt_id=require_uuid16(
-            rows[0][0],
-            field="finalized source publication receipt_id",
-        ),
+        receipt_id=receipt_id,
         expected_build_id=build,
     )
 

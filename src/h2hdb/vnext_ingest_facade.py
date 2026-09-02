@@ -1966,7 +1966,16 @@ def _apply_source_outcome(
         _require_root_upload(machine).close()
         machine.root_upload = None
         machine.root_pages = None
-        machine.action = _SourceAction.DISCOVERY_BATCH
+        if outcome.deferred_gallery_count is not None:
+            # A stale sealed build's durable publication must finalize before
+            # any new build: this turn resumes that build and the caller's
+            # snapshot is re-derived by a later turn.
+            machine.discovered_galleries = outcome.deferred_gallery_count
+            machine.staged_galleries = outcome.deferred_gallery_count
+            machine.sealed = True
+            machine.action = _SourceAction.COMPLETE
+        else:
+            machine.action = _SourceAction.DISCOVERY_BATCH
     elif action is _SourceAction.DISCOVERY_BATCH:
         batch = _require_exact_discovery_batch(step._payload)
         if batch.terminal:

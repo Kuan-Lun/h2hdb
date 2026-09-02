@@ -4649,6 +4649,11 @@ def _derive_compacted_published_baseline(
             "source build has multiple or malformed finalized publications"
         )
     row = rows[0]
+    if row[3] != "PUBLISHED":
+        # The build's publication commit is durable but not yet finalized
+        # (library activation or finalization is pending): there is no
+        # finalized provenance to compact yet, exactly as before the commit.
+        return None
     mandatory = row[:11]
     if any(value is None for value in mandatory):
         raise AnalysisCorruptionError(
