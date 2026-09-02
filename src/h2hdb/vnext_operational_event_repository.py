@@ -289,6 +289,13 @@ class OperationalEffectRepository:
                 "canonical preparation identity collides with another natural key"
             )
 
+        OperationalEffectRepository._abandon_superseded_preparations(
+            work,
+            build_id=build,
+            policy_id=policy_id,
+            deletion_generation=deletion_generation,
+            now=timestamp,
+        )
         chain = _empty_chain()
         cursor = _encode_cursor(0)
         work.connector.execute(
@@ -767,6 +774,60 @@ class OperationalEffectRepository:
                 "operational checkpoint cursor and count disagree"
             )
         return checkpoint
+
+    @staticmethod
+    def _abandon_superseded_preparations(
+        work: VNextUnitOfWork,
+        *,
+        build_id: bytes,
+        policy_id: int,
+        deletion_generation: int,
+        now: int,
+    ) -> None:
+        """Abandon this build's unbound, uncommitted attempts whose policy or
+        deletion-request generation differs from the attempt about to begin.
+
+        Generations only advance and a replaced policy is never re-issued for
+        the same build, so such an OPEN or COMPLETE preparation can never be
+        published; left alone it would retain its build forever because generic
+        cleanup reclaims only ABANDONED attempts.  A bound attempt is superseded
+        by the binding path instead, and a committed one is publication
+        lineage."""
+
+        stale = work.connector.fetch_all(
+            "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
+            f"FROM {_PREPARATION_TABLE} AS p "
+            "WHERE p.build_id = %s "
+            "AND (p.operational_policy_id <> %s "
+            "OR p.deletion_request_generation <> %s) "
+            "AND p.state IN ('OPEN', 'COMPLETE') "
+            "AND NOT EXISTS (SELECT 1 "
+            "FROM operational_publication_candidate_preparations AS bound "
+            "WHERE bound.preparation_id = p.preparation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
+            "WHERE committed.preparation_id = p.preparation_id) "
+            "ORDER BY p.preparation_id",
+            (build_id, policy_id, deletion_generation),
+        )
+        for row in stale:
+            if len(row) != 4:
+                raise OperationalEffectCorruptionError(
+                    "superseded operational preparation facts are malformed"
+                )
+            stale_id = require_uuid16(row[0], field="superseded preparation_id")
+            state = str(row[1])
+            prepared_at = require_int63(row[2], field="superseded prepared_at")
+            completed_at = (
+                max(prepared_at, now)
+                if row[3] is None
+                else require_int63(row[3], field="superseded completed_at")
+            )
+            work.compare_and_swap(
+                f"UPDATE {_PREPARATION_TABLE} SET state = 'ABANDONED', "
+                "completed_at = %s WHERE preparation_id = %s AND state = %s",
+                (completed_at, stale_id, state),
+                authority="superseded operational preparation",
+            )
 
     @staticmethod
     def _validate_existing_root(

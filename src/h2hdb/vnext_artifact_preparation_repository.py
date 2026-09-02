@@ -1720,16 +1720,28 @@ class ArtifactPreparationRepository:
         candidate_id: bytes,
         effect_seal: OperationalEffectSeal,
         now: int,
+        supersedes: bytes | None = None,
     ) -> None:
-        """Bind a COMPLETE effect seal for candidates with zero prepared bytes."""
+        """Bind a COMPLETE effect seal for candidates with zero prepared bytes.
+
+        ``supersedes`` names the exact bound preparation whose retained
+        deletion-request generation is no longer current; the new seal then
+        replaces that binding on a SEALED candidate and the stale attempt is
+        abandoned.  Without it a differing binding stays a conflict."""
 
         timestamp = require_int63(now, field="operational binding timestamp")
+        stale = (
+            None
+            if supersedes is None
+            else require_uuid16(supersedes, field="superseded preparation_id")
+        )
         projection = PublicationCandidateRepository.issue_projection_authority(
             work,
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             candidate_id=candidate_id,
             now=timestamp,
+            sealed_allowed=stale is not None,
         )
         _bind_operational_effect_seal(
             work,
@@ -1737,6 +1749,7 @@ class ArtifactPreparationRepository:
             build_id=projection.build_id,
             effect_seal=effect_seal,
             now=timestamp,
+            supersedes=stale,
         )
 
 
@@ -4901,6 +4914,7 @@ def _bind_operational_effect_seal(
     effect_seal: OperationalEffectSeal,
     now: int,
     allow_insert: bool = True,
+    supersedes: bytes | None = None,
 ) -> None:
     if not isinstance(effect_seal, OperationalEffectSeal):
         raise TypeError("effect_seal must be OperationalEffectSeal")
@@ -4936,6 +4950,21 @@ def _bind_operational_effect_seal(
     )
     if existing:
         if (
+            supersedes is not None
+            and len(existing) == 3
+            and existing[0] == candidate_id
+            and existing[1] == supersedes
+            and supersedes != preparation_id
+        ):
+            _supersede_stale_operational_binding(
+                work,
+                candidate_id=candidate_id,
+                stale_preparation_id=existing[1],
+                preparation_id=preparation_id,
+                now=now,
+            )
+            return
+        if (
             len(existing) != 3
             or existing[0] != candidate_id
             or existing[1] != preparation_id
@@ -4954,6 +4983,87 @@ def _bind_operational_effect_seal(
         "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
         (candidate_id, preparation_id, now),
     )
+
+
+def _supersede_stale_operational_binding(
+    work: VNextUnitOfWork,
+    *,
+    candidate_id: bytes,
+    stale_preparation_id: object,
+    preparation_id: bytes,
+    now: int,
+) -> None:
+    """Replace a candidate's binding whose preparation retains a superseded
+    deletion-request generation with the current-generation preparation.
+
+    Under the locked singleton generation head, the bound preparation must be
+    COMPLETE and retain a generation other than the current one, while the
+    replacement must retain exactly the current generation.  The stale attempt
+    becomes ABANDONED and unbound, which is the only state generic cleanup
+    reclaims; any other binding difference stays a conflict."""
+
+    stale = require_uuid16(
+        stale_preparation_id, field="stale operational preparation_id"
+    )
+    # The generation head is read, not locked: generations only advance, so a
+    # binding that is stale stays stale, and the publication commit locks the
+    # head again and refuses any preparation that has fallen behind since.
+    head = work.connector.fetch_one(
+        "SELECT current_generation "
+        "FROM operational_deletion_request_generation_heads "
+        "WHERE singleton_id = %s",
+        (1,),
+    )
+    if not head or len(head) != 1:
+        raise ArtifactPreparationConflictError(
+            "deletion-request generation head is missing"
+        )
+    current = require_int63(head[0], field="current deletion-request generation")
+    generations = work.connector.fetch_all(
+        "SELECT preparation_id, deletion_request_generation, state "
+        "FROM operational_operational_preparations "
+        "WHERE preparation_id IN (%s, %s)",
+        (stale, preparation_id),
+    )
+    by_id = {
+        bytes(row[0]): (
+            require_int63(row[1], field="operational preparation generation"),
+            str(row[2]),
+        )
+        for row in generations
+        if len(row) == 3
+    }
+    if (
+        by_id.get(stale, (current, "COMPLETE"))
+        in {
+            (current, "COMPLETE"),
+            (current, "OPEN"),
+        }
+        or by_id[stale][1] != "COMPLETE"
+    ):
+        raise ArtifactPreparationConflictError(
+            "operational preparation is bound to a different candidate"
+        )
+    if by_id.get(preparation_id) != (current, "COMPLETE"):
+        raise ArtifactPreparationConflictError(
+            "operational preparation does not retain the current "
+            "deletion-request generation"
+        )
+    abandoned = work.connector.execute_affected(
+        "UPDATE operational_operational_preparations SET state = 'ABANDONED' "
+        "WHERE preparation_id = %s AND state = 'COMPLETE'",
+        (stale,),
+    )
+    rebound = work.connector.execute_affected(
+        "UPDATE operational_publication_candidate_preparations "
+        "SET preparation_id = %s, bound_at = %s "
+        "WHERE candidate_id = %s AND preparation_id = %s",
+        (preparation_id, now, candidate_id, stale),
+    )
+    if abandoned != 1 or rebound != 1:
+        raise ArtifactPreparationConflictError(
+            "stale operational binding could not be superseded exactly"
+        )
 
 
 def _load_authority_facts(

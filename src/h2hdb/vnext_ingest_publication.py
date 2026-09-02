@@ -100,6 +100,7 @@ from .vnext_operational_event_repository import (
     OperationalEffect,
     OperationalEffectRepository,
     OperationalEffectSeal,
+    OperationalEffectStateError,
     RemovedGid,
 )
 from .vnext_publication_candidate_repository import (
@@ -302,6 +303,7 @@ class _OperationalWork:
     operational_policy_id: int
     preparation_id: bytes | None = None
     effect_seal: OperationalEffectSeal | None = None
+    supersedes: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1515,6 +1517,17 @@ def _issue_database_action(
         (stage for stage, state in checkpoints if state != "COMPLETE"), None
     )
     if first_open is None:
+        if _stale_operational_binding(work, candidate) is not None:
+            superseding = _issue_artifact_or_operational(
+                work,
+                generation=generation,
+                candidate_id=candidate,
+                build_id=root.build_id,
+                operational_policy_id=policy.operational_policy_id,
+                now=now,
+            )
+            if superseding is not None:
+                return superseding
         return _Action.COMMIT_PUBLICATION, candidate
 
     batch_key = secrets.token_bytes(32)
@@ -1589,6 +1602,37 @@ def _issue_database_action(
     except KeyError as error:
         raise RuntimeError("publication checkpoint stage is unsupported") from error
     return action, _CandidateWork(candidate, batch_key)
+
+
+def _stale_operational_binding(
+    work: VNextUnitOfWork,
+    candidate_id: bytes,
+) -> bytes | None:
+    """Return the bound operational preparation whose retained deletion
+    generation no longer equals the singleton head, or None when current.
+
+    The manifest keys operational preparations by (build, deletion-request
+    generation, policy): a queue writer that advances the generation after the
+    candidate bound its COMPLETE preparation makes that binding stale, and the
+    publication commit will refuse it forever.  The issue path therefore
+    re-prepares under the current generation and supersedes the binding."""
+
+    row = work.connector.fetch_one(
+        "SELECT binding.preparation_id "
+        "FROM operational_publication_candidate_preparations AS binding "
+        "JOIN operational_operational_preparations AS preparation "
+        "ON preparation.preparation_id = binding.preparation_id "
+        "JOIN operational_deletion_request_generation_heads AS head "
+        "ON head.singleton_id = 1 "
+        "WHERE binding.candidate_id = %s "
+        "AND preparation.deletion_request_generation <> head.current_generation",
+        (candidate_id,),
+    )
+    if not row:
+        return None
+    if len(row) != 1:
+        raise RuntimeError("operational binding authority is malformed")
+    return require_uuid16(row[0], field="stale operational preparation_id")
 
 
 def _issue_artifact_or_operational(
@@ -1704,7 +1748,23 @@ def _issue_artifact_or_operational(
             ),
         )
     if binding != (preparation_id,):
-        raise RuntimeError("candidate operational binding changed")
+        stale = _stale_operational_binding(work, candidate_id)
+        if stale is None or binding != (stale,):
+            raise RuntimeError("candidate operational binding changed")
+        # The bound preparation retains a superseded deletion generation; the
+        # current-generation preparation above replaces it on the same
+        # candidate and the stale attempt is abandoned for generic cleanup.
+        return (
+            _Action.BIND_OPERATIONAL,
+            _OperationalWork(
+                candidate_id,
+                build_id,
+                operational_policy_id,
+                preparation_id,
+                effect_seal,
+                stale,
+            ),
+        )
     return None
 
 
@@ -1819,6 +1879,7 @@ def _commit_action(
             candidate_id=operational.candidate_id,
             effect_seal=operational.effect_seal,
             now=now,
+            supersedes=operational.supersedes,
         )
     if action is _Action.PREPARE_ARTIFACT:
         prepared = cast(_ArtifactPrepared, payload)
@@ -2413,7 +2474,9 @@ def _derive_operational_effects(
         (preparation,),
     )
     if len(row) != 3 or int(row[1]) != int(row[2]):
-        raise RuntimeError("operational queue generation changed before batching")
+        raise OperationalEffectStateError(
+            "operational queue generation changed before batching"
+        )
     limit = min(
         require_positive_int63(row[0], field="operational effect page limit"),
         _MAX_PAGE_ROWS,

@@ -973,8 +973,13 @@ class PublicationCandidateRepository:
         ingest_turn: IngestTurn,
         candidate_id: bytes,
         now: int,
+        sealed_allowed: bool = False,
     ) -> PublicationProjectionAuthority:
-        """Capture the exact terminal selection authority in one short tx."""
+        """Capture the exact terminal selection authority in one short tx.
+
+        ``sealed_allowed`` admits a SEALED candidate as well as an OPEN one;
+        it exists only for superseding a stale operational binding after the
+        candidate sealed its validation stages."""
 
         timestamp = require_int63(now, field="projection authority now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
@@ -984,6 +989,7 @@ class PublicationCandidateRepository:
             generation=generation,
             now=timestamp,
             validate_artifact_policy=True,
+            sealed_allowed=sealed_allowed,
         )
 
     @staticmethod
@@ -1015,6 +1021,7 @@ class PublicationCandidateRepository:
         generation: int,
         now: int,
         validate_artifact_policy: bool,
+        sealed_allowed: bool = False,
     ) -> PublicationProjectionAuthority:
         """Issue after the application layer validated this transaction's fence.
 
@@ -1071,6 +1078,7 @@ class PublicationCandidateRepository:
             source_working=source_working,
             catalog_working=catalog_working,
             now=timestamp,
+            sealed_allowed=sealed_allowed,
         )
         base_source, base_catalog = _load_candidate_bases(work, candidate_key)
         _require_build_base_source(work, begin.build_id, base_source)
@@ -1434,6 +1442,7 @@ def _require_projection_candidate_exact(
     source_working: tuple[int, bytes, int] | None,
     catalog_working: tuple[int, bytes, int] | None,
     now: int,
+    sealed_allowed: bool = False,
 ) -> None:
     if (
         candidate.analysis_id != begin.analysis_id
@@ -1444,7 +1453,9 @@ def _require_projection_candidate_exact(
         raise PublicationCandidateConflictError(
             "publication candidate differs from its sealed analysis authority"
         )
-    if candidate.state != "OPEN":
+    if candidate.state != "OPEN" and not (
+        sealed_allowed and candidate.state == "SEALED"
+    ):
         raise PublicationCandidateNotReadyError(
             "catalog projection requires an OPEN candidate"
         )
