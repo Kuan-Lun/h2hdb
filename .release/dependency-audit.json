@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-01T21:07:39+00:00",
+  "checked_at": "2026-09-02T05:47:47+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.29.0",
+  "project_version": "0.29.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all build, runtime, optional, development, and Node direct dependencies for the 0.29.0 catalog, schema-bootstrap, and artifact-pipeline performance release; no dependency change is required, and recorded registry candidates remain subject to the full release gate.",
+    "note": "Reviewed all build, runtime, optional, development, and Node direct dependencies for the 0.29.1 bounded catalog hydration and explicit ingest lifecycle release; no dependency change is required, and recorded registry candidates remain subject to the full release gate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
