@@ -72,14 +72,16 @@ The layers prove different things and are not interchangeable.
   child-first cleanup theorems for both impacted-key families.
   `lean/ArtifactDelta.lean`, `lean/ArtifactReceiptCache.lean`,
   `lean/ArtifactSourceSliceIsolation.lean`,
-  `lean/CanonicalBatchHydration.lean`, `lean/CanonicalPlanCursor.lean`,
+  `lean/CanonicalBatchHydration.lean`, `lean/CatalogChildHydration.lean`,
+  `lean/CanonicalPlanCursor.lean`,
   `lean/CatalogReadBundle.lean`, `lean/ReadyAuditCanonicalCache.lean`,
   `lean/SchemaBootstrapBatch.lean`, and `GalleryDeduplication.lean` prove the
   listed abstract delta, source-revalidated and capacity-bounded disposable
   receipt-cache observational equivalence,
   shared-spool slice versus independent-source byte equivalence,
-  scalar-versus-batched canonical hydration equivalence, canonical selector
-  and catalog connector-layout equivalence, stable-head discovery-bundle
+  scalar-versus-batched canonical hydration equivalence, bounded ordered
+  contributor/subject keyset hydration, canonical selector and catalog
+  connector-layout equivalence, stable-head discovery-bundle
   equivalence, snapshot-scoped READY-audit cache equivalence and hard bounds,
   bounded-bootstrap result/replay equivalence, and deduplication theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
@@ -97,6 +99,8 @@ The layers prove different things and are not interchangeable.
   `tla/CatalogReadBundle.tla` finitely explores reused versus separate catalog
   read connectors, one-snapshot discovery bundles, stable independent reads,
   and zero stale success across head advancement.
+  `tla/CatalogChildHydration.tla` finitely explores hard-capped ordered child
+  pages, exact cursor advancement, and reference-result completion.
   `tla/SchemaBootstrapBatch.tla` finitely explores bounded, statement-aligned
   bootstrap batches through rollback, crash, lost commit responses, replay,
   and the exact durable-fact precondition for `READY`.

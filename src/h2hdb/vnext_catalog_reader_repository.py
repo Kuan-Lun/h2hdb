@@ -79,6 +79,7 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _EFFECTIVE_CONTENT_PREFIX = b"h2hdb-vnext-effective-content\0"
 _EFFECTIVE_CONTENT_HEADER_BYTES = len(_EFFECTIVE_CONTENT_PREFIX) + 12
 _CANONICAL_PREFETCH_BATCH_LIMIT = 128
+_CHILD_HYDRATION_PAGE_LIMIT = 128
 
 
 class VNextCatalogReadError(RuntimeError):
@@ -1244,10 +1245,14 @@ class VNextCatalogReaderRepository:
                 scalar_references.append((row[11], b"effective_content_v1"))
         loader.prefetch(scalar_references)
         contributors = self._contributors_for_publications(
-            connector, loader, revision=revision, publication_keys=visible
+            connector,
+            revision=revision,
+            publication_keys=visible,
         )
         subjects = self._subjects_for_publications(
-            connector, loader, revision=revision, publication_keys=visible
+            connector,
+            revision=revision,
+            publication_keys=visible,
         )
         artifact_facts = self._artifact_facts_for_publications(
             connector, revision=revision, publication_keys=visible
@@ -1351,110 +1356,181 @@ class VNextCatalogReaderRepository:
     def _contributors_for_publications(
         self,
         connector: SQLConnector,
-        loader: _CanonicalLoader,
         *,
         revision: int,
         publication_keys: tuple[bytes, ...],
     ) -> dict[bytes, tuple[CatalogContributor, ...]]:
         selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
-        rows = connector.fetch_all(
-            f"WITH selected(publication_key) AS ({selected_cte}) "
-            "SELECT contributor.publication_key, contributor.position, "
-            "contributor.contributor_name_sha256, contributor.role, roles.role "
-            "FROM catalog_contributors AS contributor JOIN selected AS chosen "
-            "ON chosen.publication_key = contributor.publication_key "
-            "LEFT JOIN catalog_contributor_role_registry AS roles "
-            "ON roles.role = contributor.role WHERE contributor.revision = %s "
-            "ORDER BY contributor.publication_key, contributor.position",
-            (*publication_keys, revision),
-        )
-        loader.prefetch(
-            tuple(
-                (row[2], b"contributor_name_utf8_v1")
-                for row in rows
-                if len(row) == 5 and row[2] is not None
-            )
-        )
+        expected = set(publication_keys)
         grouped: dict[bytes, list[CatalogContributor]] = {}
-        for row in rows:
-            if len(row) != 5 or any(value is None for value in row[2:]):
+        after: tuple[bytes, int] | None = None
+        while True:
+            after_clause = ""
+            after_parameters: tuple[object, ...] = ()
+            if after is not None:
+                after_clause = (
+                    "AND (contributor.publication_key > %s OR "
+                    "(contributor.publication_key = %s "
+                    "AND contributor.position > %s)) "
+                )
+                after_parameters = (after[0], after[0], after[1])
+            rows = connector.fetch_all(
+                f"WITH selected(publication_key) AS ({selected_cte}) "
+                "SELECT contributor.publication_key, contributor.position, "
+                "contributor.contributor_name_sha256, contributor.role, roles.role "
+                "FROM catalog_contributors AS contributor JOIN selected AS chosen "
+                "ON chosen.publication_key = contributor.publication_key "
+                "LEFT JOIN catalog_contributor_role_registry AS roles "
+                "ON roles.role = contributor.role WHERE contributor.revision = %s "
+                f"{after_clause}"
+                "ORDER BY contributor.publication_key, contributor.position LIMIT %s",
+                (
+                    *publication_keys,
+                    revision,
+                    *after_parameters,
+                    _CHILD_HYDRATION_PAGE_LIMIT,
+                ),
+            )
+            if len(rows) > _CHILD_HYDRATION_PAGE_LIMIT:
                 raise VNextCatalogReadError(
-                    "contributor occurrence has invalid or unregistered facts"
+                    "contributor hydration exceeded its hard page bound"
                 )
-            key = require_digest32(row[0], field="publication_key")
-            position = require_int63(row[1], field="contributor position")
-            current = grouped.setdefault(key, [])
-            if position != len(current):
-                raise VNextCatalogReadError("contributor positions are not contiguous")
-            name = loader.text(
-                row[2],
-                domain=b"contributor_name_utf8_v1",
-                field="contributor name",
-            )
-            role_bytes = require_ascii_bytes(
-                row[3], field="contributor role", minimum=1, maximum=64
-            )
-            if (
-                require_ascii_bytes(
-                    row[4], field="registered contributor role", minimum=1, maximum=64
+            if not rows:
+                break
+            page_loader = _CanonicalLoader(connector, backend=self._backend)
+            page_loader.prefetch(
+                tuple(
+                    (row[2], b"contributor_name_utf8_v1")
+                    for row in rows
+                    if len(row) == 5 and row[2] is not None
                 )
-                != role_bytes
-            ):
-                raise VNextCatalogReadError("contributor role registry disagrees")
-            current.append(
-                CatalogContributor(name=name, role=role_bytes.decode("ascii"))
             )
+            for row in rows:
+                if len(row) != 5 or any(value is None for value in row[2:]):
+                    raise VNextCatalogReadError(
+                        "contributor occurrence has invalid or unregistered facts"
+                    )
+                key = require_digest32(row[0], field="publication_key")
+                position = require_int63(row[1], field="contributor position")
+                coordinate = (key, position)
+                if key not in expected or (after is not None and coordinate <= after):
+                    raise VNextCatalogReadError(
+                        "contributor hydration keyset page is nonmonotone"
+                    )
+                current = grouped.setdefault(key, [])
+                if position != len(current):
+                    raise VNextCatalogReadError(
+                        "contributor positions are not contiguous"
+                    )
+                name = page_loader.text(
+                    row[2],
+                    domain=b"contributor_name_utf8_v1",
+                    field="contributor name",
+                )
+                role_bytes = require_ascii_bytes(
+                    row[3], field="contributor role", minimum=1, maximum=64
+                )
+                if (
+                    require_ascii_bytes(
+                        row[4],
+                        field="registered contributor role",
+                        minimum=1,
+                        maximum=64,
+                    )
+                    != role_bytes
+                ):
+                    raise VNextCatalogReadError("contributor role registry disagrees")
+                current.append(
+                    CatalogContributor(name=name, role=role_bytes.decode("ascii"))
+                )
+                after = coordinate
+            if len(rows) < _CHILD_HYDRATION_PAGE_LIMIT:
+                break
         return {key: tuple(values) for key, values in grouped.items()}
 
-    @staticmethod
     def _subjects_for_publications(
+        self,
         connector: SQLConnector,
-        loader: _CanonicalLoader,
         *,
         revision: int,
         publication_keys: tuple[bytes, ...],
     ) -> dict[bytes, tuple[CatalogSubject, ...]]:
-        placeholders = _sql_placeholders(len(publication_keys))
-        rows = connector.fetch_all(
-            "SELECT s.publication_key, s.position, s.tag_id, "
-            "t.tag_id, t.namespace, t.tag_value_sha256 "
-            "FROM catalog_subjects AS s "
-            "LEFT JOIN catalog_tag_terms AS t ON t.tag_id = s.tag_id "
-            f"WHERE s.revision = %s AND s.publication_key IN ({placeholders}) "
-            "ORDER BY s.publication_key, s.position",
-            (revision, *publication_keys),
-        )
-        loader.prefetch(
-            tuple(
-                (row[5], b"tag_value_utf8_v1")
-                for row in rows
-                if len(row) == 6 and row[5] is not None
-            )
-        )
+        selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
+        expected = set(publication_keys)
         grouped: dict[bytes, list[CatalogSubject]] = {}
-        for row in rows:
-            if len(row) != 6 or any(value is None for value in row[2:]):
-                raise VNextCatalogReadError("subject row lacks its tag identity")
-            key = require_digest32(row[0], field="publication_key")
-            position = require_int63(row[1], field="subject position")
-            if require_positive_int63(
-                row[2], field="subject tag_id"
-            ) != require_positive_int63(row[3], field="stored subject tag_id"):
-                raise VNextCatalogReadError("subject tag identity disagrees")
-            current = grouped.setdefault(key, [])
-            if position != len(current):
-                raise VNextCatalogReadError("subject positions are not contiguous")
-            namespace = require_utf8_bytes(
-                row[4], field="tag namespace", maximum=128
-            ).decode("utf-8")
-            value = loader.text(row[5], domain=b"tag_value_utf8_v1", field="tag value")
-            current.append(
-                CatalogSubject(
-                    name=value,
-                    scheme=f"h2h:tag:{namespace}",
-                    code=namespace,
+        after: tuple[bytes, int] | None = None
+        while True:
+            after_clause = ""
+            after_parameters: tuple[object, ...] = ()
+            if after is not None:
+                after_clause = (
+                    "AND (s.publication_key > %s OR "
+                    "(s.publication_key = %s AND s.position > %s)) "
+                )
+                after_parameters = (after[0], after[0], after[1])
+            rows = connector.fetch_all(
+                f"WITH selected(publication_key) AS ({selected_cte}) "
+                "SELECT s.publication_key, s.position, s.tag_id, "
+                "t.tag_id, t.namespace, t.tag_value_sha256 "
+                "FROM catalog_subjects AS s JOIN selected AS chosen "
+                "ON chosen.publication_key = s.publication_key "
+                "LEFT JOIN catalog_tag_terms AS t ON t.tag_id = s.tag_id "
+                f"WHERE s.revision = %s {after_clause}"
+                "ORDER BY s.publication_key, s.position LIMIT %s",
+                (
+                    *publication_keys,
+                    revision,
+                    *after_parameters,
+                    _CHILD_HYDRATION_PAGE_LIMIT,
+                ),
+            )
+            if len(rows) > _CHILD_HYDRATION_PAGE_LIMIT:
+                raise VNextCatalogReadError(
+                    "subject hydration exceeded its hard page bound"
+                )
+            if not rows:
+                break
+            page_loader = _CanonicalLoader(connector, backend=self._backend)
+            page_loader.prefetch(
+                tuple(
+                    (row[5], b"tag_value_utf8_v1")
+                    for row in rows
+                    if len(row) == 6 and row[5] is not None
                 )
             )
+            for row in rows:
+                if len(row) != 6 or any(value is None for value in row[2:]):
+                    raise VNextCatalogReadError("subject row lacks its tag identity")
+                key = require_digest32(row[0], field="publication_key")
+                position = require_int63(row[1], field="subject position")
+                coordinate = (key, position)
+                if key not in expected or (after is not None and coordinate <= after):
+                    raise VNextCatalogReadError(
+                        "subject hydration keyset page is nonmonotone"
+                    )
+                if require_positive_int63(
+                    row[2], field="subject tag_id"
+                ) != require_positive_int63(row[3], field="stored subject tag_id"):
+                    raise VNextCatalogReadError("subject tag identity disagrees")
+                current = grouped.setdefault(key, [])
+                if position != len(current):
+                    raise VNextCatalogReadError("subject positions are not contiguous")
+                namespace = require_utf8_bytes(
+                    row[4], field="tag namespace", maximum=128
+                ).decode("utf-8")
+                value = page_loader.text(
+                    row[5], domain=b"tag_value_utf8_v1", field="tag value"
+                )
+                current.append(
+                    CatalogSubject(
+                        name=value,
+                        scheme=f"h2h:tag:{namespace}",
+                        code=namespace,
+                    )
+                )
+                after = coordinate
+            if len(rows) < _CHILD_HYDRATION_PAGE_LIMIT:
+                break
         return {key: tuple(values) for key, values in grouped.items()}
 
     def _artifact_facts_for_publications(

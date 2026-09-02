@@ -30,6 +30,7 @@ from vnext_publication_fixtures import (
     seed_publication_identity,
 )
 
+import h2hdb.vnext_catalog_reader_repository as catalog_reader_repository
 import h2hdb.vnext_identity as identity
 from h2hdb import (
     CatalogContributorFilter,
@@ -993,6 +994,191 @@ def _seed_discovery_authority(
     connector.execute(
         "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
     )
+
+
+def _seed_publication_child_cardinality(
+    connector: SQLiteConnector,
+    *,
+    publication_key_value: bytes,
+    total: int,
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+    contributor_names = ["作者"]
+    subjects = [("測試", "artist")]
+    for position in range(1, total):
+        contributor_name = f"作者-{position:03d}"
+        contributor = _canonical(
+            connector,
+            "contributor_name_utf8_v1",
+            contributor_name.encode(),
+        )
+        seed_catalog_contributor(
+            connector,
+            revision=1,
+            publication_key=publication_key_value,
+            position=position,
+            contributor_name_sha256=contributor,
+            role=b"author",
+        )
+        namespace = f"topic-{position:03d}"
+        subject_name = f"主題-{position:03d}"
+        tag_value = _canonical(
+            connector,
+            "tag_value_utf8_v1",
+            subject_name.encode(),
+        )
+        seed_tag_term(
+            connector,
+            tag_id=position + 1,
+            namespace=namespace.encode("ascii"),
+            tag_value_sha256=tag_value,
+        )
+        connector.execute(
+            "INSERT INTO catalog_subjects "
+            "(revision, publication_key, position, tag_id) "
+            "VALUES (1, %s, %s, %s)",
+            (publication_key_value, position, position + 1),
+        )
+        contributor_names.append(contributor_name)
+        subjects.append((subject_name, namespace))
+    return tuple(contributor_names), tuple(subjects)
+
+
+def test_publication_children_stream_in_hard_capped_keyset_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-child-keyset-pages.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        total = catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT + 1
+        expected_contributors, expected_subjects = _seed_publication_child_cardinality(
+            connector,
+            publication_key_value=values["publication_key"],
+            total=total,
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            monkeypatch.context() as reference_patch,
+            connector.read_transaction(),
+        ):
+            reference_patch.setattr(
+                catalog_reader_repository,
+                "_CHILD_HYDRATION_PAGE_LIMIT",
+                total + 1,
+            )
+            reference = reader.get_publication(
+                connector,
+                "urn:h2h:gallery:123",
+                revision=1,
+            )
+
+        page_rows: dict[str, list[int]] = {"contributors": [], "subjects": []}
+        prefetch_sizes: list[int] = []
+        original_fetch_all = connector.fetch_all
+        original_prefetch = catalog_reader_repository._CanonicalLoader.prefetch
+
+        def record_fetch_all(
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            rows = original_fetch_all(query, data)
+            if "FROM catalog_contributors AS contributor JOIN selected" in query:
+                page_rows["contributors"].append(len(rows))
+            elif "FROM catalog_subjects AS s JOIN selected" in query:
+                page_rows["subjects"].append(len(rows))
+            return rows
+
+        def record_prefetch(
+            loader: catalog_reader_repository._CanonicalLoader,
+            references: tuple[tuple[object, bytes], ...],
+        ) -> None:
+            prefetch_sizes.append(len(references))
+            original_prefetch(loader, references)
+
+        monkeypatch.setattr(connector, "fetch_all", record_fetch_all)
+        monkeypatch.setattr(
+            catalog_reader_repository._CanonicalLoader,
+            "prefetch",
+            record_prefetch,
+        )
+        with connector.read_transaction():
+            paged = reader.get_publication(
+                connector,
+                "urn:h2h:gallery:123",
+                revision=1,
+            )
+
+        assert paged == reference
+        assert paged is not None
+        assert (
+            tuple(value.name for value in paged.contributors) == expected_contributors
+        )
+        assert tuple(value.role for value in paged.contributors) == ("author",) * total
+        assert (
+            tuple((value.name, value.code) for value in paged.subjects)
+            == expected_subjects
+        )
+        assert page_rows == {
+            "contributors": [catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT, 1],
+            "subjects": [catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT, 1],
+        }
+        assert prefetch_sizes
+        assert (
+            max(prefetch_sizes) <= catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT
+        )
+    finally:
+        connector.close()
+
+
+def test_publication_child_keyset_pages_reject_cross_page_position_gaps(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-child-keyset-gap.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        boundary = catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT
+        _seed_publication_child_cardinality(
+            connector,
+            publication_key_value=values["publication_key"],
+            total=boundary + 1,
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+
+        connector.execute(
+            "UPDATE catalog_contributors SET position = %s "
+            "WHERE revision = 1 AND publication_key = %s AND position = %s",
+            (boundary + 1, values["publication_key"], boundary),
+        )
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="contributor positions"),
+        ):
+            reader.get_publication(
+                connector,
+                "urn:h2h:gallery:123",
+                revision=1,
+            )
+        connector.execute(
+            "UPDATE catalog_contributors SET position = %s "
+            "WHERE revision = 1 AND publication_key = %s AND position = %s",
+            (boundary, values["publication_key"], boundary + 1),
+        )
+        connector.execute(
+            "UPDATE catalog_subjects SET position = %s "
+            "WHERE revision = 1 AND publication_key = %s AND position = %s",
+            (boundary + 1, values["publication_key"], boundary),
+        )
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="subject positions"),
+        ):
+            reader.get_publication(
+                connector,
+                "urn:h2h:gallery:123",
+                revision=1,
+            )
+    finally:
+        connector.close()
 
 
 def test_discovery_uses_sealed_sql_postings_and_exact_cross_filters(
