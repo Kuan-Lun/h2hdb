@@ -36,8 +36,12 @@ from .vnext_domains import (
     require_positive_int63,
     require_uint32,
 )
-from .vnext_ingest_fence_repository import IngestTurn
-from .vnext_maintenance_gate_repository import GateLease
+from .vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
+from .vnext_maintenance_gate_repository import (
+    GateLease,
+    GateMode,
+    MaintenanceGateRepository,
+)
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _POLICY_LOCK_KEY = encode_lock_key("ingest-policy-registry")
@@ -49,6 +53,31 @@ class VNextIngestPolicyConflictError(RuntimeError):
 
 class VNextIngestPolicyNotReadyError(RuntimeError):
     """A generated bootstrap policy required by ingest is unavailable."""
+
+
+def _authorize(
+    work: VNextUnitOfWork,
+    gate_lease: GateLease,
+    ingest_turn: IngestTurn,
+    *,
+    now: int,
+) -> None:
+    """Require the live SHARED gate and live ingest turn before registering.
+
+    Policy rows are immutable canonical facts, but they are still ingest
+    writes: a session whose lease expired or whose generation was taken over
+    must not register anything."""
+
+    live_gate = MaintenanceGateRepository.lock_and_require_live(
+        work,
+        gate_lease,
+        now=now,
+    )
+    if live_gate.mode is not GateMode.SHARED:
+        raise VNextIngestPolicyNotReadyError(
+            "ingest policy registration requires a live SHARED maintenance gate"
+        )
+    IngestFenceRepository.lock_and_require_live(work, ingest_turn, now=now)
 
 
 class VNextIngestPolicyRepository:
@@ -67,6 +96,7 @@ class VNextIngestPolicyRepository:
             raise TypeError("policy must be VNextIngestPolicy")
         policy.__post_init__()
         timestamp = require_int63(now, field="ingest policy registration now")
+        _authorize(work, gate_lease, ingest_turn, now=timestamp)
         artifact_semantics_created = _ensure_artifact_policy(
             work,
             ingest_turn=ingest_turn,
