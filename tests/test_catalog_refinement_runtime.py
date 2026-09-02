@@ -1428,6 +1428,7 @@ def test_depth_16_analysis_validation_has_a_fixed_query_and_index_budget(
             "CATALOG_SOURCE_PROVIDER_REGISTRY",
             "CATALOG_CANONICAL_DIGEST_POLICIES",
             "CATALOG_RESOURCE_KINDS",
+            "CATALOG_SEARCH_POLICIES",
             "CATALOG_SOURCE_HEAD_REVISIONS",
             "CATALOG_SOURCE_HEAD_ADVANCED_ATS",
             "MEMBER_1",
@@ -1449,7 +1450,9 @@ def test_depth_16_analysis_validation_has_a_fixed_query_and_index_budget(
 
     assert len(recorder.reads) <= 96
     assert max(row_count for _query, _data, row_count in recorder.reads) <= 23
-    assert sum(row_count for _query, _data, row_count in recorder.reads) <= 343
+    # One bounded registry read (the exact search-policy singleton) joined the
+    # fixed READY budget; every other read is unchanged.
+    assert sum(row_count for _query, _data, row_count in recorder.reads) <= 344
     assert all(" LIMIT " in f" {query.upper()} " for query in recorder.queries)
     assert not any("COUNT(" in query.upper() for query in recorder.queries)
     assert not any(
@@ -1513,6 +1516,7 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
             "HEAD",
             "SEALED",
             "SEAL",
+            "CATALOG_SEARCH_POLICIES",
         }
         for query, data, _row_count in recorder.reads:
             plans = connector.fetch_all(f"EXPLAIN QUERY PLAN {query}", data)

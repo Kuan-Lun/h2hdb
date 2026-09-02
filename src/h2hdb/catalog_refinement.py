@@ -1513,6 +1513,32 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
         raise CatalogSemanticValidationError(
             "catalog_resource_kind is not the exact neutral two-role registry"
         )
+    _search_seed_id, search_cells = _WIDE_POLICY_BOOTSTRAP_VALUES["search_policy"]
+    # A bounded scan of the singleton registry, like the other exact registries.
+    search_policies = connector.fetch_all(
+        "SELECT "
+        + ", ".join(name for name, _domain, _storage, _value in search_cells)
+        + " FROM catalog_search_policies ORDER BY policy_id LIMIT 2"
+    )
+    expected_search_policy = tuple(
+        value.encode("ascii") if isinstance(value, str) else value
+        for _name, _domain, _storage, value in search_cells
+    )
+    actual_search_policies = tuple(
+        tuple(
+            _as_bytes(cell, field=f"search policy {name}")
+            if storage == "utf8"
+            else _as_int(cell, field=f"search policy {name}")
+            for (name, _domain, storage, _value), cell in zip(
+                search_cells, row, strict=True
+            )
+        )
+        for row in search_policies
+    )
+    if actual_search_policies != (expected_search_policy,):
+        raise CatalogSemanticValidationError(
+            "search_policy registry is not the exact bootstrap singleton"
+        )
     stages = connector.fetch_all(
         "SELECT stage, stage_order, cursor_codec "
         "FROM catalog_analysis_stages ORDER BY stage_order LIMIT 16"
