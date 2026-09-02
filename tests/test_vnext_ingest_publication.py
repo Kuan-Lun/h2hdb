@@ -1091,7 +1091,9 @@ def test_genesis_route_covers_sixteen_candidate_stages_then_commits(
         SimpleNamespace(operational_policy_id=1),
     )
     turn = IngestTurn(1, b"i" * 16, 100)
-    connector = SimpleNamespace()
+    # The terminal route reads the candidate's operational binding once; no
+    # binding is stale on the genesis route.
+    connector = SimpleNamespace(fetch_one=lambda *_args, **_kwargs: None)
     work = cast(Any, SimpleNamespace(connector=connector))
     monkeypatch.setattr(
         PublicationCandidateRepository,
