@@ -32,7 +32,7 @@ from h2hdb.schema_epoch import SQLiteSchemaEpochCatalog
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 
-ARTIFACT_DATA = cast(dict[str, Any], ARTIFACT)
+ARTIFACT_DATA = ARTIFACT
 
 
 @pytest.fixture

@@ -44,6 +44,11 @@ FORBIDDEN_LEGACY_MODULE_MEMBERS = frozenset(
         "h2hdb/view_ginfo.py",
     }
 )
+REQUIRED_SCHEMA_ARTIFACT_MEMBERS = (
+    "h2hdb/_generated_vnext_schema.py",
+    "h2hdb/_generated_vnext_schema.bin",
+    "h2hdb/_schema_artifact_codec.py",
+)
 
 
 def _run(*command: str, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -98,6 +103,14 @@ def _verify_wheel_archive(wheel: Path) -> None:
             if "scripts" in PurePosixPath(name).parts or "bootstrap" in name.casefold()
         ]
         forbidden_legacy_members = _forbidden_legacy_members(member_names)
+        missing_schema_members = sorted(
+            set(REQUIRED_SCHEMA_ARTIFACT_MEMBERS) - set(member_names)
+        )
+        schema_sizes = {
+            member: archive.getinfo(member).file_size
+            for member in REQUIRED_SCHEMA_ARTIFACT_MEMBERS
+            if member in member_names
+        }
 
     if forbidden_members:
         raise RuntimeError(
@@ -107,14 +120,76 @@ def _verify_wheel_archive(wheel: Path) -> None:
         raise RuntimeError(
             f"The wheel contains removed legacy modules: {forbidden_legacy_members}."
         )
+    if missing_schema_members:
+        raise RuntimeError(
+            f"The wheel is missing schema artifact members: {missing_schema_members}."
+        )
+    if schema_sizes["h2hdb/_generated_vnext_schema.py"] >= 1024 * 1024:
+        raise RuntimeError("The wheel schema artifact loader exceeds 1 MiB.")
+    if schema_sizes["h2hdb/_generated_vnext_schema.bin"] >= 2 * 1024 * 1024:
+        raise RuntimeError("The wheel compressed schema artifact exceeds 2 MiB.")
 
 
 def _verify_sdist_archive(sdist: Path) -> None:
     with tarfile.open(sdist, mode="r:gz") as archive:
-        forbidden_legacy_members = _forbidden_legacy_members(archive.getnames())
+        member_names = archive.getnames()
+        forbidden_legacy_members = _forbidden_legacy_members(member_names)
+        missing_schema_members = sorted(
+            required
+            for required in REQUIRED_SCHEMA_ARTIFACT_MEMBERS
+            if not any(
+                PurePosixPath(name).parts[-len(PurePosixPath(required).parts) :]
+                == PurePosixPath(required).parts
+                for name in member_names
+            )
+        )
     if forbidden_legacy_members:
         raise RuntimeError(
             f"The sdist contains removed legacy modules: {forbidden_legacy_members}."
+        )
+    if missing_schema_members:
+        raise RuntimeError(
+            f"The sdist is missing schema artifact members: {missing_schema_members}."
+        )
+
+
+def _verify_direct_wheel_zipimport(wheel: Path, scratch: Path) -> None:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(wheel.resolve())
+    probe_source = """
+import json
+import sys
+
+import h2hdb
+
+artifact_loaded_on_package_import = "h2hdb._generated_vnext_schema" in sys.modules
+from h2hdb._generated_vnext_schema import ARTIFACT
+
+print(json.dumps({
+    "package_file": h2hdb.__file__,
+    "artifact_loaded_on_package_import": artifact_loaded_on_package_import,
+    "artifact_epoch": ARTIFACT["epoch"],
+    "sqlite_relations": len(ARTIFACT["backends"]["sqlite"]["relations"]),
+}))
+"""
+    probe = json.loads(
+        _run(
+            sys.executable,
+            "-c",
+            probe_source,
+            cwd=scratch,
+            env=environment,
+        )
+    )
+    if str(wheel.resolve()) not in str(probe["package_file"]):
+        raise RuntimeError("Direct wheel probe did not import from the wheel archive.")
+    if probe["artifact_loaded_on_package_import"]:
+        raise RuntimeError(
+            "Direct wheel package import eagerly loaded the schema artifact."
+        )
+    if probe["artifact_epoch"] != 3 or probe["sqlite_relations"] <= 0:
+        raise RuntimeError(
+            "Direct wheel zipimport could not decode the schema resource."
         )
 
 
@@ -154,16 +229,26 @@ def _verify_installed_cli(wheel: Path, scratch: Path) -> None:
 import importlib.util
 import inspect
 import json
+import sys
 from pathlib import Path
 
 import h2hdb
 from h2hdb import __main__ as h2hdb_cli
+
+artifact_loaded_on_package_import = "h2hdb._generated_vnext_schema" in sys.modules
+from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
+
+provider = GeneratedVNextSchemaProvider("sqlite")
 
 print(json.dumps({
     "package_path": str(Path(h2hdb.__file__).resolve()),
     "environment_value": h2hdb.resolve_environment_placeholders(
         "${H2HDB_DISTRIBUTION_PROBE}"
     ),
+    "artifact_loaded_on_package_import": artifact_loaded_on_package_import,
+    "artifact_epoch": ARTIFACT["epoch"],
+    "provider_relation_count": len(provider.generated_definition_data["relations"]),
     "forbidden_public_exports": sorted(
         name for name in ("H2HDB", "MigrationRunner") if name in vars(h2hdb)
     ),
@@ -203,6 +288,14 @@ print(json.dumps({
     if probe["environment_value"] != "resolved-from-installed-wheel":
         raise RuntimeError(
             "Installed wheel did not expose the environment placeholder resolver."
+        )
+    if probe["artifact_loaded_on_package_import"]:
+        raise RuntimeError(
+            "Plain installed-package import eagerly loaded the schema artifact."
+        )
+    if probe["artifact_epoch"] != 3 or probe["provider_relation_count"] <= 0:
+        raise RuntimeError(
+            "Installed wheel could not decode its generated schema artifact."
         )
     if probe["forbidden_public_exports"]:
         raise RuntimeError(
@@ -279,6 +372,7 @@ def main() -> None:
             str(wheel),
             cwd=repository_root,
         )
+        _verify_direct_wheel_zipimport(wheel, scratch)
         _verify_installed_cli(wheel, scratch)
         _copy_verified_artifacts(
             wheel=wheel,

@@ -12,6 +12,7 @@ import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any, Protocol, cast
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIRECTORY = REPOSITORY_ROOT / "verification" / "schema"
@@ -20,6 +21,9 @@ PHYSICAL_MANIFESTS = (
     SCHEMA_DIRECTORY / "operational_physical.toml",
 )
 PACKAGE_ROOT = REPOSITORY_ROOT / "src" / "h2hdb"
+GENERATED_LOADER_NAME = "_generated_vnext_schema.py"
+GENERATED_RESOURCE_NAME = "_generated_vnext_schema.bin"
+ARTIFACT_CODEC_NAME = "_schema_artifact_codec.py"
 
 # The epoch-control table is deliberately outside the catalog_/operational_
 # namespaces.  It is the only separately admitted schema-control relation.
@@ -90,6 +94,18 @@ class MutationReference:
     line: int
     relation: str
     verb: str
+
+
+class _ArtifactDecoder(Protocol):
+    def __call__(
+        self,
+        compressed: bytes,
+        *,
+        compressed_size: int,
+        compressed_sha256: str,
+        raw_size: int,
+        raw_sha256: str,
+    ) -> dict[str, Any]: ...
 
 
 def allowed_relations(
@@ -500,6 +516,167 @@ def _mutations_for_member(
     return ()
 
 
+_ARTIFACT_LOADER_CONSTANTS = (
+    "_RESOURCE_NAME",
+    "_COMPRESSED_SIZE",
+    "_COMPRESSED_SHA256",
+    "_RAW_SIZE",
+    "_RAW_SHA256",
+)
+
+
+def _artifact_loader_metadata(
+    loader_source: str, *, source: str
+) -> tuple[int, str, int, str]:
+    try:
+        tree = ast.parse(loader_source, filename=source)
+    except SyntaxError as error:
+        raise SchemaSurfaceError(
+            f"cannot parse generated artifact loader {source}: {error}"
+        ) from error
+    values: dict[str, object] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if (
+            not isinstance(target, ast.Name)
+            or target.id not in _ARTIFACT_LOADER_CONSTANTS
+        ):
+            continue
+        try:
+            values[target.id] = ast.literal_eval(statement.value)
+        except (TypeError, ValueError) as error:
+            raise SchemaSurfaceError(
+                f"generated artifact loader metadata is not literal in {source}"
+            ) from error
+    if set(values) != set(_ARTIFACT_LOADER_CONSTANTS):
+        raise SchemaSurfaceError(
+            f"generated artifact loader metadata is incomplete in {source}"
+        )
+    if values["_RESOURCE_NAME"] != GENERATED_RESOURCE_NAME:
+        raise SchemaSurfaceError(
+            f"generated artifact loader names an unexpected resource in {source}"
+        )
+    compressed_size = values["_COMPRESSED_SIZE"]
+    compressed_sha256 = values["_COMPRESSED_SHA256"]
+    raw_size = values["_RAW_SIZE"]
+    raw_sha256 = values["_RAW_SHA256"]
+    if (
+        type(compressed_size) is not int
+        or type(compressed_sha256) is not str
+        or type(raw_size) is not int
+        or type(raw_sha256) is not str
+    ):
+        raise SchemaSurfaceError(
+            f"generated artifact loader metadata has invalid types in {source}"
+        )
+    return compressed_size, compressed_sha256, raw_size, raw_sha256
+
+
+def _artifact_decoder(codec_source: str, *, source: str) -> _ArtifactDecoder:
+    namespace: dict[str, Any] = {
+        "__file__": source,
+        "__name__": "_h2hdb_schema_surface_artifact_codec",
+    }
+    try:
+        exec(compile(codec_source, source, "exec"), namespace)
+        decoder = namespace["decode_schema_artifact"]
+    except Exception as error:
+        raise SchemaSurfaceError(
+            f"cannot load packaged schema artifact decoder {source}: {error}"
+        ) from error
+    if not callable(decoder):
+        raise SchemaSurfaceError(
+            f"packaged schema artifact decoder is not callable in {source}"
+        )
+    return cast(_ArtifactDecoder, decoder)
+
+
+def _decode_artifact(
+    *,
+    loader_source: str,
+    codec_source: str,
+    compressed: bytes,
+    source: str,
+) -> dict[str, Any]:
+    compressed_size, compressed_sha256, raw_size, raw_sha256 = (
+        _artifact_loader_metadata(loader_source, source=source)
+    )
+    decoder = _artifact_decoder(codec_source, source=source)
+    try:
+        return decoder(
+            compressed,
+            compressed_size=compressed_size,
+            compressed_sha256=compressed_sha256,
+            raw_size=raw_size,
+            raw_sha256=raw_sha256,
+        )
+    except Exception as error:
+        raise SchemaSurfaceError(
+            f"cannot decode generated schema artifact {source}: {error}"
+        ) from error
+
+
+def _artifact_strings(value: object) -> Iterator[str]:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            yield current
+        elif type(current) is dict:
+            mapping = cast(dict[object, object], current)
+            pending.extend(reversed(tuple(mapping.values())))
+            pending.extend(reversed(tuple(mapping.keys())))
+        elif type(current) in {list, tuple}:
+            sequence = cast(list[object] | tuple[object, ...], current)
+            pending.extend(reversed(sequence))
+
+
+def references_in_artifact(
+    artifact: dict[str, Any], *, source: str
+) -> tuple[RelationReference, ...]:
+    references: set[RelationReference] = set()
+    for value in _artifact_strings(artifact):
+        references.update(_references_in_text(value, source=source))
+    return tuple(sorted(references))
+
+
+def mutations_in_artifact(
+    artifact: dict[str, Any], *, source: str
+) -> tuple[MutationReference, ...]:
+    mutations: set[MutationReference] = set()
+    for value in _artifact_strings(artifact):
+        mutations.update(_mutations_in_text(value, source=source))
+    return tuple(sorted(mutations))
+
+
+def _source_artifact(package_root: Path) -> dict[str, Any] | None:
+    loader = package_root / GENERATED_LOADER_NAME
+    resource = package_root / GENERATED_RESOURCE_NAME
+    codec = package_root / ARTIFACT_CODEC_NAME
+    present = tuple(path.is_file() for path in (loader, resource, codec))
+    if not any(present):
+        return None
+    if not all(present):
+        raise SchemaSurfaceError(
+            "source package contains an incomplete generated schema artifact boundary"
+        )
+    return _decode_artifact(
+        loader_source=loader.read_text(encoding="utf-8"),
+        codec_source=codec.read_text(encoding="utf-8"),
+        compressed=resource.read_bytes(),
+        source=resource.as_posix(),
+    )
+
+
+def _source_label(path: Path) -> str:
+    try:
+        return path.relative_to(REPOSITORY_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def source_references(
     package_root: Path = PACKAGE_ROOT,
 ) -> tuple[RelationReference, ...]:
@@ -510,8 +687,16 @@ def source_references(
         references.update(
             _references_for_member(
                 path.read_text(encoding="utf-8"),
-                source=path.relative_to(REPOSITORY_ROOT).as_posix(),
+                source=_source_label(path),
                 suffix=path.suffix,
+            )
+        )
+    artifact = _source_artifact(package_root)
+    if artifact is not None:
+        references.update(
+            references_in_artifact(
+                artifact,
+                source=(package_root / GENERATED_RESOURCE_NAME).as_posix(),
             )
         )
     return tuple(sorted(references))
@@ -527,11 +712,48 @@ def source_mutations(
         mutations.update(
             _mutations_for_member(
                 path.read_text(encoding="utf-8"),
-                source=path.relative_to(REPOSITORY_ROOT).as_posix(),
+                source=_source_label(path),
                 suffix=path.suffix,
             )
         )
+    artifact = _source_artifact(package_root)
+    if artifact is not None:
+        mutations.update(
+            mutations_in_artifact(
+                artifact,
+                source=(package_root / GENERATED_RESOURCE_NAME).as_posix(),
+            )
+        )
     return tuple(sorted(mutations))
+
+
+def _wheel_artifact(archive: zipfile.ZipFile) -> dict[str, Any] | None:
+    loader_name = f"h2hdb/{GENERATED_LOADER_NAME}"
+    resource_name = f"h2hdb/{GENERATED_RESOURCE_NAME}"
+    codec_name = f"h2hdb/{ARTIFACT_CODEC_NAME}"
+    members = set(archive.namelist())
+    present = tuple(
+        name in members for name in (loader_name, resource_name, codec_name)
+    )
+    if not any(present):
+        return None
+    if not all(present):
+        raise SchemaSurfaceError(
+            "wheel contains an incomplete generated schema artifact boundary"
+        )
+    try:
+        loader_source = archive.read(loader_name).decode("utf-8")
+        codec_source = archive.read(codec_name).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SchemaSurfaceError(
+            "wheel schema artifact loader or codec is not UTF-8"
+        ) from error
+    return _decode_artifact(
+        loader_source=loader_source,
+        codec_source=codec_source,
+        compressed=archive.read(resource_name),
+        source=resource_name,
+    )
 
 
 def wheel_references(wheel: Path) -> tuple[RelationReference, ...]:
@@ -556,6 +778,14 @@ def wheel_references(wheel: Path) -> tuple[RelationReference, ...]:
                     source_text,
                     source=member_name,
                     suffix=member.suffix,
+                )
+            )
+        artifact = _wheel_artifact(archive)
+        if artifact is not None:
+            references.update(
+                references_in_artifact(
+                    artifact,
+                    source=f"h2hdb/{GENERATED_RESOURCE_NAME}",
                 )
             )
     return tuple(sorted(references))
@@ -583,6 +813,14 @@ def wheel_mutations(wheel: Path) -> tuple[MutationReference, ...]:
                     source_text,
                     source=member_name,
                     suffix=member.suffix,
+                )
+            )
+        artifact = _wheel_artifact(archive)
+        if artifact is not None:
+            mutations.update(
+                mutations_in_artifact(
+                    artifact,
+                    source=f"h2hdb/{GENERATED_RESOURCE_NAME}",
                 )
             )
     return tuple(sorted(mutations))

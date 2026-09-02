@@ -122,6 +122,16 @@ the public administration API does not accept a substitute provider. `check`
 holds a read transaction while validating the complete `READY` schema;
 `ready` validates only the exact epoch/version/manifest marker.
 
+The generated schema is shipped as a small Python loader plus a bounded zlib
+resource containing canonical JSON. Dictionaries and lists use native JSON;
+tuples and bytes use reserved collision-free tags. The loader verifies exact
+compressed/raw sizes and SHA-256 digests, zlib EOF, canonical syntax, the
+closed primitive type surface, and hard byte/node/depth caps before exposing
+the eager `ARTIFACT` dictionary. A plain `import h2hdb` does not load this
+resource; explicit schema-provider use decodes it once per process. The
+generator preserves an existing valid blob when its canonical logical payload
+is unchanged, so a local zlib-version difference alone does not create drift.
+
 Applications can use the same administration boundary directly:
 
 ```python

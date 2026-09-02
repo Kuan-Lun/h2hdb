@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import io
 import re
 import sys
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from h2hdb._schema_artifact_codec import encode_schema_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_SURFACE_GATE = ROOT / "scripts" / "verify-schema-surface.py"
@@ -29,6 +33,21 @@ def _load_module(name: str, path: Path) -> ModuleType:
 
 gate = _load_module("h2hdb_schema_surface_gate", SCHEMA_SURFACE_GATE)
 distribution_gate = _load_module("h2hdb_distribution_gate", DISTRIBUTION_GATE)
+
+
+def _artifact_members(value: object) -> tuple[str, bytes, str]:
+    raw = encode_schema_artifact(value)
+    compressed = zlib.compress(raw, level=9)
+    loader = f'''_RESOURCE_NAME = "_generated_vnext_schema.bin"
+_COMPRESSED_SIZE = {len(compressed)}
+_COMPRESSED_SHA256 = "{hashlib.sha256(compressed).hexdigest()}"
+_RAW_SIZE = {len(raw)}
+_RAW_SHA256 = "{hashlib.sha256(raw).hexdigest()}"
+'''
+    codec_source = (ROOT / "src" / "h2hdb" / "_schema_artifact_codec.py").read_text(
+        encoding="utf-8"
+    )
+    return loader, compressed, codec_source
 
 
 def test_production_sql_does_not_use_mariadb_blob_reserved_alias() -> None:
@@ -258,6 +277,15 @@ def test_wheel_archive_rejects_removed_legacy_modules(tmp_path: Path) -> None:
         distribution_gate._verify_wheel_archive(wheel)
 
 
+def test_wheel_archive_requires_complete_schema_artifact(tmp_path: Path) -> None:
+    wheel = tmp_path / "missing-schema-resource.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("h2hdb/__init__.py", "")
+
+    with pytest.raises(RuntimeError, match="missing schema artifact members"):
+        distribution_gate._verify_wheel_archive(wheel)
+
+
 def test_wheel_schema_gate_rejects_packaged_view_mutation(tmp_path: Path) -> None:
     wheel = tmp_path / "view-mutation.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -276,6 +304,64 @@ def test_wheel_schema_gate_rejects_packaged_view_mutation(tmp_path: Path) -> Non
         )
 
 
+def test_source_schema_gate_scans_embedded_binary_ddl(tmp_path: Path) -> None:
+    package = tmp_path / "h2hdb"
+    package.mkdir()
+    loader, compressed, codec_source = _artifact_members(
+        {"sql": "SELECT 1 FROM catalog_unmanifested_binary_relation"}
+    )
+    (package / "_generated_vnext_schema.py").write_text(loader, encoding="utf-8")
+    (package / "_generated_vnext_schema.bin").write_bytes(compressed)
+    (package / "_schema_artifact_codec.py").write_text(codec_source, encoding="utf-8")
+
+    references = gate.source_references(package)
+
+    with pytest.raises(
+        gate.SchemaSurfaceError, match="catalog_unmanifested_binary_relation"
+    ):
+        gate.assert_closed_schema_surface(references, allowed=frozenset())
+
+
+def test_wheel_schema_gate_scans_binary_artifact_with_packaged_decoder(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "binary-view-mutation.whl"
+    loader, compressed, codec_source = _artifact_members(
+        {"sql": "UPDATE catalog_read_projection SET value = 1"}
+    )
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("h2hdb/_generated_vnext_schema.py", loader)
+        archive.writestr("h2hdb/_generated_vnext_schema.bin", compressed)
+        archive.writestr("h2hdb/_schema_artifact_codec.py", codec_source)
+
+    mutations = gate.wheel_mutations(wheel)
+
+    with pytest.raises(gate.SchemaSurfaceError, match="catalog_read_projection"):
+        gate.assert_no_view_mutations(
+            mutations,
+            kinds={"catalog_read_projection": "view"},
+        )
+
+
+def test_schema_surface_rejects_incomplete_or_corrupt_artifact_boundary(
+    tmp_path: Path,
+) -> None:
+    incomplete = tmp_path / "incomplete" / "h2hdb"
+    incomplete.mkdir(parents=True)
+    (incomplete / "_generated_vnext_schema.py").write_text("", encoding="utf-8")
+    with pytest.raises(gate.SchemaSurfaceError, match="incomplete"):
+        gate.source_references(incomplete)
+
+    corrupt = tmp_path / "corrupt" / "h2hdb"
+    corrupt.mkdir(parents=True)
+    loader, compressed, codec_source = _artifact_members({"sql": "SELECT 1"})
+    (corrupt / "_generated_vnext_schema.py").write_text(loader, encoding="utf-8")
+    (corrupt / "_generated_vnext_schema.bin").write_bytes(compressed + b"corrupt")
+    (corrupt / "_schema_artifact_codec.py").write_text(codec_source, encoding="utf-8")
+    with pytest.raises(gate.SchemaSurfaceError, match="cannot decode"):
+        gate.source_references(corrupt)
+
+
 def test_sdist_archive_rejects_removed_legacy_modules(tmp_path: Path) -> None:
     sdist = tmp_path / "fixture.tar.gz"
     payload = b"class H2HDB: pass\n"
@@ -285,6 +371,18 @@ def test_sdist_archive_rejects_removed_legacy_modules(tmp_path: Path) -> None:
         archive.addfile(member, io.BytesIO(payload))
 
     with pytest.raises(RuntimeError, match="sdist.*removed legacy modules.*service.py"):
+        distribution_gate._verify_sdist_archive(sdist)
+
+
+def test_sdist_archive_requires_complete_schema_artifact(tmp_path: Path) -> None:
+    sdist = tmp_path / "missing-schema-resource.tar.gz"
+    payload = b""
+    with tarfile.open(sdist, "w:gz") as archive:
+        member = tarfile.TarInfo("h2hdb-0/src/h2hdb/__init__.py")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(RuntimeError, match="missing schema artifact members"):
         distribution_gate._verify_sdist_archive(sdist)
 
 

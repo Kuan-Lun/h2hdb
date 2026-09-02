@@ -14,19 +14,22 @@ IDs or bootstrap rows when the formal contracts do not declare them.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
-import pprint
 import re
+import runpy
 import sys
 import tomllib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED = ROOT / "src" / "h2hdb" / "_generated_vnext_schema.py"
+GENERATED_RESOURCE = ROOT / "src" / "h2hdb" / "_generated_vnext_schema.bin"
+CODEC_SOURCE = ROOT / "src" / "h2hdb" / "_schema_artifact_codec.py"
 CATALOG_LOGICAL = ROOT / "verification" / "schema" / "catalog.toml"
 DATA_PHYSICAL = ROOT / "verification" / "schema" / "physical.toml"
 OPERATIONAL_LOGICAL = ROOT / "verification" / "schema" / "operational.toml"
@@ -36,7 +39,35 @@ SOURCE_PATHS = (
     DATA_PHYSICAL,
     OPERATIONAL_LOGICAL,
     OPERATIONAL_PHYSICAL,
+    CODEC_SOURCE,
     Path(__file__).resolve(),
+)
+
+
+class _DecodeSchemaArtifact(Protocol):
+    def __call__(
+        self,
+        compressed: bytes,
+        *,
+        compressed_size: int,
+        compressed_sha256: str,
+        raw_size: int,
+        raw_sha256: str,
+    ) -> dict[str, Any]: ...
+
+
+_CODEC_NAMESPACE = runpy.run_path(str(CODEC_SOURCE))
+_encode_schema_artifact = cast(
+    Callable[[object], bytes], _CODEC_NAMESPACE["encode_schema_artifact"]
+)
+_compress_schema_artifact = cast(
+    Callable[[bytes], bytes], _CODEC_NAMESPACE["compress_schema_artifact"]
+)
+_decode_schema_artifact = cast(
+    _DecodeSchemaArtifact, _CODEC_NAMESPACE["decode_schema_artifact"]
+)
+_SchemaArtifactCodecError = cast(
+    type[Exception], _CODEC_NAMESPACE["SchemaArtifactCodecError"]
 )
 
 
@@ -3275,34 +3306,175 @@ def _provider_payload() -> dict[str, Any]:
     }
 
 
-def render() -> str:
-    payload = _provider_payload()
-    rendered = pprint.pformat(payload, width=100, sort_dicts=True)
+_LOADER_CONSTANTS = (
+    "_RESOURCE_NAME",
+    "_COMPRESSED_SIZE",
+    "_COMPRESSED_SHA256",
+    "_RAW_SIZE",
+    "_RAW_SHA256",
+)
+
+
+def _loader_metadata(module_path: Path) -> tuple[str, int, str, int, str]:
+    tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+    values: dict[str, object] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name) or target.id not in _LOADER_CONSTANTS:
+            continue
+        values[target.id] = ast.literal_eval(statement.value)
+    if set(values) != set(_LOADER_CONSTANTS):
+        raise ValueError("generated schema loader metadata is incomplete")
+    resource_name = values["_RESOURCE_NAME"]
+    compressed_size = values["_COMPRESSED_SIZE"]
+    compressed_sha256 = values["_COMPRESSED_SHA256"]
+    raw_size = values["_RAW_SIZE"]
+    raw_sha256 = values["_RAW_SHA256"]
+    if (
+        type(resource_name) is not str
+        or type(compressed_size) is not int
+        or type(compressed_sha256) is not str
+        or type(raw_size) is not int
+        or type(raw_sha256) is not str
+    ):
+        raise ValueError("generated schema loader metadata has invalid types")
     return (
-        '"""Generated vNext schema-provider artifact; do not edit by hand.\n\n'
-        "Regenerate with ``python scripts/generate-vnext-schema-provider.py``.\n"
-        'This module intentionally has no dependency on the repository verification package.\n"""\n\n'
-        "from __future__ import annotations\n\n"
-        "# fmt: off\n"
-        f"ARTIFACT = {rendered}\n"
-        "# fmt: on\n"
+        resource_name,
+        compressed_size,
+        compressed_sha256,
+        raw_size,
+        raw_sha256,
     )
+
+
+def _matching_existing_resource(
+    *, module_path: Path, resource_path: Path, canonical_raw: bytes
+) -> bytes | None:
+    if not module_path.is_file() or not resource_path.is_file():
+        return None
+    try:
+        (
+            resource_name,
+            compressed_size,
+            compressed_sha256,
+            raw_size,
+            raw_sha256,
+        ) = _loader_metadata(module_path)
+        if resource_name != resource_path.name:
+            return None
+        compressed = resource_path.read_bytes()
+        decoded = _decode_schema_artifact(
+            compressed,
+            compressed_size=compressed_size,
+            compressed_sha256=compressed_sha256,
+            raw_size=raw_size,
+            raw_sha256=raw_sha256,
+        )
+        if _encode_schema_artifact(decoded) != canonical_raw:
+            return None
+    except OSError, SyntaxError, ValueError, _SchemaArtifactCodecError:
+        return None
+    return compressed
+
+
+def _render_loader(*, compressed: bytes, canonical_raw: bytes) -> str:
+    compressed_digest = hashlib.sha256(compressed).hexdigest()
+    raw_digest = hashlib.sha256(canonical_raw).hexdigest()
+    return f'''"""Generated vNext schema-provider loader; do not edit by hand.
+
+Regenerate with ``python scripts/generate-vnext-schema-provider.py``.
+This module and its binary resource have no verification-package dependency.
+"""
+
+from __future__ import annotations
+
+from ._schema_artifact_codec import load_schema_artifact_resource
+
+_RESOURCE_NAME = "_generated_vnext_schema.bin"
+_COMPRESSED_SIZE = {len(compressed)}
+_COMPRESSED_SHA256 = "{compressed_digest}"
+_RAW_SIZE = {len(canonical_raw)}
+_RAW_SHA256 = "{raw_digest}"
+
+ARTIFACT = load_schema_artifact_resource(
+    package=__package__,
+    resource_name=_RESOURCE_NAME,
+    compressed_size=_COMPRESSED_SIZE,
+    compressed_sha256=_COMPRESSED_SHA256,
+    raw_size=_RAW_SIZE,
+    raw_sha256=_RAW_SHA256,
+)
+
+del load_schema_artifact_resource
+'''
+
+
+def render(
+    *, module_path: Path = GENERATED, resource_path: Path = GENERATED_RESOURCE
+) -> tuple[str, bytes]:
+    canonical_raw = _encode_schema_artifact(_provider_payload())
+    compressed = _matching_existing_resource(
+        module_path=module_path,
+        resource_path=resource_path,
+        canonical_raw=canonical_raw,
+    )
+    if compressed is None:
+        compressed = _compress_schema_artifact(canonical_raw)
+    return (
+        _render_loader(compressed=compressed, canonical_raw=canonical_raw),
+        compressed,
+    )
+
+
+def _write_if_changed(path: Path, content: str | bytes) -> None:
+    current: str | bytes | None
+    if isinstance(content, str):
+        current = path.read_text(encoding="utf-8") if path.is_file() else None
+    else:
+        current = path.read_bytes() if path.is_file() else None
+    if current == content:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        path.write_text(content, encoding="utf-8")
+    else:
+        path.write_bytes(content)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--output-directory",
+        type=Path,
+        help="write the canonical loader and resource to this directory",
+    )
     arguments = parser.parse_args()
-    expected = render()
+    if arguments.output_directory is None:
+        module_path = GENERATED
+        resource_path = GENERATED_RESOURCE
+    else:
+        module_path = arguments.output_directory / GENERATED.name
+        resource_path = arguments.output_directory / GENERATED_RESOURCE.name
+    expected_module, expected_resource = render(
+        module_path=module_path,
+        resource_path=resource_path,
+    )
     if arguments.check:
-        actual = GENERATED.read_text(encoding="utf-8") if GENERATED.exists() else ""
-        if actual != expected:
+        actual_module = (
+            module_path.read_text(encoding="utf-8") if module_path.is_file() else ""
+        )
+        actual_resource = resource_path.read_bytes() if resource_path.is_file() else b""
+        if actual_module != expected_module or actual_resource != expected_resource:
             raise SystemExit(
-                f"{GENERATED.relative_to(ROOT)} is stale; regenerate it with "
+                f"{module_path} or {resource_path} is stale; regenerate it with "
                 "python scripts/generate-vnext-schema-provider.py"
             )
         return
-    GENERATED.write_text(expected, encoding="utf-8")
+    _write_if_changed(resource_path, expected_resource)
+    _write_if_changed(module_path, expected_module)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -997,7 +997,7 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
         )
         for relation_name in ("source_build", "gallery_observation_metadata")
     }
-    artifact = cast(dict[str, Any], ARTIFACT)
+    artifact = ARTIFACT
     provider_slices = dict(artifact["backends"][backend]["slices"])
 
     for relation_name in ("source_build", "gallery_observation_metadata"):
@@ -1022,7 +1022,7 @@ def test_every_refinement_and_provider_view_is_exactly_equal(backend: str) -> No
     relation_by_name = {
         relation.relation: relation for relation in physical_spec.relations
     }
-    artifact = cast(dict[str, Any], ARTIFACT)
+    artifact = ARTIFACT
     provider_slices = dict(artifact["backends"][backend]["slices"])
 
     for relation in physical_spec.relations:
@@ -1047,7 +1047,7 @@ def test_batch4_refinement_and_provider_views_are_exactly_equal(
     relation_by_name = {
         relation.relation: relation for relation in physical_spec.relations
     }
-    artifact = cast(dict[str, Any], ARTIFACT)
+    artifact = ARTIFACT
     provider_slices = dict(artifact["backends"][backend]["slices"])
     for relation_name in (
         "analysis_run",
@@ -1093,7 +1093,7 @@ def test_publication_candidate_projection_uses_fixed_terminal_receipt_joins(
         backend,
         idempotent=True,
     )
-    artifact = cast(dict[str, Any], ARTIFACT)
+    artifact = ARTIFACT
     provider_slices = dict(artifact["backends"][backend]["slices"])
     provider_statements = provider_slices["relation:publication_candidate_projection"]
 
