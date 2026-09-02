@@ -6788,13 +6788,22 @@ def _consume_effective_content_claims(
 
 
 def _generation_for_build(work: VNextUnitOfWork, build_id: bytes) -> int:
+    """Return the newest generation mapped to ``build_id``.
+
+    An expired-lease takeover of the same build retains the earlier
+    generation mapping for cleanup authority and adds the live one, so the
+    build can legitimately own several mapping rows.  The live authority is
+    always the newest mapping; reading an arbitrary row would report a valid
+    takeover receipt as stale.
+    """
+
     row = work.connector.fetch_one(
         "SELECT generation FROM operational_source_build_generations "
-        "WHERE build_id = %s",
+        "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",
         (build_id,),
     )
     if len(row) != 1:
-        raise AnalysisNotReadyError("analysis build has no unique live generation")
+        raise AnalysisNotReadyError("analysis build has no live generation")
     return require_positive_int63(row[0], field="analysis build generation")
 
 

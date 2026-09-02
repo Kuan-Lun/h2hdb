@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from test_vnext_analysis_repository import (
@@ -14,9 +15,11 @@ from test_vnext_analysis_repository import (
     _seed_initial_snapshot,
     _seed_preparation_facts,
     _seed_root,
+    _source_build_id,
 )
 
 import h2hdb
+import h2hdb.vnext_analysis_repository as analysis_module
 from h2hdb import (
     VNextAnalysisAdvanceResult,
     VNextIngestFacade,
@@ -459,3 +462,123 @@ def test_issued_gallery_page_is_hard_capped_at_128(tmp_path: Path) -> None:
     assert issued._payload.memberships[0] == (1, 1)
     assert issued._payload.memberships[-1] == (128, 128)
     prepared.close()
+
+
+def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
+    tmp_path: Path,
+) -> None:
+    """Regression: an expired-lease takeover retains the old generation mapping
+    for the same build and adds the live one.  Analysis must bind its
+    preparation receipts to the newest mapping instead of an arbitrary row."""
+
+    database = tmp_path / "analysis-takeover.sqlite3"
+    connector = _generated_database(database)
+    try:
+        _gate, first_turn = _authorities(connector)
+        file_sha256 = b"t" * 32
+        with connector.transaction():
+            scope = _seed_root(connector)
+            build_id = _source_build_id(
+                connector,
+                scope=scope,
+                manifest_sha256=bytes((9,)) * 32,
+                gallery_count=1,
+                file_count=1,
+                byte_count=1,
+            )
+            _seed_build(
+                connector,
+                build_id=build_id,
+                scope=scope,
+                manifest_byte=9,
+                gallery_count=1,
+                file_count=1,
+                byte_count=1,
+            )
+            _seed_gallery(
+                connector,
+                build_id=build_id,
+                scope=scope,
+                gallery_id=1,
+                observation_id=1,
+                occurrences=((file_sha256, 1),),
+                artists=(),
+                serial=900,
+            )
+            _seed_preparation_facts(
+                connector,
+                gallery_id=1,
+                observation_id=1,
+                file_sha256=file_sha256,
+            )
+            _map_working_build(
+                connector,
+                build_id=build_id,
+                generation=first_turn.generation,
+            )
+        takeover_now = first_turn.lease_expires_at + 1
+        with connector.transaction():
+            with patch(
+                "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+                return_value=b"h" * 16,
+            ):
+                takeover_gate = MaintenanceGateRepository.claim_shared(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    now=takeover_now,
+                    lease_duration=10_000_000,
+                )
+        with connector.transaction():
+            takeover_turn = IngestFenceRepository.claim(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                owner_token=b"k" * 16,
+                now=takeover_now,
+                lease_duration=10_000_000,
+            )
+        assert takeover_turn.generation == first_turn.generation + 1
+        with connector.transaction():
+            _map_working_build(
+                connector,
+                build_id=build_id,
+                generation=takeover_turn.generation,
+                replace=True,
+            )
+        assert connector.fetch_all(
+            "SELECT generation FROM operational_source_build_generations "
+            "WHERE build_id = %s ORDER BY generation",
+            (build_id,),
+        ) == [(first_turn.generation,), (takeover_turn.generation,)]
+        with connector.read_transaction():
+            assert (
+                analysis_module._generation_for_build(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    build_id,
+                )
+                == takeover_turn.generation
+            )
+    finally:
+        connector.close()
+
+    orchestrator = VNextIngestAnalysisOrchestrator(
+        RepositoryContext.from_config(_config(database)),
+        clock=_Clock(takeover_now + 1),
+        token_factory=_Tokens(),
+    )
+    result, prepared, stopped = _drive(
+        orchestrator,
+        _session(takeover_gate, takeover_turn),
+        build_id,
+    )
+    prepared.close()
+
+    assert stopped is None
+    assert result is not None
+    assert result.terminal and result.stage == b"snapshot_manifest"
+    connector = SQLiteConnector(str(database))
+    connector.connect()
+    try:
+        assert connector.fetch_one(
+            "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
+            (result.analysis_id,),
+        ) == ("COMPLETE",)
+    finally:
+        connector.close()
