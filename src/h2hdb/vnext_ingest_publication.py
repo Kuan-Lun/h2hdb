@@ -27,7 +27,7 @@ import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from threading import Lock
+from threading import Event, Lock
 from time import time_ns
 from typing import Protocol, cast, runtime_checkable
 
@@ -759,6 +759,7 @@ class VNextIngestPublication:
     __slots__ = (
         "__backend",
         "__clock",
+        "__closed",
         "__context",
         "__activation_checkpoints",
         "__activation_ready",
@@ -781,6 +782,7 @@ class VNextIngestPublication:
         self.__context = context
         self.__backend = context.sql_type
         self.__clock = clock
+        self.__closed = Event()
         # Disposable hints only.  A new process recovers both from the durable
         # library adapter before it performs any irreversible work.
         self.__activation_checkpoints: dict[bytes, LibraryActivationCheckpoint] = {}
@@ -790,6 +792,45 @@ class VNextIngestPublication:
         self.__publication_plan: _PublicationPlanCache | None = None
         self.__publication_plan_lock = Lock()
 
+    def close(self) -> None:
+        """Release every process-local hint owned by this orchestrator.
+
+        Issued and prepared steps are caller-owned values.  Closing the
+        orchestrator does not consume them, but no later issue, prepare, or
+        commit call is admitted.  A cache take that linearized before close
+        transfers ownership to its prepared step; every other cached resource
+        is retired exactly once here.
+        """
+
+        self.__closed.set()
+        self.__activation_checkpoints.clear()
+        self.__activation_ready.clear()
+        with self.__publication_plan_lock:
+            plan = self.__publication_plan
+            self.__publication_plan = None
+        try:
+            if plan is not None:
+                plan.retire()
+        finally:
+            with self.__artifact_receipt_lock:
+                receipt = self.__artifact_receipt
+                self.__artifact_receipt = None
+            if receipt is not None:
+                receipt.close()
+
+    def __enter__(self) -> VNextIngestPublication:
+        self.__require_open()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
     def issue_step(
         self,
         session: VNextIngestSession,
@@ -797,6 +838,7 @@ class VNextIngestPublication:
     ) -> VNextIssuedPublicationStep:
         """Issue the next DB authority without calling an external adapter."""
 
+        self.__require_open()
         _require_policy(policy)
         now = require_int63(self.__clock(), field="publication issue now")
         gate, _coordinated = _repository_authority(session)
@@ -827,10 +869,13 @@ class VNextIngestPublication:
                     payload = replace(activation, checkpoint=checkpoint)
 
         with self.__publication_plan_lock:
+            self.__require_open()
             self.__retire_mismatched_plan(action, payload)
         with self.__artifact_receipt_lock:
+            self.__require_open()
             self.__retire_mismatched_artifact_receipt(action, payload)
 
+        self.__require_open()
         return VNextIssuedPublicationStep(
             action=action,
             payload=payload,
@@ -848,6 +893,7 @@ class VNextIngestPublication:
     ) -> VNextPreparedPublicationStep:
         """Prepare local work; no fenced database write occurs here."""
 
+        self.__require_open()
         exact = _require_issued(issued)
         _require_library_activation_adapter(library_activation)
         issued_session = exact._session
@@ -856,6 +902,7 @@ class VNextIngestPublication:
 
         if action in {_Action.BUILD_CATALOG, _Action.VALIDATE_CATALOG}:
             with self.__publication_plan_lock:
+                self.__require_open()
                 work = cast(_CandidateWork, payload)
                 authority = work.payload
                 cached = self.__reusable_plan(action, authority)
@@ -885,6 +932,7 @@ class VNextIngestPublication:
             _Action.VALIDATE_ARTIFACT_INPUT,
         }:
             with self.__publication_plan_lock:
+                self.__require_open()
                 work = cast(_CandidateWork, payload)
                 authority = work.payload
                 cached = self.__reusable_plan(action, authority)
@@ -931,12 +979,18 @@ class VNextIngestPublication:
                 finalization_adapters,
             )
 
-        return VNextPreparedPublicationStep(
+        prepared = VNextPreparedPublicationStep(
             issued=exact,
             action=action,
             payload=payload,
             _token=_PREPARED_TOKEN,
         )
+        try:
+            self.__require_open()
+        except BaseException:
+            prepared.close()
+            raise
+        return prepared
 
     def commit_step(
         self,
@@ -945,6 +999,7 @@ class VNextIngestPublication:
     ) -> VNextIngestAdvanceResult:
         """Commit one bounded action using the current renewed session."""
 
+        self.__require_open()
         exact = _require_prepared(prepared)
         _require_same_session_authority(exact._issued._session, session)
         gate, coordinated = _repository_authority(session)
@@ -1071,6 +1126,9 @@ class VNextIngestPublication:
         except BaseException:
             plan.close()
             raise
+        if self.__closed.is_set():
+            cached.retire()
+            raise ValueError("ingest publication orchestrator is closed")
         self.__publication_plan = cached
         return cached
 
@@ -1200,6 +1258,11 @@ class VNextIngestPublication:
     ) -> _ArtifactReceiptOwner | None:
         with self.__artifact_receipt_lock:
             cached = self.__artifact_receipt
+            if self.__closed.is_set():
+                self.__artifact_receipt = None
+                if cached is not None:
+                    cached.close()
+                raise ValueError("ingest publication orchestrator is closed")
             if cached is None:
                 return None
             self.__artifact_receipt = None
@@ -1228,15 +1291,21 @@ class VNextIngestPublication:
             receipt=receipt,
         )
         try:
-            with self.__artifact_receipt_lock:
-                current = self.__artifact_receipt
-                self.__artifact_receipt = None
-                if current is not None:
-                    current.close()
-                self.__artifact_receipt = cached
+            self.__install_artifact_receipt(cached)
         except BaseException:
             cached.close()
             raise
+
+    def __install_artifact_receipt(self, cached: _ArtifactReceiptCache) -> None:
+        with self.__artifact_receipt_lock:
+            current = self.__artifact_receipt
+            self.__artifact_receipt = None
+            if current is not None:
+                current.close()
+            if self.__closed.is_set():
+                cached.close()
+                return
+            self.__artifact_receipt = cached
 
     def __retire_mismatched_artifact_receipt(
         self,
@@ -1386,6 +1455,10 @@ class VNextIngestPublication:
                 now=now,
             )
         return _Action.FINALIZE, page
+
+    def __require_open(self) -> None:
+        if self.__closed.is_set():
+            raise ValueError("ingest publication orchestrator is closed")
 
 
 def _release_finalization_page(

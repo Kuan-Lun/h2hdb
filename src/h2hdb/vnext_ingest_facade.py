@@ -26,6 +26,7 @@ import secrets
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from threading import Lock
 from time import time_ns
 from typing import TypeVar
 
@@ -350,7 +351,9 @@ class VNextIngestFacade:
         "__analysis",
         "__backend",
         "__clock",
+        "__closed",
         "__context",
+        "__lifecycle_lock",
         "__publication",
     )
 
@@ -368,8 +371,41 @@ class VNextIngestFacade:
         self.__context = context
         self.__backend = context.sql_type
         self.__clock = clock
+        self.__closed = False
+        self.__lifecycle_lock = Lock()
         self.__analysis: VNextIngestAnalysisOrchestrator | None = None
         self.__publication: VNextIngestPublication | None = None
+
+    def close(self) -> None:
+        """Release facade-owned process-local publication resources.
+
+        Prepared source, analysis, and publication-step handles remain owned
+        by their callers and retain their own explicit ``close`` methods.
+        Closing this facade is idempotent and rejects every later ingest call.
+        """
+
+        with self.__lifecycle_lock:
+            if self.__closed:
+                return
+            self.__closed = True
+            self.__analysis = None
+            publication = self.__publication
+            self.__publication = None
+        if publication is not None:
+            publication.close()
+
+    def __enter__(self) -> VNextIngestFacade:
+        self.__require_open()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
 
     def prepare_source(
         self,
@@ -377,6 +413,7 @@ class VNextIngestFacade:
     ) -> VNextPreparedSource:
         """Freeze one complete source snapshot outside database transactions."""
 
+        self.__require_open()
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
         root = adapter.source_root_components
@@ -413,6 +450,7 @@ class VNextIngestFacade:
     ) -> VNextIssuedSourceStep:
         """Issue one short-lived step without performing external source I/O."""
 
+        self.__require_open()
         source = _require_prepared_source(prepared)
         _require_resolved_source_policy(policy)
         machine = source._machine
@@ -485,6 +523,7 @@ class VNextIngestFacade:
     ) -> VNextPreparedSourceStep:
         """Perform one bounded adapter/disk step without database authority."""
 
+        self.__require_open()
         source = _require_prepared_source(prepared)
         if not isinstance(issued, VNextIssuedSourceStep):
             raise TypeError("issued must be VNextIssuedSourceStep")
@@ -592,6 +631,7 @@ class VNextIngestFacade:
     ) -> VNextIngestAdvanceResult:
         """Commit one prepared source step with the current renewed session."""
 
+        self.__require_open()
         if not isinstance(prepared_step, VNextPreparedSourceStep):
             raise TypeError("prepared_step must be VNextPreparedSourceStep")
         issued = prepared_step._issued
@@ -885,6 +925,7 @@ class VNextIngestFacade:
     ) -> VNextPreparedAnalysis:
         """Create restartable local analysis state without opening the database."""
 
+        self.__require_open()
         return self.__analysis_orchestrator().prepare_analysis(
             build_id,
             policy,
@@ -898,6 +939,7 @@ class VNextIngestFacade:
     ) -> VNextIssuedAnalysisStep:
         """Issue one bounded analysis action from durable authority."""
 
+        self.__require_open()
         return self.__analysis_orchestrator().issue_analysis_step(session, prepared)
 
     def prepare_analysis_step(
@@ -907,6 +949,7 @@ class VNextIngestFacade:
     ) -> VNextPreparedAnalysisStep:
         """Perform one analysis preparation step outside session serialization."""
 
+        self.__require_open()
         return self.__analysis_orchestrator().prepare_analysis_step(prepared, issued)
 
     def commit_analysis_step(
@@ -916,6 +959,7 @@ class VNextIngestFacade:
     ) -> VNextAnalysisAdvanceResult:
         """Commit one analysis step using the current renewed session receipt."""
 
+        self.__require_open()
         return self.__analysis_orchestrator().commit_analysis_step(
             session,
             prepared_step,
@@ -928,6 +972,7 @@ class VNextIngestFacade:
     ) -> VNextIssuedPublicationStep:
         """Issue one bounded publication action from durable authority."""
 
+        self.__require_open()
         return self.__publication_orchestrator().issue_step(session, policy)
 
     def prepare_publication_step(
@@ -940,6 +985,7 @@ class VNextIngestFacade:
     ) -> VNextPreparedPublicationStep:
         """Perform publication adapter work outside fenced DB transactions."""
 
+        self.__require_open()
         return self.__publication_orchestrator().prepare_step(
             issued,
             artifact_adapters=artifact_adapters,
@@ -954,6 +1000,7 @@ class VNextIngestFacade:
     ) -> VNextIngestAdvanceResult:
         """Commit one publication step using the current renewed session."""
 
+        self.__require_open()
         return self.__publication_orchestrator().commit_step(session, prepared)
 
     def try_claim_ingest(
@@ -968,6 +1015,7 @@ class VNextIngestFacade:
         closed with their typed repository error.
         """
 
+        self.__require_open()
         duration = require_positive_int63(
             lease_duration_microseconds,
             field="ingest session lease_duration_microseconds",
@@ -1015,6 +1063,7 @@ class VNextIngestFacade:
     def resume_ingest(self, session: VNextIngestSession) -> VNextIngestSession:
         """Revalidate an exact public ingest capability."""
 
+        self.__require_open()
         gate, turn = _repository_authority(session)
         now = require_int63(self.__clock(), field="ingest session resume now")
 
@@ -1036,6 +1085,7 @@ class VNextIngestFacade:
     ) -> VNextIngestSession:
         """Atomically renew both authorities in an ingest session."""
 
+        self.__require_open()
         gate, turn = _repository_authority(session)
         duration = require_positive_int63(
             lease_duration_microseconds,
@@ -1066,6 +1116,7 @@ class VNextIngestFacade:
     ) -> VNextIngestCompletionReceipt:
         """Complete ingest and release its gate in one response-loss-safe call."""
 
+        self.__require_open()
         gate, turn = _repository_authority(session)
         now = require_int63(self.__clock(), field="ingest completion now")
 
@@ -1122,6 +1173,7 @@ class VNextIngestFacade:
         a resident idle poll.
         """
 
+        self.__require_open()
         duration = require_positive_int63(
             lease_duration_microseconds,
             field="current-only maintenance lease_duration_microseconds",
@@ -1364,6 +1416,7 @@ class VNextIngestFacade:
     ) -> VNextResolvedIngestPolicy:
         """Resolve/allocate every registry ID from complete natural facts."""
 
+        self.__require_open()
         gate, turn = _repository_authority(session)
         if not isinstance(policy, VNextIngestPolicy):
             raise TypeError("policy must be VNextIngestPolicy")
@@ -1380,29 +1433,34 @@ class VNextIngestFacade:
         )
 
     def __analysis_orchestrator(self) -> VNextIngestAnalysisOrchestrator:
-        orchestrator = self.__analysis
-        if orchestrator is None:
-            orchestrator = VNextIngestAnalysisOrchestrator(
-                self.__context,
-                clock=self.__clock,
-            )
-            self.__analysis = orchestrator
-        return orchestrator
+        with self.__lifecycle_lock:
+            self.__require_open_unlocked()
+            orchestrator = self.__analysis
+            if orchestrator is None:
+                orchestrator = VNextIngestAnalysisOrchestrator(
+                    self.__context,
+                    clock=self.__clock,
+                )
+                self.__analysis = orchestrator
+            return orchestrator
 
     def __publication_orchestrator(self) -> VNextIngestPublication:
-        orchestrator = self.__publication
-        if orchestrator is None:
-            orchestrator = VNextIngestPublication(
-                self.__context,
-                clock=self.__clock,
-            )
-            self.__publication = orchestrator
-        return orchestrator
+        with self.__lifecycle_lock:
+            self.__require_open_unlocked()
+            orchestrator = self.__publication
+            if orchestrator is None:
+                orchestrator = VNextIngestPublication(
+                    self.__context,
+                    clock=self.__clock,
+                )
+                self.__publication = orchestrator
+            return orchestrator
 
     def __read(
         self,
         operation: Callable[[SQLConnector], _ResultT],
     ) -> _ResultT:
+        self.__require_open()
         with self.__context.SQLConnector() as connector:
             with connector.read_transaction():
                 return operation(connector)
@@ -1411,9 +1469,18 @@ class VNextIngestFacade:
         self,
         operation: Callable[[VNextUnitOfWork], _ResultT],
     ) -> _ResultT:
+        self.__require_open()
         with self.__context.SQLConnector() as connector:
             with connector.transaction():
                 return operation(VNextUnitOfWork(connector, backend=self.__backend))
+
+    def __require_open(self) -> None:
+        with self.__lifecycle_lock:
+            self.__require_open_unlocked()
+
+    def __require_open_unlocked(self) -> None:
+        if self.__closed:
+            raise ValueError("ingest facade is closed")
 
 
 def _public_session(
