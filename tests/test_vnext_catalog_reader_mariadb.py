@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -19,12 +20,17 @@ from h2hdb import (
     CoreConfig,
     StorageObjectDescriptor,
     StorageObjectKey,
+    VNextCatalogFacade,
     catalog_refinement,
 )
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.vnext_catalog_reader_repository import VNextCatalogReaderRepository
+from h2hdb.repository import RepositoryContext
+from h2hdb.vnext_catalog_reader_repository import (
+    VNextCatalogReaderRepository,
+    VNextCatalogReadError,
+)
 from h2hdb.vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
@@ -300,6 +306,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
 
 def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
     mariadb_config: CoreConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connector = _generated_mariadb(mariadb_config)
     gid = 31
@@ -599,6 +606,117 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         assert [
             (value.value, value.publication_count) for value in language_facets.values
         ] == [("en", 1)]
+
+        stable_events: list[tuple[str, int]] = []
+
+        class TracedMariaDBConnector(MariaDBConnector):
+            def __init__(self, *, events: list[tuple[str, int]]) -> None:
+                database = mariadb_config.database
+                super().__init__(
+                    host=database.host,
+                    port=database.port,
+                    user=database.user,
+                    password=database.password,
+                    database=database.database,
+                )
+                self._events = events
+                self._read_count = 0
+
+            def connect(self) -> None:
+                super().connect()
+                self._events.append(("connect", id(self)))
+
+            def begin_read(self) -> None:
+                self._read_count += 1
+                self._events.append((f"begin-read-{self._read_count}", id(self)))
+                super().begin_read()
+
+            def close(self) -> None:
+                self._events.append(("close", id(self)))
+                super().close()
+
+        base_context = RepositoryContext.from_config(mariadb_config)
+        stable_context = replace(
+            base_context,
+            SQLConnector=lambda: TracedMariaDBConnector(events=stable_events),
+        )
+        monkeypatch.setattr(
+            RepositoryContext,
+            "from_config",
+            classmethod(lambda cls, value: stable_context),
+        )
+
+        stable_bundle = VNextCatalogFacade(
+            mariadb_config
+        ).discover_publications_with_facets(limit=1, facet_limit=1)
+
+        assert len(stable_bundle.page.publications) == 1
+        assert [event for event, _connector_id in stable_events] == [
+            "connect",
+            "begin-read-1",
+            "begin-read-2",
+            "close",
+        ]
+        assert len({connector_id for _event, connector_id in stable_events}) == 1
+
+        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_source_revision_descriptors "
+                "(source_revision, channel, snapshot_manifest_sha256) "
+                "VALUES (2, %s, %s)",
+                (b"default", b"n" * 32),
+            )
+            connector.execute(
+                "INSERT INTO catalog_revision_descriptors "
+                "(revision, publication_count, artifact_count) VALUES (2, 0, 0)"
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_commits "
+                "(receipt_id, candidate_id, revision, source_revision, generation, "
+                "preparation_id, operational_policy_id, artifact_policy_id, "
+                "display_title_policy_id, new_galleries, changed_galleries, "
+                "removed_galleries, duplicate_losers, committed_at) "
+                "VALUES (%s, %s, 2, 2, 2, %s, 1, 1, 1, 0, 0, 1, 0, 4000000)",
+                (b"s" * 16, b"d" * 16, b"q" * 16),
+            )
+        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+        race_events: list[tuple[str, int]] = []
+
+        class RacingMariaDBConnector(TracedMariaDBConnector):
+            def begin_read(self) -> None:
+                if self._read_count == 1:
+                    connector.execute(
+                        "UPDATE catalog_publication_commit_head_receipts "
+                        "SET receipt_id = %s WHERE channel = %s",
+                        (b"s" * 16, b"default"),
+                    )
+                super().begin_read()
+
+        race_context = replace(
+            base_context,
+            SQLConnector=lambda: RacingMariaDBConnector(events=race_events),
+        )
+        monkeypatch.setattr(
+            RepositoryContext,
+            "from_config",
+            classmethod(lambda cls, value: race_context),
+        )
+
+        with pytest.raises(VNextCatalogReadError, match="head advanced"):
+            VNextCatalogFacade(mariadb_config).discover_publications_with_facets(
+                limit=1,
+                facet_limit=1,
+            )
+
+        assert [event for event, _connector_id in race_events] == [
+            "connect",
+            "begin-read-1",
+            "begin-read-2",
+            "close",
+        ]
+        assert len({connector_id for _event, connector_id in race_events}) == 1
     finally:
         connector.execute("SET FOREIGN_KEY_CHECKS = 1")
         connector.close()
