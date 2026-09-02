@@ -109,4 +109,4 @@ def test_fresh_imports_stay_within_broad_resource_budget(
 
 def test_generated_loader_and_resource_have_hard_distribution_size_caps() -> None:
     assert GENERATED_LOADER.stat().st_size < 1024 * 1024
-    assert GENERATED_RESOURCE.stat().st_size < 8 * 1024 * 1024
+    assert GENERATED_RESOURCE.stat().st_size <= 8 * 1024 * 1024

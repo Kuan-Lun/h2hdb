@@ -28,6 +28,9 @@ InputKinds == {
     "protocol-invalid",
     "frame-overflow",
     "opcode-overflow",
+    "expanded-byte-overflow",
+    "scalar-overflow",
+    "work-overflow",
     "forbidden-opcode",
     "node-overflow",
     "memo-dag-overflow",
@@ -50,6 +53,9 @@ NoTrailingData(input) == input /= "trailing"
 ProtocolOK(input) == input /= "protocol-invalid"
 FrameBoundOK(input) == input /= "frame-overflow"
 OpcodeBoundOK(input) == input /= "opcode-overflow"
+ExpandedByteBoundOK(input) == input /= "expanded-byte-overflow"
+ScalarBoundOK(input) == input /= "scalar-overflow"
+ConstructionWorkBoundOK(input) == input /= "work-overflow"
 OpcodeSurfaceOK(input) == input /= "forbidden-opcode"
 NodeBoundOK(input) == input \notin {"node-overflow", "memo-dag-overflow"}
 DepthBoundOK(input) == input /= "depth-overflow"
@@ -66,6 +72,9 @@ FullPreflightChecksPass(input) ==
     /\ ProtocolOK(input)
     /\ FrameBoundOK(input)
     /\ OpcodeBoundOK(input)
+    /\ ExpandedByteBoundOK(input)
+    /\ ScalarBoundOK(input)
+    /\ ConstructionWorkBoundOK(input)
     /\ OpcodeSurfaceOK(input)
     /\ NodeBoundOK(input)
     /\ DepthBoundOK(input)

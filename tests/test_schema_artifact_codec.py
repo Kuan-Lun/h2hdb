@@ -385,6 +385,40 @@ def test_decoder_enforces_encoded_node_and_opcode_bounds(
         _decode(raw)
 
 
+def test_preflight_enforces_expanded_byte_weight_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = pickle.dumps({"value": "expanded"}, protocol=5)
+    monkeypatch.setattr(codec, "MAX_SCHEMA_ARTIFACT_EXPANDED_BYTES", 8)
+
+    with pytest.raises(codec.SchemaArtifactCodecError, match="maximum byte weight"):
+        _decode(raw)
+
+
+@pytest.mark.parametrize("value", ["scalar", b"scalar"])
+def test_preflight_enforces_single_scalar_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str | bytes,
+) -> None:
+    raw = pickle.dumps({"value": value}, protocol=5)
+    monkeypatch.setattr(codec, "_MAX_SCHEMA_ARTIFACT_SCALAR_BYTES", 5)
+
+    with pytest.raises(
+        codec.SchemaArtifactCodecError, match="value exceeds|string exceeds"
+    ):
+        _decode(raw)
+
+
+def test_preflight_enforces_construction_work_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = pickle.dumps({"value": [1, 2]}, protocol=5)
+    monkeypatch.setattr(codec, "_MAX_SCHEMA_ARTIFACT_WORK_BYTES", 1)
+
+    with pytest.raises(codec.SchemaArtifactCodecError, match="construction work"):
+        _decode(raw)
+
+
 def test_decoder_enforces_semantic_depth_before_python_recursion_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

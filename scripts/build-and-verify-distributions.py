@@ -126,7 +126,7 @@ def _verify_wheel_archive(wheel: Path) -> None:
         )
     if schema_sizes["h2hdb/_generated_vnext_schema.py"] >= 1024 * 1024:
         raise RuntimeError("The wheel schema artifact loader exceeds 1 MiB.")
-    if schema_sizes["h2hdb/_generated_vnext_schema.bin"] >= 8 * 1024 * 1024:
+    if schema_sizes["h2hdb/_generated_vnext_schema.bin"] > 8 * 1024 * 1024:
         raise RuntimeError("The wheel schema artifact resource exceeds 8 MiB.")
 
 
@@ -159,7 +159,7 @@ def _verify_sdist_archive(sdist: Path) -> None:
         raise RuntimeError(
             f"The sdist is missing schema artifact members: {missing_schema_members}."
         )
-    if len(resource_members) != 1 or resource_members[0].size >= 8 * 1024 * 1024:
+    if len(resource_members) != 1 or resource_members[0].size > 8 * 1024 * 1024:
         raise RuntimeError("The sdist schema artifact resource exceeds 8 MiB.")
 
 

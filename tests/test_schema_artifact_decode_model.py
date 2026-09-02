@@ -24,6 +24,12 @@ def test_formal_models_state_the_exact_decode_boundary() -> None:
     assert "AcceptanceMatchesChecks" in tla
     assert "DigestOK" in tla
     assert "OpcodeSurfaceOK" in tla
+    assert "ExpandedByteBoundOK" in tla
+    assert "ScalarBoundOK" in tla
+    assert "ConstructionWorkBoundOK" in tla
+    assert '"expanded-byte-overflow"' in tla
+    assert '"scalar-overflow"' in tla
+    assert '"work-overflow"' in tla
     assert "NodeBoundOK" in tla
     assert '"memo-dag-overflow"' in tla
     assert '"dictionary-key-invalid"' in tla
