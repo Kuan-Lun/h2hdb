@@ -468,7 +468,6 @@ def test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set
     """
 
     injector = FaultInjector()
-    original = injector.before_mutation
     seed_batches = 0
 
     def stop_before_batch(sql: str) -> None:
@@ -477,9 +476,8 @@ def test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set
             seed_batches += 1
             if seed_batches == batch_ordinal:
                 raise _SeedBatchStop(f"interrupted before seed batch {batch_ordinal}")
-        original(sql)
 
-    injector.before_mutation = stop_before_batch  # type: ignore[method-assign]  # test seam
+    injector.on_before_mutation = stop_before_batch
     with fault_injection(monkeypatch, injector):
         with pytest.raises(_SeedBatchStop):
             VNextDatabaseAdminFacade(mariadb_config).initialize()

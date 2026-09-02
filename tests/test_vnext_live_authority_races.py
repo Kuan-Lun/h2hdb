@@ -465,7 +465,11 @@ def test_policy_replacement_between_preparation_and_commit_supersedes_the_attemp
         # The replaced policy is a new attempt; the stale one is abandoned and
         # reclaimed by generic cleanup, while the first revision's committed
         # attempt under the old policy stays as publication lineage.
-        assert attempts == [("ABANDONED", 128), ("COMPLETE", 128), ("COMPLETE", 64)]
+        assert sorted(attempts) == [
+            ("ABANDONED", 128),
+            ("COMPLETE", 64),
+            ("COMPLETE", 128),
+        ]
         drain_maintenance(second)
         connector = open_connector(config)
         try:

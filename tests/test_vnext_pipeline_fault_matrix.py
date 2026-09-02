@@ -330,10 +330,11 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
     mariadb_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Six sampled statement faults and lost commit responses, spread over the
-    transaction shapes of one incremental revision, on live MariaDB.  Each
-    interrupted revision proves exact rollback (row locks, CAS and rollback on
-    InnoDB) and converges after an expired-lease takeover on the real clock."""
+    """Six sampled mutation ordinals (statement faults and lost commit
+    responses) spread over the transaction shapes of one incremental revision,
+    each injected into a later revision on live MariaDB.  Each interrupted
+    revision proves exact rollback (row locks, CAS and rollback on InnoDB) and
+    converges after an expired-lease takeover on the real clock."""
 
     initialize_database(mariadb_config)
     source = MemorySource(_fresh_corpus())
@@ -353,11 +354,16 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
     assert len(transaction_shapes(dry_run)) >= 20
     for index, point in enumerate(_sample_points(points, 6), start=1):
         revise(index)
+        # A later revision's mutation ordinals are not identical to the dry
+        # run's, so the interrupted transaction's pre-state is captured at
+        # every transaction start; the sampled ordinal still lands inside one
+        # real production transaction of the same turn.
         injector, pre_transaction = run_fault_point(
             monkeypatch,
             config=mariadb_config,
             point=point,
             workflow=lambda: _short_lease_turn(mariadb_config, source, library),
+            capture_every_transaction=True,
         )
         assert injector.fired is not None, point
         if point.kind == "before_mutation":

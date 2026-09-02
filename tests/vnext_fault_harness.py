@@ -62,7 +62,8 @@ class FaultInjector:
     commit response.  ``on_first_mutation`` is invoked with the ordinal of the
     next statement whenever a new write transaction starts, so callers can
     capture the exact pre-transaction snapshot of the transaction that will be
-    interrupted.
+    interrupted.  ``on_before_mutation`` sees every mutation statement first
+    and may raise to interrupt it (a caller-chosen stop instead of an ordinal).
     """
 
     fail_before_mutation: int | None = None
@@ -77,8 +78,11 @@ class FaultInjector:
     _current: list[str] = field(default_factory=list)
     _current_first: int = 0
     on_first_mutation: Callable[[int], None] | None = None
+    on_before_mutation: Callable[[str], None] | None = None
 
     def before_mutation(self, sql: str) -> None:
+        if self.on_before_mutation is not None:
+            self.on_before_mutation(sql)
         if self.transaction_mutations == 0:
             self._current = []
             self._current_first = self.mutations + 1
@@ -370,13 +374,18 @@ def run_fault_point(
     point: FaultPoint,
     workflow: Callable[[], object],
     snapshot_tables: Sequence[str] | None = None,
+    capture_every_transaction: bool = False,
 ) -> tuple[FaultInjector, dict[str, tuple[tuple[Any, ...], ...]] | None]:
     """Run ``workflow`` with exactly one fault and return the pre-state of the
     interrupted transaction (for ``before_mutation`` points).
 
     The snapshot is taken once, through an independent read transaction, when
     the transaction that will be interrupted issues its first mutation, so it
-    reflects only committed state.
+    reflects only committed state.  ``capture_every_transaction`` snapshots at
+    every transaction start instead, for workflows whose mutation ordinals
+    are not identical to the recorded dry run (a later revision on the same
+    live database): the last snapshot before the fault is the interrupted
+    transaction's committed pre-state.
     """
 
     injector = FaultInjector(
@@ -389,7 +398,7 @@ def run_fault_point(
 
         def capture(next_ordinal: int) -> None:
             nonlocal pre_transaction
-            if next_ordinal == interrupted_first:
+            if capture_every_transaction or next_ordinal == interrupted_first:
                 pre_transaction = snapshot_database(config, tables=snapshot_tables)
 
         injector.on_first_mutation = capture

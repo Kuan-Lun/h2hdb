@@ -230,6 +230,24 @@ def _rows_by_table(config: CoreConfig, tables: set[str]) -> dict[str, tuple[Any,
         connector.close()
 
 
+def _key_columns(connector: SQLConnector, backend: str, table: str) -> list[str]:
+    """The primary-key columns of ``table`` (every manifest relation has one)."""
+
+    if backend == "sqlite":
+        rows = connector.fetch_all(f"PRAGMA table_info({table})")
+        keyed = sorted((int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0)
+        return [name for _position, name in keyed]
+    return [
+        str(row[0])
+        for row in connector.fetch_all(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+            "AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
+            (table,),
+        )
+    ]
+
+
 def _column_names(connector: SQLConnector, backend: str, table: str) -> list[str]:
     if backend == "sqlite":
         return [
@@ -253,20 +271,34 @@ _REJECTIONS: tuple[type[BaseException], ...] = (
 )
 
 
+def _key_predicate(
+    names: list[str], keys: list[str], row: tuple[Any, ...]
+) -> tuple[str, tuple[Any, ...]]:
+    """Address the sampled row by its primary key (all columns when none)."""
+
+    selected = keys or names
+    pairs = [
+        (name, value)
+        for name, value in zip(names, row, strict=True)
+        if name in selected
+    ]
+    where = " AND ".join(
+        f"{name} IS NULL" if value is None else f"{name} = %s" for name, value in pairs
+    )
+    return where, tuple(value for _name, value in pairs if value is not None)
+
+
 def _apply_candidate(
     connector: SQLConnector,
     backend: str,
     candidate: Candidate,
     row: tuple[Any, ...],
     names: list[str],
+    keys: list[str],
 ) -> str:
     """UPDATE the sampled row's column to the candidate; return the outcome."""
 
-    where = " AND ".join(
-        f"{name} IS NULL" if value is None else f"{name} = %s"
-        for name, value in zip(names, row, strict=True)
-    )
-    bound = tuple(value for value in row if value is not None)
+    where, bound = _key_predicate(names, keys, row)
     table = candidate.column.table
     connector.begin()
     try:
@@ -321,25 +353,29 @@ def _run_matrix(
         try:
             if backend == "sqlite":
                 connector.execute("PRAGMA foreign_keys = OFF")
-            names_cache: dict[str, list[str]] = {}
+            names_cache: dict[str, tuple[list[str], list[str]]] = {}
             for candidate in selected:
                 table = candidate.column.table
-                names = names_cache.get(table)
-                if names is None:
-                    names = _column_names(connector, backend, table)
-                    names_cache[table] = names
+                cached = names_cache.get(table)
+                if cached is None:
+                    with connector.read_transaction():
+                        cached = (
+                            _column_names(connector, backend, table),
+                            _key_columns(connector, backend, table),
+                        )
+                    names_cache[table] = cached
+                names, keys = cached
                 before = sampled[table]
-                outcome = _apply_candidate(connector, backend, candidate, before, names)
+                outcome = _apply_candidate(
+                    connector, backend, candidate, before, names, keys
+                )
                 outcomes[candidate.label] = outcome
                 # Rollback exactness: the sampled row is unchanged.
-                after = connector.fetch_all(
-                    f"SELECT * FROM {table} WHERE "
-                    + " AND ".join(
-                        f"{name} IS NULL" if value is None else f"{name} = %s"
-                        for name, value in zip(names, before, strict=True)
-                    ),
-                    tuple(value for value in before if value is not None),
-                )
+                where, bound = _key_predicate(names, keys, before)
+                with connector.read_transaction():
+                    after = connector.fetch_all(
+                        f"SELECT * FROM {table} WHERE {where}", bound
+                    )
                 assert after == [before], candidate.label
         finally:
             connector.close()

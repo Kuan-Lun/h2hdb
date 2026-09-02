@@ -606,6 +606,15 @@ def test_stale_session_cannot_register_a_policy_after_takeover(
 
 
 SHORT_LEASE_MICROSECONDS = 8_000_000
+# Live MariaDB turns take several times longer, so the lease that must
+# outlive the abandoned turn (but expire before the takeover) is longer there.
+MARIADB_SHORT_LEASE_MICROSECONDS = 45_000_000
+
+
+def _short_lease(pipeline: Pipeline) -> int:
+    if pipeline.config.database.sql_type == "mariadb":
+        return MARIADB_SHORT_LEASE_MICROSECONDS
+    return SHORT_LEASE_MICROSECONDS
 
 
 def _abandon_turn_with_short_lease(pipeline: Pipeline, label: str) -> None:
@@ -619,9 +628,10 @@ def _abandon_turn_with_short_lease(pipeline: Pipeline, label: str) -> None:
         if seen == label:
             raise _StopAt(seen)
 
+    lease = _short_lease(pipeline)
     facade = VNextIngestFacade(pipeline.config, clock=Clock())
     try:
-        session = claim_session(facade, lease=SHORT_LEASE_MICROSECONDS)
+        session = claim_session(facade, lease=lease)
         with pytest.raises(_StopAt):
             run_ingest_turn(
                 facade,
@@ -632,7 +642,7 @@ def _abandon_turn_with_short_lease(pipeline: Pipeline, label: str) -> None:
             )
     finally:
         facade.close()
-    time.sleep(SHORT_LEASE_MICROSECONDS / 1_000_000 + 0.5)
+    time.sleep(lease / 1_000_000 + 0.5)
 
 
 def _fresh_reference(pipeline: Pipeline, tag: str) -> dict[str, Any] | None:
