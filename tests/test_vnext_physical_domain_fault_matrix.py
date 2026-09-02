@@ -33,6 +33,8 @@ from vnext_fault_harness import EPOCH_CONTROL_TABLE, open_connector
 from h2hdb import CoreConfig, DatabaseConfig
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_domains import (
+    INT63_MAX,
+    UINT32_MAX,
     DomainValidationError,
     require_ascii_bytes,
     require_bool_byte,
@@ -550,6 +552,18 @@ MARIADB_UNDECLARED_CHECK_CLASSES = frozenset(
 )
 
 
+@pytest.mark.parametrize(
+    ("guard", "invalid"),
+    [
+        (require_int63, (-1, INT63_MAX + 1, 1.5, "1", True, None)),
+        (require_positive_int63, (0, -1, INT63_MAX + 1, 1.5, True)),
+        (require_uint32, (-1, UINT32_MAX + 1, 1.0, False)),
+        (require_bool_byte, (2, -1, True, "1")),
+        (require_digest32, (b"\x01" * 31, b"\x01" * 33, "a" * 32, 32, None)),
+        (require_uuid16, (b"\x01" * 15, b"\x01" * 17, "a" * 16, bytearray(16))),
+        (require_text, (b"text", 1, None, 1.0)),
+    ],
+)
 def test_every_writer_boundary_guard_rejects_each_invalid_class(
     guard: Callable[..., object],
     invalid: tuple[object, ...],
