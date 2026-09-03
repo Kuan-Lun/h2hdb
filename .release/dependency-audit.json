@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-02T10:16:21+00:00",
+  "checked_at": "2026-09-03T10:15:25+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.29.2",
+  "project_version": "0.30.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all build, runtime, optional, development, and Node direct dependencies for the 0.29.2 authenticated schema-provider artifact release; no dependency change is required, registry candidates remain within declared compatibility ranges, and the codec change uses only the Python standard library.",
+    "note": "Compatibility lane bump to 0.30.0: the operational manifest gained the preparation drainage seek index, so the generated DDL manifest digest changed and an existing epoch-3 database is drift that must be rebuilt; no dependency declaration changed. Every build, runtime, optional, development and Node direct dependency admits its registry latest within the declared ranges (hatchling 1.32.0, mysql-connector-python 26.7.0, pydantic 2.13.5, build 1.6.0, hypothesis 6.167.1, mypy 2.3.1, packaging 26.3, pytest 9.1.1, pytest-xdist 3.8.0, ruff 0.16.5, testcontainers 4.15.0, markdownlint-cli2 0.23.2); the repository environment already runs those releases and the release gate for this candidate executes against them, so no bound was changed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
