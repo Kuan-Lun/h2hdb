@@ -5649,6 +5649,10 @@ attributes = ["deletion_request_generation"]
 referenced_relation = "deletion_request_generation"
 referenced_attributes = ["generation"]
 [[relation.required_index]]
+name = "ix_operational_preparation_drain_seek"
+attributes = ["build_id", "state", "preparation_id"]
+unique = false
+[[relation.required_index]]
 name = "ix_operational_preparation_fk_3"
 attributes = ["operational_policy_id"]
 unique = false

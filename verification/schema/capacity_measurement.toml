@@ -16,7 +16,7 @@ measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
 soft_limit_bytes = 400000000
 capacity_plan_sha256 = "ad6c47c668a47237cc12a04d9d83976fceb95fc98e67910437b3de6e5e65260b"
 catalog_physical_manifest_sha256 = "ab64644093d21caff4371369429322d1559590f29b453b750226465a3ec017dc"
-operational_physical_manifest_sha256 = "cd1d74ea77044f01db57f8772f06b2ea770c5b16daef7c109f99263473600004"
+operational_physical_manifest_sha256 = "b1b389dd7f9284f9dea3deeb00ee57918f7d05908ba5da59c72ca3781bad2b7c"
 
 [registry_measurement]
 relation = "analysis_policy"

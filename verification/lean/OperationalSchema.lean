@@ -2149,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "0f4c18568fb7b74157b34e39f9331d2929445638c1058059a31bbed7411e4985"
+def operationalManifestSha256 : String := "266e8f06894d11c5e549e4771934cbfc78531b666e7065bc54bfb2dd4724fc8c"
 
 /-! This section is mechanically generated from operational.toml. -/
 
