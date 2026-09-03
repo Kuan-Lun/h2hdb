@@ -223,6 +223,7 @@ def test_default_generated_epoch_end_to_end_on_sqlite(
     _exercise_generated_epoch(sqlite_config)
 
 
+@pytest.mark.mariadb_smoke
 def test_default_generated_epoch_end_to_end_on_live_mariadb(
     mariadb_config: CoreConfig,
 ) -> None:

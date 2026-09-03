@@ -276,17 +276,29 @@ resolution, and backup boundaries.
 ## Development and verification
 
 Repository contributors should read [`AGENTS.md`](AGENTS.md) before changing
-code or schema. The local fast check and complete release check are:
+code or schema. The local fast check and bounded release check are:
 
 ```bash
 ./scripts/check-fast.sh
 ./scripts/check-full.sh
 ```
 
-The full check covers formatting, typing, tests, generated-schema drift, schema
-surface, formal evidence, the installed distribution, SQLite, and the pinned
-MariaDB 10.11.11 integration profile. MariaDB tests require Docker and
-`H2HDB_TEST_MARIADB=1`.
+The release check covers formatting, typing, generated-schema drift, schema
+surface, formal evidence, the installed distribution, and a pytest merge
+profile with a 300-second aggregate hard deadline. Its canonical runner is
+`scripts/run-pytest.py merge`: the first phase selects
+`not deep and not mariadb` with automatic xdist workers; the second uses one
+worker and `H2HDB_TEST_MARIADB=1` for only
+`mariadb_smoke and mariadb and not deep` against pinned MariaDB 10.11.11. Docker is
+therefore required for the release check's MariaDB smoke phase.
+
+Plain `pytest` defaults to `not deep` with automatic bounded xdist workers and
+does not enable the live service.
+Run `scripts/check-pytest-deep.sh` explicitly for the full non-MariaDB suite
+followed by the full live-MariaDB suite. That manual profile has no default
+timeout and requires Docker. Deep matrix results are not part of the
+exact-tree release receipt and must not be reported as though every merge ran
+them.
 
 For an isolated editable-install smoke containing explicit consumer sources,
 run:

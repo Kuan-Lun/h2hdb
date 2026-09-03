@@ -61,17 +61,14 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    # The pipeline matrices discharge most production-evidence layers, but the
-    # honest re-audit keeps thirteen layers blocked where the executable
-    # evidence does not meet the layer's original quantifier (unenforced
-    # SQLite domain classes, unreachable cleanup strategies, the unwired
-    # orphan-protection reconciliation, one representative bootstrap row and
-    # column, illegal state-machine edges, and one-corpus live MariaDB spans).
-    assert len(report.blockers) == 13
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 6
+    # The honest re-audit keeps every layer blocked where the executable
+    # evidence does not meet the obligation's original quantifier.  Pinning the
+    # split makes any later reclassification an explicit reviewed change.
+    assert len(report.blockers) == 26
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 13
     assert (
         sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 7
+        == 13
     )
 
 
@@ -161,7 +158,7 @@ def test_vertical_family_small_declares_bounded_safety_scope() -> None:
 def test_runtime_obligation_cannot_hide_missing_fault_coverage(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }',
+        'fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }',
         'fault = { status = "not_applicable", rationale = "This runtime invariant deliberately has no injected fault evidence yet." }',
     )
 
@@ -185,7 +182,7 @@ def test_stale_evidence_symbol_is_rejected(tmp_path: Path) -> None:
 def test_blocked_layer_requires_an_explicit_machine_blocker(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }',
+        'fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }',
         'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "unknown" }',
     )
 
@@ -255,7 +252,7 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 1, result.stdout
-    assert "formal coverage blocked: invariants=31 evidence=135 blockers=13" in (
+    assert "formal coverage blocked: invariants=31 evidence=145 blockers=26" in (
         result.stdout
     )
     assert "catalog.physical-domains.v1:fault:" in result.stdout
@@ -264,7 +261,7 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
 
 def test_coverage_validate_only_reports_production_blockers() -> None:
     """The real manifest is contract-valid under ``--validate-only`` and lists
-    its thirteen honest production blockers; the strict gate rejects it."""
+    its honest production blockers; the strict gate rejects it."""
 
     validate_only = subprocess.run(
         [
@@ -281,7 +278,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     assert validate_only.returncode == 0, validate_only.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=31 evidence=135 blockers=13"
+        "invariants=31 evidence=145 blockers=26"
     ) in validate_only.stdout
     assert "catalog.retention.v2:fault:" in validate_only.stdout
     strict = subprocess.run(
@@ -293,7 +290,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     )
     assert strict.returncode == 1
     assert (
-        "formal coverage blocked: invariants=31 evidence=135 blockers=13"
+        "formal coverage blocked: invariants=31 evidence=145 blockers=26"
         in strict.stdout
     )
 

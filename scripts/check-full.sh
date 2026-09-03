@@ -37,13 +37,8 @@ run_timed_stage \
     .venv/bin/python scripts/verify-formal.py lean
 
 run_timed_stage \
-    "pytest (SQLite and MariaDB, auto workers)" \
-    env H2HDB_TEST_MARIADB=1 PYTHONDONTWRITEBYTECODE=1 \
-    .venv/bin/pytest \
-    --numprocesses=auto \
-    --dist=loadgroup \
-    --max-worker-restart=0 \
-    --durations=50
+    "pytest merge profile (300s aggregate budget)" \
+    .venv/bin/python scripts/run-pytest.py merge
 
 run_timed_stage \
     "formal tool availability" \

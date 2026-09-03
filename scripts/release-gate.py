@@ -20,7 +20,7 @@ from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 1
-RELEASE_PROFILE = "h2hdb-release-v2"
+RELEASE_PROFILE = "h2hdb-release-v3"
 REQUIRED_CHECKS = (
     "ruff-lint",
     "ruff-format",
@@ -32,7 +32,9 @@ REQUIRED_CHECKS = (
     "schema-drift",
     "schema-surface",
     "lean",
-    "sqlite-mariadb-10.11.11-tests",
+    "sqlite-merge-tests-parallel",
+    "mariadb-10.11.11-smoke-single-worker",
+    "pytest-total-budget-300s",
     "tlc-small",
     "distribution-boundary",
 )
@@ -284,7 +286,7 @@ def _run_release_gate(
         "Task version and dependency-audit policy",
         (sys.executable, "scripts/check-version.py", *version_arguments),
     )
-    _run("Full repository gate", ("scripts/check-full.sh",))
+    _run("Bounded repository release gate", ("scripts/check-full.sh",))
 
     current_tree = _git("write-tree")
     if current_tree != tree:
@@ -329,7 +331,7 @@ def _pre_commit() -> None:
     _assert_no_unstaged_or_untracked_files()
     print(
         f"project.version {change}: {previous or '<none>'} -> {current}; "
-        "staged release metadata is valid. The complete local release gate "
+        "staged release metadata is valid. The configured bounded release gate "
         "will run against the exact integration candidate."
     )
 
@@ -368,7 +370,7 @@ def _pre_push(document: str) -> None:
             _assert_clean_head()
             print(
                 f"No valid local release receipt for version {current} ({tree}); "
-                "running the complete gate before push."
+                "running the configured bounded gate before push."
             )
             _run_release_gate(
                 tree,

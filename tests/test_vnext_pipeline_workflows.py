@@ -135,6 +135,8 @@ def _artifact_sha(view: dict[str, Any], gid: int) -> str:
     raise AssertionError(f"gid {gid} is not published")
 
 
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
 def test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit(
     pipeline: Pipeline,
 ) -> None:
@@ -782,6 +784,7 @@ def test_source_change_after_a_sealed_commit_fails_closed_until_it_is_finalized(
 CHANGED_POLICY_THRESHOLD = 7
 
 
+@pytest.mark.merge_smoke
 @pytest.mark.parametrize("label", ("analysis.commit:content_owner",))
 def test_policy_change_at_takeover_after_a_mid_analysis_crash_converges(
     pipeline: Pipeline,

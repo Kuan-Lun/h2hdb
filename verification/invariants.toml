@@ -4,8 +4,10 @@ invariant_sources = [
   "verification/schema/operational.toml",
 ]
 
-# Proof engines are pinned by repository-owned lock files.  pytest is pinned
-# explicitly in the required CI workflow which executes the runtime evidence.
+# Proof engines are pinned by repository-owned lock files. pytest evidence
+# records identify executable checks, not the per-merge execution profile. The
+# exact-tree release receipt covers only the bounded "not deep" pytest merge
+# profile; manual deep execution must be reported separately.
 [tools]
 python = "3.14.6"
 lean_toolchain = "lean-toolchain"
@@ -820,7 +822,7 @@ layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
 claim = "SQLite integration applies every generated bootstrap row twice, validates the exact generated genesis set, then mutates allocator state and requires exact-genesis validation to reject it."
-assumptions = ["This test covers generated SQLite bootstrap behavior; MariaDB execution is a separate opt-in integration gate."]
+assumptions = ["This test covers generated SQLite bootstrap behavior; representative MariaDB bootstrap execution is in the bounded release smoke profile, while the remaining live cases are manual deep evidence."]
 [[evidence.location]]
 path = "tests/test_vnext_schema_provider_generation.py"
 symbol = "test_sqlite_bootstrap_validation_is_exact"
@@ -917,7 +919,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "A live MariaDB test applies the generated schema and seeds, then executes production canonical source-root and locator uploads, source and gallery identity handoffs, replay, row locks, and streamed canonical-value validation."
-assumptions = ["The opt-in test covers this finite canonical foundation workflow, not every identity codec, canonical-reference consumer, or READY validator."]
+assumptions = ["The live case is in the manual deep profile and is not attested by the bounded release receipt; it covers this finite canonical foundation workflow, not every identity codec, canonical-reference consumer, or READY validator."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_foundations.py"
 symbol = "test_live_mariadb_canonical_source_and_gallery_identity_round_trip"
@@ -1088,7 +1090,7 @@ id = "integration.mariadb-shape.artifact-preparation"
 layer = "integration"
 strength = "runtime_integration"
 directness = "supporting"
-claim = "No dedicated MariaDB artifact-preparation integration is presently cited; live backend coverage remains an explicit release blocker rather than being inferred from SQLite domain tests."
+claim = "No dedicated MariaDB artifact-preparation integration is presently cited; live backend coverage remains an explicit production-readiness evidence blocker rather than being inferred from SQLite domain tests."
 assumptions = ["SQLite evidence cannot establish MariaDB isolation, locking, rollback, constraints, external adapter ordering, or exact replay."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_preparation_repository.py"
@@ -1453,7 +1455,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "MariaDB 10.11.11 enforces the unique per-build staging slot for RETIRING states, serializes concurrent request reserve and actual-delete release transactions through the shared singleton budget row while preserving exact counter-to-row congruence, and rolls back the counter plus request insert together after an injected failure."
-assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run the pinned live backend fixture; this focused concurrency case does not execute all seven retirement phases on MariaDB."]
+assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run this manual deep case, which is not attested by the bounded release receipt; the focused concurrency case does not execute all seven retirement phases on MariaDB."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize"
@@ -1595,7 +1597,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "MariaDB 10.11.11 executes a real FK-backed frozen hash-cache root selection, child-first deletion, terminal completion replay, and an injected transaction abort that rolls back frozen membership plus cleanup authority atomically."
-assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run the pinned live backend fixture."]
+assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run this manual deep case, which is not attested by the bounded release receipt."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_cleanup_frozen_root_set_and_rollback"
@@ -1665,7 +1667,7 @@ layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
 claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 5,833 bootstrap seeds per backend and all 28 recurring semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
-assumptions = ["The MariaDB 10.11.11 test remains an opt-in testcontainer integration gate."]
+assumptions = ["The live generated-provider location is a representative mariadb_smoke case in the bounded release profile; broader live schema-epoch recovery and fault cases remain manual deep evidence."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
 symbol = "SchemaEpochRunner"
@@ -1719,7 +1721,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 5,833 MariaDB seeds, all 28 resolved writer bindings, and the non-null publication-candidate projection metadata."
-assumptions = ["The MariaDB 10.11.11 tests remain opt-in testcontainer integration gates."]
+assumptions = ["The generated-provider end-to-end location is a representative mariadb_smoke case in the bounded release profile; the other live epoch locations remain manual deep evidence and are not attested by its receipt."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
 symbol = "test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock"
@@ -1739,7 +1741,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "A live MariaDB 10.11.11 test applies the complete generated schema and seeds and executes production fencing, maintenance, allocation, queue, canonical hash-cache, typed transient-event and derived-activation workflows while tracing the SELECT FOR UPDATE statements actually sent to the server."
-assumptions = ["The finite workflow omits exhaustion, forced stale allocator CAS, activation joined to the publication pointer transaction, deliberate event corruption, cleanup, and true SHA-256 collision or cache eviction."]
+assumptions = ["This is manual deep evidence and is not attested by the bounded release receipt; the finite workflow omits exhaustion, forced stale allocator CAS, activation joined to the publication pointer transaction, deliberate event corruption, cleanup, and true SHA-256 collision or cache eviction."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
@@ -2161,7 +2163,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "With H2HDB_TEST_MARIADB=1 the same public-facade 129/257 drainage workflows run on live MariaDB 10.11.11 with the full READY audit, and the repository-level drains converge over 257 and 129 rows on live MariaDB with EXPLAIN pinning a range seek on ix_operational_preparation_drain_seek."
-assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1, which the release gate sets."]
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1; these bounded-drainage locations are manual deep evidence and are not attested by the bounded release receipt."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_superseded_preparations_drain_through_the_public_facade"
@@ -2426,7 +2428,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; nothing is a SQL-shape recorder."
-assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1: a plain pytest run and the check-fast commit hook start no live service, but the release/merge gate (scripts/check-full.sh) sets that variable and does run live MariaDB.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes a separate fresh-pipeline mariadb_smoke case; the liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restarted_process_takes_over_expired_leases_and_replays"

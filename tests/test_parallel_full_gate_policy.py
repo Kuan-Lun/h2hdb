@@ -6,12 +6,14 @@ from unittest.mock import Mock
 import pytest
 from conftest import (
     AUTO_WORKER_CAP,
+    DEEP_TEST_FILES,
     MACOS_PERFORMANCE_CORE_SYSCTL,
     MACOS_SYSCTL_TIMEOUT_SECONDS,
     MARIADB_AUTO_WORKER_CAP,
     MARIADB_XDIST_GROUP,
     OVERRIDE_WORKER_CAP,
     claim_live_mariadb_container,
+    item_requires_deep_profile,
     live_mariadb_group_marker_required,
     live_mariadb_xdist_group,
     macos_performance_core_count,
@@ -64,6 +66,65 @@ def test_live_mariadb_group_rejects_a_conflicting_existing_group() -> None:
         live_mariadb_group_marker_required((conflicting_marker,))
 
 
+def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
+    assert DEEP_TEST_FILES == {
+        "test_operational_refinement_runtime.py",
+        "test_vnext_schema_provider_generation.py",
+        "test_vnext_bootstrap_fault_matrix.py",
+        "test_vnext_identity_corruption_matrix.py",
+        "test_vnext_live_authority_races.py",
+        "test_vnext_physical_domain_fault_matrix.py",
+        "test_vnext_pipeline_fault_matrix.py",
+        "test_vnext_pipeline_stage_authority.py",
+        "test_vnext_pipeline_takeover_matrix.py",
+        "test_vnext_pipeline_workflows.py",
+    }
+
+
+@pytest.mark.parametrize(
+    ("test_file_name", "marker_names", "live_mariadb", "expected"),
+    (
+        ("test_vnext_pipeline_workflows.py", (), False, True),
+        ("test_vnext_pipeline_workflows.py", ("merge_smoke",), False, False),
+        ("test_vnext_domains.py", (), False, False),
+        ("test_vnext_domains.py", (), True, True),
+        ("test_vnext_domains.py", ("mariadb_smoke",), True, False),
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("merge_smoke",),
+            True,
+            True,
+        ),
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("mariadb_smoke",),
+            True,
+            True,
+        ),
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("merge_smoke", "mariadb_smoke"),
+            True,
+            False,
+        ),
+    ),
+)
+def test_deep_profile_classification_requires_each_applicable_smoke_marker(
+    test_file_name: str,
+    marker_names: tuple[str, ...],
+    live_mariadb: bool,
+    expected: bool,
+) -> None:
+    assert (
+        item_requires_deep_profile(
+            test_file_name=test_file_name,
+            marker_names=marker_names,
+            live_mariadb=live_mariadb,
+        )
+        is expected
+    )
+
+
 def test_live_mariadb_container_claim_is_process_exclusive(tmp_path: Path) -> None:
     claim = claim_live_mariadb_container(tmp_path, "test-run")
 
@@ -83,6 +144,22 @@ def test_pytest_xdist_is_a_required_bounded_development_dependency() -> None:
     )
     assert pyproject["tool"]["pytest"]["ini_options"]["required_plugins"] == [
         "pytest-xdist>=3.8.0,<4.0.0"
+    ]
+    assert pyproject["tool"]["pytest"]["ini_options"]["addopts"] == [
+        "-m",
+        "not deep",
+        "--numprocesses=auto",
+        "--dist=loadgroup",
+        "--max-worker-restart=0",
+        "--strict-markers",
+        "--maxfail=1",
+        "--tb=short",
+    ]
+    assert pyproject["tool"]["pytest"]["ini_options"]["markers"] == [
+        "deep: exhaustive or high-cost coverage excluded from the default profile",
+        "merge_smoke: representative coverage retained in the bounded merge profile",
+        "mariadb: requires the single live MariaDB testcontainer worker",
+        "mariadb_smoke: representative live MariaDB coverage retained in the bounded merge profile",
     ]
 
 
@@ -261,10 +338,14 @@ def test_full_gate_pins_bounded_xdist_and_timing_policy() -> None:
     full_gate = (REPOSITORY_ROOT / "scripts" / "check-full.sh").read_text(
         encoding="utf-8"
     )
+    pytest_runner = (REPOSITORY_ROOT / "scripts" / "run-pytest.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert "--numprocesses=auto" in full_gate
-    assert "--dist=loadgroup" in full_gate
-    assert "--max-worker-restart=0" in full_gate
-    assert "--durations=50" in full_gate
+    assert "scripts/run-pytest.py merge" in full_gate
+    assert "--numprocesses={phase.worker_count}" in pytest_runner
+    assert '"--dist=loadgroup"' in pytest_runner
+    assert '"--max-worker-restart=0"' in pytest_runner
+    assert "DEFAULT_MERGE_BUDGET_SECONDS = 300.0" in pytest_runner
     assert 'local started_at="$SECONDS"' in full_gate
     assert '"$((SECONDS - started_at))"' in full_gate

@@ -92,8 +92,8 @@
 - audit script負責盤點與候選發現；有新版時仍須檢查 release notes、驗證
   相容性並嘗試修正問題，再以具體 review note產生 receipt。
 - audit receipt綁定 project version與 dependency manifest hash；它本身不
-  取代完整測試。exact-tree release receipt會連同 audit evidence一起綁定
-  merge candidate。
+  取代 bounded merge profile，manual deep結果亦必須另行回報。
+  exact-tree release receipt會連同 audit evidence一起綁定 merge candidate。
 - `uv.lock` 與 `package-lock.json` 不得成為 committed或重建輸入。
   `scripts/rebuild-env.sh` 可使用 `uv venv` 與 `uv pip`，但不得使用會依賴
   project lockfile的同步流程。
@@ -121,15 +121,24 @@
   Markdown fixer。
 - `scripts/check-fast.sh`：離線、唯讀的 Ruff、format check、strict mypy與
   markdownlint；每次非 merge commit執行。不得寫入 Ruff或 mypy cache。
+- `scripts/run-pytest.py merge`是 canonical bounded pytest runner。它先執行
+  `not deep and not mariadb`，再以單一 worker、`H2HDB_TEST_MARIADB=1`執行
+  `mariadb_smoke and mariadb and not deep`；collection、execution、teardown、
+  container cleanup與兩階段間 overhead共用 300 秒 hard deadline。
 - `scripts/check-full.sh`：fast gate、coverage contract、schema與 generated
-  artifact drift、schema surface、Lean、完整 SQLite/MariaDB 10.11.11 tests、
+  artifact drift、schema surface、Lean、上述 bounded pytest merge profile、
   small TLC profiles，以及 distribution boundary。
-- deep TLC只供明確的手動驗證，不進入自動 merge gate。
+- `scripts/check-pytest-deep.sh`是明確的手動 deep pytest入口；它預設不限時，
+  依序執行完整 non-MariaDB與完整 live MariaDB suite。deep pytest與 deep TLC
+  都不進入自動 merge gate。
 - `.githooks/pre-merge-commit` 透過 `scripts/release-gate.py run --index`
   驗證 staged candidate；不得另建競爭的第二套 merge gate。
 - release gate先驗證 task-level version與 dependency audit，再呼叫
   `scripts/check-full.sh`。成功 receipt存在 Git metadata，且只對 exact tree、
   project version、gate profile與 required-check set有效。
+- release receipt只證明 bounded pytest merge profile；不得宣稱它執行或證明
+  `deep` matrices、非 smoke live-MariaDB cases或 deep TLC。手動 deep結果必須
+  連同 exact invocation另行回報。
 - exact-tree release receipt不得 commit、修改或偽造。相同 tree的 merge
   commit與 pre-push可以重用 receipt；tree或 required checks改變就必須重跑。
 - dependency audit可連網；commit hooks只驗證 candidate內既有 evidence，
@@ -145,6 +154,11 @@
 - 數值測試固定隨機種子；容許誤差需有依據。
 - flaky test視為失敗，不得以重跑掩蓋。
 - 不設定跨 repository的統一 coverage百分比。
+- plain `pytest`預設選擇 `not deep`並使用 bounded auto-xdist，且不得自行啟動
+  live service。高成本測試檔與 live-MariaDB cases由 collection分類為
+  `deep`；只有經明確審核的
+  `merge_smoke`與 `mariadb_smoke`代表性案例可分別豁免對應分類。兩個豁免互不
+  隱含；同時屬於高成本檔與 MariaDB的案例必須同時明列兩者。
 - live account、network、production或 destructive probe不得進入 hooks、
   一般 pytest或自動 merge gate。
 - `skip` 或 `xfail` 必須有理由；`xfail` 原則上使用 `strict=True`。
@@ -298,4 +312,6 @@ Schema變更依序進行：
 - Shared schema、transaction、connector、validator或 repository變更都須測
   SQLite。MariaDB cases以 `H2HDB_TEST_MARIADB=1`啟用 testcontainers，並固定
   MariaDB 10.11.11，對應 Synology package build 10.11.11-1551。
+- bounded merge profile只執行明列的少量 `mariadb_smoke`；其餘 MariaDB cases
+  屬於手動 deep profile，不得由 release receipt推稱已執行。
 - Docker不可用時必須精確回報；不得把未執行 MariaDB測試描述為通過。

@@ -304,6 +304,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
         connector.close()
 
 
+@pytest.mark.mariadb_smoke
 def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
     mariadb_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,

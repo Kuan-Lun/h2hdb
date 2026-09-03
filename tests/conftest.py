@@ -23,6 +23,20 @@ OVERRIDE_WORKER_CAP = 16
 PYTEST_WORKER_OVERRIDE = "H2HDB_PYTEST_WORKERS"
 MACOS_PERFORMANCE_CORE_SYSCTL = "hw.perflevel0.physicalcpu"
 MACOS_SYSCTL_TIMEOUT_SECONDS = 2
+DEEP_TEST_FILES = frozenset(
+    {
+        "test_operational_refinement_runtime.py",
+        "test_vnext_schema_provider_generation.py",
+        "test_vnext_bootstrap_fault_matrix.py",
+        "test_vnext_identity_corruption_matrix.py",
+        "test_vnext_live_authority_races.py",
+        "test_vnext_physical_domain_fault_matrix.py",
+        "test_vnext_pipeline_fault_matrix.py",
+        "test_vnext_pipeline_stage_authority.py",
+        "test_vnext_pipeline_takeover_matrix.py",
+        "test_vnext_pipeline_workflows.py",
+    }
+)
 
 
 def select_pytest_worker_count(
@@ -122,6 +136,22 @@ def live_mariadb_xdist_group(
     return None
 
 
+def item_requires_deep_profile(
+    *,
+    test_file_name: str,
+    marker_names: Collection[str],
+    live_mariadb: bool,
+) -> bool:
+    declared_markers = frozenset(marker_names)
+    heavy_file_requires_deep = (
+        test_file_name in DEEP_TEST_FILES and "merge_smoke" not in declared_markers
+    )
+    live_mariadb_requires_deep = (
+        live_mariadb and "mariadb_smoke" not in declared_markers
+    )
+    return heavy_file_requires_deep or live_mariadb_requires_deep
+
+
 def _item_fixture_names(item: pytest.Item) -> tuple[str, ...]:
     raw_fixture_names: object = getattr(item, "fixturenames", ())
     if not isinstance(raw_fixture_names, (list, tuple)):
@@ -183,20 +213,28 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             _item_fixture_names(item),
             _item_parameters(item),
         )
-        if group_name is None:
-            continue
+        live_mariadb = group_name is not None
+        if group_name is not None:
+            existing_group_markers = tuple(item.iter_markers(name="xdist_group"))
+            try:
+                marker_required = live_mariadb_group_marker_required(
+                    existing_group_markers
+                )
+            except ValueError as error:
+                raise pytest.UsageError(f"{item.nodeid} {error}") from error
+            if marker_required:
+                item.add_marker(
+                    pytest.mark.xdist_group(name=group_name),
+                    append=False,
+                )
+            item.add_marker(pytest.mark.mariadb, append=False)
 
-        existing_group_markers = tuple(item.iter_markers(name="xdist_group"))
-        try:
-            marker_required = live_mariadb_group_marker_required(existing_group_markers)
-        except ValueError as error:
-            raise pytest.UsageError(f"{item.nodeid} {error}") from error
-        if marker_required:
-            item.add_marker(
-                pytest.mark.xdist_group(name=group_name),
-                append=False,
-            )
-        item.add_marker(pytest.mark.mariadb, append=False)
+        if item_requires_deep_profile(
+            test_file_name=item.path.name,
+            marker_names={marker.name for marker in item.iter_markers()},
+            live_mariadb=live_mariadb,
+        ):
+            item.add_marker(pytest.mark.deep, append=False)
 
 
 @pytest.fixture(scope="session")

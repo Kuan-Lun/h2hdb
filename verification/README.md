@@ -270,6 +270,19 @@ rendered SQL boundary and at the writer-binding guards, and they seed some
 fixtures with foreign keys disabled, so they are not themselves pure
 facade-only runs.
 
+The evidence inventory below records what an executable check establishes
+when it is run; it is not the per-merge execution manifest. Plain `pytest`
+selects `not deep` and does not enable a live service. The canonical bounded
+merge runner, `scripts/run-pytest.py merge`, gives its SQLite
+`not deep and not mariadb` phase and its single-worker live-MariaDB
+`mariadb_smoke and mariadb and not deep` phase one shared 300-second hard
+deadline. The
+exact-tree release receipt attests only that bounded profile. High-cost SQLite
+and non-smoke live-MariaDB matrices are marked `deep`; they remain executable
+through the explicit, unlimited-by-default `scripts/check-pytest-deep.sh`, but
+neither their existence nor their evidence status means that every merge ran
+them.
+
 Executable evidence added, and what it establishes:
 
 - A statement-fault and response-loss matrix interrupts every distinct write
@@ -322,13 +335,16 @@ Executable evidence added, and what it establishes:
   129 and 257 seeded attempts in exactly `ceil(n/128)` bounded commits on
   SQLite and live MariaDB; the repository tests pin `EXPLAIN QUERY PLAN` and
   MariaDB `EXPLAIN` to one range seek on that index with no table scan.
-- Live MariaDB 10.11.11 runs the same facade workflows, the liveness
-  regressions, the policy crash matrix, the authority races, the interrupted
-  seed batch, the two bounded preparation drains (facade-level and
-  repository-level), the physical matrix (one corpus) and six sampled
-  statement faults. It runs only under `H2HDB_TEST_MARIADB=1`, which a
-  plain `pytest` and the check-fast commit hook leave unset; the release/merge
-  gate (`scripts/check-full.sh`) sets it and does run live MariaDB.
+- The available live MariaDB 10.11.11 deep profile runs the same facade
+  workflows, the liveness regressions, the policy crash matrix, the authority
+  races, the interrupted seed batch, the two bounded preparation drains
+  (facade-level and repository-level), the physical matrix (one corpus) and
+  six sampled statement faults. The bounded release profile does not run that
+  matrix: it runs only three representative `mariadb_smoke` cases covering the
+  generated epoch end to end, one fresh public-facade pipeline plus full READY
+  audit, and catalog-reader discovery, facets and presentation over real rows.
+  Both profiles require `H2HDB_TEST_MARIADB=1`, which their canonical runners
+  set; plain `pytest` and the check-fast commit hook leave it unset.
 
 Explicit assumptions and limits (each is also recorded on the evidence):
 

@@ -7,6 +7,7 @@ import ast
 import re
 import tomllib
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -135,7 +136,16 @@ def _resolve_repo_path(value: str, context: str, errors: list[str]) -> Path | No
     return resolved
 
 
+@cache
 def _python_symbols(path: Path) -> frozenset[str]:
+    """Parse each evidence module once per checker process.
+
+    A production evidence manifest intentionally references the same test and
+    implementation modules many times.  Re-parsing those large modules for
+    every location made validation proportional to locations times source
+    size without changing the validation result.
+    """
+
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return frozenset(
         node.name

@@ -46,8 +46,21 @@ packages = ["src/h2hdb"]
 
 [tool.pytest.ini_options]
 required_plugins = ["pytest-xdist>=3.8.0,<4.0.0"]
+addopts = [
+    "-m",
+    "not deep",
+    "--numprocesses=auto",
+    "--dist=loadgroup",
+    "--max-worker-restart=0",
+    "--strict-markers",
+    "--maxfail=1",
+    "--tb=short",
+]
 markers = [
+    "deep: exhaustive or high-cost coverage excluded from the default profile",
+    "merge_smoke: representative coverage retained in the bounded merge profile",
     "mariadb: requires the single live MariaDB testcontainer worker",
+    "mariadb_smoke: representative live MariaDB coverage retained in the bounded merge profile",
 ]
 
 [tool.h2h.version]

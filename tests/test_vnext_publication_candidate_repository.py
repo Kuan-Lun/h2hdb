@@ -1259,6 +1259,7 @@ def test_projection_receipt_revalidation_requires_exact_working_assignment(
     connector.close()
 
 
+@pytest.mark.deep
 def test_selection_and_validation_cross_the_fixed_128_row_keyset_boundary(
     tmp_path: Path,
 ) -> None:
@@ -1498,6 +1499,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
     connector.close()
 
 
+@pytest.mark.deep
 def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
     tmp_path: Path,
 ) -> None:

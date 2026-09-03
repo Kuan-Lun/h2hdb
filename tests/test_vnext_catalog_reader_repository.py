@@ -1043,6 +1043,7 @@ def _seed_publication_child_cardinality(
     return tuple(contributor_names), tuple(subjects)
 
 
+@pytest.mark.deep
 def test_publication_children_stream_in_hard_capped_keyset_pages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1130,6 +1131,7 @@ def test_publication_children_stream_in_hard_capped_keyset_pages(
         connector.close()
 
 
+@pytest.mark.deep
 def test_publication_child_keyset_pages_reject_cross_page_position_gaps(
     tmp_path: Path,
 ) -> None:
@@ -1778,6 +1780,7 @@ def test_recent_artifact_windows_sort_by_authoritative_times_and_gid_ties(
         connector.close()
 
 
+@pytest.mark.deep
 def test_recent_artifact_window_is_fixed_to_top_128(
     tmp_path: Path,
 ) -> None:
