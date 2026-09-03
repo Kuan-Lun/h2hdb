@@ -87,6 +87,7 @@ from .vnext_download_ingest_repository import (
     HandoffKind,
 )
 from .vnext_ingest_fence_repository import IngestTurn
+from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from .vnext_library_activation_repository import (
     LibraryActivationResourceRepository,
 )
@@ -926,12 +927,16 @@ class VNextIngestPublication:
             with connector.transaction():
                 work = VNextUnitOfWork(connector, backend=self.__backend)
                 generation = _resume_authority(work, session, now)
-                root = _load_root(work, session, policy)
+                trusted_policy = VNextIngestPolicyRepository.require_exact(
+                    work,
+                    policy,
+                )
+                root = _load_root(work, session, trusted_policy)
                 action, payload = _issue_database_action(
                     work,
                     generation=generation,
                     root=root,
-                    policy=policy,
+                    policy=trusted_policy,
                     now=now,
                 )
 

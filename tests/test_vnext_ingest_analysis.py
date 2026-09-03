@@ -86,6 +86,7 @@ def _policy() -> VNextResolvedIngestPolicy:
     )
     natural = VNextIngestPolicy(
         artifact=artifact,
+        unicode_data_version=b"14.0.0",
     )
     return VNextResolvedIngestPolicy(
         natural,

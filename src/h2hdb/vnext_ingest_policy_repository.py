@@ -9,7 +9,11 @@ __all__ = [
 ]
 
 from . import vnext_identity as identity
-from .domain import VNextIngestPolicy, VNextResolvedIngestPolicy
+from .domain import (
+    VNextArtifactAdapterPolicy,
+    VNextIngestPolicy,
+    VNextResolvedIngestPolicy,
+)
 from .vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
@@ -82,6 +86,286 @@ def _authorize(
 
 class VNextIngestPolicyRepository:
     """Resolve or insert every immutable policy row needed by one ingest run."""
+
+    @staticmethod
+    def require_exact(
+        work: VNextUnitOfWork,
+        resolved: VNextResolvedIngestPolicy,
+    ) -> VNextResolvedIngestPolicy:
+        """Rebind a caller receipt to its complete immutable registry authority.
+
+        ``VNextResolvedIngestPolicy`` is a public value and therefore cannot
+        itself authorize any derived registry identifier.  Resolve every
+        component again from the natural policy facts in this transaction and
+        reject a missing, corrupt, or caller-substituted identifier before a
+        source workflow is allowed to mutate durable state.
+        """
+
+        if not isinstance(resolved, VNextResolvedIngestPolicy):
+            raise TypeError("resolved must be VNextResolvedIngestPolicy")
+        resolved.__post_init__()
+        supplied_policy = resolved.policy
+        # The outer receipt deliberately validates only its own shape.  Repeat
+        # the complete nested natural-policy validation here because frozen
+        # Python values can still be forged with ``object.__setattr__``.
+        supplied_policy.__post_init__()
+        policy = VNextIngestPolicy(
+            artifact=VNextArtifactAdapterPolicy(
+                adapter_id=supplied_policy.artifact.adapter_id,
+                policy_fingerprint_sha256=(
+                    supplied_policy.artifact.policy_fingerprint_sha256
+                ),
+            ),
+            manifest_algorithm_version=supplied_policy.manifest_algorithm_version,
+            file_order_version=supplied_policy.file_order_version,
+            analysis_algorithm_version=supplied_policy.analysis_algorithm_version,
+            spam_artist_threshold=supplied_policy.spam_artist_threshold,
+            spam_occurrence_threshold=supplied_policy.spam_occurrence_threshold,
+            content_owner_rule_version=supplied_policy.content_owner_rule_version,
+            gid_winner_rule_version=supplied_policy.gid_winner_rule_version,
+            artifact_algorithm_version=supplied_policy.artifact_algorithm_version,
+            display_title_algorithm_version=(
+                supplied_policy.display_title_algorithm_version
+            ),
+            title_sort_algorithm_version=supplied_policy.title_sort_algorithm_version,
+            unicode_data_version=supplied_policy.unicode_data_version,
+            operational_schema_version=supplied_policy.operational_schema_version,
+            operational_algorithm_version=(
+                supplied_policy.operational_algorithm_version
+            ),
+            operational_max_batch_rows=supplied_policy.operational_max_batch_rows,
+            artifacts_required=supplied_policy.artifacts_required,
+        )
+        supplied_authority = (
+            require_positive_int63(
+                resolved.manifest_policy_id,
+                field="supplied manifest_policy_id",
+            ),
+            require_positive_int63(
+                resolved.analysis_policy_id,
+                field="supplied analysis_policy_id",
+            ),
+            require_digest32(
+                resolved.artifact_policy_sha256,
+                field="supplied artifact_policy_sha256",
+            ),
+            require_digest32(
+                resolved.artifact_policy_fingerprint_sha256,
+                field="supplied artifact_policy_fingerprint_sha256",
+            ),
+            require_positive_int63(
+                resolved.display_title_policy_id,
+                field="supplied display_title_policy_id",
+            ),
+            require_uint32(
+                resolved.title_sort_policy_id,
+                field="supplied title_sort_policy_id",
+            ),
+            require_positive_int63(
+                resolved.operational_policy_id,
+                field="supplied operational_policy_id",
+            ),
+        )
+        rows = work.connector.fetch_all(
+            "SELECT artifact.artifact_policy_id, "
+            "artifact.policy_component_sha256, "
+            "semantics.artifact_algorithm_version, "
+            "semantics.policy_fingerprint_sha256, adapter.adapter_id, "
+            "manifest.manifest_policy_id, manifest.manifest_algorithm_version, "
+            "manifest.file_order_version, analysis.policy_id, "
+            "analysis.algorithm_version, analysis.spam_artist_threshold, "
+            "analysis.spam_occurrence_threshold, "
+            "analysis.content_owner_rule_version, "
+            "analysis.gid_winner_rule_version, "
+            "title_sort.title_sort_policy_id, "
+            "title_sort.title_sort_algorithm_version, "
+            "title_sort.unicode_data_version, display.display_title_policy_id, "
+            "display.display_title_algorithm_version, "
+            "display.title_sort_policy_id, operational.operational_policy_id, "
+            "operational.operational_schema_version, operational.algorithm_version, "
+            "operational.max_batch_rows "
+            "FROM catalog_artifact_policies AS artifact "
+            "JOIN catalog_artifact_policy_semantics AS semantics "
+            "ON semantics.policy_component_sha256 = "
+            "artifact.policy_component_sha256 "
+            "JOIN catalog_artifact_adapter_policy AS adapter "
+            "ON adapter.policy_fingerprint_sha256 = "
+            "semantics.policy_fingerprint_sha256 "
+            "JOIN catalog_manifest_policies AS manifest "
+            "ON manifest.manifest_algorithm_version = %s "
+            "AND manifest.file_order_version = %s "
+            "JOIN catalog_analysis_policies AS analysis "
+            "ON analysis.algorithm_version = %s "
+            "AND analysis.spam_artist_threshold = %s "
+            "AND analysis.spam_occurrence_threshold = %s "
+            "AND analysis.content_owner_rule_version = %s "
+            "AND analysis.gid_winner_rule_version = %s "
+            "JOIN catalog_title_sort_policy AS title_sort "
+            "ON title_sort.title_sort_algorithm_version = %s "
+            "AND title_sort.unicode_data_version = %s "
+            "JOIN catalog_display_title_policies AS display "
+            "ON display.display_title_algorithm_version = %s "
+            "AND display.title_sort_policy_id = title_sort.title_sort_policy_id "
+            "JOIN operational_operational_policys AS operational "
+            "ON operational.operational_schema_version = %s "
+            "AND operational.algorithm_version = %s "
+            "AND operational.max_batch_rows = %s "
+            "WHERE artifact.policy_component_sha256 = %s "
+            "AND semantics.artifact_algorithm_version = %s "
+            "AND semantics.policy_fingerprint_sha256 = %s "
+            "AND adapter.adapter_id = %s "
+            "ORDER BY artifact.artifact_policy_id, manifest.manifest_policy_id, "
+            "analysis.policy_id, title_sort.title_sort_policy_id, "
+            "display.display_title_policy_id, operational.operational_policy_id "
+            "LIMIT 2",
+            (
+                policy.manifest_algorithm_version,
+                policy.file_order_version,
+                policy.analysis_algorithm_version,
+                policy.spam_artist_threshold,
+                policy.spam_occurrence_threshold,
+                policy.content_owner_rule_version,
+                policy.gid_winner_rule_version,
+                policy.title_sort_algorithm_version,
+                policy.unicode_data_version,
+                policy.display_title_algorithm_version,
+                policy.operational_schema_version,
+                policy.operational_algorithm_version,
+                policy.operational_max_batch_rows,
+                policy.artifact_policy_sha256,
+                policy.artifact_algorithm_version,
+                policy.artifact_policy_fingerprint_sha256,
+                policy.artifact.adapter_id,
+            ),
+        )
+        if len(rows) != 1 or len(rows[0]) != 24:
+            raise VNextIngestPolicyConflictError(
+                "resolved ingest policy lacks exact durable registry authority"
+            )
+        row = rows[0]
+        require_positive_int63(row[0], field="durable artifact_policy_id")
+        artifact = ArtifactPolicySemanticsRecord(
+            require_digest32(row[1], field="durable artifact_policy_sha256"),
+            require_uint32(row[2], field="durable artifact_algorithm_version"),
+            require_digest32(
+                row[3],
+                field="durable artifact_policy_fingerprint_sha256",
+            ),
+            row[4],
+        )
+        expected_artifact = ArtifactPolicySemanticsRecord(
+            policy.artifact_policy_sha256,
+            policy.artifact_algorithm_version,
+            policy.artifact_policy_fingerprint_sha256,
+            policy.artifact.adapter_id,
+        )
+        adapter = ArtifactAdapterPolicyRecord(
+            artifact.policy_fingerprint_sha256, row[4]
+        )
+        expected_adapter = ArtifactAdapterPolicyRecord(
+            policy.artifact_policy_fingerprint_sha256,
+            policy.artifact.adapter_id,
+        )
+        if artifact != expected_artifact or adapter != expected_adapter:
+            raise VNextIngestPolicyConflictError(
+                "resolved artifact policy differs from its durable registry"
+            )
+        manifest = ManifestPolicyRecord(
+            require_positive_int63(row[5], field="durable manifest_policy_id"),
+            require_uint32(row[6], field="durable manifest_algorithm_version"),
+            require_uint32(row[7], field="durable file_order_version"),
+        )
+        expected_manifest = ManifestPolicyRecord(
+            manifest.manifest_policy_id,
+            policy.manifest_algorithm_version,
+            policy.file_order_version,
+        )
+        analysis = AnalysisPolicyRecord(
+            require_positive_int63(row[8], field="durable analysis_policy_id"),
+            require_uint32(row[9], field="durable analysis_algorithm_version"),
+            require_int63(row[10], field="durable spam_artist_threshold"),
+            require_int63(row[11], field="durable spam_occurrence_threshold"),
+            require_uint32(row[12], field="durable content_owner_rule_version"),
+            require_uint32(row[13], field="durable gid_winner_rule_version"),
+        )
+        expected_analysis = AnalysisPolicyRecord(
+            analysis.policy_id,
+            policy.analysis_algorithm_version,
+            policy.spam_artist_threshold,
+            policy.spam_occurrence_threshold,
+            policy.content_owner_rule_version,
+            policy.gid_winner_rule_version,
+        )
+        title_sort = TitleSortPolicyRecord(
+            require_uint32(row[14], field="durable title_sort_policy_id"),
+            require_uint32(row[15], field="durable title_sort_algorithm_version"),
+            row[16],
+        )
+        expected_title_sort = TitleSortPolicyRecord(
+            title_sort.title_sort_policy_id,
+            policy.title_sort_algorithm_version,
+            policy.unicode_data_version,
+        )
+        display = DisplayTitlePolicyRecord(
+            require_positive_int63(row[17], field="durable display_title_policy_id"),
+            require_uint32(row[18], field="durable display_title_algorithm_version"),
+            require_uint32(row[19], field="durable display title_sort_policy_id"),
+        )
+        expected_display = DisplayTitlePolicyRecord(
+            display.display_title_policy_id,
+            policy.display_title_algorithm_version,
+            title_sort.title_sort_policy_id,
+        )
+        operational_policy_id = require_positive_int63(
+            row[20], field="durable operational_policy_id"
+        )
+        operational = (
+            require_uint32(row[21], field="durable operational_schema_version"),
+            require_uint32(row[22], field="durable operational_algorithm_version"),
+            require_uint32(row[23], field="durable operational_max_batch_rows"),
+        )
+        expected_operational = (
+            policy.operational_schema_version,
+            policy.operational_algorithm_version,
+            policy.operational_max_batch_rows,
+        )
+        if (
+            manifest != expected_manifest
+            or analysis != expected_analysis
+            or title_sort != expected_title_sort
+            or display != expected_display
+            or operational != expected_operational
+        ):
+            raise VNextIngestPolicyConflictError(
+                "resolved ingest policy differs from its durable natural facts"
+            )
+
+        canonical = VNextResolvedIngestPolicy(
+            policy=policy,
+            manifest_policy_id=manifest.manifest_policy_id,
+            analysis_policy_id=analysis.policy_id,
+            artifact_policy_sha256=policy.artifact_policy_sha256,
+            artifact_policy_fingerprint_sha256=(
+                policy.artifact_policy_fingerprint_sha256
+            ),
+            display_title_policy_id=display.display_title_policy_id,
+            title_sort_policy_id=title_sort.title_sort_policy_id,
+            operational_policy_id=operational_policy_id,
+            replayed=True,
+        )
+        if supplied_authority != (
+            canonical.manifest_policy_id,
+            canonical.analysis_policy_id,
+            canonical.artifact_policy_sha256,
+            canonical.artifact_policy_fingerprint_sha256,
+            canonical.display_title_policy_id,
+            canonical.title_sort_policy_id,
+            canonical.operational_policy_id,
+        ):
+            raise VNextIngestPolicyConflictError(
+                "resolved ingest policy contains caller-substituted authority"
+            )
+        return canonical
 
     @staticmethod
     def ensure(

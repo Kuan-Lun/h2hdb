@@ -41,6 +41,7 @@ from h2hdb.vnext_identity import (
     publication_key,
 )
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
+from h2hdb.vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from h2hdb.vnext_library_activation_repository import (
     LibraryActivationResourcePage,
     LibraryActivationResourceRepository,
@@ -619,6 +620,11 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
     )
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
     monkeypatch.setattr(
+        VNextIngestPolicyRepository,
+        "require_exact",
+        staticmethod(lambda _work, policy: policy),
+    )
+    monkeypatch.setattr(
         publication,
         "_resume_authority",
         lambda _work, current, _now: current,
@@ -711,6 +717,11 @@ def test_catalog_issue_reuses_the_outer_gate_and_ingest_authorization(
         return object()
 
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
+    monkeypatch.setattr(
+        VNextIngestPolicyRepository,
+        "require_exact",
+        staticmethod(lambda _work, policy: policy),
+    )
     monkeypatch.setattr(publication, "_load_root", lambda *_args: root)
     monkeypatch.setattr(publication, "_load_checkpoints", lambda *_args: states)
     monkeypatch.setattr(
@@ -1396,6 +1407,11 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
     )
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
     monkeypatch.setattr(
+        VNextIngestPolicyRepository,
+        "require_exact",
+        staticmethod(lambda _work, policy: policy),
+    )
+    monkeypatch.setattr(
         publication,
         "_resume_authority",
         lambda _work, current, _now: current,
@@ -1612,6 +1628,11 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
 
     adapter = PersistThenLoseResponseAdapter()
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
+    monkeypatch.setattr(
+        VNextIngestPolicyRepository,
+        "require_exact",
+        staticmethod(lambda _work, current: current),
+    )
     monkeypatch.setattr(
         publication,
         "_resume_authority",

@@ -2481,7 +2481,7 @@ id = "runtime.production.policy-takeover"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production facade exposes receipt-scoped recovery before source I/O: it authorizes the sole reader-invisible DB_COMMITTED direct successor, resumes library activation/finalization, revalidates the PUBLISHED head on completion, and never creates a source-build generation mapping. Source handoff then compares the current PUBLISHED head's complete durable ingest-policy tuple (manifest, analysis, artifact digest, display-title, title-sort, operational and artifacts-required) with the exact requested tuple; exact equality may reuse the build, while any mismatch selects a successor. A foreign-policy OPEN or non-durably COMPLETE working analysis is retired before mapping, with bounded attempt drainage and immutable terminal facts preserved."
+claim = "The production facade exposes receipt-scoped recovery before source I/O: it authorizes the sole reader-invisible DB_COMMITTED direct successor, resumes library activation/finalization, revalidates the PUBLISHED head on completion, and never creates a source-build generation mapping. A public resolved-policy receipt is never derived-ID authority: before the first source or analysis mutation and before every publication issue, one bounded natural-fact JOIN reloads and type-validates the complete registry tuple, exact-compares all supplied derived IDs and digests, and returns a fresh outer and nested policy copy; missing, substituted, invalid, or subsequently mutated caller values fail closed before durable writes. Source handoff then compares the current PUBLISHED head's complete durable ingest-policy tuple (manifest, analysis, artifact digest, display-title, title-sort, operational and artifacts-required) with the exact requested tuple; exact equality may reuse the build, while any mismatch selects a successor. A foreign-policy OPEN or non-durably COMPLETE working analysis is retired before mapping, with bounded attempt drainage and immutable terminal facts preserved."
 assumptions = ["The facade recovery protocol establishes core ordering and fencing; the ingest integration is responsible for driving it to terminal before constructing its filesystem source and for returning only after the subsequent requested-policy publication is terminal."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_ingest_facade.py"
@@ -2510,13 +2510,28 @@ symbol = "_load_finalized_source_policy"
 [[evidence.location]]
 path = "src/h2hdb/vnext_source_build_repository.py"
 symbol = "_select_source_build_id"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_policy_repository.py"
+symbol = "VNextIngestPolicyRepository.require_exact"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_facade.py"
+symbol = "VNextIngestFacade.issue_source_step"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_analysis.py"
+symbol = "VNextIngestAnalysisOrchestrator.issue_analysis_step"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "VNextIngestPublication.issue_step"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_public_contract.py"
+symbol = "test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes"
 
 [[evidence]]
 id = "fault.pipeline.policy-crash-matrix"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "For a first and a later revision, a turn dies at each of eight boundaries (analysis COMPLETE before publication; candidate BEGIN durable; artifact rendered but not persisted; artifact persisted before operational preparation; preparation sealed; every input bound before commit; DB_COMMITTED before activation; activated before finalization) and the restarted synchronization requests another policy. Every case checks that one restarted session converges before returning: a pending immutable commit is finalized receipt-first without binding the new generation, the exact requested-policy successor becomes the current head in that same session, no working root or OPEN analysis survives, durable commits equal published revisions, replay creates no build/analysis/candidate/commit, generation mappings stay bounded, maintenance reaches its stated outcome, the full READY audit passes, and the catalog equals a fresh requested-policy ingest."
+claim = "For a first and a later revision, a turn dies at each of eight boundaries (analysis COMPLETE before publication; candidate BEGIN durable; artifact rendered but not persisted; artifact persisted before operational preparation; preparation sealed; every input bound before commit; DB_COMMITTED before activation; activated before finalization) and the restarted synchronization requests another policy. Every case checks that one restarted session converges before returning: a pending immutable commit is finalized receipt-first without binding the new generation, the exact requested-policy successor becomes the current head in that same session, no working root or OPEN analysis survives, durable commits equal published revisions, replay creates no build/analysis/candidate/commit, generation mappings stay bounded, maintenance reaches its stated outcome, the full READY audit passes, and the catalog equals a fresh requested-policy ingest. A separate public-facade negative control substitutes every derived ID with the valid ID of another registered policy at source, analysis and publication ingress, and supplies absent or object-mutated natural facts; every case fails before durable writes, preserves the OPEN analysis, and proves that late mutation of the caller-owned nested policy cannot alter the already rebound source machine."
 assumptions = ["The matrix varies the analysis-policy component; repository parameterization separately proves that artifact, display-title, title-sort, operational and artifacts-required mismatches also prevent current-head build reuse.", "Where a pre-commit crashed candidate had already protected artifacts, maintenance reports BLOCKED until the separately tracked artifact-release reconciliation is wired; the matrix states that limitation rather than treating it as policy convergence success."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
@@ -2527,6 +2542,12 @@ symbol = "_policy_facts"
 [[evidence.location]]
 path = "tests/test_vnext_source_build_runtime_repository.py"
 symbol = "test_current_finalized_build_policy_change_selects_successor"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_public_contract.py"
+symbol = "test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_public_contract.py"
+symbol = "test_bound_source_policy_isolated_from_late_caller_mutation"
 
 # Each required invariant has all six evidence layers.  `supporting` is
 # deliberately weaker than `covered`; it does not turn BCNF, a generic binding

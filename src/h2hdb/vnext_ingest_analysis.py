@@ -46,6 +46,7 @@ from .vnext_domains import (
     require_uuid16,
 )
 from .vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
+from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from .vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
@@ -347,22 +348,29 @@ class VNextIngestAnalysisOrchestrator:
             )
             now = require_int63(self.__clock(), field="analysis issue now")
 
-            def issue(work: VNextUnitOfWork) -> tuple[bytes, AnalysisStageIssue]:
+            def issue(
+                work: VNextUnitOfWork,
+            ) -> tuple[bytes, AnalysisStageIssue, VNextResolvedIngestPolicy]:
                 gate, turn = _repository_authority(session)
+                trusted_policy = VNextIngestPolicyRepository.require_exact(
+                    work,
+                    analysis._policy,
+                )
                 run, stage_issue = AnalysisRepository.begin_and_issue_next_batch(
                     work,
                     gate_lease=gate,
                     ingest_turn=turn,
                     build_id=analysis._build_id,
-                    policy_id=analysis._policy.analysis_policy_id,
+                    policy_id=trusted_policy.analysis_policy_id,
                     proposed_analysis_id=proposed_analysis_id,
                     batch_key=batch_key,
                     max_rows=analysis._max_rows,
                     now=now,
                 )
-                return run.analysis_id, stage_issue
+                return run.analysis_id, stage_issue, trusted_policy
 
-            analysis_id, issued_payload = self.__write(issue)
+            analysis_id, issued_payload, trusted_policy = self.__write(issue)
+            analysis._policy = trusted_policy
             payload = issued_payload
             if machine.analysis_id is not None and machine.analysis_id != analysis_id:
                 raise RuntimeError("analysis natural-key replay changed analysis_id")

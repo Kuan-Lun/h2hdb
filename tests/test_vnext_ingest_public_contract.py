@@ -8,6 +8,7 @@ from unicodedata import unidata_version
 
 import pytest
 from vnext_generated_database import open_generated_sqlite_database
+from vnext_pipeline import MemorySource, run_analysis, run_source
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
 import h2hdb.vnext_ingest_policy_repository as policy_module
@@ -843,6 +844,189 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
         assert result.source_receipt.discovered_galleries == 0
         assert result.source_receipt.staged_galleries == 0
         assert result.source_receipt.sealed
+
+
+def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ingest-source-policy-forgery.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 100_000)
+    assert session is not None
+    policy = facade.ensure_policy(session, _policy())
+    alternate = facade.ensure_policy(
+        session,
+        replace(
+            _policy(),
+            manifest_algorithm_version=2,
+            analysis_algorithm_version=2,
+            display_title_algorithm_version=2,
+            title_sort_algorithm_version=2,
+            operational_algorithm_version=2,
+        ),
+    )
+    substituted_fields = (
+        "manifest_policy_id",
+        "analysis_policy_id",
+        "display_title_policy_id",
+        "title_sort_policy_id",
+        "operational_policy_id",
+    )
+    assert all(
+        getattr(policy, field_name) != getattr(alternate, field_name)
+        for field_name in substituted_fields
+    )
+    source_receipt = run_source(
+        facade,
+        session,
+        policy,
+        MemorySource(root=("policy-authority",)),
+    )
+
+    with facade.prepare_analysis(
+        source_receipt.build_id,
+        policy,
+        max_rows=128,
+    ) as analysis:
+        issued_analysis = facade.issue_analysis_step(session, analysis)
+        prepared_analysis = facade.prepare_analysis_step(analysis, issued_analysis)
+        analysis_result = facade.commit_analysis_step(session, prepared_analysis)
+        assert not analysis_result.terminal
+
+        with SQLiteConnector(str(path)) as connector:
+            assert connector.fetch_all(
+                "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+            ) == [("OPEN",)]
+        with sqlite3.connect(path) as connector:
+            before = tuple(connector.iterdump())
+
+        for field_name in substituted_fields:
+            forged = replace(
+                policy,
+                **{field_name: getattr(alternate, field_name)},
+            )
+            with facade.prepare_source(
+                MemorySource(root=("forged-policy", field_name))
+            ) as source:
+                with pytest.raises(
+                    VNextIngestPolicyConflictError,
+                    match="caller-substituted authority",
+                ):
+                    facade.issue_source_step(session, forged, source)
+
+            with sqlite3.connect(path) as connector:
+                assert tuple(connector.iterdump()) == before
+            with SQLiteConnector(str(path)) as connector:
+                assert connector.fetch_all(
+                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+                ) == [("OPEN",)]
+
+        for field_name in substituted_fields:
+            forged = replace(
+                policy,
+                **{field_name: getattr(alternate, field_name)},
+            )
+            with facade.prepare_analysis(
+                source_receipt.build_id,
+                forged,
+                max_rows=128,
+            ) as forged_analysis:
+                with pytest.raises(
+                    VNextIngestPolicyConflictError,
+                    match="caller-substituted authority",
+                ):
+                    facade.issue_analysis_step(session, forged_analysis)
+
+            with sqlite3.connect(path) as connector:
+                assert tuple(connector.iterdump()) == before
+            with SQLiteConnector(str(path)) as connector:
+                assert connector.fetch_all(
+                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+                ) == [("OPEN",)]
+
+    completed = run_analysis(
+        facade,
+        session,
+        policy,
+        source_receipt.build_id,
+    )
+    assert completed.terminal
+    with sqlite3.connect(path) as connector:
+        completed_before = tuple(connector.iterdump())
+
+    for field_name in substituted_fields:
+        forged = replace(
+            policy,
+            **{field_name: getattr(alternate, field_name)},
+        )
+        with pytest.raises(
+            VNextIngestPolicyConflictError,
+            match="caller-substituted authority",
+        ):
+            facade.issue_publication_step(session, forged)
+
+        with sqlite3.connect(path) as connector:
+            assert tuple(connector.iterdump()) == completed_before
+
+    unregistered_natural_policy = _policy(
+        adapter_id=b"unregistered-adapter",
+        policy_fingerprint_sha256=b"u" * 32,
+    )
+    unregistered_artifact = replace(
+        policy,
+        policy=unregistered_natural_policy,
+        artifact_policy_sha256=(unregistered_natural_policy.artifact_policy_sha256),
+        artifact_policy_fingerprint_sha256=(
+            unregistered_natural_policy.artifact_policy_fingerprint_sha256
+        ),
+    )
+    with pytest.raises(
+        VNextIngestPolicyConflictError,
+        match="lacks exact durable registry authority",
+    ):
+        facade.issue_publication_step(session, unregistered_artifact)
+    with sqlite3.connect(path) as connector:
+        assert tuple(connector.iterdump()) == completed_before
+
+    invalid_natural_policy = replace(policy.policy)
+    object.__setattr__(
+        invalid_natural_policy,
+        "analysis_algorithm_version",
+        0,
+    )
+    invalid_nested = replace(policy, policy=invalid_natural_policy)
+    with facade.prepare_source(
+        MemorySource(root=("invalid-natural-policy",))
+    ) as source:
+        with pytest.raises(ValueError, match="must be positive"):
+            facade.issue_source_step(session, invalid_nested, source)
+    with sqlite3.connect(path) as connector:
+        assert tuple(connector.iterdump()) == completed_before
+
+
+def test_bound_source_policy_isolated_from_late_caller_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "ingest-source-policy-copy.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 100_000)
+    assert session is not None
+    caller_policy = facade.ensure_policy(session, _policy())
+
+    with facade.prepare_source(MemorySource(root=("late-policy-mutation",))) as source:
+        issued = facade.issue_source_step(session, caller_policy, source)
+        local = facade.prepare_source_step(source, issued)
+        facade.commit_source_step(session, local)
+
+        object.__setattr__(caller_policy.policy.artifact, "adapter_id", b"mutated")
+        fresh_policy = facade.ensure_policy(session, _policy())
+        issued = facade.issue_source_step(session, fresh_policy, source)
+        local = facade.prepare_source_step(source, issued)
+        result = facade.commit_source_step(session, local)
+
+    assert not result.terminal
 
 
 def test_fresh_runtime_replays_the_same_sealed_source_snapshot(

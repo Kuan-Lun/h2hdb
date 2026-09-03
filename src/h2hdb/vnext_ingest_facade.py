@@ -469,8 +469,11 @@ class VNextIngestFacade:
             return active
 
         action = machine.action
+        bind_policy = machine.policy is None
+        trusted_policy: VNextResolvedIngestPolicy | None = None
 
         def issue(work: VNextUnitOfWork) -> object:
+            nonlocal trusted_policy
             now = self.__clock()
             if action is _SourceAction.STAGING_FIND:
                 # The staging repository owns this operation's outer gate/fence
@@ -494,6 +497,11 @@ class VNextIngestFacade:
                     build_id=machine.build_id,
                 )
             _resume_authority(work, session, now)
+            if bind_policy:
+                trusted_policy = VNextIngestPolicyRepository.require_exact(
+                    work,
+                    policy,
+                )
             if action is _SourceAction.DISCOVERY_BATCH:
                 if machine.build_id is None:
                     raise RuntimeError("source build is not initialized")
@@ -507,8 +515,10 @@ class VNextIngestFacade:
             return None
 
         payload = self.__write(issue)
-        if machine.policy is None:
-            machine.policy = policy
+        if bind_policy:
+            if trusted_policy is None:  # pragma: no cover - invariant
+                raise AssertionError("source policy authority was not rebound")
+            machine.policy = trusted_policy
         issued = VNextIssuedSourceStep(
             source=source,
             action=action,
