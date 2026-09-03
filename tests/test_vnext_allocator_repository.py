@@ -13,7 +13,7 @@ from h2hdb.vnext_allocator_repository import (
     VNextAllocatorRepository,
 )
 from h2hdb.vnext_domains import INT63_MAX
-from h2hdb.vnext_transaction import VNextUnitOfWork
+from h2hdb.vnext_transaction import StaleWriteError, VNextUnitOfWork
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
@@ -138,5 +138,78 @@ def test_allocator_requires_exact_seed_authority(tmp_path: Path) -> None:
                     RevisionStream.SOURCE,
                     updated_at=1,
                 )
+    finally:
+        connector.close()
+
+
+def test_revision_allocator_stale_next_revision_cas_fails_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _generated_database(tmp_path / "allocator-stale.sqlite3")
+    try:
+        original_execute_affected = connector.execute_affected
+        injected = False
+
+        def execute_affected(query: str, data: tuple[object, ...] = ()) -> int:
+            nonlocal injected
+            if query.startswith("UPDATE operational_revision_allocators SET"):
+                assert not injected
+                injected = True
+                connector.execute(
+                    "UPDATE operational_revision_allocators "
+                    "SET next_revision = next_revision + 1 WHERE stream = %s",
+                    (RevisionStream.SOURCE.value,),
+                )
+            return original_execute_affected(query, data)
+
+        monkeypatch.setattr(connector, "execute_affected", execute_affected)
+        with pytest.raises(StaleWriteError, match="SOURCE allocator"):
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend="sqlite")
+                VNextAllocatorRepository.allocate_revision(
+                    work,
+                    RevisionStream.SOURCE,
+                    updated_at=99,
+                )
+
+        assert injected
+        assert connector.fetch_one(
+            "SELECT next_revision, updated_at "
+            "FROM operational_revision_allocators WHERE stream = %s",
+            (RevisionStream.SOURCE.value,),
+        ) == (1, 0)
+    finally:
+        connector.close()
+
+
+def test_revision_allocation_is_rolled_back_with_its_transaction(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "allocator-rollback.sqlite3")
+    try:
+        with pytest.raises(RuntimeError, match="force transaction rollback"):
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend="sqlite")
+                assert (
+                    VNextAllocatorRepository.allocate_revision(
+                        work,
+                        RevisionStream.CATALOG,
+                        updated_at=77,
+                    )
+                    == 1
+                )
+                assert connector.fetch_one(
+                    "SELECT next_revision, updated_at "
+                    "FROM operational_revision_allocators WHERE stream = %s",
+                    (RevisionStream.CATALOG.value,),
+                ) == (2, 77)
+                raise RuntimeError("force transaction rollback")
+
+        assert connector.fetch_one(
+            "SELECT next_revision, updated_at "
+            "FROM operational_revision_allocators WHERE stream = %s",
+            (RevisionStream.CATALOG.value,),
+        ) == (1, 0)
     finally:
         connector.close()

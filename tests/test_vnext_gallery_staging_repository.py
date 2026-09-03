@@ -3465,6 +3465,131 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
         connector.close()
 
 
+def test_metadata_parser_resumes_a_utf8_code_point_split_at_the_chunk_boundary(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-metadata-utf8-carry.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+
+        marker = "€".encode()
+        probe = encode_gallery_observation_metadata(
+            GalleryObservationMetadata(7, "€Z", "", "", 10, 11, 12, 1, 0, 0)
+        )
+        title_start = probe.index(marker)
+        title = "A" * (32_767 - title_start) + "€Z"
+        encoded = encode_gallery_observation_metadata(
+            GalleryObservationMetadata(7, title, "", "", 10, 11, 12, 1, 0, 0)
+        )
+        assert encoded[32_767:32_770] == marker
+
+        first = _put_metadata(
+            connector,
+            gate,
+            turn,
+            handle,
+            MetadataBatchCommand(
+                encoded[:32_768],
+                False,
+                BatchAttempt(b"u" * 16, None),
+            ),
+            now=21,
+        )
+        assert (first.cursor, first.state) == (32_768, "OPEN")
+        assert connector.fetch_one(
+            "SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail "
+            "FROM operational_gallery_observation_staging_metadata_parsers "
+            "WHERE staging_id = %s",
+            (handle.staging_id,),
+        ) == ("TITLE", b"", 3, marker[:1])
+
+        complete = _put_metadata(
+            connector,
+            gate,
+            turn,
+            handle,
+            MetadataBatchCommand(
+                encoded[32_768:],
+                True,
+                BatchAttempt(b"v" * 16, b"u" * 16),
+            ),
+            now=22,
+        )
+        assert (complete.cursor, complete.state) == (len(encoded), "COMPLETE")
+        assert connector.fetch_one(
+            "SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail "
+            "FROM operational_gallery_observation_staging_metadata_parsers "
+            "WHERE staging_id = %s",
+            (handle.staging_id,),
+        ) == ("DONE", b"", 0, b"")
+        assert connector.fetch_one(
+            "SELECT gid, upload_time, download_time, modified_time "
+            "FROM catalog_gallery_observation_metadata WHERE gallery_id = %s "
+            "AND observation_id = %s",
+            (gallery_id, handle.observation_id),
+        ) == (7, 10, 11, 12)
+    finally:
+        connector.close()
+
+
+def test_file_to_directory_match_miss_is_rejected_without_progress(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-directory-miss.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        file = _file_observation(0)
+        other_file = _file_observation(1)
+        _put_files(
+            connector,
+            gate,
+            turn,
+            handle,
+            FileBatchCommand((file,), True, BatchAttempt(b"f" * 16, None)),
+            now=21,
+        )
+        _put_directories(
+            connector,
+            gate,
+            turn,
+            handle,
+            DirectoryBatchCommand(
+                (_directory_observation(other_file),),
+                True,
+                BatchAttempt(b"d" * 16, None),
+            ),
+            now=22,
+        )
+        before = _request_snapshot(connector)
+
+        with pytest.raises(
+            GalleryStagingConflictError,
+            match="FILE has no unique DIRECTORY name match",
+        ):
+            _match(
+                connector,
+                gate,
+                turn,
+                handle,
+                MatchBatchCommand(b"m" * 16, None),
+                now=23,
+            )
+
+        assert _request_snapshot(connector) == before
+        assert connector.fetch_one(
+            "SELECT file_cursor_bytes, matched_count, state "
+            "FROM operational_gallery_observation_staging_match_checkpoints "
+            "WHERE staging_id = %s",
+            (handle.staging_id,),
+        ) == (b"", 0, "OPEN")
+    finally:
+        connector.close()
+
+
 def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

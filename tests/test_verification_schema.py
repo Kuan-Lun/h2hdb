@@ -2347,12 +2347,12 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
         ("runtime_obligation", "append-only", "hot-path obligation"),
         (
             "ready_obligation",
-            "retained current/reachable publication window",
+            "publication-commit deletion and generation compaction are separate bounded transactions",
             "full READY/quick readiness distinction",
         ),
         (
             "ready_obligation",
-            "no fork/orphan/gap after the compacted floor",
+            "a crash may conservatively retain a contiguous unreferenced node/edge prefix below the oldest commit",
             "full READY/quick readiness distinction",
         ),
         (

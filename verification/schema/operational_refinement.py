@@ -1715,7 +1715,7 @@ _CLEANUP_TARGET_SHAPES = {
         "target_kind_tag16_u64be_zero8_v1",
         "publication_generation_unreferenced_prefix_v2",
         "publication_generation_references_and_compacted_floor_v2",
-        "h2hdb.cleanup.publication_generation.v2",
+        "h2hdb.cleanup.publication_generation.v3",
         ("PG_EDGE", "PG_ROOT"),
     ),
     "PUBLICATION_CANDIDATE": (
@@ -1920,7 +1920,7 @@ _CLEANUP_SELECTION_ORDERS = {
     "PUBLICATION_COMMIT": "receipt_uuid_first_byte_then_uuid_v2",
     "CATALOG_REVISION_DESCRIPTOR": "revision_mod_256_then_revision_v2",
     "SOURCE_REVISION_DESCRIPTOR": "source_revision_mod_256_then_revision_v2",
-    "PUBLICATION_GENERATION": "generation_mod_256_then_generation_v2",
+    "PUBLICATION_GENERATION": "oldest_contiguous_generation_prefix_v3",
     "PUBLICATION_CANDIDATE": "uuid_first_byte_then_uuid_v1",
     "OPERATIONAL_PREPARATION": "uuid_first_byte_then_uuid_v1",
     "GALLERY_OBSERVATION": "gallery_id_mod_256_then_gallery_id_observation_id_v1",
@@ -2164,6 +2164,8 @@ def check_cleanup_reachability_v1(
             "GALLERY_OBSERVATION_PAGE",
         }:
             extra_allowed.add("phase_selectors")
+        if kind == "PUBLICATION_GENERATION":
+            extra_allowed.add("transition_rule")
         if kind == "GALLERY_OBSERVATION_PAGE":
             extra_allowed.add("operational_blockers")
         if kind in {

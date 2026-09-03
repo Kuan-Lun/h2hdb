@@ -831,6 +831,11 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             ["file_sha256", "gallery_id", "observation_id", "file_key"],
             False,
         ),
+        (
+            "ix_gallery_file_hash_ready",
+            ["gallery_id", "observation_id", "file_sha256", "file_key"],
+            False,
+        ),
     ],
     "gallery_observation_file_seal": [
         (
@@ -941,6 +946,31 @@ def relation_checks(
     sqlite: list[str] = []
     maria: list[str] = []
 
+    # SQLite affinity is not a storage-domain contract.  In particular, a
+    # BLOB column accepts values of every storage class unless the generated
+    # DDL explicitly checks ``typeof``.  Derive one closed storage-class
+    # predicate for every physical column instead of relying on a growing
+    # hand-maintained list of attributes below.  Nullable columns admit NULL
+    # explicitly; all non-NULL values must have the declared storage class.
+    for attribute in sorted(attributes):
+        template: dict[str, Any] | None
+        if attribute in UUID_ATTRIBUTES:
+            template = UUID_BYTES
+        elif attribute.endswith("_sha256") or attribute in DIGEST_KEY_ATTRIBUTES:
+            template = DIGEST_BYTES
+        else:
+            template = NEW_ATTRIBUTE_SHAPES.get(attribute)
+        if template is None:
+            raise KeyError(f"No physical type for {name}.{attribute}")
+        storage_class = str(template["sqlite"]["type"]).lower()
+        nullable = nullable_override(name, attribute)
+        if nullable is None:
+            nullable = bool(template["sqlite"]["nullable"])
+        predicate = f"typeof({attribute}) = '{storage_class}'"
+        sqlite.append(
+            f"({attribute} IS NULL OR {predicate})" if nullable else predicate
+        )
+
     digest_attrs = {
         value
         for value in attributes
@@ -1027,6 +1057,22 @@ def relation_checks(
         if NEW_ATTRIBUTE_SHAPES.get(attribute, {}).get("mariadb", {}).get("type")
         == "INT UNSIGNED"
     }
+    unsigned_attrs = {
+        attribute
+        for attribute in attributes
+        if "UNSIGNED"
+        in str(
+            (
+                UUID_BYTES
+                if attribute in UUID_ATTRIBUTES
+                else DIGEST_BYTES
+                if attribute.endswith("_sha256") or attribute in DIGEST_KEY_ATTRIBUTES
+                else NEW_ATTRIBUTE_SHAPES.get(attribute, {})
+            )
+            .get("mariadb", {})
+            .get("type", "")
+        ).upper()
+    }
     for attribute in sorted(digest_attrs):
         sqlite.append(f"typeof({attribute}) = 'blob' AND length({attribute}) = 32")
         maria.append(f"octet_length({attribute}) = 32")
@@ -1046,6 +1092,12 @@ def relation_checks(
     for attribute in sorted(uint32_attrs):
         sqlite.append(f"{attribute} <= 4294967295")
         maria.append(f"{attribute} <= 4294967295")
+    # MariaDB UNSIGNED is part of the generated physical type.  Render the
+    # same lower bound into SQLite for exact cross-backend portability (and
+    # retain it in MariaDB CHECK metadata as an executable contract).
+    for attribute in sorted(unsigned_attrs):
+        sqlite.append(f"{attribute} >= 0")
+        maria.append(f"{attribute} >= 0")
     for attribute in sorted(nonnegative - positive):
         sqlite.append(f"{attribute} >= 0")
         maria.append(f"{attribute} >= 0")

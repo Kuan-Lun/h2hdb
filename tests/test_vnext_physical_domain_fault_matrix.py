@@ -143,7 +143,15 @@ def candidates(column: Column) -> Iterator[Candidate]:
     greater = re.search(rf"\b{name} > (-?\d+)", expression)
     at_most = re.search(rf"\b{name} <= (-?\d+)", expression)
     less = re.search(rf"\b{name} < (-?\d+)", expression)
-    singleton = re.search(rf"\b{name} = (\d+)\b", expression)
+    # A scalar equality inside a relational OR is not a column domain.  The
+    # only unconditional singleton physical column is the explicit singleton
+    # key; deriving candidates from branch-local receipt/state equations used
+    # to misclassify valid rows as storage-domain violations.
+    singleton = (
+        re.search(rf"\b{name} = (\d+)\b", expression)
+        if column.name == "singleton_id"
+        else None
+    )
     enums = _enum_values(expression, column.name)
 
     if storage == "blob" or column.sqlite_type == "BLOB":
@@ -166,15 +174,18 @@ def candidates(column: Column) -> Iterator[Candidate]:
         yield Candidate(column, "storage-real", 1.5, _SQLITE_ONLY)
         yield Candidate(column, "storage-text", "text", _SQLITE_ONLY)
         yield Candidate(column, "storage-blob", b"\x01", _SQLITE_ONLY)
+        if at_least is not None:
+            yield Candidate(column, "range-low", int(at_least.group(1)) - 1, _BOTH)
+        elif greater is not None:
+            yield Candidate(column, "range-low", int(greater.group(1)), _BOTH)
+        elif between is not None:
+            # Prefer the unconditional generated lower bound above.  A
+            # BETWEEN inside one relational OR branch is not the column's
+            # domain (for example ancestry depth zero versus positive depth).
+            yield Candidate(column, "range-low", int(between.group(1)) - 1, _BOTH)
         if between is not None:
-            low, high = int(between.group(1)), int(between.group(2))
-            yield Candidate(column, "range-low", low - 1, _BOTH)
-            yield Candidate(column, "range-high", high + 1, _BOTH)
+            yield Candidate(column, "range-high", int(between.group(2)) + 1, _BOTH)
         else:
-            if at_least is not None:
-                yield Candidate(column, "range-low", int(at_least.group(1)) - 1, _BOTH)
-            elif greater is not None:
-                yield Candidate(column, "range-low", int(greater.group(1)), _BOTH)
             if at_most is not None:
                 yield Candidate(column, "range-high", int(at_most.group(1)) + 1, _BOTH)
             elif less is not None:
@@ -384,58 +395,17 @@ def _run_matrix(
 
 
 def _leniency(candidate: Candidate) -> str | None:
-    """Name the check the SQLite DDL does not declare for an accepted value.
+    """Name a lossless SQLite affinity conversion of an injected value.
 
-    SQLite enforces only the CHECK expressions the manifest renders; it has no
-    strict storage classes and no unsigned integers.  An acceptance is
-    explained exactly when the rendered checks of that column declare no
-    constraint of the injected class.  Anything else is a real hole."""
+    The generated DDL now declares every persisted storage class and mirrors
+    every MariaDB ``UNSIGNED`` lower bound.  SQLite may still losslessly turn
+    an integer bound to a TEXT-affinity column into text before evaluating its
+    CHECK; that leaves the stored value inside the declared physical domain.
+    Any other accepted candidate is a real hole."""
 
-    name = re.escape(candidate.column.name)
-    checks = candidate.column.checks
-    expression = " AND ".join(checks)
-    if candidate.kind.startswith("storage-"):
-        if re.search(rf"typeof\({name}\)", expression) is None and not _enum_values(
-            expression, candidate.column.name
-        ):
-            return "no-typeof-check"
-        return None
-    if candidate.kind in {"range-negative", "range-low"}:
-        bounded = [
-            check
-            for check in checks
-            if re.search(rf"\b{name} (>=|>|BETWEEN) ", check) is not None
-        ]
-        if not bounded:
-            return "no-lower-bound"
-        if all(" OR " in check for check in bounded):
-            # The bound holds only in one disjunct; the sampled row satisfies
-            # another (for example a depth-zero self ancestor).
-            return "conditional-bound"
-        return None
-    if candidate.kind == "singleton":
-        if any(
-            re.search(rf"\b{name} = \d+\b", check) and " OR " in check
-            for check in checks
-        ):
-            return "conditional-equality"
-        return None
+    if candidate.kind == "storage-integer" and candidate.column.sqlite_type == "TEXT":
+        return "text-affinity-normalization"
     return None
-
-
-# Exact inventory of invalid classes the rendered SQLite DDL does not reject,
-# keyed by injected class and the undeclared check that explains it.  Every one
-# of these values is refused by the covered writer-binding guards before a
-# production writer binds it; this fence pins that storage itself does not.
-SQLITE_UNDECLARED_CHECK_INVENTORY: dict[str, int] = {
-    "storage-real:no-typeof-check": 112,
-    "storage-text:no-typeof-check": 105,
-    "storage-integer:no-typeof-check": 34,
-    "storage-blob:no-typeof-check": 9,
-    "range-negative:no-lower-bound": 18,
-    "range-low:conditional-bound": 1,
-    "singleton:conditional-equality": 3,
-}
 
 
 def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back(
@@ -460,10 +430,12 @@ def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back
     explained = {label: _leniency(by_label[label]) for label in accepted}
     unexplained = sorted(label for label, reason in explained.items() if reason is None)
     assert unexplained == [], unexplained
-    inventory = Counter(
+    normalizations = Counter(
         f"{by_label[label].kind}:{reason}" for label, reason in explained.items()
     )
-    assert dict(inventory) == SQLITE_UNDECLARED_CHECK_INVENTORY, dict(inventory)
+    assert set(normalizations) <= {"storage-integer:text-affinity-normalization"}, dict(
+        normalizations
+    )
     assert len(outcomes) - len(accepted) > 4000
     kinds = {label.rsplit(":", 1)[1] for label in outcomes}
     assert {
@@ -488,8 +460,8 @@ def test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_roll
     class its own manifest checks declare on live MariaDB 10.11.11; the
     rendered CHECK constraints and strict column types own width, range, enum
     and binary collation, storage-class coercions are owned by the writer
-    guards, and the only storage leniency (fixed-width BINARY padding, plus
-    the conditional bounds) is pinned as an exact inventory."""
+    guards, and the only storage normalization (fixed-width BINARY padding)
+    is pinned as an exact inventory."""
 
     del tmp_path
     configs = [
@@ -514,7 +486,8 @@ def test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_roll
         f"{by_label[label].kind}:{reason}" for label, reason in explained.items()
     )
     # InnoDB samples a different row per run (clustered by random identities),
-    # so the exact counts move by a few columns; the classes are exact.
+    # so the exact counts move by a few columns; the normalization class is
+    # exact.
     assert set(inventory) == MARIADB_UNDECLARED_CHECK_CLASSES, dict(inventory)
     assert 30 <= inventory["width-short:binary-padding"] <= 50, dict(inventory)
     assert len(outcomes) > 500
@@ -525,29 +498,23 @@ def _mariadb_leniency(candidate: Candidate) -> str | None:
 
     MariaDB enforces the rendered CHECK constraints and strict column types,
     but a ``BINARY(n)`` column pads a shorter value with zero bytes before any
-    check runs, so a short fixed-width identity is stored padded.  Conditional
-    bounds and equalities are explained as on SQLite."""
+    check runs, so a short fixed-width identity is stored padded."""
 
     if (
         candidate.kind == "width-short"
         and candidate.column.mariadb_type.upper().startswith("BINARY(")
     ):
         return "binary-padding"
-    if candidate.kind in {"range-negative", "range-low", "singleton"}:
-        return _leniency(candidate)
     return None
 
 
 # The exact classes live MariaDB storage does not reject: fixed-width BINARY
 # columns padded from a shorter value (about forty columns, depending on the
-# sampled row), and the conditional bounds and equalities that hold only in
-# one disjunct.  The writer-binding guards refuse them before a production
+# sampled row).  The writer-binding guards refuse them before a production
 # writer binds them.
 MARIADB_UNDECLARED_CHECK_CLASSES = frozenset(
     {
         "width-short:binary-padding",
-        "range-low:conditional-bound",
-        "singleton:conditional-equality",
     }
 )
 

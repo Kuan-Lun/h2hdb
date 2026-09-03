@@ -1,15 +1,16 @@
-"""Bounded production refinements for the vNext operational plane.
+"""Bounded-memory production refinements for the vNext operational plane.
 
 Full CHECK validation is deliberately independent of most catalog and operational
 corpus sizes except for the explicitly capped gallery-staging request budget audit,
 at most 256 frozen PUBLICATION_COMMIT roots during transient event retirement, and
-indexed global effect-root owner probes. It
-reads the schema-epoch singleton, exact generated registries, the current ingest
-head through primary-key lookups, the current 64-slot maintenance gate, the two
-allocator registries, the fixed cleanup-shard control plane, and one bounded
-``COUNT(*)`` over at most 1,500,000 retained staging requests. It never walks
-unbounded queues, event payload history, canonical page trees, hash caches, or
-source revisions. The separate public ``ready`` probe remains O(1).
+indexed global effect-root owner probes. Queue-history and hash-cache obligations
+add complete keyset-paged scans: each page has a fixed row bound, and canonical
+preimages are streamed without retaining their payloads. Other checks read the
+schema-epoch singleton, exact generated registries, current heads through primary-key
+lookups, the current 64-slot maintenance gate, allocator registries, the fixed
+cleanup-shard control plane, and one bounded ``COUNT(*)`` over at most 1,500,000
+retained staging requests. Full CHECK therefore has corpus-linear work only for its
+explicit retained-fact audits; the separate public ``ready`` probe remains O(1).
 
 Those high-cardinality and temporal properties belong to the named
 same-transaction writer hooks. ``OPERATIONAL_RUNTIME_WRITER_BLOCKERS`` states
@@ -46,7 +47,7 @@ __all__ = [
 
 import hashlib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -54,11 +55,19 @@ from typing import Any, Literal, cast
 from ._generated_vnext_schema import ARTIFACT
 from .schema_epoch import SchemaEpochValidationError
 from .sql_connector import SQLConnector
+from .vnext_canonical_value_repository import (
+    CanonicalValueCollisionError,
+    CanonicalValueNotReadyError,
+    stream_and_validate_canonical_value,
+)
 
 type Backend = Literal["sqlite", "mariadb"]
 type SemanticValidator = Callable[[SQLConnector], None]
 
 _INT63_MAX = 9223372036854775807
+_READY_AUDIT_PAGE_ROWS = 128
+_HASH_CACHE_SOURCE_DOMAIN = b"filesystem_source_identity_v1"
+_HASH_CACHE_FINGERPRINT_DOMAIN = b"filesystem_fingerprint_v1"
 _CLEANUP_ID_DOMAIN = b"h2hdb-cleanup-cycle-v1\0"
 _CLEANUP_CHAIN_DOMAIN = b"h2hdb-cleanup-chain-v1\0"
 _CLEANUP_FROZEN_ROOT_SET_DOMAIN = b"h2hdb-cleanup-frozen-root-set-v1\0"
@@ -226,8 +235,8 @@ _CONTRACT_KEYS = {
 }
 
 
-# These are intentionally specific. They document what READY does *not* prove
-# and remain blockers until the named hook is installed at every mutation site.
+# These are intentionally specific. They document the same-transaction duties
+# that remain writer-owned even when READY also audits every retained fact.
 OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
     {
         "h2hdb.operational.physical-domains.v1": (
@@ -252,13 +261,13 @@ OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
             "receipt, and checkpoint CAS; READY inspects only fixed cleanup shards"
         ),
         "h2hdb.operational.queue-history.v1": (
-            "queue writers must preserve immutable attempts and exact GID congruence; "
-            "READY never scans deletion history"
+            "queue writers must preserve immutable attempts and exact GID congruence "
+            "at mutation time; READY keyset-scans the complete retained history"
         ),
         "h2hdb.operational.canonical-hash-cache.v1": (
             "canonical writers/readers must stream the exact framed preimage, "
-            "recompute SHA-256 and byte_count, and byte-compare collisions; READY "
-            "never walks canonical page trees or hash-cache observations"
+            "recompute SHA-256 and byte_count, and byte-compare collisions at use; "
+            "READY keyset-scans every retained cache fact and streams its page trees"
         ),
         "h2hdb.operational.event-integrity.v1": (
             "event and effect-seal writers must insert the exact subtype and advance "
@@ -507,6 +516,46 @@ def _fetch_one(
         ) from error
 
 
+def _keyset_rows(
+    connector: SQLConnector,
+    *,
+    label: str,
+    first_query: str,
+    next_query: str,
+    cursor_width: int = 1,
+    next_parameters: Callable[[tuple[Any, ...]], tuple[Any, ...]] | None = None,
+) -> Iterator[tuple[Any, ...]]:
+    """Yield a complete ordered relation through fixed-size keyset pages."""
+
+    cursor: tuple[Any, ...] | None = None
+    while True:
+        if cursor is None:
+            query = first_query
+            parameters: tuple[Any, ...] = ()
+        else:
+            query = next_query
+            parameters = cursor if next_parameters is None else next_parameters(cursor)
+        rows = _fetch_all(connector, label, query, parameters)
+        if len(rows) > _READY_AUDIT_PAGE_ROWS:
+            raise OperationalSemanticValidationError(
+                f"operational READY {label} page exceeds its fixed row bound"
+            )
+        yield from rows
+        if len(rows) < _READY_AUDIT_PAGE_ROWS:
+            return
+        final_row = rows[-1]
+        if len(final_row) < cursor_width:
+            raise OperationalSemanticValidationError(
+                f"operational READY {label} row has an invalid physical shape"
+            )
+        following_cursor = tuple(final_row[:cursor_width])
+        if following_cursor == cursor:
+            raise OperationalSemanticValidationError(
+                f"operational READY {label} keyset cursor did not advance"
+            )
+        cursor = following_cursor
+
+
 def _as_int(
     value: object,
     *,
@@ -733,7 +782,7 @@ def _exact_seeded_relation(
     rows = _fetch_all(
         connector,
         f"{relation_name} exact registry",
-        f"{query} LIMIT {len(expected) + 1}",
+        query,
     )
     if Counter(tuple(row) for row in rows) != Counter(expected):
         raise OperationalSemanticValidationError(
@@ -1735,16 +1784,523 @@ def check_bounded_work_contract_v1(connector: SQLConnector) -> None:
     _validate_fixed_cleanup_state(connector, backend)
 
 
-def check_queue_history_contract_v1(connector: SQLConnector) -> None:
-    """Bind queue metadata; immutable history remains a writer obligation."""
+def _queue_generation_head(
+    connector: SQLConnector,
+    backend: Backend,
+) -> int:
+    head = _table(backend, "deletion_request_generation_head")
+    rows = _fetch_all(
+        connector,
+        "deletion generation head",
+        f"SELECT singleton_id, current_generation, updated_at FROM {head} "
+        "ORDER BY singleton_id LIMIT 2",
+    )
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise OperationalSemanticValidationError(
+            "operational READY requires exactly one deletion generation head"
+        )
+    singleton_id, current_generation, updated_at = rows[0]
+    if (
+        _as_int(
+            singleton_id,
+            label="deletion generation head singleton_id",
+            minimum=1,
+            maximum=1,
+        )
+        != 1
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY deletion generation head is not singleton one"
+        )
+    current = _as_int(
+        current_generation,
+        label="deletion generation head current_generation",
+    )
+    _as_int(updated_at, label="deletion generation head updated_at")
+    return current
 
-    _ready_context(connector, "h2hdb.operational.queue-history.v1")
+
+def _audit_deletion_generation_history(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    current_generation: int,
+) -> None:
+    history = _table(backend, "deletion_request_generation")
+    expected_generation = 0
+    last_generation: int | None = None
+    for row in _keyset_rows(
+        connector,
+        label="deletion generation history",
+        first_query=(
+            f"SELECT generation, allocated_at FROM {history} "
+            f"ORDER BY generation LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            f"SELECT generation, allocated_at FROM {history} "
+            "WHERE generation > %s ORDER BY generation "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 2:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion generation row has an invalid shape"
+            )
+        generation = _as_int(row[0], label="deletion generation")
+        allocated_at = _as_int(row[1], label="deletion generation allocated_at")
+        if generation != expected_generation:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion generation history is not contiguous "
+                "from genesis"
+            )
+        if generation == 0 and allocated_at != 0:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion generation-zero genesis is not exact"
+            )
+        last_generation = generation
+        expected_generation += 1
+    if last_generation != current_generation:
+        raise OperationalSemanticValidationError(
+            "operational READY deletion generation history does not end at its head"
+        )
+
+
+def _audit_deletion_attempts(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    attempt = _table(backend, "deletion_request_attempt")
+    for row in _keyset_rows(
+        connector,
+        label="deletion attempt history",
+        first_query=(
+            f"SELECT request_token, gid, requested_at FROM {attempt} "
+            f"ORDER BY request_token LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            f"SELECT request_token, gid, requested_at FROM {attempt} "
+            "WHERE request_token > %s ORDER BY request_token "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 3:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion attempt row has an invalid shape"
+            )
+        _as_bytes(row[0], label="deletion attempt token", length=16)
+        _as_int(row[1], label="deletion attempt gid", minimum=1)
+        _as_int(row[2], label="deletion attempt requested_at")
+
+
+def _audit_deletion_heads(connector: SQLConnector, backend: Backend) -> None:
+    head = _table(backend, "deletion_request_head")
+    attempt = _table(backend, "deletion_request_attempt")
+    for row in _keyset_rows(
+        connector,
+        label="deletion request heads",
+        first_query=(
+            "SELECT queue_head.gid, queue_head.request_token, attempt_history.gid, "
+            f"attempt_history.request_token FROM {head} AS queue_head "
+            f"LEFT JOIN {attempt} AS attempt_history "
+            "ON attempt_history.request_token = queue_head.request_token "
+            f"ORDER BY queue_head.gid LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            "SELECT queue_head.gid, queue_head.request_token, attempt_history.gid, "
+            f"attempt_history.request_token FROM {head} AS queue_head "
+            f"LEFT JOIN {attempt} AS attempt_history "
+            "ON attempt_history.request_token = queue_head.request_token "
+            "WHERE queue_head.gid > %s ORDER BY queue_head.gid "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 4:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion head row has an invalid shape"
+            )
+        gid = _as_int(row[0], label="deletion head gid", minimum=1)
+        token = _as_bytes(row[1], label="deletion head token", length=16)
+        if row[2] is None or row[3] is None:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion head lacks immutable attempt authority"
+            )
+        attempt_gid = _as_int(row[2], label="deletion head attempt gid", minimum=1)
+        attempt_token = _as_bytes(
+            row[3], label="deletion head attempt token", length=16
+        )
+        if attempt_gid != gid or attempt_token != token:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion head gid disagrees with its attempt"
+            )
+
+
+def _audit_deletion_urls(connector: SQLConnector, backend: Backend) -> None:
+    url = _table(backend, "deletion_request_url")
+    attempt = _table(backend, "deletion_request_attempt")
+    for row in _keyset_rows(
+        connector,
+        label="deletion request URLs",
+        first_query=(
+            "SELECT url_payload.request_token, url_payload.url, "
+            f"attempt_history.request_token FROM {url} AS url_payload "
+            f"LEFT JOIN {attempt} AS attempt_history "
+            "ON attempt_history.request_token = url_payload.request_token "
+            f"ORDER BY url_payload.request_token LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            "SELECT url_payload.request_token, url_payload.url, "
+            f"attempt_history.request_token FROM {url} AS url_payload "
+            f"LEFT JOIN {attempt} AS attempt_history "
+            "ON attempt_history.request_token = url_payload.request_token "
+            "WHERE url_payload.request_token > %s "
+            "ORDER BY url_payload.request_token "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 3:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion URL row has an invalid shape"
+            )
+        token = _as_bytes(row[0], label="deletion URL token", length=16)
+        if not isinstance(row[1], str):
+            raise OperationalSemanticValidationError(
+                "operational READY deletion URL is not exact text"
+            )
+        if row[2] is None:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion URL lacks immutable attempt authority"
+            )
+        if _as_bytes(row[2], label="deletion URL attempt token", length=16) != token:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion URL names a different attempt"
+            )
+
+
+def _audit_preparation_deletion_generations(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    current_generation: int,
+) -> None:
+    preparation = _table(backend, "operational_preparation")
+    for row in _keyset_rows(
+        connector,
+        label="preparation deletion generations",
+        first_query=(
+            "SELECT preparation_id, deletion_request_generation "
+            f"FROM {preparation} ORDER BY preparation_id "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            "SELECT preparation_id, deletion_request_generation "
+            f"FROM {preparation} WHERE preparation_id > %s "
+            f"ORDER BY preparation_id LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 2:
+            raise OperationalSemanticValidationError(
+                "operational READY preparation generation row has an invalid shape"
+            )
+        _as_bytes(row[0], label="preparation_id", length=16)
+        generation = _as_int(row[1], label="preparation deletion_request_generation")
+        if generation > current_generation:
+            raise OperationalSemanticValidationError(
+                "operational READY preparation references a deletion generation "
+                "beyond the current history"
+            )
+
+
+def _audit_deletion_consumption_history(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    consumption = _table(backend, "operational_deletion_consumption_event")
+    attempt = _table(backend, "deletion_request_attempt")
+    for row in _keyset_rows(
+        connector,
+        label="deletion consumption history",
+        first_query=(
+            "SELECT consumption_row.event_id, consumption_row.gid, "
+            "consumption_row.deletion_request_token, attempt_history.request_token, "
+            f"attempt_history.gid FROM {consumption} AS consumption_row "
+            f"LEFT JOIN {attempt} AS attempt_history ON "
+            "attempt_history.request_token = consumption_row.deletion_request_token "
+            f"ORDER BY consumption_row.event_id LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            "SELECT consumption_row.event_id, consumption_row.gid, "
+            "consumption_row.deletion_request_token, attempt_history.request_token, "
+            f"attempt_history.gid FROM {consumption} AS consumption_row "
+            f"LEFT JOIN {attempt} AS attempt_history ON "
+            "attempt_history.request_token = consumption_row.deletion_request_token "
+            "WHERE consumption_row.event_id > %s "
+            "ORDER BY consumption_row.event_id "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 5:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion consumption row has an invalid shape"
+            )
+        _as_bytes(row[0], label="deletion consumption event_id", length=16)
+        gid = _as_int(row[1], label="deletion consumption gid", minimum=1)
+        token = _as_bytes(row[2], label="deletion consumption request token", length=16)
+        if row[3] is None or row[4] is None:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion consumption lacks immutable attempt "
+                "authority"
+            )
+        attempt_token = _as_bytes(
+            row[3], label="deletion consumption attempt token", length=16
+        )
+        attempt_gid = _as_int(
+            row[4], label="deletion consumption attempt gid", minimum=1
+        )
+        if attempt_token != token or attempt_gid != gid:
+            raise OperationalSemanticValidationError(
+                "operational READY deletion consumption gid disagrees with its "
+                "immutable attempt"
+            )
+
+
+def check_queue_history_contract_v1(connector: SQLConnector) -> None:
+    """Keyset-audit all retained queue generation and attempt authority."""
+
+    backend = _ready_context(connector, "h2hdb.operational.queue-history.v1")
+    current_generation = _queue_generation_head(connector, backend)
+    _audit_deletion_generation_history(
+        connector,
+        backend,
+        current_generation=current_generation,
+    )
+    _audit_deletion_attempts(connector, backend)
+    _audit_deletion_heads(connector, backend)
+    _audit_deletion_urls(connector, backend)
+    _audit_preparation_deletion_generations(
+        connector,
+        backend,
+        current_generation=current_generation,
+    )
+    _audit_deletion_consumption_history(connector, backend)
+
+
+def _composite_digest_cursor_parameters(
+    cursor: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    if len(cursor) != 2:
+        raise OperationalSemanticValidationError(
+            "operational READY composite digest cursor has an invalid shape"
+        )
+    return (cursor[0], cursor[0], cursor[1])
+
+
+def _discard_canonical_part(_part: bytes) -> None:
+    """Keep canonical validation streaming without retaining provisional bytes."""
+
+
+def _audit_hash_cache_canonical_reference(
+    connector: SQLConnector,
+    *,
+    value_sha256: bytes,
+    expected_domain: bytes,
+    label: str,
+) -> None:
+    try:
+        receipt = stream_and_validate_canonical_value(
+            connector,
+            value_sha256=value_sha256,
+            consume_provisional=_discard_canonical_part,
+        )
+    except (
+        CanonicalValueCollisionError,
+        CanonicalValueNotReadyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise OperationalSemanticValidationError(
+            f"operational READY {label} canonical framed preimage is incomplete "
+            "or corrupt"
+        ) from error
+    if receipt.value_sha256 != value_sha256 or receipt.digest_domain != expected_domain:
+        raise OperationalSemanticValidationError(
+            f"operational READY {label} canonical framed preimage uses the wrong "
+            "digest domain"
+        )
+
+
+def _audit_distinct_hash_cache_canonical_references(
+    connector: SQLConnector,
+    *,
+    observation_table: str,
+    column: str,
+    expected_domain: bytes,
+    label: str,
+) -> None:
+    """Validate each referenced canonical value once in indexed digest order."""
+
+    for row in _keyset_rows(
+        connector,
+        label=f"distinct {label} references",
+        first_query=(
+            f"SELECT DISTINCT {column} FROM {observation_table} "
+            f"ORDER BY {column} LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            f"SELECT DISTINCT {column} FROM {observation_table} "
+            f"WHERE {column} > %s ORDER BY {column} "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+    ):
+        if len(row) != 1:
+            raise OperationalSemanticValidationError(
+                f"operational READY distinct {label} reference has an invalid shape"
+            )
+        _audit_hash_cache_canonical_reference(
+            connector,
+            value_sha256=_as_bytes(
+                row[0],
+                label=f"distinct {label} digest",
+                length=32,
+            ),
+            expected_domain=expected_domain,
+            label=label,
+        )
+
+
+def _audit_hash_cache_observations(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    observation = _table(backend, "hash_cache_observation")
+    for row in _keyset_rows(
+        connector,
+        label="hash-cache observations",
+        first_query=(
+            "SELECT source_identity_sha256, fingerprint_sha256, observed_at "
+            f"FROM {observation} ORDER BY source_identity_sha256, "
+            f"fingerprint_sha256 LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            "SELECT source_identity_sha256, fingerprint_sha256, observed_at "
+            f"FROM {observation} WHERE source_identity_sha256 > %s "
+            "OR (source_identity_sha256 = %s AND fingerprint_sha256 > %s) "
+            "ORDER BY source_identity_sha256, fingerprint_sha256 "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        cursor_width=2,
+        next_parameters=_composite_digest_cursor_parameters,
+    ):
+        if len(row) != 3:
+            raise OperationalSemanticValidationError(
+                "operational READY hash-cache observation has an invalid shape"
+            )
+        source = _as_bytes(row[0], label="hash-cache source identity", length=32)
+        fingerprint = _as_bytes(row[1], label="hash-cache fingerprint", length=32)
+        _as_int(row[2], label="hash-cache observed_at")
+        if source == fingerprint:
+            raise OperationalSemanticValidationError(
+                "operational READY hash-cache source and fingerprint are not distinct"
+            )
+
+
+def _audit_file_hash_cache_rows(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    cache = _table(backend, "file_hash_cache")
+    observation = _table(backend, "hash_cache_observation")
+    content_blob = _table(backend, "content_blob")
+    columns = (
+        "cached.source_identity_sha256, cached.fingerprint_sha256, "
+        "cached.file_sha256, cached.cached_at, observation_row.source_identity_sha256, "
+        "observation_row.fingerprint_sha256, content_row.file_sha256, "
+        "content_row.size_bytes "
+    )
+    join = (
+        f"FROM {cache} AS cached LEFT JOIN {observation} AS observation_row "
+        "ON observation_row.source_identity_sha256 = cached.source_identity_sha256 "
+        "AND observation_row.fingerprint_sha256 = cached.fingerprint_sha256 "
+        f"LEFT JOIN {content_blob} AS content_row "
+        "ON content_row.file_sha256 = cached.file_sha256 "
+    )
+    for row in _keyset_rows(
+        connector,
+        label="file hash-cache rows",
+        first_query=(
+            f"SELECT {columns}{join}ORDER BY cached.source_identity_sha256, "
+            f"cached.fingerprint_sha256 LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        next_query=(
+            f"SELECT {columns}{join}WHERE cached.source_identity_sha256 > %s "
+            "OR (cached.source_identity_sha256 = %s "
+            "AND cached.fingerprint_sha256 > %s) "
+            "ORDER BY cached.source_identity_sha256, cached.fingerprint_sha256 "
+            f"LIMIT {_READY_AUDIT_PAGE_ROWS}"
+        ),
+        cursor_width=2,
+        next_parameters=_composite_digest_cursor_parameters,
+    ):
+        if len(row) != 8:
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache row has an invalid shape"
+            )
+        source = _as_bytes(row[0], label="file hash-cache source identity", length=32)
+        fingerprint = _as_bytes(row[1], label="file hash-cache fingerprint", length=32)
+        file_sha256 = _as_bytes(row[2], label="file hash-cache file_sha256", length=32)
+        _as_int(row[3], label="file hash-cache cached_at")
+        if row[4] is None or row[5] is None:
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache row lacks observation authority"
+            )
+        observed_source = _as_bytes(
+            row[4], label="file hash-cache observed source", length=32
+        )
+        observed_fingerprint = _as_bytes(
+            row[5], label="file hash-cache observed fingerprint", length=32
+        )
+        if (observed_source, observed_fingerprint) != (source, fingerprint):
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache observation key disagrees"
+            )
+        if row[6] is None or row[7] is None:
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache row lacks content-blob authority"
+            )
+        if (
+            _as_bytes(row[6], label="file hash-cache content blob", length=32)
+            != file_sha256
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache content-blob key disagrees"
+            )
+        _as_int(row[7], label="file hash-cache content-blob size")
+        if source == fingerprint:
+            raise OperationalSemanticValidationError(
+                "operational READY file hash-cache domains are not distinct"
+            )
 
 
 def check_canonical_hash_cache_contract_v1(connector: SQLConnector) -> None:
-    """Bind cache metadata; READY never recomputes canonical corpus hashes."""
+    """Stream and recompute every distinct retained canonical preimage once."""
 
-    _ready_context(connector, "h2hdb.operational.canonical-hash-cache.v1")
+    backend = _ready_context(connector, "h2hdb.operational.canonical-hash-cache.v1")
+    observation = _table(backend, "hash_cache_observation")
+    _audit_distinct_hash_cache_canonical_references(
+        connector,
+        observation_table=observation,
+        column="source_identity_sha256",
+        expected_domain=_HASH_CACHE_SOURCE_DOMAIN,
+        label="hash-cache source identity",
+    )
+    _audit_distinct_hash_cache_canonical_references(
+        connector,
+        observation_table=observation,
+        column="fingerprint_sha256",
+        expected_domain=_HASH_CACHE_FINGERPRINT_DOMAIN,
+        label="hash-cache fingerprint",
+    )
+    _audit_hash_cache_observations(connector, backend)
+    _audit_file_hash_cache_rows(connector, backend)
 
 
 _PCOM_TRANSITION_PHASE_ORDER = MappingProxyType(
@@ -2436,7 +2992,7 @@ def check_build_generation_contract_v1(connector: SQLConnector) -> None:
 
 
 def check_attempt_identity_contract_v1(connector: SQLConnector) -> None:
-    """Validate fixed cleanup cycle IDs; preparation retry identity is writer-owned."""
+    """Validate retained cleanup IDs; queue READY audits preparation generations."""
 
     backend = _ready_context(connector, "h2hdb.operational.attempt-identity.v1")
     sweep, _phases = _cleanup_layout(backend)
@@ -2523,12 +3079,57 @@ def _validate_allocator_registry(
         )
 
 
+def _validate_published_revision_bound(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    stream: str,
+    relation_name: str,
+    revision_column: str,
+) -> None:
+    """Reject one indexed witness at or beyond its stream's next revision."""
+
+    published = _table(backend, relation_name)
+    allocator = _table(backend, "revision_allocator")
+    violations = _fetch_all(
+        connector,
+        f"{stream} published revision bound",
+        f"""
+        SELECT 1
+        FROM {published} AS published_revision
+        JOIN {allocator} AS allocator
+          ON allocator.stream = %s
+        WHERE published_revision.{revision_column} >= allocator.next_revision
+        LIMIT 1
+        """,
+        (stream,),
+    )
+    if violations:
+        raise OperationalSemanticValidationError(
+            f"operational READY published {stream} revision is not below next_revision"
+        )
+
+
 def check_revision_allocator_contract_v1(connector: SQLConnector) -> None:
-    """Validate the two fixed revision streams without scanning revisions."""
+    """Validate fixed streams and indexed current published-revision bounds."""
 
     backend = _ready_context(connector, "h2hdb.operational.revision-allocation.v1")
     _validate_allocator_registry(
         connector, backend, "revision_allocator", "next_revision"
+    )
+    _validate_published_revision_bound(
+        connector,
+        backend,
+        stream="SOURCE",
+        relation_name="source_revision",
+        revision_column="source_revision",
+    )
+    _validate_published_revision_bound(
+        connector,
+        backend,
+        stream="CATALOG",
+        relation_name="catalog_revision",
+        revision_column="revision",
     )
 
 

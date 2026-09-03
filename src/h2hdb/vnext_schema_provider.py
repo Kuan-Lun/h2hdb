@@ -967,11 +967,7 @@ def _validate_bootstrap_seed_records(
             seed.get("expected_row"),
             f"bootstrap seed {seed_id!r} expected row",
         )
-        if rows != [expected_row]:
-            raise SchemaEpochValidationError(
-                f"Bootstrap seed {seed_id!r} differs from its exact generated row: "
-                f"actual={rows!r} expected={[expected_row]!r}"
-            )
+        _validate_exact_bootstrap_seed_row(seed_id, rows, expected_row)
         completed.append(seed_id)
 
     for relation in _dicts(
@@ -997,12 +993,11 @@ def _validate_bootstrap_seed_records(
                 f"bootstrap relation {relation_name!r} expected rows",
             )
         )
-        if Counter(actual_rows) != Counter(expected_rows):
-            raise SchemaEpochValidationError(
-                f"Bootstrap relation {relation_name!r} does not contain exactly "
-                f"its generated genesis rows: actual={actual_rows!r} "
-                f"expected={expected_rows!r}"
-            )
+        _validate_exact_bootstrap_relation_rows(
+            relation_name,
+            actual_rows,
+            expected_rows,
+        )
 
     for relation in _dicts(
         payload.get("bootstrap_absent_relations"), "bootstrap absent relations"
@@ -1017,11 +1012,55 @@ def _validate_bootstrap_seed_records(
                 f"bootstrap absent relation {relation_name!r}",
             )
         )
-        if rows:
-            raise SchemaEpochValidationError(
-                f"Bootstrap-absent relation {relation_name!r} contains data"
-            )
+        _validate_empty_bootstrap_relation(relation_name, rows)
     return tuple(completed)
+
+
+def _validate_exact_bootstrap_seed_row(
+    seed_id: str,
+    actual_rows: Sequence[tuple[Any, ...]],
+    expected_row: tuple[bytes | int | str | None, ...],
+) -> None:
+    """Require the keyed lookup for one generated seed to be an exact singleton.
+
+    Keeping this comparison as a small pure trust boundary lets the exhaustive
+    fault contract cover every generated row and cell without creating and
+    mutating thousands of databases.  ``_validate_bootstrap_seed_records`` is
+    still responsible for obtaining the rows through the production connector.
+    """
+
+    if actual_rows != [expected_row]:
+        raise SchemaEpochValidationError(
+            f"Bootstrap seed {seed_id!r} differs from its exact generated row: "
+            f"actual={actual_rows!r} expected={[expected_row]!r}"
+        )
+
+
+def _validate_exact_bootstrap_relation_rows(
+    relation_name: str,
+    actual_rows: Sequence[tuple[bytes | int | str | None, ...]],
+    expected_rows: Sequence[tuple[bytes | int | str | None, ...]],
+) -> None:
+    """Require exact bootstrap multiset equality for one seeded relation."""
+
+    if Counter(actual_rows) != Counter(expected_rows):
+        raise SchemaEpochValidationError(
+            f"Bootstrap relation {relation_name!r} does not contain exactly "
+            f"its generated genesis rows: actual={tuple(actual_rows)!r} "
+            f"expected={tuple(expected_rows)!r}"
+        )
+
+
+def _validate_empty_bootstrap_relation(
+    relation_name: str,
+    actual_rows: Sequence[tuple[Any, ...]],
+) -> None:
+    """Require one generated bootstrap-absent relation to remain empty."""
+
+    if actual_rows:
+        raise SchemaEpochValidationError(
+            f"Bootstrap-absent relation {relation_name!r} contains data"
+        )
 
 
 def _load_builtin_semantic_validators() -> Mapping[str, SemanticValidator]:

@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
 
 import h2hdb.operational_refinement as operational_runtime
+from h2hdb import vnext_identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.operational_refinement import (
     OPERATIONAL_RUNTIME_WRITER_BLOCKERS,
@@ -20,11 +22,13 @@ from h2hdb.operational_refinement import (
     check_attempt_identity_contract_v1,
     check_bootstrap_contract_v1,
     check_bounded_work_contract_v1,
+    check_canonical_hash_cache_contract_v1,
     check_download_ingest_handoff_contract_v1,
     check_fencing_contract_v1,
     check_gallery_staging_contract_v1,
     check_maintenance_gate_contract_v1,
     check_physical_domains_v1,
+    check_queue_history_contract_v1,
     check_revision_allocator_contract_v1,
     validate_builtin_operational_manifest,
 )
@@ -72,6 +76,181 @@ def greenfield(tmp_path: Path) -> Iterator[SQLiteConnector]:
 def _disable_integrity(connector: SQLiteConnector) -> None:
     connector.connection.execute("PRAGMA foreign_keys = OFF")
     connector.connection.execute("PRAGMA ignore_check_constraints = ON")
+
+
+def _insert_minimal_published_revision(
+    connector: SQLiteConnector,
+    *,
+    source_revision: int = 1,
+    catalog_revision: int = 1,
+) -> None:
+    _disable_integrity(connector)
+    connector.execute(
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) VALUES (%s, %s, %s)",
+        (source_revision, b"default", b"s" * 32),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_descriptors "
+        "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
+        (catalog_revision, 0, 0),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_commits "
+        "(receipt_id, candidate_id, revision, source_revision, generation, "
+        "preparation_id, operational_policy_id, artifact_policy_id, "
+        "display_title_policy_id, new_galleries, changed_galleries, "
+        "removed_galleries, duplicate_losers, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            b"r" * 16,
+            b"c" * 16,
+            catalog_revision,
+            source_revision,
+            1,
+            b"p" * 16,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+        ),
+    )
+
+
+def _insert_queue_history(
+    connector: SQLiteConnector,
+    *,
+    count: int,
+) -> tuple[bytes, ...]:
+    tokens = tuple(index.to_bytes(16, "big") for index in range(1, count + 1))
+    for index, token in enumerate(tokens, start=1):
+        connector.execute(
+            "INSERT INTO operational_deletion_request_generations "
+            "(generation, allocated_at) VALUES (%s, %s)",
+            (index, index),
+        )
+        connector.execute(
+            "INSERT INTO operational_deletion_request_attempts "
+            "(request_token, gid, requested_at) VALUES (%s, %s, %s)",
+            (token, index, index),
+        )
+        connector.execute(
+            "INSERT INTO operational_deletion_request_heads "
+            "(gid, request_token) VALUES (%s, %s)",
+            (index, token),
+        )
+        connector.execute(
+            "INSERT INTO operational_deletion_request_urls "
+            "(request_token, url) VALUES (%s, %s)",
+            (token, "" if index == 1 else f"https://example.invalid/{index}"),
+        )
+    connector.execute(
+        "UPDATE operational_deletion_request_generation_heads "
+        "SET current_generation = %s, updated_at = %s WHERE singleton_id = 1",
+        (count, count),
+    )
+    return tokens
+
+
+def _seed_canonical_payload(
+    connector: SQLiteConnector,
+    *,
+    domain: str,
+    payload: bytes,
+    claimed_value_sha256: bytes | None = None,
+) -> bytes:
+    value_sha256 = (
+        vnext_identity.canonical_value_digest(domain, payload)
+        if claimed_value_sha256 is None
+        else claimed_value_sha256
+    )
+    page = vnext_identity.CanonicalValuePage(
+        value_sha256,
+        vnext_identity.GalleryObservationNodeKind.LEAF,
+        0,
+        0,
+        len(payload),
+        (vnext_identity.CanonicalValueChunk(0, payload),),
+    )
+    page_bytes = vnext_identity.encode_canonical_value_page(page)
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=domain.encode("ascii"),
+        page_sha256=vnext_identity.canonical_value_page_digest(page_bytes),
+        page_bytes=page_bytes,
+        subtree_item_count=len(payload),
+        allocated_at=1,
+    )
+    return value_sha256
+
+
+def _insert_hash_cache_fixture(
+    connector: SQLiteConnector,
+    *,
+    corrupt_last_source_preimage: bool = False,
+) -> tuple[tuple[bytes, bytes], ...]:
+    source_domain = "filesystem_source_identity_v1"
+    fingerprint_domain = "filesystem_fingerprint_v1"
+    plans: list[tuple[bytes, bytes, bytes, bytes, int]] = []
+    for index in range(3):
+        source_payload = f"source-preimage-{index}".encode()
+        fingerprint_payload = f"fingerprint-preimage-{index}".encode()
+        plans.append(
+            (
+                vnext_identity.canonical_value_digest(source_domain, source_payload),
+                vnext_identity.canonical_value_digest(
+                    fingerprint_domain, fingerprint_payload
+                ),
+                source_payload,
+                fingerprint_payload,
+                index,
+            )
+        )
+    plans.sort(key=lambda plan: (plan[0], plan[1]))
+    corrupt_key = (plans[-1][0], plans[-1][1])
+    for source, fingerprint, source_payload, fingerprint_payload, index in plans:
+        stored_source_payload = source_payload
+        if corrupt_last_source_preimage and (source, fingerprint) == corrupt_key:
+            stored_source_payload = source_payload[:-1] + bytes(
+                (source_payload[-1] ^ 1,)
+            )
+        _seed_canonical_payload(
+            connector,
+            domain=source_domain,
+            payload=stored_source_payload,
+            claimed_value_sha256=source,
+        )
+        _seed_canonical_payload(
+            connector,
+            domain=fingerprint_domain,
+            payload=fingerprint_payload,
+            claimed_value_sha256=fingerprint,
+        )
+        file_payload = f"file-payload-{index}".encode()
+        file_sha256 = hashlib.sha256(file_payload).digest()
+        connector.execute(
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
+            "VALUES (%s, %s)",
+            (file_sha256, len(file_payload)),
+        )
+        connector.execute(
+            "INSERT INTO operational_hash_cache_observations "
+            "(source_identity_sha256, fingerprint_sha256, observed_at) "
+            "VALUES (%s, %s, %s)",
+            (source, fingerprint, index),
+        )
+        connector.execute(
+            "INSERT INTO operational_file_hash_caches "
+            "(source_identity_sha256, fingerprint_sha256, file_sha256, cached_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (source, fingerprint, file_sha256, index),
+        )
+    return tuple((source, fingerprint) for source, fingerprint, *_rest in plans)
 
 
 def _cleanup_cycle_id(target_kind: str, shard_no: int, generation: int) -> bytes:
@@ -179,6 +358,7 @@ def test_registry_is_closed_world_and_does_not_import_verification(
         validate_builtin_operational_manifest()
 
 
+@pytest.mark.merge_smoke
 def test_generated_greenfield_and_bootstrap_pass_every_read_validator(
     greenfield: SQLiteConnector,
 ) -> None:
@@ -232,6 +412,157 @@ def test_runtime_blockers_name_every_delegated_high_cardinality_duty() -> None:
     assert "retention roots" in cleanup and "child-first" in cleanup
     queue = OPERATIONAL_RUNTIME_WRITER_BLOCKERS["h2hdb.operational.queue-history.v1"]
     assert "history" in queue
+
+
+@pytest.mark.merge_smoke
+def test_queue_history_audit_rejects_gap_beyond_first_page(
+    greenfield: SQLiteConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
+    _insert_queue_history(greenfield, count=3)
+    check_queue_history_contract_v1(greenfield)
+
+    greenfield.execute(
+        "DELETE FROM operational_deletion_request_generations WHERE generation = 2"
+    )
+    with pytest.raises(
+        OperationalSemanticValidationError,
+        match="generation history is not contiguous",
+    ):
+        check_queue_history_contract_v1(greenfield)
+
+
+@pytest.mark.merge_smoke
+def test_queue_history_audit_rejects_late_consumption_gid_mismatch(
+    greenfield: SQLiteConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
+    tokens = _insert_queue_history(greenfield, count=3)
+    _disable_integrity(greenfield)
+    greenfield.execute_many(
+        "INSERT INTO operational_operational_deletion_consumption_events "
+        "(event_id, gid, deletion_request_token) VALUES (%s, %s, %s)",
+        [
+            (index.to_bytes(16, "big"), index if index < 3 else 99, token)
+            for index, token in enumerate(tokens, start=1)
+        ],
+    )
+
+    with pytest.raises(
+        OperationalSemanticValidationError,
+        match="consumption gid disagrees with its immutable attempt",
+    ):
+        check_queue_history_contract_v1(greenfield)
+
+
+@pytest.mark.merge_smoke
+def test_hash_cache_audit_recomputes_late_framed_preimage(
+    greenfield: SQLiteConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
+    _insert_hash_cache_fixture(greenfield, corrupt_last_source_preimage=True)
+
+    with pytest.raises(
+        OperationalSemanticValidationError,
+        match="source identity canonical framed preimage is incomplete or corrupt",
+    ):
+        check_canonical_hash_cache_contract_v1(greenfield)
+
+
+def test_hash_cache_audit_streams_each_distinct_canonical_preimage_once(
+    greenfield: SQLiteConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
+    keys = _insert_hash_cache_fixture(greenfield)
+    shared_source = keys[0][0]
+    extra_fingerprint = _seed_canonical_payload(
+        greenfield,
+        domain="filesystem_fingerprint_v1",
+        payload=b"shared-source-extra-fingerprint",
+    )
+    file_payload = b"shared-source-extra-file"
+    file_sha256 = hashlib.sha256(file_payload).digest()
+    greenfield.execute(
+        "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (%s, %s)",
+        (file_sha256, len(file_payload)),
+    )
+    greenfield.execute(
+        "INSERT INTO operational_hash_cache_observations "
+        "(source_identity_sha256, fingerprint_sha256, observed_at) "
+        "VALUES (%s, %s, 4)",
+        (shared_source, extra_fingerprint),
+    )
+    greenfield.execute(
+        "INSERT INTO operational_file_hash_caches "
+        "(source_identity_sha256, fingerprint_sha256, file_sha256, cached_at) "
+        "VALUES (%s, %s, %s, 4)",
+        (shared_source, extra_fingerprint, file_sha256),
+    )
+
+    calls: list[tuple[bytes, bytes]] = []
+    original = operational_runtime._audit_hash_cache_canonical_reference
+
+    def tracked(
+        connector: SQLConnector,
+        *,
+        value_sha256: bytes,
+        expected_domain: bytes,
+        label: str,
+    ) -> None:
+        calls.append((expected_domain, value_sha256))
+        original(
+            connector,
+            value_sha256=value_sha256,
+            expected_domain=expected_domain,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        operational_runtime,
+        "_audit_hash_cache_canonical_reference",
+        tracked,
+    )
+    check_canonical_hash_cache_contract_v1(greenfield)
+
+    expected = {
+        (operational_runtime._HASH_CACHE_SOURCE_DOMAIN, source)
+        for source, _fingerprint in keys
+    } | {
+        (operational_runtime._HASH_CACHE_FINGERPRINT_DOMAIN, fingerprint)
+        for _source, fingerprint in keys
+    }
+    expected.add(
+        (operational_runtime._HASH_CACHE_FINGERPRINT_DOMAIN, extra_fingerprint)
+    )
+    assert set(calls) == expected
+    assert len(calls) == len(expected)
+
+
+@pytest.mark.merge_smoke
+def test_hash_cache_audit_rejects_late_file_row_without_observation(
+    greenfield: SQLiteConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
+    keys = _insert_hash_cache_fixture(greenfield)
+    check_canonical_hash_cache_contract_v1(greenfield)
+
+    _disable_integrity(greenfield)
+    source, fingerprint = keys[-1]
+    greenfield.execute(
+        "DELETE FROM operational_hash_cache_observations "
+        "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
+        (source, fingerprint),
+    )
+    with pytest.raises(
+        OperationalSemanticValidationError,
+        match="file hash-cache row lacks observation authority",
+    ):
+        check_canonical_hash_cache_contract_v1(greenfield)
 
 
 def test_static_physical_check_does_not_claim_to_rescan_corpus(
@@ -605,6 +936,27 @@ def test_fixed_allocator_registry_corruption_fails_closed(
         check_gallery_staging_contract_v1(greenfield)
 
 
+@pytest.mark.merge_smoke
+@pytest.mark.parametrize("stream", ("SOURCE", "CATALOG"))
+def test_revision_allocator_rejects_published_revision_at_next_value(
+    greenfield: SQLiteConnector,
+    stream: str,
+) -> None:
+    _insert_minimal_published_revision(greenfield)
+    other_stream = "CATALOG" if stream == "SOURCE" else "SOURCE"
+    greenfield.execute(
+        "UPDATE operational_revision_allocators SET next_revision = %s "
+        "WHERE stream = %s",
+        (2, other_stream),
+    )
+
+    with pytest.raises(
+        OperationalSemanticValidationError,
+        match=rf"published {stream} revision is not below next_revision",
+    ):
+        check_revision_allocator_contract_v1(greenfield)
+
+
 class _RecordingConnector(SQLConnector):
     def __init__(self, delegate: SQLiteConnector) -> None:
         self.delegate = delegate
@@ -707,13 +1059,24 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         "cleanup_cycle_root",
         "cleanup_checkpoint",
         "revision_allocator",
+        "source_revision",
+        "catalog_revision",
         "identity_allocator",
         "gallery_observation_staging_request_budget",
         "gallery_observation_staging_request",
         "publication_commit",
+        "deletion_request_generation",
+        "deletion_request_generation_head",
+        "deletion_request_attempt",
+        "deletion_request_head",
+        "deletion_request_url",
         "operational_preparation",
         "operational_preparation_effect_seal",
         "operational_event_stream",
+        "operational_deletion_consumption_event",
+        "hash_cache_observation",
+        "file_hash_cache",
+        "content_blob",
     }
     allowed_tables = {_table_name(name) for name in allowed_relations}
     allowed_tables.add("h2hdb_schema_epoch")
@@ -732,6 +1095,7 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
             "revision_allocator",
             "identity_allocator",
             "gallery_observation_staging_request_budget",
+            "deletion_request_generation_head",
         }
     }
     capped_request_table = _table_name("gallery_observation_staging_request")
@@ -742,6 +1106,20 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
             "operational_preparation",
             "operational_preparation_effect_seal",
             "operational_event_stream",
+        }
+    }
+    retained_fact_audit_tables = {
+        _table_name(name)
+        for name in {
+            "deletion_request_generation",
+            "deletion_request_attempt",
+            "deletion_request_head",
+            "deletion_request_url",
+            "operational_preparation",
+            "operational_deletion_consumption_event",
+            "hash_cache_observation",
+            "file_hash_cache",
+            "content_blob",
         }
     }
     relation_pattern = re.compile(r"\b(?:FROM|JOIN)\s+([a-z0-9_]+)", re.I)
@@ -765,10 +1143,12 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
                 tables <= fixed_scan_tables
                 or tables == {capped_request_table}
                 or tables <= owner_audit_tables
+                or tables <= retained_fact_audit_tables
             )
 
     assert _table_name("download_request") not in queried_tables
-    assert _table_name("source_revision") not in queried_tables
+    assert _table_name("source_revision") in queried_tables
+    assert _table_name("catalog_revision") in queried_tables
     assert _table_name("gallery_observation_staging") not in queried_tables
     cycle_root_queries = [
         " ".join(query.split()).upper()

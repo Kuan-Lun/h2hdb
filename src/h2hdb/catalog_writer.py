@@ -924,7 +924,10 @@ _BOUND_BINDINGS = (
     _binding(
         "catalog.state-machines.v1",
         (
+            SourceBuildRepository.handoff_root,
+            SourceBuildRepository.abandon,
             SourceBuildRepository.assemble_batch,
+            AnalysisRepository.begin,
             AnalysisRepository.abandon,
             *_ANALYSIS_BATCH_WRITERS,
             AnalysisRepository.handoff_snapshot_manifest,

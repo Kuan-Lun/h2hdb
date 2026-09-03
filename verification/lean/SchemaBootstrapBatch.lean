@@ -32,6 +32,36 @@ deriving DecidableEq, Repr
 
 abbrev Durable := List Seed
 
+/-- The per-key production validator accepts one exact ordered singleton. -/
+def ExactOrderedRows (actual expected : List Seed) : Prop :=
+  actual = expected
+
+theorem exact_singleton_rejects_missing (expected : Seed) :
+    ¬ ExactOrderedRows [] [expected] := by
+  simp [ExactOrderedRows]
+
+theorem exact_singleton_rejects_duplicate (expected : Seed) :
+    ¬ ExactOrderedRows [expected, expected] [expected] := by
+  simp [ExactOrderedRows]
+
+theorem exact_singleton_rejects_changed_row
+    (actual expected : Seed)
+    (different : actual ≠ expected) :
+    ¬ ExactOrderedRows [actual] [expected] := by
+  simpa [ExactOrderedRows] using different
+
+/-- Seeded-relation validation is exact multiset equality, like `Counter`. -/
+def ExactSeedMultiset (actual expected : List Seed) : Prop :=
+  ∀ candidate, actual.count candidate = expected.count candidate
+
+theorem exact_seed_multiset_rejects_count_difference
+    (actual expected : List Seed)
+    (candidate : Seed)
+    (different : actual.count candidate ≠ expected.count candidate) :
+    ¬ ExactSeedMultiset actual expected := by
+  intro exact
+  exact different (exact candidate)
+
 def durableInsert (seed : Seed) (durable : Durable) : Durable :=
   if seed ∈ durable then durable else seed :: durable
 
@@ -123,6 +153,21 @@ theorem replay_after_generated_subset_equals_clean_execution
     rcases expected with existing | generated
     · exact Or.inl (Or.inl existing)
     · exact Or.inr generated
+
+/-- Every committed generated prefix is a generated subset, so replaying the
+complete manifest converges to the same durable facts as a clean execution. -/
+theorem replay_after_generated_prefix_equals_clean_execution
+    (generatedPrefix remainder : List Seed)
+    (durable : Durable) :
+    DurablyEquivalent
+      (applyReference
+        (generatedPrefix ++ remainder)
+        (applyReference generatedPrefix durable))
+      (applyReference (generatedPrefix ++ remainder) durable) := by
+  apply replay_after_generated_subset_equals_clean_execution
+  intro seed member
+  simp only [List.mem_append]
+  exact Or.inl member
 
 theorem batched_replay_after_generated_subset_equals_reference
     (limit remaining : Nat)

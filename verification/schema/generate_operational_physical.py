@@ -1294,6 +1294,37 @@ def _indexes(name: str, relation: dict[str, Any]) -> list[tuple[str, tuple[str, 
 def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
     attributes = set(relation["attributes"])
     checks: list[tuple[str, str, str]] = []
+
+    # The physical type declaration is sufficient on MariaDB, but SQLite's
+    # affinity model otherwise permits every storage class in ordinary
+    # tables.  Generate a closed per-relation predicate for every column so
+    # adding a logical attribute cannot silently omit its SQLite domain.
+    sqlite_storage: list[str] = []
+    mariadb_storage: list[str] = []
+    for attribute in sorted(attributes):
+        column_name, nullable, sqlite_type, mariadb_type = _column(name, attribute)
+        storage_class = sqlite_type.lower()
+        sqlite_predicate = f"typeof({column_name}) = '{storage_class}'"
+        mariadb_name = f"`{column_name}`" if column_name == "cursor" else column_name
+        if nullable:
+            sqlite_predicate = f"({column_name} IS NULL OR {sqlite_predicate})"
+            mariadb_predicate = (
+                f"({mariadb_name} IS NULL OR {mariadb_name} IS NOT NULL)"
+            )
+        else:
+            mariadb_predicate = f"{mariadb_name} IS NOT NULL"
+        sqlite_storage.append(sqlite_predicate)
+        mariadb_storage.append(mariadb_predicate)
+        if "UNSIGNED" in mariadb_type.upper():
+            sqlite_storage.append(f"{column_name} >= 0")
+            mariadb_storage.append(f"{mariadb_name} >= 0")
+    checks.append(
+        (
+            _identifier(f"ck_{name}_storage_domain"),
+            " AND ".join(sqlite_storage),
+            " AND ".join(mariadb_storage),
+        )
+    )
     if "singleton_id" in attributes:
         checks.append(
             (

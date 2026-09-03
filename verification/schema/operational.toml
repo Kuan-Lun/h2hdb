@@ -286,7 +286,7 @@ eligible_predicate_id = "publication_commit_unreachable_finalized_v2"
 blocker_query_id = "publication_commit_reachability_v2"
 writer_hook = "h2hdb.cleanup.publication_commit.v2"
 preparation_control_handoff_rule = "under the exact live EXCLUSIVE maintenance gate, an unreachable finalized commit is initially eligible only with its exact candidate_id/preparation_id binding, a unique COMPLETE preparation and effect seal whose operational_policy_id matches the commit, no source or catalog working root, and no PENDING or PREPARED prepared-artifact protection. The begin transaction freezes each eligible exact (receipt_id, preparation_id) anchor/commit authority in cleanup_cycle_root and includes both identities in the sealed root-set digest; later phases select by receipt_id but fail closed if the commit preparation differs from the frozen pair. The exact closed-world order is RELEASE_BASE, PREP_BINDING, PREP_BATCH, PREP_CHECKPOINT, PREP, EVENT, FINALIZATION_MARKER, FINALIZATION_BATCH, COMMIT_EFFECT_ROOT, FINALIZATION_CHECKPOINT, ANCHOR; every phase requires the exact prior COMPLETE cleanup receipt and prior relation absence. Operational events are per-preparation publication-owned transient current/retry snapshots rather than cross-revision delta or delivery history. The compound EVENT phase locks each base event with exactly one type-matching subtype and atomically deletes subtype then event; a durable (receipt_id, preparation_id, sequence_no) cursor permits only fully absent covered subtype/event coordinates, while partial, mismatched, or ahead-of-cursor absence fails closed. An OPEN PCOM job may temporarily retain the unreachable non-head commit and seal after covered coordinates are gone; the full CHECK accepts that state only for the matching frozen OPEN PCOM job and EVENT cursor/receipt chain before COMMIT_EFFECT_ROOT, while public reads remain current-head-only and exact COMPLETE preparation authority is already removed. COMMIT_EFFECT_ROOT rechecks every pin, prior receipt, child absence, and every cursor-uncovered exact receipt_id/preparation_id commit, effect-seal, and event-stream triple; because the frozen root set is capped at 256, one bounded transaction exact-deletes commit, effect seal, and event stream in FK order with affected-count one for every triple, then commits its cleanup receipt/checkpoint CAS last. Any partial authority, mismatch, or fault rolls back the whole batch. A nonempty compound cursor must equal the final frozen receipt/preparation coordinate, start from the empty cursor, report row_count equal to frozen_root_count, and have every frozen commit, preparation, event, effect seal, and event stream absent; its monotone receipt/checkpoint chain, frozen pair authority, and full CHECK owner/orphan rejection are the durable covered-root proof. The exact empty root set instead uses the terminal empty-cursor receipt as its proof. Separately receipted finalization-checkpoint and anchor phases then complete."
-retention_roots = ["current publication_commit_head receipt", "a source_build_base_publication_commit whose consuming build has OPEN work, an incomplete analysis, or no exact newer PUBLISHED handoff for every COMPLETE analysis", "publication_candidate_base_publication_commit.base_receipt_id", "PENDING or PREPARED prepared-artifact protection", "a source_working_build for the commit preparation build", "a catalog_working_candidate for the commit candidate", "a commit whose replacement head is not yet PUBLISHED", "the exact COMPLETE operational_preparation remains commit-to-build retry lineage until this same cleanup lifecycle has released the safe build base and removed the exact candidate/preparation binding"]
+retention_roots = ["current publication_commit_head receipt", "a source_build_base_publication_commit whose consuming build has OPEN work, an incomplete analysis, or no exact newer PUBLISHED handoff for every COMPLETE analysis", "a publication_candidate_base_publication_commit predecessor pin only while its successor is reader-invisible DB_COMMITTED; the terminal PUBLISHED head CAS consumes that one-shot row atomically", "PENDING or PREPARED prepared-artifact protection", "a source_working_build for the commit preparation build", "a catalog_working_candidate for the commit candidate", "a commit whose replacement head is not yet PUBLISHED", "the exact COMPLETE operational_preparation remains commit-to-build retry lineage until this same cleanup lifecycle has released the safe build base and removed the exact candidate/preparation binding"]
 retained_fk_edges = [
   { relation = "publication_commit_head_receipt", attributes = ["receipt_id"] },
   { relation = "publication_candidate_base_publication_commit", attributes = ["base_receipt_id"] },
@@ -351,14 +351,14 @@ phases = [{ phase = "SRD_ROOT", order = 1, relations = ["source_revision_descrip
 target_kind = "PUBLICATION_GENERATION"
 mode = "SWEEP"
 sweep_shard_count = 256
-selection_order_id = "generation_mod_256_then_generation_v2"
+selection_order_id = "oldest_contiguous_generation_prefix_v3"
 root_relation = "publication_generation_node"
 root_key = ["generation"]
 key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "publication_generation_unreferenced_prefix_v2"
 blocker_query_id = "publication_generation_references_and_compacted_floor_v2"
-writer_hook = "h2hdb.cleanup.publication_generation.v2"
-retention_roots = ["publication_commit.generation", "the oldest retained generation node as the compacted floor"]
+writer_hook = "h2hdb.cleanup.publication_generation.v3"
+retention_roots = ["publication_commit.generation", "the oldest retained generation node as the compacted floor", "an OPEN cleanup job's exact sealed contiguous prefix until both child-first phases complete"]
 retained_fk_edges = [{ relation = "publication_commit", attributes = ["generation"] }]
 phase_selectors = [
   { relation = "publication_generation_successor", attributes = ["successor_generation"], referenced_relation = "publication_generation_node", referenced_attributes = ["generation"] },
@@ -368,6 +368,7 @@ phases = [
   { phase = "PG_EDGE", order = 1, relations = ["publication_generation_successor"] },
   { phase = "PG_ROOT", order = 2, relations = ["publication_generation_node"] },
 ]
+transition_rule = "The next actionable oldest generation chooses the reusable sweep slot, but the frozen authority is the complete oldest contiguous eligible prefix capped by max_rows_per_transaction, independent of modulo sharding. PG_EDGE may remove only successor edges touching that exact frozen prefix; PG_ROOT may then remove only cursor-covered frozen nodes. Full READY accepts each intermediate gap only from the validated OPEN job, sealed roots, registered phase and canonical keyset cursor. Completion atomically removes that transient authority only after the remaining generation interval is contiguous again."
 
 [[cleanup_target]]
 target_kind = "PUBLICATION_CANDIDATE"

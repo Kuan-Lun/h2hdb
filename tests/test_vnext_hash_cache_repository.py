@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from vnext_catalog_registry_fixtures import seed_manifest_policy
 from vnext_generated_database import open_generated_sqlite_database
+from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
 
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import (
@@ -114,7 +115,7 @@ def _ready_build(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root,
-                analysis_policy_id=1,
+                policy=SOURCE_BUILD_POLICY_AUTHORITY,
                 now=23,
             )
     finally:

@@ -2893,6 +2893,10 @@ name = "ready_at"
 sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
 [[relation.check]]
+name = "ck_schema_epoch_control_storage_domain"
+sqlite_expression = "typeof(epoch) = 'integer' AND epoch >= 0 AND typeof(manifest_sha256) = 'blob' AND (ready_at IS NULL OR typeof(ready_at) = 'integer') AND ready_at >= 0 AND typeof(schema_version) = 'integer' AND schema_version >= 0 AND typeof(singleton_id) = 'integer' AND singleton_id >= 0 AND typeof(started_at) = 'integer' AND started_at >= 0 AND typeof(state) = 'text'"
+mariadb_expression = "epoch IS NOT NULL AND epoch >= 0 AND manifest_sha256 IS NOT NULL AND (ready_at IS NULL OR ready_at IS NOT NULL) AND ready_at >= 0 AND schema_version IS NOT NULL AND schema_version >= 0 AND singleton_id IS NOT NULL AND singleton_id >= 0 AND started_at IS NOT NULL AND started_at >= 0 AND state IS NOT NULL"
+[[relation.check]]
 name = "ck_schema_epoch_control_singleton"
 sqlite_expression = "singleton_id = 1"
 mariadb_expression = "singleton_id = 1"
@@ -2951,6 +2955,10 @@ attribute = "completed_at"
 name = "completed_at"
 sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
+[[relation.check]]
+name = "ck_download_generation_storage_domain"
+sqlite_expression = "(completed_at IS NULL OR typeof(completed_at) = 'integer') AND completed_at >= 0 AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(started_at) = 'integer' AND started_at >= 0"
+mariadb_expression = "(completed_at IS NULL OR completed_at IS NOT NULL) AND completed_at >= 0 AND generation IS NOT NULL AND generation >= 0 AND started_at IS NOT NULL AND started_at >= 0"
 [[relation.check]]
 name = "ck_download_generation_started_at_nonneg"
 sqlite_expression = "started_at >= 0 AND started_at <= 9223372036854775807"
@@ -3014,6 +3022,10 @@ name = "ix_download_coordination_head_fk_2"
 attributes = ["completed_generation"]
 unique = false
 [[relation.check]]
+name = "ck_download_coordination_head_storage_domain"
+sqlite_expression = "typeof(completed_generation) = 'integer' AND completed_generation >= 0 AND typeof(current_generation) = 'integer' AND current_generation >= 0 AND typeof(last_transition_at) = 'integer' AND last_transition_at >= 0 AND typeof(singleton_id) = 'integer' AND singleton_id >= 0"
+mariadb_expression = "completed_generation IS NOT NULL AND completed_generation >= 0 AND current_generation IS NOT NULL AND current_generation >= 0 AND last_transition_at IS NOT NULL AND last_transition_at >= 0 AND singleton_id IS NOT NULL AND singleton_id >= 0"
+[[relation.check]]
 name = "ck_download_coordination_head_singleton"
 sqlite_expression = "singleton_id = 1"
 mariadb_expression = "singleton_id = 1"
@@ -3071,6 +3083,10 @@ attributes = ["generation"]
 referenced_relation = "download_generation"
 referenced_attributes = ["generation"]
 [[relation.check]]
+name = "ck_download_generation_owner_storage_domain"
+sqlite_expression = "typeof(claimed_at) = 'integer' AND claimed_at >= 0 AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(lease_expires_at) = 'integer' AND lease_expires_at >= 0 AND typeof(owner_token) = 'blob'"
+mariadb_expression = "claimed_at IS NOT NULL AND claimed_at >= 0 AND generation IS NOT NULL AND generation >= 0 AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0 AND owner_token IS NOT NULL"
+[[relation.check]]
 name = "ck_download_generation_owner_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
 mariadb_expression = "octet_length(owner_token) = 16"
@@ -3119,6 +3135,10 @@ name = "fk_download_ingest_handoff_1"
 attributes = ["download_generation"]
 referenced_relation = "download_generation"
 referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_download_ingest_handoff_storage_domain"
+sqlite_expression = "typeof(download_generation) = 'integer' AND download_generation >= 0 AND typeof(handoff_kind) = 'text' AND typeof(owner_token) = 'blob' AND typeof(requested_at) = 'integer' AND requested_at >= 0"
+mariadb_expression = "download_generation IS NOT NULL AND download_generation >= 0 AND handoff_kind IS NOT NULL AND owner_token IS NOT NULL AND requested_at IS NOT NULL AND requested_at >= 0"
 [[relation.check]]
 name = "ck_download_ingest_handoff_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
@@ -3169,6 +3189,10 @@ attributes = ["ingest_generation"]
 referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.check]]
+name = "ck_download_ingest_consumption_storage_domain"
+sqlite_expression = "typeof(consumed_at) = 'integer' AND consumed_at >= 0 AND typeof(download_generation) = 'integer' AND download_generation >= 0 AND typeof(ingest_generation) = 'integer' AND ingest_generation >= 0"
+mariadb_expression = "consumed_at IS NOT NULL AND consumed_at >= 0 AND download_generation IS NOT NULL AND download_generation >= 0 AND ingest_generation IS NOT NULL AND ingest_generation >= 0"
+[[relation.check]]
 name = "ck_download_ingest_consumption_consumed_at_nonneg"
 sqlite_expression = "consumed_at >= 0 AND consumed_at <= 9223372036854775807"
 mariadb_expression = "consumed_at >= 0 AND consumed_at <= 9223372036854775807"
@@ -3209,6 +3233,10 @@ attributes = ["ingest_generation"]
 referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.check]]
+name = "ck_coordinated_ingest_completion_storage_domain"
+sqlite_expression = "(completed_at IS NULL OR typeof(completed_at) = 'integer') AND completed_at >= 0 AND typeof(ingest_generation) = 'integer' AND ingest_generation >= 0 AND typeof(owner_token) = 'blob'"
+mariadb_expression = "(completed_at IS NULL OR completed_at IS NOT NULL) AND completed_at >= 0 AND ingest_generation IS NOT NULL AND ingest_generation >= 0 AND owner_token IS NOT NULL"
+[[relation.check]]
 name = "ck_coordinated_ingest_completion_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
 mariadb_expression = "octet_length(owner_token) = 16"
@@ -3243,6 +3271,10 @@ attribute = "completed_at"
 name = "completed_at"
 sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
+[[relation.check]]
+name = "ck_ingest_generation_storage_domain"
+sqlite_expression = "(completed_at IS NULL OR typeof(completed_at) = 'integer') AND completed_at >= 0 AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(started_at) = 'integer' AND started_at >= 0"
+mariadb_expression = "(completed_at IS NULL OR completed_at IS NOT NULL) AND completed_at >= 0 AND generation IS NOT NULL AND generation >= 0 AND started_at IS NOT NULL AND started_at >= 0"
 [[relation.check]]
 name = "ck_ingest_generation_started_at_nonneg"
 sqlite_expression = "started_at >= 0 AND started_at <= 9223372036854775807"
@@ -3307,6 +3339,10 @@ name = "ix_ingest_coordination_head_fk_2"
 attributes = ["completed_generation"]
 unique = false
 [[relation.check]]
+name = "ck_ingest_coordination_head_storage_domain"
+sqlite_expression = "typeof(completed_generation) = 'integer' AND completed_generation >= 0 AND typeof(current_generation) = 'integer' AND current_generation >= 0 AND typeof(last_transition_at) = 'integer' AND last_transition_at >= 0 AND typeof(phase) = 'text' AND typeof(singleton_id) = 'integer' AND singleton_id >= 0"
+mariadb_expression = "completed_generation IS NOT NULL AND completed_generation >= 0 AND current_generation IS NOT NULL AND current_generation >= 0 AND last_transition_at IS NOT NULL AND last_transition_at >= 0 AND phase IS NOT NULL AND singleton_id IS NOT NULL AND singleton_id >= 0"
+[[relation.check]]
 name = "ck_ingest_coordination_head_singleton"
 sqlite_expression = "singleton_id = 1"
 mariadb_expression = "singleton_id = 1"
@@ -3368,6 +3404,10 @@ attributes = ["generation"]
 referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.check]]
+name = "ck_ingest_generation_owner_storage_domain"
+sqlite_expression = "typeof(claimed_at) = 'integer' AND claimed_at >= 0 AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(lease_expires_at) = 'integer' AND lease_expires_at >= 0 AND typeof(owner_token) = 'blob'"
+mariadb_expression = "claimed_at IS NOT NULL AND claimed_at >= 0 AND generation IS NOT NULL AND generation >= 0 AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0 AND owner_token IS NOT NULL"
+[[relation.check]]
 name = "ck_ingest_generation_owner_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
 mariadb_expression = "octet_length(owner_token) = 16"
@@ -3415,6 +3455,10 @@ referenced_attributes = ["generation"]
 name = "ix_source_build_generation_fk_1"
 attributes = ["build_id"]
 unique = false
+[[relation.check]]
+name = "ck_source_build_generation_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND typeof(generation) = 'integer' AND generation >= 0"
+mariadb_expression = "build_id IS NOT NULL AND generation IS NOT NULL AND generation >= 0"
 [[relation.check]]
 name = "ck_source_build_generation_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -3470,6 +3514,10 @@ referenced_attributes = ["build_id"]
 name = "ix_source_build_discovery_checkpoint_state"
 attributes = ["state", "updated_at"]
 unique = false
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND typeof(cursor_bytes) = 'blob' AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(processed_count) = 'integer' AND processed_count >= 0 AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "build_id IS NOT NULL AND cursor_bytes IS NOT NULL AND generation IS NOT NULL AND generation >= 0 AND processed_count IS NOT NULL AND processed_count >= 0 AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_source_build_discovery_checkpoint_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -3563,6 +3611,10 @@ name = "fk_source_build_discovery_batch_receipt_1"
 attributes = ["build_id"]
 referenced_relation = "source_build_discovery_checkpoint"
 referenced_attributes = ["build_id"]
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_storage_domain"
+sqlite_expression = "typeof(batch_key) = 'blob' AND typeof(build_id) = 'blob' AND typeof(committed_at) = 'integer' AND committed_at >= 0 AND typeof(committed_generation) = 'integer' AND committed_generation >= 0 AND typeof(next_cursor) = 'blob' AND typeof(next_processed_count) = 'integer' AND next_processed_count >= 0 AND typeof(next_state) = 'text' AND typeof(row_count) = 'integer' AND row_count >= 0 AND typeof(start_cursor) = 'blob' AND typeof(start_generation) = 'integer' AND start_generation >= 0 AND typeof(start_processed_count) = 'integer' AND start_processed_count >= 0 AND typeof(terminal) = 'integer' AND terminal >= 0"
+mariadb_expression = "batch_key IS NOT NULL AND build_id IS NOT NULL AND committed_at IS NOT NULL AND committed_at >= 0 AND committed_generation IS NOT NULL AND committed_generation >= 0 AND next_cursor IS NOT NULL AND next_processed_count IS NOT NULL AND next_processed_count >= 0 AND next_state IS NOT NULL AND row_count IS NOT NULL AND row_count >= 0 AND start_cursor IS NOT NULL AND start_generation IS NOT NULL AND start_generation >= 0 AND start_processed_count IS NOT NULL AND start_processed_count >= 0 AND terminal IS NOT NULL AND terminal >= 0"
 [[relation.check]]
 name = "ck_source_build_discovery_batch_receipt_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -3661,6 +3713,10 @@ referenced_attributes = ["build_id"]
 name = "ix_source_build_assembly_checkpoint_state"
 attributes = ["state", "updated_at"]
 unique = false
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND typeof(cursor_bytes) = 'blob' AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(manifest_chain_sha256) = 'blob' AND typeof(processed_byte_count) = 'integer' AND processed_byte_count >= 0 AND typeof(processed_file_count) = 'integer' AND processed_file_count >= 0 AND typeof(processed_gallery_count) = 'integer' AND processed_gallery_count >= 0 AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "build_id IS NOT NULL AND cursor_bytes IS NOT NULL AND generation IS NOT NULL AND generation >= 0 AND manifest_chain_sha256 IS NOT NULL AND processed_byte_count IS NOT NULL AND processed_byte_count >= 0 AND processed_file_count IS NOT NULL AND processed_file_count >= 0 AND processed_gallery_count IS NOT NULL AND processed_gallery_count >= 0 AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_source_build_assembly_checkpoint_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -3797,6 +3853,10 @@ attributes = ["build_id"]
 referenced_relation = "source_build_assembly_checkpoint"
 referenced_attributes = ["build_id"]
 [[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_storage_domain"
+sqlite_expression = "typeof(batch_key) = 'blob' AND typeof(build_id) = 'blob' AND typeof(committed_at) = 'integer' AND committed_at >= 0 AND typeof(committed_generation) = 'integer' AND committed_generation >= 0 AND typeof(next_byte_count) = 'integer' AND next_byte_count >= 0 AND typeof(next_cursor) = 'blob' AND typeof(next_file_count) = 'integer' AND next_file_count >= 0 AND typeof(next_gallery_count) = 'integer' AND next_gallery_count >= 0 AND typeof(next_manifest_chain_sha256) = 'blob' AND typeof(next_state) = 'text' AND typeof(row_count) = 'integer' AND row_count >= 0 AND typeof(start_byte_count) = 'integer' AND start_byte_count >= 0 AND typeof(start_cursor) = 'blob' AND typeof(start_file_count) = 'integer' AND start_file_count >= 0 AND typeof(start_gallery_count) = 'integer' AND start_gallery_count >= 0 AND typeof(start_generation) = 'integer' AND start_generation >= 0 AND typeof(start_manifest_chain_sha256) = 'blob' AND typeof(terminal) = 'integer' AND terminal >= 0"
+mariadb_expression = "batch_key IS NOT NULL AND build_id IS NOT NULL AND committed_at IS NOT NULL AND committed_at >= 0 AND committed_generation IS NOT NULL AND committed_generation >= 0 AND next_byte_count IS NOT NULL AND next_byte_count >= 0 AND next_cursor IS NOT NULL AND next_file_count IS NOT NULL AND next_file_count >= 0 AND next_gallery_count IS NOT NULL AND next_gallery_count >= 0 AND next_manifest_chain_sha256 IS NOT NULL AND next_state IS NOT NULL AND row_count IS NOT NULL AND row_count >= 0 AND start_byte_count IS NOT NULL AND start_byte_count >= 0 AND start_cursor IS NOT NULL AND start_file_count IS NOT NULL AND start_file_count >= 0 AND start_gallery_count IS NOT NULL AND start_gallery_count >= 0 AND start_generation IS NOT NULL AND start_generation >= 0 AND start_manifest_chain_sha256 IS NOT NULL AND terminal IS NOT NULL AND terminal >= 0"
+[[relation.check]]
 name = "ck_source_build_assembly_batch_receipt_build_id_len"
 sqlite_expression = "length(build_id) = 16"
 mariadb_expression = "octet_length(build_id) = 16"
@@ -3880,6 +3940,10 @@ name = "created_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.check]]
+name = "ck_maintenance_gate_generation_storage_domain"
+sqlite_expression = "typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(gate_generation) = 'integer' AND gate_generation >= 0 AND typeof(mode) = 'text'"
+mariadb_expression = "created_at IS NOT NULL AND created_at >= 0 AND gate_generation IS NOT NULL AND gate_generation >= 0 AND mode IS NOT NULL"
+[[relation.check]]
 name = "ck_maintenance_gate_generation_created_at_nonneg"
 sqlite_expression = "created_at >= 0 AND created_at <= 9223372036854775807"
 mariadb_expression = "created_at >= 0 AND created_at <= 9223372036854775807"
@@ -3923,6 +3987,10 @@ referenced_attributes = ["gate_generation"]
 name = "ix_maintenance_gate_head_fk_1"
 attributes = ["gate_generation"]
 unique = false
+[[relation.check]]
+name = "ck_maintenance_gate_head_storage_domain"
+sqlite_expression = "typeof(gate_generation) = 'integer' AND gate_generation >= 0 AND typeof(singleton_id) = 'integer' AND singleton_id >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "gate_generation IS NOT NULL AND gate_generation >= 0 AND singleton_id IS NOT NULL AND singleton_id >= 0 AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_maintenance_gate_head_singleton"
 sqlite_expression = "singleton_id = 1"
@@ -3972,6 +4040,10 @@ name = "ix_maintenance_gate_owner_fk_1"
 attributes = ["gate_generation"]
 unique = false
 [[relation.check]]
+name = "ck_maintenance_gate_owner_storage_domain"
+sqlite_expression = "typeof(gate_generation) = 'integer' AND gate_generation >= 0 AND typeof(lease_expires_at) = 'integer' AND lease_expires_at >= 0 AND typeof(owner_token) = 'blob'"
+mariadb_expression = "gate_generation IS NOT NULL AND gate_generation >= 0 AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0 AND owner_token IS NOT NULL"
+[[relation.check]]
 name = "ck_maintenance_gate_owner_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
 mariadb_expression = "octet_length(owner_token) = 16"
@@ -4010,6 +4082,10 @@ referenced_attributes = ["owner_token"]
 name = "ix_maintenance_gate_holder_owner"
 attributes = ["owner_token"]
 unique = false
+[[relation.check]]
+name = "ck_maintenance_gate_holder_storage_domain"
+sqlite_expression = "typeof(owner_token) = 'blob' AND typeof(slot) = 'integer' AND slot >= 0"
+mariadb_expression = "owner_token IS NOT NULL AND slot IS NOT NULL AND slot >= 0"
 [[relation.check]]
 name = "ck_maintenance_gate_holder_owner_token_len"
 sqlite_expression = "length(owner_token) = 16"
@@ -4050,6 +4126,10 @@ name = "fk_source_working_build_1"
 attributes = ["build_id"]
 referenced_relation = "source_build_descriptor"
 referenced_attributes = ["build_id"]
+[[relation.check]]
+name = "ck_source_working_build_storage_domain"
+sqlite_expression = "typeof(assigned_at) = 'integer' AND assigned_at >= 0 AND typeof(build_id) = 'blob' AND typeof(slot) = 'integer' AND slot >= 0"
+mariadb_expression = "assigned_at IS NOT NULL AND assigned_at >= 0 AND build_id IS NOT NULL AND slot IS NOT NULL AND slot >= 0"
 [[relation.check]]
 name = "ck_source_working_build_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -4095,6 +4175,10 @@ attributes = ["candidate_id"]
 referenced_relation = "publication_candidate"
 referenced_attributes = ["candidate_id"]
 [[relation.check]]
+name = "ck_catalog_working_candidate_storage_domain"
+sqlite_expression = "typeof(assigned_at) = 'integer' AND assigned_at >= 0 AND typeof(candidate_id) = 'blob' AND typeof(slot) = 'integer' AND slot >= 0"
+mariadb_expression = "assigned_at IS NOT NULL AND assigned_at >= 0 AND candidate_id IS NOT NULL AND slot IS NOT NULL AND slot >= 0"
+[[relation.check]]
 name = "ck_catalog_working_candidate_candidate_id_len"
 sqlite_expression = "length(candidate_id) = 16"
 mariadb_expression = "octet_length(candidate_id) = 16"
@@ -4134,6 +4218,10 @@ name = "updated_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.check]]
+name = "ck_revision_allocator_storage_domain"
+sqlite_expression = "typeof(next_revision) = 'integer' AND next_revision >= 0 AND typeof(stream) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "next_revision IS NOT NULL AND next_revision >= 0 AND stream IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
 name = "ck_revision_allocator_updated_at_nonneg"
 sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
 mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
@@ -4168,6 +4256,10 @@ attribute = "updated_at"
 name = "updated_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_identity_allocator_storage_domain"
+sqlite_expression = "typeof(next_id) = 'integer' AND next_id >= 0 AND typeof(stream) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "next_id IS NOT NULL AND next_id >= 0 AND stream IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_identity_allocator_updated_at_nonneg"
 sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
@@ -4212,6 +4304,10 @@ name = "fk_gallery_observation_allocator_1"
 attributes = ["gallery_id"]
 referenced_relation = "gallery_identity"
 referenced_attributes = ["gallery_id"]
+[[relation.check]]
+name = "ck_gallery_observation_allocator_storage_domain"
+sqlite_expression = "typeof(gallery_id) = 'integer' AND gallery_id >= 0 AND typeof(next_observation_id) = 'integer' AND next_observation_id >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "gallery_id IS NOT NULL AND gallery_id >= 0 AND next_observation_id IS NOT NULL AND next_observation_id >= 0 AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_gallery_observation_allocator_updated_at_nonneg"
 sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
@@ -4286,6 +4382,10 @@ name = "fk_gallery_observation_staging_2"
 attributes = ["gallery_id", "observation_id"]
 referenced_relation = "gallery_observation_allocation"
 referenced_attributes = ["gallery_id", "observation_id"]
+[[relation.check]]
+name = "ck_gallery_observation_staging_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(gallery_id) = 'integer' AND gallery_id >= 0 AND typeof(observation_id) = 'integer' AND observation_id >= 0 AND (sealed_at IS NULL OR typeof(sealed_at) = 'integer') AND sealed_at >= 0 AND typeof(staging_id) = 'blob' AND typeof(state) = 'text' AND (terminal_byte_count IS NULL OR typeof(terminal_byte_count) = 'integer') AND terminal_byte_count >= 0"
+mariadb_expression = "build_id IS NOT NULL AND created_at IS NOT NULL AND created_at >= 0 AND gallery_id IS NOT NULL AND gallery_id >= 0 AND observation_id IS NOT NULL AND observation_id >= 0 AND (sealed_at IS NULL OR sealed_at IS NOT NULL) AND sealed_at >= 0 AND staging_id IS NOT NULL AND state IS NOT NULL AND (terminal_byte_count IS NULL OR terminal_byte_count IS NOT NULL) AND terminal_byte_count >= 0"
 [[relation.check]]
 name = "ck_gallery_observation_staging_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -4365,6 +4465,10 @@ name = "ix_gallery_observation_staging_claim_fk_2"
 attributes = ["ingest_generation"]
 unique = false
 [[relation.check]]
+name = "ck_gallery_observation_staging_claim_storage_domain"
+sqlite_expression = "typeof(claim_generation) = 'integer' AND claim_generation >= 0 AND typeof(ingest_generation) = 'integer' AND ingest_generation >= 0 AND typeof(staging_id) = 'blob' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "claim_generation IS NOT NULL AND claim_generation >= 0 AND ingest_generation IS NOT NULL AND ingest_generation >= 0 AND staging_id IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
 name = "ck_gallery_observation_staging_claim_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -4442,6 +4546,10 @@ name = "ix_gallery_observation_staging_checkpoint_state"
 attributes = ["state", "updated_at"]
 unique = false
 [[relation.check]]
+name = "ck_gallery_observation_staging_checkpoint_storage_domain"
+sqlite_expression = "typeof(component) = 'blob' AND typeof(cursor) = 'integer' AND cursor >= 0 AND typeof(level) = 'integer' AND level >= 0 AND typeof(processed_byte_count) = 'integer' AND processed_byte_count >= 0 AND typeof(regular_count) = 'integer' AND regular_count >= 0 AND typeof(staging_id) = 'blob' AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "component IS NOT NULL AND `cursor` IS NOT NULL AND `cursor` >= 0 AND level IS NOT NULL AND level >= 0 AND processed_byte_count IS NOT NULL AND processed_byte_count >= 0 AND regular_count IS NOT NULL AND regular_count >= 0 AND staging_id IS NOT NULL AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
 name = "ck_gallery_observation_staging_checkpoint_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -4513,6 +4621,10 @@ name = "ix_gallery_observation_staging_request_fk_1"
 attributes = ["staging_id"]
 unique = false
 [[relation.check]]
+name = "ck_gallery_observation_staging_request_storage_domain"
+sqlite_expression = "typeof(request_sha256) = 'blob' AND typeof(staging_id) = 'blob'"
+mariadb_expression = "request_sha256 IS NOT NULL AND staging_id IS NOT NULL"
+[[relation.check]]
 name = "ck_gallery_observation_staging_request_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -4538,6 +4650,10 @@ attribute = "retained_request_count"
 name = "retained_request_count"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_gallery_observation_staging_request_budget_storage_domain"
+sqlite_expression = "typeof(retained_request_count) = 'integer' AND retained_request_count >= 0 AND typeof(singleton_id) = 'integer' AND singleton_id >= 0"
+mariadb_expression = "retained_request_count IS NOT NULL AND retained_request_count >= 0 AND singleton_id IS NOT NULL AND singleton_id >= 0"
 [[relation.check]]
 name = "ck_gallery_observation_staging_request_budget_singleton"
 sqlite_expression = "singleton_id = 1"
@@ -4583,6 +4699,10 @@ attributes = ["request_sha256"]
 referenced_relation = "gallery_observation_staging_request"
 referenced_attributes = ["request_sha256"]
 [[relation.check]]
+name = "ck_gallery_observation_staging_request_chunk_storage_domain"
+sqlite_expression = "typeof(position) = 'integer' AND position >= 0 AND typeof(request_bytes) = 'blob' AND typeof(request_sha256) = 'blob'"
+mariadb_expression = "position IS NOT NULL AND position >= 0 AND request_bytes IS NOT NULL AND request_sha256 IS NOT NULL"
+[[relation.check]]
 name = "ck_gallery_observation_staging_request_chunk_request_sha256_len"
 sqlite_expression = "length(request_sha256) = 32"
 mariadb_expression = "octet_length(request_sha256) = 32"
@@ -4626,6 +4746,10 @@ name = "fk_gallery_observation_staging_request_predecessor_2"
 attributes = ["prior_request_sha256"]
 referenced_relation = "gallery_observation_staging_request"
 referenced_attributes = ["request_sha256"]
+[[relation.check]]
+name = "ck_gallery_observation_staging_request_predecessor_6cf6b17155a0"
+sqlite_expression = "typeof(prior_request_sha256) = 'blob' AND typeof(request_sha256) = 'blob'"
+mariadb_expression = "prior_request_sha256 IS NOT NULL AND request_sha256 IS NOT NULL"
 [[relation.check]]
 name = "ck_gallery_observation_staging_request_predecessor_e1c5331f7fe3"
 sqlite_expression = "length(prior_request_sha256) = 32"
@@ -4683,6 +4807,10 @@ attributes = ["staging_id", "component", "level"]
 referenced_relation = "gallery_observation_staging_checkpoint"
 referenced_attributes = ["staging_id", "component", "level"]
 [[relation.check]]
+name = "ck_gallery_observation_staging_page_request_storage_domain"
+sqlite_expression = "typeof(component) = 'blob' AND typeof(level) = 'integer' AND level >= 0 AND typeof(request_sha256) = 'blob' AND typeof(staging_id) = 'blob' AND typeof(start_cursor) = 'integer' AND start_cursor >= 0 AND typeof(terminal) = 'integer' AND terminal >= 0"
+mariadb_expression = "component IS NOT NULL AND level IS NOT NULL AND level >= 0 AND request_sha256 IS NOT NULL AND staging_id IS NOT NULL AND start_cursor IS NOT NULL AND start_cursor >= 0 AND terminal IS NOT NULL AND terminal >= 0"
+[[relation.check]]
 name = "ck_gallery_observation_staging_page_request_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -4738,6 +4866,10 @@ referenced_attributes = ["page_sha256"]
 name = "ix_gallery_observation_staging_request_page_fk_2"
 attributes = ["page_sha256"]
 unique = false
+[[relation.check]]
+name = "ck_gallery_observation_staging_request_page_storage_domain"
+sqlite_expression = "typeof(page_sha256) = 'blob' AND typeof(request_sha256) = 'blob'"
+mariadb_expression = "page_sha256 IS NOT NULL AND request_sha256 IS NOT NULL"
 [[relation.check]]
 name = "ck_gallery_observation_staging_request_page_page_sha256_len"
 sqlite_expression = "length(page_sha256) = 32"
@@ -4800,6 +4932,10 @@ attributes = ["request_sha256"]
 referenced_relation = "gallery_observation_staging_page_request"
 referenced_attributes = ["request_sha256"]
 [[relation.check]]
+name = "ck_gallery_observation_staging_receipt_storage_domain"
+sqlite_expression = "typeof(committed_at) = 'integer' AND committed_at >= 0 AND typeof(component) = 'blob' AND typeof(level) = 'integer' AND level >= 0 AND typeof(next_processed_byte_count) = 'integer' AND next_processed_byte_count >= 0 AND typeof(request_sha256) = 'blob' AND typeof(staging_id) = 'blob' AND typeof(start_processed_byte_count) = 'integer' AND start_processed_byte_count >= 0"
+mariadb_expression = "committed_at IS NOT NULL AND committed_at >= 0 AND component IS NOT NULL AND level IS NOT NULL AND level >= 0 AND next_processed_byte_count IS NOT NULL AND next_processed_byte_count >= 0 AND request_sha256 IS NOT NULL AND staging_id IS NOT NULL AND start_processed_byte_count IS NOT NULL AND start_processed_byte_count >= 0"
+[[relation.check]]
 name = "ck_gallery_observation_staging_receipt_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -4850,6 +4986,10 @@ name = "fk_gallery_observation_staging_frontier_1"
 attributes = ["request_sha256"]
 referenced_relation = "gallery_observation_staging_request_page"
 referenced_attributes = ["request_sha256"]
+[[relation.check]]
+name = "ck_gallery_observation_staging_frontier_storage_domain"
+sqlite_expression = "typeof(position) = 'integer' AND position >= 0 AND typeof(request_sha256) = 'blob'"
+mariadb_expression = "position IS NOT NULL AND position >= 0 AND request_sha256 IS NOT NULL"
 [[relation.check]]
 name = "ck_gallery_observation_staging_frontier_request_sha256_len"
 sqlite_expression = "length(request_sha256) = 32"
@@ -4904,6 +5044,10 @@ referenced_attributes = ["staging_id"]
 name = "ix_gallery_observation_staging_match_checkpoint_state"
 attributes = ["state", "updated_at"]
 unique = false
+[[relation.check]]
+name = "ck_gallery_observation_staging_match_checkpoint_storage_domain"
+sqlite_expression = "typeof(file_cursor_bytes) = 'blob' AND typeof(matched_count) = 'integer' AND matched_count >= 0 AND typeof(staging_id) = 'blob' AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "file_cursor_bytes IS NOT NULL AND matched_count IS NOT NULL AND matched_count >= 0 AND staging_id IS NOT NULL AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_gallery_observation_staging_match_checkpoint_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
@@ -4972,6 +5116,10 @@ attributes = ["staging_id"]
 referenced_relation = "gallery_observation_staging_match_checkpoint"
 referenced_attributes = ["staging_id"]
 [[relation.check]]
+name = "ck_gallery_observation_staging_match_request_storage_domain"
+sqlite_expression = "typeof(request_sha256) = 'blob' AND typeof(staging_id) = 'blob' AND typeof(start_file_cursor_bytes) = 'blob' AND typeof(start_matched_count) = 'integer' AND start_matched_count >= 0 AND typeof(terminal) = 'integer' AND terminal >= 0"
+mariadb_expression = "request_sha256 IS NOT NULL AND staging_id IS NOT NULL AND start_file_cursor_bytes IS NOT NULL AND start_matched_count IS NOT NULL AND start_matched_count >= 0 AND terminal IS NOT NULL AND terminal >= 0"
+[[relation.check]]
 name = "ck_gallery_observation_staging_match_request_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -5020,6 +5168,10 @@ name = "fk_gallery_observation_staging_match_receipt_2"
 attributes = ["request_sha256"]
 referenced_relation = "gallery_observation_staging_match_request"
 referenced_attributes = ["request_sha256"]
+[[relation.check]]
+name = "ck_gallery_observation_staging_match_receipt_storage_domain"
+sqlite_expression = "typeof(committed_at) = 'integer' AND committed_at >= 0 AND typeof(request_sha256) = 'blob' AND typeof(staging_id) = 'blob'"
+mariadb_expression = "committed_at IS NOT NULL AND committed_at >= 0 AND request_sha256 IS NOT NULL AND staging_id IS NOT NULL"
 [[relation.check]]
 name = "ck_gallery_observation_staging_match_receipt_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
@@ -5126,6 +5278,10 @@ attributes = ["staging_id"]
 referenced_relation = "gallery_observation_staging"
 referenced_attributes = ["staging_id"]
 [[relation.check]]
+name = "ck_gallery_observation_staging_metadata_parser_storage_domain"
+sqlite_expression = "(comment_byte_count IS NULL OR typeof(comment_byte_count) = 'integer') AND comment_byte_count >= 0 AND (download_time IS NULL OR typeof(download_time) = 'integer') AND download_time >= 0 AND typeof(fixed_carry) = 'blob' AND (gid IS NULL OR typeof(gid) = 'integer') AND gid >= 0 AND (modified_time IS NULL OR typeof(modified_time) = 'integer') AND modified_time >= 0 AND (page_count IS NULL OR typeof(page_count) = 'integer') AND page_count >= 0 AND typeof(phase) = 'text' AND typeof(remaining_text_bytes) = 'integer' AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR typeof(scan_observation_version) = 'integer') AND scan_observation_version >= 0 AND (source_file_count IS NULL OR typeof(source_file_count) = 'integer') AND source_file_count >= 0 AND typeof(staging_id) = 'blob' AND (title_byte_count IS NULL OR typeof(title_byte_count) = 'integer') AND title_byte_count >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR typeof(upload_account_byte_count) = 'integer') AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR typeof(upload_time) = 'integer') AND upload_time >= 0 AND typeof(utf8_tail) = 'blob'"
+mariadb_expression = "(comment_byte_count IS NULL OR comment_byte_count IS NOT NULL) AND comment_byte_count >= 0 AND (download_time IS NULL OR download_time IS NOT NULL) AND download_time >= 0 AND fixed_carry IS NOT NULL AND (gid IS NULL OR gid IS NOT NULL) AND gid >= 0 AND (modified_time IS NULL OR modified_time IS NOT NULL) AND modified_time >= 0 AND (page_count IS NULL OR page_count IS NOT NULL) AND page_count >= 0 AND phase IS NOT NULL AND remaining_text_bytes IS NOT NULL AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR scan_observation_version IS NOT NULL) AND scan_observation_version >= 0 AND (source_file_count IS NULL OR source_file_count IS NOT NULL) AND source_file_count >= 0 AND staging_id IS NOT NULL AND (title_byte_count IS NULL OR title_byte_count IS NOT NULL) AND title_byte_count >= 0 AND updated_at IS NOT NULL AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR upload_account_byte_count IS NOT NULL) AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR upload_time IS NOT NULL) AND upload_time >= 0 AND utf8_tail IS NOT NULL"
+[[relation.check]]
 name = "ck_gallery_observation_staging_metadata_parser_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
 mariadb_expression = "octet_length(staging_id) = 16"
@@ -5226,6 +5382,10 @@ name = "ix_canonical_value_upload_fk_2"
 attributes = ["value_sha256"]
 unique = false
 [[relation.check]]
+name = "ck_canonical_value_upload_storage_domain"
+sqlite_expression = "typeof(generation) = 'integer' AND generation >= 0 AND typeof(value_sha256) = 'blob'"
+mariadb_expression = "generation IS NOT NULL AND generation >= 0 AND value_sha256 IS NOT NULL"
+[[relation.check]]
 name = "ck_canonical_value_upload_value_sha256_len"
 sqlite_expression = "length(value_sha256) = 32"
 mariadb_expression = "octet_length(value_sha256) = 32"
@@ -5262,6 +5422,10 @@ name = "requested_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.check]]
+name = "ck_download_request_storage_domain"
+sqlite_expression = "typeof(gid) = 'integer' AND gid >= 0 AND typeof(request_token) = 'blob' AND typeof(requested_at) = 'integer' AND requested_at >= 0 AND typeof(url) = 'text'"
+mariadb_expression = "gid IS NOT NULL AND gid >= 0 AND request_token IS NOT NULL AND requested_at IS NOT NULL AND requested_at >= 0 AND url IS NOT NULL"
+[[relation.check]]
 name = "ck_download_request_request_token_len"
 sqlite_expression = "length(request_token) = 16"
 mariadb_expression = "octet_length(request_token) = 16"
@@ -5291,6 +5455,10 @@ attribute = "allocated_at"
 name = "allocated_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_deletion_request_generation_storage_domain"
+sqlite_expression = "typeof(allocated_at) = 'integer' AND allocated_at >= 0 AND typeof(generation) = 'integer' AND generation >= 0"
+mariadb_expression = "allocated_at IS NOT NULL AND allocated_at >= 0 AND generation IS NOT NULL AND generation >= 0"
 [[relation.check]]
 name = "ck_deletion_request_generation_allocated_at_nonneg"
 sqlite_expression = "allocated_at >= 0 AND allocated_at <= 9223372036854775807"
@@ -5332,6 +5500,10 @@ name = "ix_deletion_request_generation_head_fk_1"
 attributes = ["current_generation"]
 unique = false
 [[relation.check]]
+name = "ck_deletion_request_generation_head_storage_domain"
+sqlite_expression = "typeof(current_generation) = 'integer' AND current_generation >= 0 AND typeof(singleton_id) = 'integer' AND singleton_id >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "current_generation IS NOT NULL AND current_generation >= 0 AND singleton_id IS NOT NULL AND singleton_id >= 0 AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
 name = "ck_deletion_request_generation_head_singleton"
 sqlite_expression = "singleton_id = 1"
 mariadb_expression = "singleton_id = 1"
@@ -5371,6 +5543,10 @@ name = "requested_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.check]]
+name = "ck_deletion_request_attempt_storage_domain"
+sqlite_expression = "typeof(gid) = 'integer' AND gid >= 0 AND typeof(request_token) = 'blob' AND typeof(requested_at) = 'integer' AND requested_at >= 0"
+mariadb_expression = "gid IS NOT NULL AND gid >= 0 AND request_token IS NOT NULL AND requested_at IS NOT NULL AND requested_at >= 0"
+[[relation.check]]
 name = "ck_deletion_request_attempt_request_token_len"
 sqlite_expression = "length(request_token) = 16"
 mariadb_expression = "octet_length(request_token) = 16"
@@ -5406,6 +5582,10 @@ attributes = ["request_token"]
 referenced_relation = "deletion_request_attempt"
 referenced_attributes = ["request_token"]
 [[relation.check]]
+name = "ck_deletion_request_url_storage_domain"
+sqlite_expression = "typeof(request_token) = 'blob' AND typeof(url) = 'text'"
+mariadb_expression = "request_token IS NOT NULL AND url IS NOT NULL"
+[[relation.check]]
 name = "ck_deletion_request_url_request_token_len"
 sqlite_expression = "length(request_token) = 16"
 mariadb_expression = "octet_length(request_token) = 16"
@@ -5433,6 +5613,10 @@ attributes = ["request_token"]
 referenced_relation = "deletion_request_attempt"
 referenced_attributes = ["request_token"]
 [[relation.check]]
+name = "ck_deletion_request_head_storage_domain"
+sqlite_expression = "typeof(gid) = 'integer' AND gid >= 0 AND typeof(request_token) = 'blob'"
+mariadb_expression = "gid IS NOT NULL AND gid >= 0 AND request_token IS NOT NULL"
+[[relation.check]]
 name = "ck_deletion_request_head_request_token_len"
 sqlite_expression = "length(request_token) = 16"
 mariadb_expression = "octet_length(request_token) = 16"
@@ -5453,6 +5637,10 @@ attribute = "gid"
 name = "gid"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_removed_gid_storage_domain"
+sqlite_expression = "typeof(gid) = 'integer' AND gid >= 0"
+mariadb_expression = "gid IS NOT NULL AND gid >= 0"
 [[relation.check]]
 name = "ck_removed_gid_gid_nonneg"
 sqlite_expression = "gid >= 0 AND gid <= 9223372036854775807"
@@ -5500,6 +5688,10 @@ name = "ix_gallery_redownload_state_fk_2"
 attributes = ["through_source_revision", "redownload_at", "gallery_id"]
 unique = false
 [[relation.check]]
+name = "ck_gallery_redownload_state_storage_domain"
+sqlite_expression = "typeof(gallery_id) = 'integer' AND gallery_id >= 0 AND typeof(redownload_at) = 'integer' AND redownload_at >= 0 AND typeof(through_source_revision) = 'integer' AND through_source_revision >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "gallery_id IS NOT NULL AND gallery_id >= 0 AND redownload_at IS NOT NULL AND redownload_at >= 0 AND through_source_revision IS NOT NULL AND through_source_revision >= 0 AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
 name = "ck_gallery_redownload_state_redownload_at_nonneg"
 sqlite_expression = "redownload_at >= 0 AND redownload_at <= 9223372036854775807"
 mariadb_expression = "redownload_at >= 0 AND redownload_at <= 9223372036854775807"
@@ -5544,6 +5736,10 @@ name = "max_batch_rows"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.check]]
+name = "ck_operational_policy_storage_domain"
+sqlite_expression = "typeof(algorithm_version) = 'integer' AND algorithm_version >= 0 AND typeof(max_batch_rows) = 'integer' AND max_batch_rows >= 0 AND typeof(operational_policy_id) = 'integer' AND operational_policy_id >= 0 AND typeof(operational_schema_version) = 'integer' AND operational_schema_version >= 0"
+mariadb_expression = "algorithm_version IS NOT NULL AND algorithm_version >= 0 AND max_batch_rows IS NOT NULL AND max_batch_rows >= 0 AND operational_policy_id IS NOT NULL AND operational_policy_id >= 0 AND operational_schema_version IS NOT NULL AND operational_schema_version >= 0"
+[[relation.check]]
 name = "ck_operational_policy_algorithm_version_nonneg"
 sqlite_expression = "algorithm_version >= 0 AND algorithm_version <= 9223372036854775807"
 mariadb_expression = "algorithm_version >= 0 AND algorithm_version <= 9223372036854775807"
@@ -5577,6 +5773,10 @@ attribute = "created_at"
 name = "created_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_operational_event_stream_storage_domain"
+sqlite_expression = "typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(preparation_id) = 'blob'"
+mariadb_expression = "created_at IS NOT NULL AND created_at >= 0 AND preparation_id IS NOT NULL"
 [[relation.check]]
 name = "ck_operational_event_stream_preparation_id_len"
 sqlite_expression = "length(preparation_id) = 16"
@@ -5660,6 +5860,10 @@ unique = false
 name = "ix_operational_preparation_fk_4"
 attributes = ["deletion_request_generation"]
 unique = false
+[[relation.check]]
+name = "ck_operational_preparation_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND (completed_at IS NULL OR typeof(completed_at) = 'integer') AND completed_at >= 0 AND typeof(deletion_request_generation) = 'integer' AND deletion_request_generation >= 0 AND typeof(operational_policy_id) = 'integer' AND operational_policy_id >= 0 AND typeof(preparation_id) = 'blob' AND typeof(prepared_at) = 'integer' AND prepared_at >= 0 AND typeof(state) = 'text'"
+mariadb_expression = "build_id IS NOT NULL AND (completed_at IS NULL OR completed_at IS NOT NULL) AND completed_at >= 0 AND deletion_request_generation IS NOT NULL AND deletion_request_generation >= 0 AND operational_policy_id IS NOT NULL AND operational_policy_id >= 0 AND preparation_id IS NOT NULL AND prepared_at IS NOT NULL AND prepared_at >= 0 AND state IS NOT NULL"
 [[relation.check]]
 name = "ck_operational_preparation_build_id_len"
 sqlite_expression = "length(build_id) = 16"
@@ -5745,6 +5949,10 @@ referenced_attributes = ["preparation_id"]
 name = "ix_operational_preparation_checkpoint_state"
 attributes = ["state", "updated_at"]
 unique = false
+[[relation.check]]
+name = "ck_operational_preparation_checkpoint_storage_domain"
+sqlite_expression = "typeof(chain_sha256) = 'blob' AND typeof(cursor_bytes) = 'blob' AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(phase) = 'text' AND typeof(preparation_id) = 'blob' AND typeof(processed_count) = 'integer' AND processed_count >= 0 AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "chain_sha256 IS NOT NULL AND cursor_bytes IS NOT NULL AND generation IS NOT NULL AND generation >= 0 AND phase IS NOT NULL AND preparation_id IS NOT NULL AND processed_count IS NOT NULL AND processed_count >= 0 AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_operational_preparation_checkpoint_preparation_id_len"
 sqlite_expression = "length(preparation_id) = 16"
@@ -5833,6 +6041,10 @@ attributes = ["preparation_id", "phase"]
 referenced_relation = "operational_preparation_checkpoint"
 referenced_attributes = ["preparation_id", "phase"]
 [[relation.check]]
+name = "ck_operational_preparation_batch_receipt_storage_domain"
+sqlite_expression = "typeof(batch_key) = 'blob' AND typeof(committed_at) = 'integer' AND committed_at >= 0 AND typeof(committed_generation) = 'integer' AND committed_generation >= 0 AND typeof(input_sha256) = 'blob' AND typeof(next_cursor) = 'blob' AND typeof(output_sha256) = 'blob' AND typeof(phase) = 'text' AND typeof(preparation_id) = 'blob' AND typeof(row_count) = 'integer' AND row_count >= 0 AND typeof(start_cursor) = 'blob'"
+mariadb_expression = "batch_key IS NOT NULL AND committed_at IS NOT NULL AND committed_at >= 0 AND committed_generation IS NOT NULL AND committed_generation >= 0 AND input_sha256 IS NOT NULL AND next_cursor IS NOT NULL AND output_sha256 IS NOT NULL AND phase IS NOT NULL AND preparation_id IS NOT NULL AND row_count IS NOT NULL AND row_count >= 0 AND start_cursor IS NOT NULL"
+[[relation.check]]
 name = "ck_operational_preparation_batch_receipt_preparation_id_len"
 sqlite_expression = "length(preparation_id) = 16"
 mariadb_expression = "octet_length(preparation_id) = 16"
@@ -5894,6 +6106,10 @@ attributes = ["preparation_id"]
 referenced_relation = "operational_event_stream"
 referenced_attributes = ["preparation_id"]
 [[relation.check]]
+name = "ck_operational_preparation_effect_seal_storage_domain"
+sqlite_expression = "typeof(event_count) = 'integer' AND event_count >= 0 AND typeof(final_chain_sha256) = 'blob' AND typeof(preparation_id) = 'blob' AND typeof(sealed_at) = 'integer' AND sealed_at >= 0"
+mariadb_expression = "event_count IS NOT NULL AND event_count >= 0 AND final_chain_sha256 IS NOT NULL AND preparation_id IS NOT NULL AND sealed_at IS NOT NULL AND sealed_at >= 0"
+[[relation.check]]
 name = "ck_operational_preparation_effect_seal_preparation_id_len"
 sqlite_expression = "length(preparation_id) = 16"
 mariadb_expression = "octet_length(preparation_id) = 16"
@@ -5947,6 +6163,10 @@ name = "fk_publication_candidate_preparation_3"
 attributes = ["preparation_id"]
 referenced_relation = "operational_preparation_effect_seal"
 referenced_attributes = ["preparation_id"]
+[[relation.check]]
+name = "ck_publication_candidate_preparation_storage_domain"
+sqlite_expression = "typeof(bound_at) = 'integer' AND bound_at >= 0 AND typeof(candidate_id) = 'blob' AND typeof(preparation_id) = 'blob'"
+mariadb_expression = "bound_at IS NOT NULL AND bound_at >= 0 AND candidate_id IS NOT NULL AND preparation_id IS NOT NULL"
 [[relation.check]]
 name = "ck_publication_candidate_preparation_candidate_id_len"
 sqlite_expression = "length(candidate_id) = 16"
@@ -6003,6 +6223,10 @@ attributes = ["preparation_id"]
 referenced_relation = "operational_event_stream"
 referenced_attributes = ["preparation_id"]
 [[relation.check]]
+name = "ck_operational_event_storage_domain"
+sqlite_expression = "typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(event_id) = 'blob' AND typeof(event_sha256) = 'blob' AND typeof(event_type) = 'text' AND typeof(preparation_id) = 'blob' AND typeof(sequence_no) = 'integer' AND sequence_no >= 0"
+mariadb_expression = "created_at IS NOT NULL AND created_at >= 0 AND event_id IS NOT NULL AND event_sha256 IS NOT NULL AND event_type IS NOT NULL AND preparation_id IS NOT NULL AND sequence_no IS NOT NULL AND sequence_no >= 0"
+[[relation.check]]
 name = "ck_operational_event_event_id_len"
 sqlite_expression = "length(event_id) = 16"
 mariadb_expression = "octet_length(event_id) = 16"
@@ -6055,6 +6279,10 @@ attributes = ["event_id"]
 referenced_relation = "operational_event"
 referenced_attributes = ["event_id"]
 [[relation.check]]
+name = "ck_operational_removed_gid_event_storage_domain"
+sqlite_expression = "typeof(event_id) = 'blob' AND typeof(gid) = 'integer' AND gid >= 0 AND typeof(request_token) = 'blob'"
+mariadb_expression = "event_id IS NOT NULL AND gid IS NOT NULL AND gid >= 0 AND request_token IS NOT NULL"
+[[relation.check]]
 name = "ck_operational_removed_gid_event_event_id_len"
 sqlite_expression = "length(event_id) = 16"
 mariadb_expression = "octet_length(event_id) = 16"
@@ -6099,6 +6327,10 @@ name = "fk_operational_deletion_consumption_event_2"
 attributes = ["deletion_request_token"]
 referenced_relation = "deletion_request_attempt"
 referenced_attributes = ["request_token"]
+[[relation.check]]
+name = "ck_operational_deletion_consumption_event_storage_domain"
+sqlite_expression = "typeof(deletion_request_token) = 'blob' AND typeof(event_id) = 'blob' AND typeof(gid) = 'integer' AND gid >= 0"
+mariadb_expression = "deletion_request_token IS NOT NULL AND event_id IS NOT NULL AND gid IS NOT NULL AND gid >= 0"
 [[relation.check]]
 name = "ck_operational_deletion_consumption_event_deletion_ef5ea5c8f545"
 sqlite_expression = "length(deletion_request_token) = 16"
@@ -6148,6 +6380,10 @@ referenced_attributes = ["value_sha256"]
 name = "ix_hash_cache_observation_fk_2"
 attributes = ["fingerprint_sha256"]
 unique = false
+[[relation.check]]
+name = "ck_hash_cache_observation_storage_domain"
+sqlite_expression = "typeof(fingerprint_sha256) = 'blob' AND typeof(observed_at) = 'integer' AND observed_at >= 0 AND typeof(source_identity_sha256) = 'blob'"
+mariadb_expression = "fingerprint_sha256 IS NOT NULL AND observed_at IS NOT NULL AND observed_at >= 0 AND source_identity_sha256 IS NOT NULL"
 [[relation.check]]
 name = "ck_hash_cache_observation_fingerprint_sha256_len"
 sqlite_expression = "length(fingerprint_sha256) = 32"
@@ -6203,6 +6439,10 @@ name = "ix_file_hash_cache_hash"
 attributes = ["file_sha256", "cached_at"]
 unique = false
 [[relation.check]]
+name = "ck_file_hash_cache_storage_domain"
+sqlite_expression = "typeof(cached_at) = 'integer' AND cached_at >= 0 AND typeof(file_sha256) = 'blob' AND typeof(fingerprint_sha256) = 'blob' AND typeof(source_identity_sha256) = 'blob'"
+mariadb_expression = "cached_at IS NOT NULL AND cached_at >= 0 AND file_sha256 IS NOT NULL AND fingerprint_sha256 IS NOT NULL AND source_identity_sha256 IS NOT NULL"
+[[relation.check]]
 name = "ck_file_hash_cache_file_sha256_len"
 sqlite_expression = "length(file_sha256) = 32"
 mariadb_expression = "octet_length(file_sha256) = 32"
@@ -6231,6 +6471,10 @@ attribute = "target_kind"
 name = "target_kind"
 sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
 mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.check]]
+name = "ck_cleanup_target_kind_storage_domain"
+sqlite_expression = "typeof(target_kind) = 'text'"
+mariadb_expression = "target_kind IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_target_kind_target_kind_registry"
 sqlite_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
@@ -6263,6 +6507,10 @@ name = "fk_cleanup_sweep_target_1"
 attributes = ["target_kind"]
 referenced_relation = "cleanup_target_kind"
 referenced_attributes = ["target_kind"]
+[[relation.check]]
+name = "ck_cleanup_sweep_target_storage_domain"
+sqlite_expression = "typeof(shard_no) = 'integer' AND shard_no >= 0 AND typeof(target_key) = 'blob' AND typeof(target_kind) = 'text'"
+mariadb_expression = "shard_no IS NOT NULL AND shard_no >= 0 AND target_key IS NOT NULL AND target_kind IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_sweep_target_target_key_len"
 sqlite_expression = "length(target_key) = 32"
@@ -6303,6 +6551,10 @@ name = "fk_cleanup_phase_1"
 attributes = ["target_kind"]
 referenced_relation = "cleanup_target_kind"
 referenced_attributes = ["target_kind"]
+[[relation.check]]
+name = "ck_cleanup_phase_storage_domain"
+sqlite_expression = "typeof(phase) = 'text' AND typeof(phase_order) = 'integer' AND phase_order >= 0 AND typeof(target_kind) = 'text'"
+mariadb_expression = "phase IS NOT NULL AND phase_order IS NOT NULL AND phase_order >= 0 AND target_kind IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_order_nonneg"
 sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
@@ -6399,6 +6651,10 @@ attributes = ["target_key"]
 referenced_relation = "cleanup_sweep_target"
 referenced_attributes = ["target_key"]
 [[relation.check]]
+name = "ck_cleanup_job_storage_domain"
+sqlite_expression = "typeof(algorithm_version) = 'integer' AND algorithm_version >= 0 AND typeof(cleanup_id) = 'blob' AND (completed_at IS NULL OR typeof(completed_at) = 'integer') AND completed_at >= 0 AND typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(cycle_cutoff_at) = 'integer' AND cycle_cutoff_at >= 0 AND typeof(cycle_generation) = 'integer' AND cycle_generation >= 0 AND (final_chain_sha256 IS NULL OR typeof(final_chain_sha256) = 'blob') AND (final_deleted_count IS NULL OR typeof(final_deleted_count) = 'integer') AND final_deleted_count >= 0 AND typeof(frozen_root_count) = 'integer' AND frozen_root_count >= 0 AND typeof(frozen_root_set_sha256) = 'blob' AND typeof(hash_cache_max_age_microseconds) = 'integer' AND hash_cache_max_age_microseconds >= 0 AND typeof(max_rows_per_transaction) = 'integer' AND max_rows_per_transaction >= 0 AND typeof(state) = 'text' AND typeof(target_key) = 'blob'"
+mariadb_expression = "algorithm_version IS NOT NULL AND algorithm_version >= 0 AND cleanup_id IS NOT NULL AND (completed_at IS NULL OR completed_at IS NOT NULL) AND completed_at >= 0 AND created_at IS NOT NULL AND created_at >= 0 AND cycle_cutoff_at IS NOT NULL AND cycle_cutoff_at >= 0 AND cycle_generation IS NOT NULL AND cycle_generation >= 0 AND (final_chain_sha256 IS NULL OR final_chain_sha256 IS NOT NULL) AND (final_deleted_count IS NULL OR final_deleted_count IS NOT NULL) AND final_deleted_count >= 0 AND frozen_root_count IS NOT NULL AND frozen_root_count >= 0 AND frozen_root_set_sha256 IS NOT NULL AND hash_cache_max_age_microseconds IS NOT NULL AND hash_cache_max_age_microseconds >= 0 AND max_rows_per_transaction IS NOT NULL AND max_rows_per_transaction >= 0 AND state IS NOT NULL AND target_key IS NOT NULL"
+[[relation.check]]
 name = "ck_cleanup_job_cleanup_id_len"
 sqlite_expression = "length(cleanup_id) = 16"
 mariadb_expression = "octet_length(cleanup_id) = 16"
@@ -6489,6 +6745,10 @@ name = "fk_cleanup_cycle_root_1"
 attributes = ["cleanup_id"]
 referenced_relation = "cleanup_job"
 referenced_attributes = ["cleanup_id"]
+[[relation.check]]
+name = "ck_cleanup_cycle_root_storage_domain"
+sqlite_expression = "typeof(cleanup_id) = 'blob' AND typeof(frozen_root_key) = 'blob'"
+mariadb_expression = "cleanup_id IS NOT NULL AND frozen_root_key IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_cycle_root_cleanup_id_len"
 sqlite_expression = "length(cleanup_id) = 16"
@@ -6593,6 +6853,10 @@ unique = false
 name = "ix_cleanup_checkpoint_fk_2"
 attributes = ["phase"]
 unique = false
+[[relation.check]]
+name = "ck_cleanup_checkpoint_storage_domain"
+sqlite_expression = "typeof(chain_sha256) = 'blob' AND typeof(cleanup_id) = 'blob' AND typeof(cursor_bytes) = 'blob' AND typeof(deleted_count) = 'integer' AND deleted_count >= 0 AND typeof(generation) = 'integer' AND generation >= 0 AND typeof(phase) = 'text' AND (receipt_batch_key IS NULL OR typeof(receipt_batch_key) = 'blob') AND (receipt_input_sha256 IS NULL OR typeof(receipt_input_sha256) = 'blob') AND (receipt_prior_chain_sha256 IS NULL OR typeof(receipt_prior_chain_sha256) = 'blob') AND (receipt_prior_deleted_count IS NULL OR typeof(receipt_prior_deleted_count) = 'integer') AND receipt_prior_deleted_count >= 0 AND (receipt_row_count IS NULL OR typeof(receipt_row_count) = 'integer') AND receipt_row_count >= 0 AND (receipt_start_cursor IS NULL OR typeof(receipt_start_cursor) = 'blob') AND typeof(state) = 'text' AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "chain_sha256 IS NOT NULL AND cleanup_id IS NOT NULL AND cursor_bytes IS NOT NULL AND deleted_count IS NOT NULL AND deleted_count >= 0 AND generation IS NOT NULL AND generation >= 0 AND phase IS NOT NULL AND (receipt_batch_key IS NULL OR receipt_batch_key IS NOT NULL) AND (receipt_input_sha256 IS NULL OR receipt_input_sha256 IS NOT NULL) AND (receipt_prior_chain_sha256 IS NULL OR receipt_prior_chain_sha256 IS NOT NULL) AND (receipt_prior_deleted_count IS NULL OR receipt_prior_deleted_count IS NOT NULL) AND receipt_prior_deleted_count >= 0 AND (receipt_row_count IS NULL OR receipt_row_count IS NOT NULL) AND receipt_row_count >= 0 AND (receipt_start_cursor IS NULL OR receipt_start_cursor IS NOT NULL) AND state IS NOT NULL AND updated_at IS NOT NULL AND updated_at >= 0"
 [[relation.check]]
 name = "ck_cleanup_checkpoint_cleanup_id_len"
 sqlite_expression = "length(cleanup_id) = 16"

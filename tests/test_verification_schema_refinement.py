@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from h2hdb import CoreConfig, VNextDatabaseAdminFacade
+from h2hdb import CoreConfig, VNextDatabaseAdminFacade, catalog_refinement
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -39,6 +39,18 @@ def _load_refinement() -> ModuleType:
 
 
 refinement = _load_refinement()
+
+
+def test_runtime_canonical_reference_registry_matches_logical_manifest() -> None:
+    with CATALOG.open("rb") as stream:
+        document = tomllib.load(stream)
+    expected = {
+        (relation, role["attribute"], role["digest_domain"].encode("ascii"))
+        for role in document["canonical_reference_role"]
+        for relation in role["relations"]
+    }
+
+    assert set(catalog_refinement._CANONICAL_REFERENCE_ROLES) == expected
 
 
 def test_data_bootstrap_cells_are_exact_typed_scalars() -> None:

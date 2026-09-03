@@ -2923,6 +2923,10 @@ def _render_bootstrap_validation(
             relation_seeds = tuple(
                 seed for seed in seeds if seed.get("relation") == relation_name
             )
+            if not relation_seeds:
+                raise ValueError(
+                    f"bootstrap seeded relation {relation_name!r} has no seed rows"
+                )
             seeded_relations.append(
                 {
                     "relation": str(relation_name),
@@ -2930,7 +2934,7 @@ def _render_bootstrap_validation(
                     "validation_sql": (
                         "SELECT "
                         + ", ".join(_quote(column, backend) for column in columns)
-                        + f" FROM {target_table}"
+                        + f" FROM {target_table} LIMIT {len(relation_seeds) + 1}"
                     ),
                     "expected_rows": tuple(
                         _seed_parameters(seed) for seed in relation_seeds

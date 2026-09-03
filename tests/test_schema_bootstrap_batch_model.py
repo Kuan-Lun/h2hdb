@@ -17,11 +17,18 @@ def test_lean_model_names_batch_equivalence_and_replay_theorems() -> None:
         "applyReference",
         "applyBatched",
         "DurablyEquivalent",
+        "ExactOrderedRows",
+        "ExactSeedMultiset",
     }:
         assert f"def {definition}" in model
     for theorem in {
         "batched_result_equals_row_reference",
+        "exact_seed_multiset_rejects_count_difference",
+        "exact_singleton_rejects_changed_row",
+        "exact_singleton_rejects_duplicate",
+        "exact_singleton_rejects_missing",
         "replay_after_generated_subset_equals_clean_execution",
+        "replay_after_generated_prefix_equals_clean_execution",
         "batched_replay_after_generated_subset_equals_reference",
     }:
         assert f"theorem {theorem}" in model

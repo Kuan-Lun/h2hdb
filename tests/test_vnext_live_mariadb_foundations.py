@@ -4,6 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 from vnext_catalog_registry_fixtures import seed_manifest_policy
+from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
 
 from h2hdb import CoreConfig
 from h2hdb._generated_vnext_schema import ARTIFACT
@@ -152,7 +153,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 ingest_turn=turn,
                 command=root_command,
                 root_plan=root_plan,
-                analysis_policy_id=1,
+                policy=SOURCE_BUILD_POLICY_AUTHORITY,
                 now=23,
             )
         build_id = source.build_id

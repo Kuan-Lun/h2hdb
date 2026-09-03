@@ -17,6 +17,7 @@ from vnext_catalog_registry_fixtures import (
 )
 from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
 from vnext_publication_fixtures import seed_publication_finalization_checkpoint
+from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
 
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
@@ -1039,7 +1040,7 @@ def test_live_mariadb_operational_writer_workflows(
                 ingest_turn=current_turn,
                 command=root_command,
                 root_plan=root_plan,
-                analysis_policy_id=1,
+                policy=SOURCE_BUILD_POLICY_AUTHORITY,
                 now=504,
             )
     build_id = source.build_id
