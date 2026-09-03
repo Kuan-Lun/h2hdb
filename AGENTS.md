@@ -124,7 +124,10 @@
 - `scripts/run-pytest.py merge`是 canonical bounded pytest runner。它先執行
   `not deep and not mariadb`，再以單一 worker、`H2HDB_TEST_MARIADB=1`執行
   `mariadb_smoke and mariadb and not deep`；collection、execution、teardown、
-  container cleanup與兩階段間 overhead共用 300 秒 hard deadline。
+  pytest/xdist POSIX process-group cleanup與兩階段間 overhead共用 300 秒 hard
+  deadline；Windows中斷則使用`taskkill /T`。刻意脫離process group/session的
+  test child不在此保證內。Docker daemon內的Testcontainers/Ryuk resource
+  cleanup可能在runner結束後才完成，不屬於此deadline的證據。
 - `scripts/check-full.sh`：fast gate、coverage contract、schema與 generated
   artifact drift、schema surface、Lean、上述 bounded pytest merge profile、
   small TLC profiles，以及 distribution boundary。
@@ -155,7 +158,9 @@
 - flaky test視為失敗，不得以重跑掩蓋。
 - 不設定跨 repository的統一 coverage百分比。
 - plain `pytest`預設選擇 `not deep`並使用 bounded auto-xdist，且不得自行啟動
-  live service。高成本測試檔與 live-MariaDB cases由 collection分類為
+  live service；這個直接入口沒有 aggregate wall-clock deadline，需要強制
+  五分鐘上限時必須使用 `scripts/run-pytest.py merge`。高成本測試檔與
+  live-MariaDB cases由 collection分類為
   `deep`；只有經明確審核的
   `merge_smoke`與 `mariadb_smoke`代表性案例可分別豁免對應分類。兩個豁免互不
   隱含；同時屬於高成本檔與 MariaDB的案例必須同時明列兩者。

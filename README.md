@@ -290,10 +290,17 @@ profile with a 300-second aggregate hard deadline. Its canonical runner is
 `not deep and not mariadb` with automatic xdist workers; the second uses one
 worker and `H2HDB_TEST_MARIADB=1` for only
 `mariadb_smoke and mariadb and not deep` against pinned MariaDB 10.11.11. Docker is
-therefore required for the release check's MariaDB smoke phase.
+therefore required for the release check's MariaDB smoke phase. The deadline
+includes termination and reaping of the pytest/xdist POSIX process group; on
+Windows, interrupted runs use `taskkill /T`. A test that deliberately creates a
+detached operating-system session is outside that process-group guarantee.
+Testcontainers/Ryuk cleanup inside the Docker daemon can finish after the runner
+exits and is not claimed by that deadline.
 
 Plain `pytest` defaults to `not deep` with automatic bounded xdist workers and
-does not enable the live service.
+does not enable the live service, but that direct command has no aggregate
+wall-clock deadline. Use `scripts/run-pytest.py merge` when the five-minute
+ceiling must be enforced.
 Run `scripts/check-pytest-deep.sh` explicitly for the full non-MariaDB suite
 followed by the full live-MariaDB suite. That manual profile has no default
 timeout and requires Docker. Deep matrix results are not part of the

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -43,10 +46,18 @@ def test_main_applies_default_budget_only_to_merge(
 
     assert runner.main(["merge"]) == 0
     assert runner.main(["deep"]) == 0
-    assert run_profile.call_args_list == [
-        call("merge", budget_seconds=300.0),
-        call("deep", budget_seconds=None),
+    assert [value.args for value in run_profile.call_args_list] == [
+        ("merge",),
+        ("deep",),
     ]
+    assert [value.kwargs["budget_seconds"] for value in run_profile.call_args_list] == [
+        300.0,
+        None,
+    ]
+    assert all(
+        isinstance(value.kwargs["signal_controller"], runner._SignalController)
+        for value in run_profile.call_args_list
+    )
 
 
 def test_merge_profile_selectors_split_sqlite_from_mariadb_smoke() -> None:
@@ -127,6 +138,149 @@ def test_start_phase_inherits_live_output_and_starts_posix_process_group(
     assert "stderr" not in keywords
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_posix_sigterm_kills_and_reaps_real_forked_tree_and_restores_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_handlers = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in (signal.SIGTERM, signal.SIGHUP)
+    }
+    installed_handlers: dict[signal.Signals, Any] = {}
+    active_process: subprocess.Popen[bytes] | None = None
+    interrupt_timer: threading.Timer | None = None
+
+    def start_real_tree(_phase: Any) -> subprocess.Popen[bytes]:
+        nonlocal active_process, interrupt_timer
+        installed_handlers.update(
+            {
+                signal_number: signal.getsignal(signal_number)
+                for signal_number in (signal.SIGTERM, signal.SIGHUP)
+            }
+        )
+        active_process = subprocess.Popen(  # noqa: S603 -- fixed regression helper
+            ("/bin/sh", "-c", "sleep 60 & wait"),
+            start_new_session=True,
+        )
+        interrupt_timer = threading.Timer(
+            0.2,
+            os.kill,
+            args=(os.getpid(), signal.SIGTERM),
+        )
+        interrupt_timer.start()
+        return active_process
+
+    monkeypatch.setattr(runner, "_start_phase", start_real_tree)
+    monkeypatch.setattr(
+        runner,
+        "_phases",
+        lambda _profile: (runner.MERGE_PHASES[0],),
+    )
+    try:
+        assert runner.main(["merge", "--budget-seconds", "20"]) == (
+            128 + signal.SIGTERM
+        )
+        assert active_process is not None
+        assert active_process.poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(active_process.pid, 0)
+        assert all(callable(handler) for handler in installed_handlers.values())
+        assert {
+            signal_number: signal.getsignal(signal_number)
+            for signal_number in (signal.SIGTERM, signal.SIGHUP)
+        } == original_handlers
+    finally:
+        if interrupt_timer is not None:
+            interrupt_timer.cancel()
+            interrupt_timer.join(timeout=2.0)
+        if active_process is not None:
+            try:
+                os.killpg(active_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            active_process.wait(timeout=2.0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX signal delivery")
+def test_posix_signal_during_spawn_is_deferred_until_the_group_is_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_process: subprocess.Popen[bytes] | None = None
+
+    def start_then_signal(_phase: Any) -> subprocess.Popen[bytes]:
+        nonlocal active_process
+        active_process = subprocess.Popen(  # noqa: S603 -- fixed regression helper
+            ("/bin/sh", "-c", "sleep 60 & wait"),
+            start_new_session=True,
+        )
+        signal.raise_signal(signal.SIGTERM)
+        return active_process
+
+    monkeypatch.setattr(runner, "_start_phase", start_then_signal)
+    monkeypatch.setattr(
+        runner,
+        "_phases",
+        lambda _profile: (runner.MERGE_PHASES[0],),
+    )
+    try:
+        assert runner.main(["merge", "--budget-seconds", "20"]) == (
+            128 + signal.SIGTERM
+        )
+        assert active_process is not None
+        assert active_process.poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(active_process.pid, 0)
+    finally:
+        if active_process is not None:
+            try:
+                os.killpg(active_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            active_process.wait(timeout=2.0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_normal_leader_exit_cleans_surviving_group_and_fails_the_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_process: subprocess.Popen[bytes] | None = None
+
+    def start_leader_with_survivor(_phase: Any) -> subprocess.Popen[bytes]:
+        nonlocal active_process
+        active_process = subprocess.Popen(  # noqa: S603 -- fixed regression helper
+            (
+                sys.executable,
+                "-c",
+                "import os, time; child = os.fork(); "
+                "time.sleep(60) if child == 0 else None; os._exit(0)",
+            ),
+            start_new_session=True,
+        )
+        return active_process
+
+    monkeypatch.setattr(runner, "_start_phase", start_leader_with_survivor)
+    monkeypatch.setattr(
+        runner,
+        "_phases",
+        lambda _profile: (runner.MERGE_PHASES[0],),
+    )
+    try:
+        assert runner.main(["merge", "--budget-seconds", "20"]) == (
+            runner.TERMINATION_FAILED_EXIT_CODE
+        )
+        assert active_process is not None
+        assert active_process.poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(active_process.pid, 0)
+    finally:
+        if active_process is not None:
+            try:
+                os.killpg(active_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            active_process.wait(timeout=2.0)
+
+
 def test_windows_start_requires_a_real_new_process_group_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -190,12 +344,19 @@ def test_phase_wait_subtracts_popen_overhead_from_absolute_deadline(
 ) -> None:
     process = Mock()
     process.wait.return_value = 0
-    monotonic = Mock(side_effect=(100.0, 103.0, 103.5))
+    monotonic = Mock(side_effect=(100.0, 103.0, 103.5, 104.0))
+    wait_for_group = Mock(return_value=True)
     monkeypatch.setattr(runner, "_start_phase", Mock(return_value=process))
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_posix_process_group_exit",
+        wait_for_group,
+    )
     monkeypatch.setattr(runner.time, "monotonic", monotonic)
 
     assert runner._run_phase(runner.MERGE_PHASES[0], hard_deadline=110.0) == 0
     process.wait.assert_called_once_with(timeout=1.0)
+    wait_for_group.assert_called_once()
 
 
 def test_posix_termination_kills_surviving_group_after_leader_exits(
@@ -308,7 +469,13 @@ def test_profile_uses_one_deadline_across_both_pytest_phases(
     monotonic = Mock(side_effect=(100.0, 100.0, 225.0))
     observed: list[tuple[str, float | None]] = []
 
-    def run_phase(phase: Any, *, hard_deadline: float | None) -> int:
+    def run_phase(
+        phase: Any,
+        *,
+        hard_deadline: float | None,
+        signal_controller: Any,
+    ) -> int:
+        assert signal_controller is None
         observed.append((phase.label, hard_deadline))
         return 0
 
@@ -353,6 +520,29 @@ def test_full_gate_uses_merge_runner_and_manual_deep_entry_is_not_in_gate() -> N
     assert "scripts/run-pytest.py deep" not in full_gate
     assert ".venv/bin/pytest" not in full_gate
     assert "scripts/run-pytest.py deep" in deep_gate
+
+
+def test_deadline_contract_does_not_claim_docker_daemon_cleanup() -> None:
+    documents = (
+        (ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+        (ROOT / "README.md").read_text(encoding="utf-8"),
+        (ROOT / "verification" / "README.md").read_text(encoding="utf-8"),
+    )
+
+    for document in documents:
+        normalized = " ".join(document.split())
+        assert "pytest/xdist" in normalized
+        assert "Docker daemon" in normalized
+        assert "cleanup" in normalized
+        assert "process group" in normalized.lower() or "process-group" in normalized
+        assert "detached" in normalized.lower() or "脫離" in normalized
+        assert "plain `pytest`" in normalized.lower()
+        assert "aggregate" in normalized
+    assert "container cleanup與兩階段間 overhead共用" not in documents[0]
+    assert "沒有 aggregate" in " ".join(documents[0].split())
+    assert all(
+        "no aggregate" in " ".join(document.split()) for document in documents[1:]
+    )
 
 
 def test_release_receipt_names_the_bounded_merge_evidence() -> None:

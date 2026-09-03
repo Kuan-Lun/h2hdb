@@ -1,3 +1,4 @@
+import ast
 import subprocess
 import tomllib
 from pathlib import Path
@@ -79,6 +80,41 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
         "test_vnext_pipeline_takeover_matrix.py",
         "test_vnext_pipeline_workflows.py",
     }
+
+
+def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
+    expected = {
+        (
+            "test_vnext_catalog_reader_mariadb.py",
+            "test_mariadb_discovery_facets_and_presentation_hydrate_real_rows",
+        ),
+        (
+            "test_vnext_generated_epoch_e2e.py",
+            "test_default_generated_epoch_end_to_end_on_live_mariadb",
+        ),
+        (
+            "test_vnext_pipeline_workflows.py",
+            "test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit",
+        ),
+    }
+    observed: set[tuple[str, str]] = set()
+    for path in sorted((REPOSITORY_ROOT / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if (
+                    isinstance(decorator, ast.Attribute)
+                    and decorator.attr == "mariadb_smoke"
+                    and isinstance(decorator.value, ast.Attribute)
+                    and decorator.value.attr == "mark"
+                    and isinstance(decorator.value.value, ast.Name)
+                    and decorator.value.value.id == "pytest"
+                ):
+                    observed.add((path.name, node.name))
+
+    assert observed == expected
 
 
 @pytest.mark.parametrize(

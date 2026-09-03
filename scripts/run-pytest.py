@@ -11,9 +11,11 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import Literal, cast
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,96 @@ TIMEOUT_EXIT_CODE = 124
 TERMINATION_FAILED_EXIT_CODE = 125
 INTERRUPTED_EXIT_CODE = 130
 ProfileName = Literal["merge", "deep"]
+
+
+class RunnerSignalInterrupt(BaseException):
+    """A POSIX termination signal converted into controlled runner shutdown."""
+
+    def __init__(self, signal_number: int) -> None:
+        super().__init__(signal_number)
+        self.signal_number = signal_number
+
+
+class ProcessGroupTerminationError(RuntimeError):
+    """The runner could not verify that a managed pytest process group exited."""
+
+
+@dataclass
+class _SignalController:
+    """Defer asynchronous interruption only across ownership-critical regions."""
+
+    pending_signal: int | None = None
+    defer_depth: int = 0
+    interruption_started: bool = False
+
+    def receive(self, signal_number: int) -> None:
+        if self.interruption_started:
+            return
+        if self.defer_depth:
+            if self.pending_signal is None:
+                self.pending_signal = signal_number
+            return
+        self._raise(signal_number)
+
+    @contextmanager
+    def defer(self) -> Iterator[None]:
+        self.defer_depth += 1
+        try:
+            yield
+        finally:
+            self.defer_depth -= 1
+            if self.defer_depth == 0 and self.pending_signal is not None:
+                pending = self.pending_signal
+                self.pending_signal = None
+                self._raise(pending)
+
+    def _raise(self, signal_number: int) -> None:
+        self.interruption_started = True
+        if signal_number == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise RunnerSignalInterrupt(signal_number)
+
+
+@contextmanager
+def _controlled_posix_termination_signals() -> Iterator[_SignalController | None]:
+    """Control INT/TERM/HUP delivery and restore every prior handler."""
+
+    if os.name == "nt":
+        yield None
+        return
+
+    signal_numbers = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous_handlers = [
+        (signal_number, signal.getsignal(signal_number))
+        for signal_number in signal_numbers
+    ]
+    controller = _SignalController()
+
+    def interrupt(signal_number: int, frame: FrameType | None) -> None:
+        del frame
+        controller.receive(signal_number)
+
+    installed: list[signal.Signals] = []
+    try:
+        for signal_number, _previous_handler in previous_handlers:
+            signal.signal(signal_number, interrupt)
+            installed.append(signal_number)
+        yield controller
+    finally:
+        previous_by_signal = dict(previous_handlers)
+        for signal_number in reversed(installed):
+            signal.signal(signal_number, previous_by_signal[signal_number])
+
+
+@contextmanager
+def _defer_signal_interrupts(
+    controller: _SignalController | None,
+) -> Iterator[None]:
+    if controller is None:
+        yield
+        return
+    with controller.defer():
+        yield
 
 
 @dataclass(frozen=True)
@@ -257,14 +349,19 @@ def _terminate_windows_process_group(
 def terminate_process_group(
     process: subprocess.Popen[bytes], *, deadline: float
 ) -> bool:
-    """Terminate and verify the pytest leader and its children before deadline."""
+    """Terminate and verify the managed pytest process group before deadline."""
 
     if os.name == "nt":
         return _terminate_windows_process_group(process, deadline=deadline)
     return _terminate_posix_process_group(process, deadline=deadline)
 
 
-def _run_phase(phase: PytestPhase, *, hard_deadline: float | None) -> int:
+def _run_phase(
+    phase: PytestPhase,
+    *,
+    hard_deadline: float | None,
+    signal_controller: _SignalController | None = None,
+) -> int:
     started_at = time.monotonic()
     budget_detail = (
         "unbounded"
@@ -283,15 +380,25 @@ def _run_phase(phase: PytestPhase, *, hard_deadline: float | None) -> int:
             flush=True,
         )
         return TIMEOUT_EXIT_CODE
-    process = _start_phase(phase)
-    timeout_seconds = (
-        None
-        if execution_deadline is None
-        else max(0.0, execution_deadline - time.monotonic())
-    )
+    process: subprocess.Popen[bytes] | None = None
+    process_wait_completed = False
+    termination_attempt_completed = False
+    interrupted = False
     try:
+        # Do not raise SIGINT/SIGTERM/SIGHUP after Popen creates the child but
+        # before this frame owns its handle.  The handler records a pending
+        # signal and delivers it after assignment, without changing the signal
+        # mask inherited by pytest and xdist.
+        with _defer_signal_interrupts(signal_controller):
+            process = _start_phase(phase)
+        timeout_seconds = (
+            None
+            if execution_deadline is None
+            else max(0.0, execution_deadline - time.monotonic())
+        )
         try:
             return_code = process.wait(timeout=timeout_seconds)
+            process_wait_completed = True
         except subprocess.TimeoutExpired:
             print(
                 f"pytest budget expired during {phase.label}; "
@@ -301,6 +408,7 @@ def _run_phase(phase: PytestPhase, *, hard_deadline: float | None) -> int:
             )
             assert hard_deadline is not None
             terminated = terminate_process_group(process, deadline=hard_deadline)
+            termination_attempt_completed = True
             if terminated:
                 return_code = TIMEOUT_EXIT_CODE
             else:
@@ -310,30 +418,71 @@ def _run_phase(phase: PytestPhase, *, hard_deadline: float | None) -> int:
                     flush=True,
                 )
                 return_code = TERMINATION_FAILED_EXIT_CODE
-    except KeyboardInterrupt:
+    except KeyboardInterrupt, RunnerSignalInterrupt:
+        interrupted = True
         print(
             f"pytest interrupted during {phase.label}; terminating its process group",
             file=sys.stderr,
             flush=True,
         )
-        termination_deadline = (
-            hard_deadline
-            if hard_deadline is not None
-            else time.monotonic() + TERMINATION_RESERVE_SECONDS
-        )
-        if not terminate_process_group(process, deadline=termination_deadline):
-            print(
-                f"could not verify process-group termination for {phase.label}",
-                file=sys.stderr,
-                flush=True,
-            )
         raise
+    finally:
+        # Once cleanup starts, another termination signal may wait, but it may
+        # not interrupt the only code capable of reaping the managed group.
+        with _defer_signal_interrupts(signal_controller):
+            if process is not None and not termination_attempt_completed:
+                cleanup_started = time.monotonic()
+                termination_deadline = (
+                    cleanup_started + TERMINATION_RESERVE_SECONDS
+                    if interrupted or hard_deadline is None
+                    else hard_deadline
+                )
+                if process_wait_completed and os.name != "nt":
+                    kill_process_group = cast(
+                        Callable[[int, int], None] | None,
+                        getattr(os, "killpg", None),
+                    )
+                    if kill_process_group is None:
+                        raise ProcessGroupTerminationError(phase.label)
+                    clean_exit_deadline = min(
+                        termination_deadline,
+                        cleanup_started + TERMINATION_POLL_SECONDS * 5,
+                    )
+                    group_exited = _wait_for_posix_process_group_exit(
+                        process,
+                        kill_process_group=kill_process_group,
+                        deadline=clean_exit_deadline,
+                    )
+                    if not group_exited:
+                        terminate_process_group(process, deadline=termination_deadline)
+                        print(
+                            "pytest leader exited with surviving process-group "
+                            f"members during {phase.label}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        raise ProcessGroupTerminationError(phase.label)
+                elif not process_wait_completed and not terminate_process_group(
+                    process,
+                    deadline=termination_deadline,
+                ):
+                    print(
+                        f"could not verify process-group termination for {phase.label}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    raise ProcessGroupTerminationError(phase.label)
     elapsed = time.monotonic() - started_at
     print(f"<== {phase.label}: {elapsed:.1f}s (exit {return_code})", flush=True)
     return return_code
 
 
-def run_profile(profile: ProfileName, *, budget_seconds: float | None) -> int:
+def run_profile(
+    profile: ProfileName,
+    *,
+    budget_seconds: float | None,
+    signal_controller: _SignalController | None = None,
+) -> int:
     """Run a profile sequentially under one aggregate wall-clock deadline."""
 
     deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
@@ -349,7 +498,11 @@ def run_profile(profile: ProfileName, *, budget_seconds: float | None) -> int:
                 flush=True,
             )
             return TIMEOUT_EXIT_CODE
-        return_code = _run_phase(phase, hard_deadline=deadline)
+        return_code = _run_phase(
+            phase,
+            hard_deadline=deadline,
+            signal_controller=signal_controller,
+        )
         if return_code != 0:
             return return_code
     return 0
@@ -385,7 +538,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
         else requested_budget
     )
     try:
-        return run_profile(profile, budget_seconds=budget_seconds)
+        with _controlled_posix_termination_signals() as signal_controller:
+            return run_profile(
+                profile,
+                budget_seconds=budget_seconds,
+                signal_controller=signal_controller,
+            )
+    except RunnerSignalInterrupt as interruption:
+        return 128 + interruption.signal_number
+    except ProcessGroupTerminationError:
+        return TERMINATION_FAILED_EXIT_CODE
     except KeyboardInterrupt:
         return INTERRUPTED_EXIT_CODE
 
