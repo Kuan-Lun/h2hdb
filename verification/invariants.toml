@@ -1988,6 +1988,227 @@ symbol = "test_allocator_requires_exact_seed_authority"
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
 
+[[evidence]]
+id = "lean.operational.preparation-drain"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "Unbounded theorems over the ascending matching keys of one drain state: a page is hard bounded by 128; a committed page strictly shrinks the matching set; draining n rows takes exactly ceil(n/128) committed pages and is not finished one page earlier; every key of a committed page is strictly below every key still matching afterwards, so the next durable position is strictly greater; committing a page removes exactly its keys from the matching set; and committing the same page twice (a lost commit response replayed) changes nothing beyond committing it once."
+assumptions = ["The SQL page is the exact 128-prefix of the ascending matching keys of the issued state, which the query-plan and 129/257-row tests establish per backend.", "Nothing here proves SQL ordering, transaction atomicity, index usage, or that Python implements the model."]
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "page_is_hard_bounded"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "committed_page_strictly_shrinks_the_measure"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "drained_after_pages_needed"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "not_drained_one_page_earlier"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "committed_page_is_strictly_below_every_remaining_key"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "commit_removes_exactly_the_page_keys"
+[[evidence.location]]
+path = "verification/lean/PreparationDrain.lean"
+symbol = "commit_is_idempotent"
+
+[[evidence]]
+id = "tla.preparation-drain.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "direct"
+claim = "TLC exhausts the Small profile of the drainage state machine (issue the durable position, commit the page, lose the commit response, replay a stale position, crash between issue and commit): every committed page is bounded, abandoned rows never revive, the durable position strictly advances after every committed page, a stale position is never the durable position again, at most ceil(RowCount/PageLimit) pages ever commit, and under fairness every behavior drains the build."
+assumptions = ["TLC exhausts only RowCount = 5 and PageLimit = 2; this is bounded exploration, not an unbounded proof, and it does not model SQL, transactions, or either backend."]
+[[evidence.location]]
+path = "verification/tla/PreparationDrain.tla"
+symbol = "PageIsHardBounded"
+[[evidence.location]]
+path = "verification/tla/PreparationDrain.tla"
+symbol = "PositionStrictlyAdvances"
+[[evidence.location]]
+path = "verification/tla/PreparationDrain.tla"
+symbol = "StalePositionNeverCurrent"
+[[evidence.location]]
+path = "verification/tla/PreparationDrain.tla"
+symbol = "CommitsAreBounded"
+[[evidence.location]]
+path = "verification/tla/PreparationDrain.tla"
+symbol = "Drains"
+[[evidence.location]]
+path = "verification/tla/PreparationDrainSmall.cfg"
+symbol = "PositionStrictlyAdvances"
+
+[[evidence]]
+id = "tla.policy-takeover.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "direct"
+claim = "TLC exhausts the Small profile of the analysis-policy takeover state machine (takeover to a new generation with any requested policy at any lifecycle point, handoff retirement or durable replay, analysis, commit, finalization, unchanged-snapshot replay): each build keeps one analysis policy, a durable commit belongs to a COMPLETE analysis, the live generation never maps a build the analysis stage would refuse forever (a foreign-policy mapping exists only for a durable replay), a retired build never publishes, mappings and builds are bounded by the generation count, and once takeovers stop the head converges to the requested policy."
+assumptions = ["TLC exhausts only Policies = {1, 2}, MaxGeneration = 4 and MaxBuilds = 4, and takeovers stop two generations before the bound so the exploration can observe the deferred successor of a durable replay; this is bounded exploration, not an unbounded proof.", "The durable-replay branch is the hidden policy deferral: the model states it explicitly rather than hiding it, and the public semantics remain an open decision."]
+[[evidence.location]]
+path = "verification/tla/PolicyTakeover.tla"
+symbol = "MappingIsAnalyzable"
+[[evidence.location]]
+path = "verification/tla/PolicyTakeover.tla"
+symbol = "RetiredBuildNeverPublishes"
+[[evidence.location]]
+path = "verification/tla/PolicyTakeover.tla"
+symbol = "MappingsBounded"
+[[evidence.location]]
+path = "verification/tla/PolicyTakeover.tla"
+symbol = "Converges"
+[[evidence.location]]
+path = "verification/tla/PolicyTakeoverSmall.cfg"
+symbol = "MappingIsAnalyzable"
+
+[[evidence]]
+id = "runtime.production.superseded-drainage"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The production drainage reads the durable position (the least (state, preparation_id) still matching) by one index seek per drain state, pages one single-state index range from it capped at 128 rows, reloads the position before writing and fails closed on a caller-carried copy that differs, and the publication orchestrator and the source machine refuse a position that did not advance strictly past the page they committed."
+assumptions = ["The (build_id, state, preparation_id) index exists in the generated schema; the query-plan tests establish that both backends seek it."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_operational_event_repository.py"
+symbol = "SupersededDrainPosition"
+[[evidence.location]]
+path = "src/h2hdb/vnext_operational_event_repository.py"
+symbol = "superseded_drain_position"
+[[evidence.location]]
+path = "src/h2hdb/vnext_operational_event_repository.py"
+symbol = "abandon_superseded_preparations"
+[[evidence.location]]
+path = "src/h2hdb/vnext_operational_event_repository.py"
+symbol = "retiring_build_drain_position"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_build_repository.py"
+symbol = "_drain_retiring_build_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "__require_drain_progress"
+
+[[evidence]]
+id = "fault.production.superseded-drainage"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Drainage tests interrupt a page before its commit and prove nothing was abandoned and the durable position is unchanged; replay a committed page's stale position and prove it is refused with zero writes on SQLite and live MariaDB; forge a non-advancing fence and a switched retiring build and prove both fail closed with zero writes; and prove the live build's drainage excludes the current attempt and bound attempts while the retiring build's drainage includes bound attempts."
+assumptions = ["Preparation rows are seeded directly for the repository-level tests; the facade-level tests seed only attempts and advance generations through the public queue facade."]
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit"
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_rejects_a_stale_position_with_zero_writes"
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_excludes_bound_and_current_attempts"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_stale_build_drainage_fails_closed_when_the_position_does_not_advance"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable"
+
+[[evidence]]
+id = "integration.sqlite.superseded-drainage"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated SQLite drains 129 and 257 seeded attempts of a live and of a retiring build in exact 128-row pages from strictly advancing durable positions, drains mixed states as single-state ranges, and pins EXPLAIN QUERY PLAN of the position probe and the page to one range seek on ix_operational_preparation_drain_seek with no table scan and no temporary sort."
+assumptions = ["This executes SQLite and does not establish MariaDB plans or locking."]
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_is_bounded_seek_paged_and_converges"
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_drains_each_state_as_one_seek_range"
+[[evidence.location]]
+path = "tests/test_vnext_operational_event_repository.py"
+symbol = "test_superseded_drainage_sql_seeks_the_drain_index"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_stale_build_preparation_drainage_is_bounded_and_converges"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_stale_build_drainage_abandons_attempts_bound_to_the_orphaned_candidate"
+
+[[evidence]]
+id = "integration.pipeline.bounded-drainage"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Through the public facades only, a live build with 129 and 257 superseded attempts drains in exactly ceil(n/128) ABANDON_SUPERSEDED commits before its single BEGIN_OPERATIONAL and publishes, and a retiring build with 129 and 257 attempts drains through exactly ceil(n/128) bounded ROOT_HANDOFF commits before the changed snapshot publishes; generic cleanup then reclaims every abandoned attempt and the full READY audit passes."
+assumptions = ["The attempts are seeded directly under deletion generations the public queue facade advanced; producing 257 superseded attempts through 257 interrupted turns is not attempted."]
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_superseded_preparations_drain_through_the_public_facade"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_retiring_build_preparations_drain_through_the_public_facade"
+
+[[evidence]]
+id = "integration.live-mariadb.bounded-drainage"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "With H2HDB_TEST_MARIADB=1 the same public-facade 129/257 drainage workflows run on live MariaDB 10.11.11 with the full READY audit, and the repository-level drains converge over 257 and 129 rows on live MariaDB with EXPLAIN pinning a range seek on ix_operational_preparation_drain_seek."
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1, which the release gate sets."]
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_superseded_preparations_drain_through_the_public_facade"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_retiring_build_preparations_drain_through_the_public_facade"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable"
+
+[[evidence]]
+id = "runtime.production.policy-takeover"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The production source handoff retires a SEALED working build whose analysis is OPEN, or COMPLETE without a durable publication commit, under a foreign policy before any generation mapping is written (draining its attempts in pages, releasing its working roots, keeping a COMPLETE analysis as an immutable terminal fact) and derives a successor build of the same snapshot; the retired-build proof accepts that COMPLETE analysis; and the analysis replay accepts the finalization prune of a published self-only depth-zero baseline while the build's base pin remains."
+assumptions = ["A COMPLETE analysis with a durable publication commit is replayed so its publication finalizes first; applying the requested policy afterwards is the deferred, open public decision."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_build_repository.py"
+symbol = "_retire_policy_mismatched_working_build"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_build_repository.py"
+symbol = "_is_exact_retired_sealed_source_build"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_build_repository.py"
+symbol = "_analysis_has_durable_commit"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_analysis_is_finalized"
+
+[[evidence]]
+id = "fault.pipeline.policy-crash-matrix"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "For a first and a later revision, a turn dies at each of eight boundaries (analysis COMPLETE before publication; candidate BEGIN durable; artifact rendered but not persisted; artifact persisted before the operational preparation; preparation sealed; every input bound before the commit; DB_COMMITTED before activation; activated before finalization) and the restarted process requests another analysis policy. Every case checks the head's actual policy, build and revision, the exact analysis-run set, that no working root or OPEN analysis survives, that durable commits equal published revisions, that retrying the converged turn creates no build, analysis, candidate or commit and at most one generation mapping per turn, the maintenance outcome, the full READY audit, and equality with a fresh ingest under the requested policy."
+assumptions = ["After a durable commit the pending publication finalizes under its own policy first and the requested policy is applied only by the next turn; the matrix pins that deferral explicitly because it is an open public decision, not hidden behavior.", "Where the crashed candidate had already protected artifacts, maintenance reports BLOCKED until the orphan-protection reconciliation is wired (owner decision); the matrix pins BLOCKED there instead of hiding it."]
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_policy_change_crash_matrix_converges_under_the_requested_policy"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "_policy_facts"
+
 # Each required invariant has all six evidence layers.  `supporting` is
 # deliberately weaker than `covered`; it does not turn BCNF, a generic binding
 # negative control, or whole-schema SQLite refinement into a protocol proof.
@@ -2153,7 +2374,7 @@ layer = "fault"
 strength = "negative_control"
 directness = "direct"
 claim = "Regressions for the liveness gaps the matrices exposed, each proved against a fresh-ingest reference: a deletion request or policy replacement after operational preparation supersedes the stale attempt; a stale session cannot register a policy; a restart after a durable commit finalizes the pending publication (first and later revisions); a source that changed while a durable commit is unfinalized fails closed until that commit is re-ingested and finalized; an analysis-policy change at a mid-analysis-crash takeover retires the abandoned analysis and analyzes a successor build under the new policy, and at a durable-commit takeover finalizes the pending publication first; content ownership transferred by removing co-owners, a spam exclusion flip, and the depth-sixteen compaction all publish exactly what a fresh ingest publishes."
-assumptions = ["A build abandoned after its candidate protected artifacts converges the same way, but its orphaned storage protections await the artifact-release reconciliation that no maintenance entry point drives; maintenance reports BLOCKED until that is wired (open policy item).", "A snapshot that changed while a prior commit is durable but unfinalized is not silently deferred: this repository fails the handoff closed until the committed snapshot is ingested again and finalized; restoring liveness without re-ingesting it is an open public-protocol decision."]
+assumptions = ["A build abandoned after its candidate protected artifacts converges the same way, but its orphaned storage protections await the artifact-release reconciliation that no maintenance entry point drives; maintenance reports BLOCKED until that is wired (open policy item).", "A snapshot that changed while a prior commit is durable but unfinalized is not silently deferred: this repository fails the handoff closed until the committed snapshot is ingested again and finalized. That failure is the internal SourceBuildConflictError (a RuntimeError subclass the package root does not export), so consumers see an untyped failure; the public protocol for this outcome, like restoring liveness without re-ingesting the snapshot, is an open decision."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restart_after_a_sealed_commit_finalizes_the_pending_publication"
@@ -2230,8 +2451,8 @@ id = "catalog.identity-codecs.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore treats identities as atoms and has no byte framing, hash domain, collision-preimage, or codec-version state." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.identity-codecs", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.gallery-identity", "runtime.production.gallery-staging", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.identity-codecs", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.gallery-identity", "runtime.production.gallery-staging", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate", "runtime.production.publication"], blocker = "The obligation says every stable identity is recomputed, but the READY validator recomputes only the active source and publication contexts; retained-history identities are recomputed only when a writer consumes them, and the corruption matrix pins seven published and analysis-history identity columns that nothing re-derives." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"], blocker = "The identity-corruption matrix proves refusal or inertness for every identity column except the seven reader-visible columns it pins, for which no validator or consumer rejects the corruption, and the collision fixture covers only the canonical-value, file-name and page-staging seams rather than every codec." }
 integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.canonical-value", "integration.sqlite.gallery-identity", "integration.sqlite.gallery-staging", "integration.sqlite.analysis", "integration.sqlite.artifact-preparation", "integration.sqlite.publication-candidate", "integration.sqlite.publication", "integration.live-mariadb.canonical-foundations", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2239,17 +2460,17 @@ id = "catalog.canonical-reference-domains.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no canonical digest-domain registry, framed value bytes, collision comparison, or SQL foreign-reference state." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.canonical-reference-domains", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.canonical-reference-domains", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate"], blocker = "The obligation requires every canonical FK to resolve to exact bytes in its assigned domain, but READY resolves only the active source contexts, the live snapshot-manifest pins and the active publication contexts; canonical references in retained history are resolved only when a writer consumes them." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"], blocker = "No matrix repoints each canonical FK column at a sealed value of another digest domain and proves every consuming writer and the audit reject it; the physical-domain matrix injects invalid value classes, not cross-domain references." }
 integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.canonical-value", "integration.sqlite.analysis", "integration.sqlite.artifact-preparation", "integration.sqlite.publication-candidate", "integration.live-mariadb.canonical-foundations", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
 id = "catalog.source-baseline-channel.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
-tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.source-baseline-channel", "runtime.production.writer-bindings", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.production.source-build", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.publication"] }
+tla = { status = "covered", evidence = ["tla.data.lifecycle.small", "tla.policy-takeover.small"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.source-baseline-channel", "runtime.production.writer-bindings", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.publication", "runtime.production.policy-takeover"] }
+fault = { status = "covered", evidence = ["fault.production.source-build", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.policy-crash-matrix"] }
 integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2303,7 +2524,7 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore does not model canonical payload streaming, pinned Unicode tokenization, SQL keyset traversal, or exact revision-scoped search and facet reconstruction." }
 runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.discovery-exactness"] }
-fault = { status = "covered", evidence = ["fault.production.discovery-exactness"] }
+fault = { status = "blocked", evidence = ["fault.production.discovery-exactness"], blocker = "The READY regressions inject excess documents, postings and facet rows and a descriptor-count drift, but none deletes a posting, document or facet row while preserving counts or corrupts stored lexeme bytes, so the no-omission half of the obligation has no negative control." }
 integration = { status = "covered", evidence = ["integration.sqlite.discovery-exactness", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2320,8 +2541,8 @@ id = "catalog.role-derivation.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no exact file-name bytes, galleryinfo.txt classifier, file role, hash occurrence, or artist-contribution derivation." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.role-derivation", "runtime.production.writer-bindings", "runtime.production.gallery-staging", "runtime.production.analysis"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.gallery-staging", "fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.digest-collision"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.role-derivation", "runtime.production.writer-bindings", "runtime.production.gallery-staging", "runtime.production.analysis"], blocker = "READY validates the classifier registry constant, not that every stored gallery_observation_file_artifact_role equals the classifier of its exact file_name_identity bytes; only the staging writer derives roles, so a stored role that drifted after writing is never recomputed." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.gallery-staging", "fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.digest-collision"], blocker = "No matrix flips a stored artifact role between METADATA and CONTENT and proves that the audit, the analysis stage or a reader rejects it; the staging tests reject forged roles only at write time." }
 integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.gallery-staging", "integration.sqlite.analysis", "integration.mariadb-shape.gallery-staging", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2399,18 +2620,18 @@ integration = { status = "blocked", evidence = ["integration.operational.sqlite-
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
-tla = { status = "not_applicable", rationale = "CatalogCore does not model durable cursor bytes, typed effect pages, batch receipts, checkpoint compare-and-swap, terminal empty-page receipts, or effect seals." }
-runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
+lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain"] }
+tla = { status = "covered", evidence = ["tla.preparation-drain.small"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.superseded-drainage"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage"] }
 
 [[invariant]]
 id = "h2hdb.operational.queue-history.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no deletion-generation history/singleton CAS head, preparation generation recheck, deletion-attempt, mutable per-gid head, optional URL-satellite, or immutable consumption-event state." }
-runtime_refinement = { status = "covered", evidence = ["runtime.queue-history", "runtime.production.writer-bindings", "runtime.production.queue", "runtime.production.operational-event", "runtime.production.publication"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.queue-history", "runtime.production.writer-bindings", "runtime.production.queue", "runtime.production.operational-event", "runtime.production.publication"], blocker = "The READY check for this ready_and_runtime obligation validates manifest shape only; no READY validator proves the deletion-generation history is contiguous from the genesis row to the singleton head or that every consumption event names an immutable attempt beyond the physical FK." }
 fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.queue", "fault.production.operational-event", "fault.production.publication", "fault.pipeline.takeover-matrix", "fault.pipeline.authority-races"] }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
 
@@ -2419,7 +2640,7 @@ id = "h2hdb.operational.canonical-hash-cache.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore abstracts artifacts as atoms and does not model digest domains, framed bytes, SHA-256, collisions, or cache preimages." }
-runtime_refinement = { status = "covered", evidence = ["runtime.canonical-hash-cache", "runtime.production.writer-bindings", "runtime.production.hash-cache", "runtime.production.canonical-value"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.canonical-hash-cache", "runtime.production.writer-bindings", "runtime.production.hash-cache", "runtime.production.canonical-value"], blocker = "The READY check for this ready_and_runtime obligation validates manifest shape only; no READY validator recomputes the framed digest of any hash_cache_observation or file_hash_cache row or compares canonical preimages, which happens only in the writer at insert time." }
 fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.hash-cache", "fault.production.canonical-value", "fault.pipeline.digest-collision", "fault.pipeline.identity-corruption"] }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
 
@@ -2436,18 +2657,18 @@ integration = { status = "covered", evidence = ["integration.operational.sqlite-
 id = "h2hdb.operational.build-generation.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
-tla = { status = "not_applicable", rationale = "CatalogCore authorizes abstract build actions but does not model the durable one-row reservation relation or the no-build row-absence rule." }
+tla = { status = "covered", evidence = ["tla.policy-takeover.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.build-generation", "runtime.production.writer-bindings", "runtime.production.source-build"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.source-build", "fault.pipeline.takeover-matrix", "fault.pipeline.liveness-regressions"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.source-build", "fault.pipeline.takeover-matrix", "fault.pipeline.liveness-regressions", "fault.pipeline.policy-crash-matrix"] }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.source-build", "integration.mariadb-shape.source-build", "integration.live-mariadb.pipeline"] }
 
 [[invariant]]
 id = "h2hdb.operational.attempt-identity.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
-tla = { status = "not_applicable", rationale = "CatalogCore has no cleanup attempt number or policy-qualified operational preparation natural-identity variables." }
-runtime_refinement = { status = "covered", evidence = ["runtime.attempt-identity", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.production.publication", "fault.pipeline.authority-races", "fault.pipeline.takeover-matrix"] }
+tla = { status = "covered", evidence = ["tla.preparation-drain.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.attempt-identity", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.publication", "runtime.production.superseded-drainage"], blocker = "The READY check for this ready_and_runtime obligation validates manifest shape only; no READY validator proves cleanup attempt numbers are monotone per shard or that every retained preparation still names an exact retained deletion generation beyond the physical FK." }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.production.publication", "fault.pipeline.authority-races", "fault.pipeline.takeover-matrix", "fault.production.superseded-drainage", "fault.pipeline.policy-crash-matrix"] }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2473,8 +2694,8 @@ id = "h2hdb.operational.revision-allocation.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore selects revisions from a finite set but does not model SOURCE and CATALOG allocator rows, row locks, or exact generation CAS." }
-runtime_refinement = { status = "covered", evidence = ["runtime.revision-allocation", "runtime.production.writer-bindings", "runtime.production.allocator", "runtime.production.publication-candidate", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.allocator", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.authority-races"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.revision-allocation", "runtime.production.writer-bindings", "runtime.production.allocator", "runtime.production.publication-candidate", "runtime.production.publication"], blocker = "The READY check for this ready_and_runtime obligation validates manifest shape only; no READY validator proves every published revision is strictly below its stream's current next_revision or that the allocator rows only advanced." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.allocator", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.authority-races"], blocker = "No test forces a stale next_revision compare-and-swap at the allocator boundary or a publication rollback after allocation, as the allocator evidence itself states." }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
 
 [[invariant]]
@@ -2492,7 +2713,7 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "covered", evidence = ["tla.gallery-staging.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.gallery-staging-model", "runtime.production.writer-bindings", "runtime.production.gallery-staging"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.gallery-staging", "fault.pipeline.statement-matrix", "fault.pipeline.takeover-matrix"] }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.gallery-staging", "fault.pipeline.statement-matrix", "fault.pipeline.takeover-matrix"], blocker = "The staging matrix states that it does not inject every page, branch, parser, match and reuse statement, and the statement matrix interrupts only the transaction shapes its three corpora reach; no corpus reaches a metadata-parser chunk boundary carry, a DIRECTORY match miss or an observation reuse, so the obligation's every-stream quantifier is not met." }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.gallery-staging", "integration.mariadb-shape.gallery-staging", "integration.live-mariadb.pipeline"] }
 
 [[invariant]]

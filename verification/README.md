@@ -75,7 +75,8 @@ The layers prove different things and are not interchangeable.
   `lean/CanonicalBatchHydration.lean`, `lean/CatalogChildHydration.lean`,
   `lean/CanonicalPlanCursor.lean`, `lean/IngestFacadeLifecycle.lean`,
   `lean/CatalogReadBundle.lean`, `lean/ReadyAuditCanonicalCache.lean`,
-  `lean/SchemaBootstrapBatch.lean`, and `GalleryDeduplication.lean` prove the
+  `lean/SchemaBootstrapBatch.lean`, `lean/PreparationDrain.lean`, and
+  `GalleryDeduplication.lean` prove the
   listed abstract delta, source-revalidated and capacity-bounded disposable
   receipt-cache observational equivalence,
   shared-spool slice versus independent-source byte equivalence,
@@ -83,7 +84,10 @@ The layers prove different things and are not interchangeable.
   contributor/subject keyset hydration, ingest-facade close/cache ownership,
   canonical selector and catalog connector-layout equivalence, stable-head discovery-bundle
   equivalence, snapshot-scoped READY-audit cache equivalence and hard bounds,
-  bounded-bootstrap result/replay equivalence, and deduplication theorems.
+  bounded-bootstrap result/replay equivalence, bounded preparation-drainage
+  page arithmetic (hard-bounded pages, a strictly decreasing measure, exactly
+  `ceil(n/128)` committed pages, a strictly advancing durable position, and
+  idempotent page replay), and deduplication theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
   SQLite and MariaDB realizations. The refinement code introspects object kind,
   columns, types, nullability, collation, keys, FKs, checks, indexes, and view
@@ -106,6 +110,16 @@ The layers prove different things and are not interchangeable.
   `tla/SchemaBootstrapBatch.tla` finitely explores bounded, statement-aligned
   bootstrap batches through rollback, crash, lost commit responses, replay,
   and the exact durable-fact precondition for `READY`.
+  `tla/PreparationDrain.tla` finitely explores the superseded-preparation
+  drainage through issue, commit, lost commit responses, stale-position
+  retries and crashes: bounded pages, a strictly advancing durable position,
+  at most `ceil(rows/limit)` committed pages, and fair drainage.
+  `tla/PolicyTakeover.tla` finitely explores an analysis-policy change at a
+  takeover across every lifecycle point: one policy per build, no mapping of
+  a build the analysis stage would refuse forever, no retired build
+  publishing, bounded mappings, and convergence to the requested policy once
+  takeovers stop (its durable-replay branch states the policy deferral
+  explicitly).
 - `invariants.toml` indexes evidence for every semantic-obligation ID. Missing
   production refinement, fault, or cross-backend integration evidence is a
   machine-readable blocker, not an implicit success.
@@ -237,13 +251,17 @@ and no live candidate/build predecessor pins it.
 ## Honest production boundary
 
 The strict closed-world coverage command (`scripts/verify-formal.py coverage`)
-still exits nonzero: after an honest re-audit, thirteen production-evidence
-layers remain `blocked` because their executable evidence does not meet the
+still exits nonzero: after two honest re-audits, twenty-six production-evidence
+layers are `blocked` because their executable evidence does not meet the
 layer's original quantifier. `scripts/check-full.sh` therefore runs the
 `--validate-only` contract gate (the evidence index is well-formed and every
 symbol resolves), not the strict gate; the strict gate is the production
 readiness bar and is not yet met. The evidence below is real and executable,
-but this section is exact about where it stops.
+but this section is exact about where it stops. The coverage checker only
+validates metadata (statuses, evidence layers, symbol existence); it cannot
+tell whether a test meets an obligation's quantifier, so the second re-audit
+read the referenced tests and READY validators against each obligation's
+"every"/"exact" wording and re-blocked thirteen more layers below.
 
 The end-to-end workflow and liveness evidence runs only through the public
 facades on a fresh temporary database per case. The fault matrices are
@@ -272,10 +290,43 @@ Executable evidence added, and what it establishes:
   production audit and the production turns as oracles, and authority
   exhaustion, expiry-takeover, response-loss and policy-replacement races
   through the facades.
+- An analysis-policy crash matrix: for a first and a later revision, a turn
+  dies at each of eight boundaries (analysis complete before publication,
+  candidate begin durable, artifact rendered but not persisted, artifact
+  persisted before the operational preparation, preparation sealed, every
+  input bound before the commit, durable commit before activation, activated
+  before finalization) and the restarted process requests another analysis
+  policy. Every case checks the head's actual policy, build and revision, the
+  exact analysis-run set, that no working root or open analysis survives,
+  that durable commits equal published revisions, that retrying the
+  converged turn creates no build, analysis, candidate or commit and at most
+  one generation mapping per turn, the maintenance outcome, the READY audit
+  and equality with a fresh ingest under the requested policy. Before a
+  durable commit the crashed build is retired (a COMPLETE analysis without a
+  commit stays an immutable terminal fact that cleanup reclaims) before any
+  generation mapping is written; after a durable commit the pending
+  publication finalizes under its own policy first (see the open decision
+  below). The matrix also exposed and fixed a liveness bug: replaying a
+  published self-only depth-zero analysis (a policy change or a depth-16
+  compaction) after finalization pruned its working baseline failed as
+  corruption while the build's base pin remained.
+- Both preparation drains (the live build's superseded attempts and a
+  retiring build's attempts) page from a durable position: the least
+  `(state, preparation_id)` still matching, read by one seek per drain state
+  on the manifest index `ix_operational_preparation_drain_seek`
+  `(build_id, state, preparation_id)`; a page is one single-state index range
+  from that position capped at 128 rows. The position travels between issue
+  and commit and is not trusted: the page reloads it and a stale copy fails
+  closed with zero writes, and both orchestrators refuse a position that did
+  not advance strictly past the page they committed. Public-facade E2E drains
+  129 and 257 seeded attempts in exactly `ceil(n/128)` bounded commits on
+  SQLite and live MariaDB; the repository tests pin `EXPLAIN QUERY PLAN` and
+  MariaDB `EXPLAIN` to one range seek on that index with no table scan.
 - Live MariaDB 10.11.11 runs the same facade workflows, the liveness
-  regressions, the authority races, the interrupted seed batch, the two
-  bounded preparation drains, the physical matrix (one corpus) and six
-  sampled statement faults. It runs only under `H2HDB_TEST_MARIADB=1`, which a
+  regressions, the policy crash matrix, the authority races, the interrupted
+  seed batch, the two bounded preparation drains (facade-level and
+  repository-level), the physical matrix (one corpus) and six sampled
+  statement faults. It runs only under `H2HDB_TEST_MARIADB=1`, which a
   plain `pytest` and the check-fast commit hook leave unset; the release/merge
   gate (`scripts/check-full.sh`) sets it and does run live MariaDB.
 
@@ -308,12 +359,19 @@ Explicit assumptions and limits (each is also recorded on the evidence):
 - Orphaned artifact protections of a candidate abandoned mid-publication can
   only be released by the artifact-release reconciliation, which no
   maintenance entry point drives yet; maintenance reports `BLOCKED` until it
-  is wired (owner decision).
+  is wired (owner decision). The policy crash matrix pins the consequence at
+  the boundary where the crashed candidate had already protected artifacts
+  (every input bound, commit not durable): the takeover still converges the
+  catalog under the requested policy, ingest keeps claiming turns once
+  maintenance has settled (a claim refuses only while maintenance is still
+  ACTIONABLE), but current-only maintenance settles to `BLOCKED` after every
+  turn and the orphaned payload is never reclaimed until the reconciliation
+  is wired.
 - Three manifest relations have no production writer and rest in no corpus.
 - Every TLC result is a finite model check of the declared small profile; the
   Lean theorems are unbounded only for the abstract models they state.
 
-The thirteen layers the re-audit keeps `blocked`, and why:
+The thirteen layers the first re-audit keeps `blocked`, and why:
 
 - `catalog.physical-domains` and `h2hdb.operational.physical-domains` (fault):
   SQLite renders no check for 282 of 4668 injected classes; the writer-binding
@@ -335,10 +393,79 @@ The thirteen layers the re-audit keeps `blocked`, and why:
 - `catalog.state-machines` (fault): no matrix attempts every illegal enum
   transition and timestamp-presence edge at every repository callsite.
 
+The thirteen layers the second re-audit re-blocked, and why (each blocker
+is recorded verbatim on the invariant):
+
+- `catalog.identity-codecs` (runtime refinement): the obligation recomputes
+  every stable identity, but READY recomputes only the active source and
+  publication contexts, and seven published and analysis-history identity
+  columns are re-derived by nothing. (fault): the corruption matrix proves
+  refusal or inertness for every identity column except those seven, and the
+  collision fixture covers three seams, not every codec.
+- `catalog.canonical-reference-domains` (runtime refinement): READY resolves
+  canonical FKs only for the active contexts and live pins, not every FK in
+  retained history. (fault): no matrix repoints a canonical FK at a value of
+  another digest domain.
+- `catalog.discovery-exactness` (fault): the regressions inject excess rows
+  and a count drift, never an omission with preserved counts or corrupted
+  lexeme bytes, so the "no omission" half has no negative control.
+- `catalog.role-derivation` (runtime refinement): READY checks the classifier
+  constant, not every stored role against its file-name bytes. (fault): no
+  matrix flips a stored role and proves rejection.
+- `h2hdb.operational.canonical-hash-cache` (runtime refinement): the READY
+  check is manifest-shape only; framed digests are recomputed only by the
+  writer.
+- `h2hdb.operational.revision-allocation` (runtime refinement): manifest-shape
+  READY check; no validator proves every published revision is below its
+  stream's `next_revision`. (fault): no forced stale allocator CAS.
+- `h2hdb.operational.attempt-identity` (runtime refinement): manifest-shape
+  READY check; monotone attempt numbers are proved by no validator.
+- `h2hdb.operational.queue-history` (runtime refinement): manifest-shape READY
+  check; contiguity from genesis to the head is proved by no validator.
+- `h2hdb.operational.gallery-staging` (fault): the staging matrix admits it
+  does not inject every page, branch, parser, match and reuse statement, and
+  the statement matrix reaches only its three corpora's shapes.
+
 A further honest limit that is documented on the evidence but does not, on its
 own, keep a layer blocked: for seven published and analysis-history columns
 the bounded READY audit does not re-derive the value, so a corruption there is
 reader-visible; the identity-corruption matrix pins exactly those columns.
+
+## Open public-protocol decisions
+
+Two behaviors are deliberately not decided by this repository and are recorded
+as blockers rather than settled by a hidden default.
+
+1. **Applying a new analysis policy when a durable commit already exists.**
+   A takeover that resolves another analysis policy while the working build's
+   publication commit is durable (`DB_COMMITTED`) finalizes that publication
+   under the policy it was analyzed with; the requested policy takes effect
+   only on the following turn, which analyzes a successor build of the same
+   snapshot. Today this deferral is invisible to a consumer: the ingest
+   service's `synchronize_once` returns a normal terminal result whose catalog
+   head is not yet under the requested policy. The crash matrix pins the
+   deferral explicitly. The two candidate public semantics are:
+   - **A. Converge before returning.** `synchronize_once` drives a second turn
+     until the head is under the requested policy. No new public type; the
+     call becomes longer and publishes two revisions from one call. Consumers
+     see one result whose head policy always equals the request; the core
+     needs no API change (ingest-side loop), so a compatible core bump and an
+     ingest compatible bump.
+   - **B. An explicit deferred outcome.** The core publication result (and the
+     ingest synchronization result) gains an explicit outcome such as
+     `POLICY_DEFERRED`, returned when the finalized head's policy differs from
+     the requested one; consumers decide whether to re-run. This adds a public
+     enum/field to `VNextIngestAdvanceResult` and the ingest result: a core
+     compatibility-lane bump (new public protocol) and an ingest lane bump,
+     and every consumer must handle the new outcome.
+   Until the owner chooses, the deferral stays a documented blocker.
+2. **The changed-snapshot conflict.** A snapshot that changed while a prior
+   commit is durable but unfinalized fails the source handoff closed with
+   `SourceBuildConflictError`. That class is an internal `RuntimeError`
+   subclass: it is not exported from the package root, is not part of the
+   facade surface, and consumers see an untyped failure. Making it a typed
+   public contract (export it, decide whether the resident retries, backs off
+   or requires the old snapshot) is part of the same undecided protocol.
 
 FD completeness remains a domain-audit assumption. The checker and Lean can
 prove consequences of the declared FD set; they cannot infer an omitted real
