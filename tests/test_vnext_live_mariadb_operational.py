@@ -1436,6 +1436,9 @@ def _seed_mariadb_drain_preparations(
                 ),
             )
     connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+    # SET opens an implicit transaction that no auto-commit statement
+    # closes; commit it so the caller can start its own transactions.
+    connector.commit()
 
 
 def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
@@ -1468,12 +1471,17 @@ def test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable
             )
             raise RuntimeError("interrupted before commit")
     assert _mariadb_non_abandoned(connector) == 257
+
     # Bounded, keyset-paged drainage; the lost-response replay resumes.
+    def stale_pending() -> bool:
+        with connector.read_transaction():
+            return source_build_module._build_superseded_preparations_pending(
+                connector, build_id=_DRAIN_BUILD
+            )
+
     pages: list[int] = []
     now = 200
-    while source_build_module._build_superseded_preparations_pending(
-        connector, build_id=_DRAIN_BUILD
-    ):
+    while stale_pending():
         with connector.transaction():
             pages.append(
                 source_build_module._abandon_build_preparations_page(
@@ -1500,13 +1508,13 @@ def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
         "INSERT INTO operational_operational_policys "
         "(operational_policy_id, operational_schema_version, algorithm_version, "
         "max_batch_rows) VALUES (%s, %s, %s, %s)",
-        (2, 1, 1, 64),
+        (2, 1, 1, 63),
     )
     gate = _claim_shared(connector, b"gate-drain-00001", now=5, duration=1_000_000)
     with connector.transaction():
         turn = IngestFenceRepository.claim(
             _work(connector),
-            owner_token=b"ingest-drain-0001",
+            owner_token=b"ingest-drain-001",
             now=6,
             lease_duration=1_000_000,
         )
@@ -1516,14 +1524,19 @@ def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
         "WHERE build_id = %s",
         (turn.generation, _DRAIN_BUILD),
     )
+
+    def superseded_pending() -> bool:
+        with connector.read_transaction():
+            return OperationalEffectRepository.superseded_preparations_pending(
+                _work(connector),
+                build_id=_DRAIN_BUILD,
+                policy_id=1,
+                deletion_generation=0,
+            )
+
     pages: list[int] = []
     now = 300
-    while OperationalEffectRepository.superseded_preparations_pending(
-        _work(connector),
-        build_id=_DRAIN_BUILD,
-        policy_id=1,
-        deletion_generation=0,
-    ):
+    while superseded_pending():
         with connector.transaction():
             pages.append(
                 OperationalEffectRepository.abandon_superseded_preparations(
