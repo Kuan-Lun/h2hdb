@@ -152,6 +152,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 ingest_turn=turn,
                 command=root_command,
                 root_plan=root_plan,
+                analysis_policy_id=1,
                 now=23,
             )
         build_id = source.build_id

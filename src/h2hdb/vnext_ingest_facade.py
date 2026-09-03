@@ -127,6 +127,7 @@ from .vnext_source_build_repository import (
     SourceBuildSnapshotMismatchError,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
+    _SourceDrainRetry,
 )
 from .vnext_source_observation_spool import (
     FrozenGalleryObservation,
@@ -681,12 +682,15 @@ class VNextIngestFacade:
             if action is _SourceAction.ROOT_HANDOFF:
                 if machine.root_command is None:
                     raise RuntimeError("source-root command is absent")
-                return SourceBuildRepository.handoff_root(
+                if machine.policy is None:
+                    raise RuntimeError("source machine lacks its resolved policy")
+                return SourceBuildRepository.handoff_root_or_drain(
                     work,
                     gate_lease=gate,
                     ingest_turn=turn.ingest_turn,
                     command=machine.root_command,
                     root_plan=_require_root_upload(machine),
+                    analysis_policy_id=machine.policy.analysis_policy_id,
                     now=now,
                 )
             if action is _SourceAction.DISCOVERY_BATCH:
@@ -1955,6 +1959,13 @@ def _apply_source_outcome(
     elif action is _SourceAction.ROOT_SEAL:
         machine.action = _SourceAction.ROOT_HANDOFF
     elif action is _SourceAction.ROOT_HANDOFF:
+        if isinstance(outcome, _SourceDrainRetry):
+            # One bounded page of a retiring build's superseded preparations
+            # was abandoned; the root upload and frozen snapshot are untouched.
+            # Re-issue the handoff to drain the rest before any new build.
+            processed_rows = outcome.abandoned
+            machine.action = _SourceAction.ROOT_HANDOFF
+            return processed_rows, replayed
         if not isinstance(outcome, SourceBuildHandoff):
             raise RuntimeError("source-root handoff returned an invalid receipt")
         policy = machine.policy
@@ -1966,16 +1977,7 @@ def _apply_source_outcome(
         _require_root_upload(machine).close()
         machine.root_upload = None
         machine.root_pages = None
-        if outcome.deferred_gallery_count is not None:
-            # A stale sealed build's durable publication must finalize before
-            # any new build: this turn resumes that build and the caller's
-            # snapshot is re-derived by a later turn.
-            machine.discovered_galleries = outcome.deferred_gallery_count
-            machine.staged_galleries = outcome.deferred_gallery_count
-            machine.sealed = True
-            machine.action = _SourceAction.COMPLETE
-        else:
-            machine.action = _SourceAction.DISCOVERY_BATCH
+        machine.action = _SourceAction.DISCOVERY_BATCH
     elif action is _SourceAction.DISCOVERY_BATCH:
         batch = _require_exact_discovery_batch(step._payload)
         if batch.terminal:

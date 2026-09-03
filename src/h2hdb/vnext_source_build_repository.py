@@ -140,6 +140,7 @@ _ANALYSIS_RUN_DESCRIPTOR_TABLE = "catalog_analysis_run_descriptor"
 _ANALYSIS_SNAPSHOT_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
 _CATALOG_WORKING_CANDIDATE_TABLE = "operational_catalog_working_candidates"
 _OPERATIONAL_PREPARATION_TABLE = "operational_operational_preparations"
+_MAX_STALE_ABANDON_ROWS = 128
 _SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
 _PENDING_SOURCE_GALLERY_QUERY = (
     "SELECT expected.position, expected.gallery_id, identity.locator_sha256 "
@@ -753,11 +754,6 @@ class SourceBuildHandoff:
     source_root_sha256: bytes
     manifest_policy_id: int
     replayed: bool
-    deferred_gallery_count: int | None = None
-    """Set only when the handoff resumes a stale SEALED build whose durable
-    publication commit still awaits finalization; the caller's own snapshot
-    is deferred to a later turn and this build's sealed discovery count is
-    reported instead."""
 
     def __post_init__(self) -> None:
         require_uuid16(self.build_id, field="build_id")
@@ -765,10 +761,6 @@ class SourceBuildHandoff:
         require_digest32(self.scope_key, field="scope_key")
         require_digest32(self.source_root_sha256, field="source_root_sha256")
         require_positive_int63(self.manifest_policy_id, field="manifest_policy_id")
-        if self.deferred_gallery_count is not None:
-            require_int63(self.deferred_gallery_count, field="deferred_gallery_count")
-            if not self.replayed:
-                raise ValueError("a deferred handoff is always a replay")
         if not isinstance(self.replayed, bool):
             raise ValueError("replayed must be bool")
 
@@ -899,13 +891,62 @@ class SourceBuildRepository:
         ingest_turn: IngestTurn,
         command: SourceRootBuildCommand,
         root_plan: CanonicalValueUploadPlan,
+        analysis_policy_id: int,
         now: int,
     ) -> SourceBuildHandoff:
+        """Reserve or replay the sole source working build for this snapshot.
+
+        This is the terminal-handoff view used by direct callers: it either
+        returns the build handoff or raises if a stale build still needs
+        bounded preparation drainage.  The ingest orchestrator instead calls
+        :meth:`handoff_root_or_drain`, which surfaces the drainage step so it
+        can be re-issued one bounded page per transaction."""
+
+        outcome = SourceBuildRepository.handoff_root_or_drain(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            command=command,
+            root_plan=root_plan,
+            analysis_policy_id=analysis_policy_id,
+            now=now,
+        )
+        if isinstance(outcome, _SourceDrainRetry):
+            raise SourceBuildNotReadyError(
+                "stale source working build still has superseded preparations "
+                "to drain before this snapshot can be handed off"
+            )
+        return outcome
+
+    @staticmethod
+    def handoff_root_or_drain(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        command: SourceRootBuildCommand,
+        root_plan: CanonicalValueUploadPlan,
+        analysis_policy_id: int,
+        now: int,
+    ) -> SourceBuildHandoff | _SourceDrainRetry:
+        """Reserve or replay the sole source working build for this snapshot.
+
+        ``analysis_policy_id`` is the session's resolved analysis policy.  A
+        build is reusable for a snapshot only while its analysis (if any) was
+        made under that policy: the manifest forbids a different-policy sibling
+        analysis of one build, so a policy change retires an OPEN analysis and
+        derives a successor build, while a durably committed analysis is
+        replayed so its publication can finalize first.
+        """
+
         if type(command) is not SourceRootBuildCommand:
             raise TypeError("command must be an exact SourceRootBuildCommand")
         command.__post_init__()
         if type(root_plan) is not CanonicalValueUploadPlan:
             raise TypeError("root_plan must be an exact CanonicalValueUploadPlan")
+        session_analysis_policy = require_positive_int63(
+            analysis_policy_id, field="session analysis_policy_id"
+        )
         timestamp = require_int63(now, field="now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
         connector = work.connector
@@ -1005,11 +1046,26 @@ class SourceBuildRepository:
                 catalog_working=catalog_working,
                 base_source=base_source,
             )
+        if working and mapped_build is None:
+            policy_retirement = _retire_policy_mismatched_working_build(
+                work,
+                working=working,
+                catalog_working=catalog_working,
+                analysis_policy_id=session_analysis_policy,
+                current_generation=generation,
+                now=timestamp,
+            )
+            if policy_retirement is not None:
+                if not policy_retirement.drained:
+                    return _SourceDrainRetry(policy_retirement.abandoned)
+                working = ()
+                catalog_working = ()
         selection = _select_source_build_id(
             work,
             command=command,
             scope=scope,
             manifest_policy_id=manifest_policy_id,
+            analysis_policy_id=session_analysis_policy,
             base_source=base_source,
             generation=generation,
             working=working,
@@ -1123,17 +1179,19 @@ class SourceBuildRepository:
                         connector, build_id=stale_build
                     ):
                         # The stale build's commit is durable but not yet
-                        # finalized: finish it before any new build starts.
-                        return _defer_to_pending_sealed_build(
-                            work,
-                            build_id=stale_build,
-                            generation=generation,
-                            manifest_policy_id=manifest_policy_id,
-                            expected_root=expected_root,
+                        # finalized.  This transaction neither defers nor
+                        # discards the caller's snapshot: it fails closed and
+                        # only a turn that ingests the committed snapshot
+                        # again can finalize that publication first.
+                        raise SourceBuildConflictError(
+                            "stale source working build has a durable "
+                            "publication awaiting finalization; ingest its "
+                            "snapshot again to finalize it before a new "
+                            "snapshot can start"
                         )
                     # Sealed, never published, and superseded by this
                     # generation: the build can never publish now.
-                    _abandon_stale_sealed_working_build(
+                    sealed_retirement = _abandon_stale_sealed_working_build(
                         work,
                         current_generation=generation,
                         build_id=stale_build,
@@ -1141,6 +1199,8 @@ class SourceBuildRepository:
                         catalog_working=catalog_working,
                         now=timestamp,
                     )
+                    if not sealed_retirement.drained:
+                        return _SourceDrainRetry(sealed_retirement.abandoned)
                     catalog_working = ()
                 else:
                     if (
@@ -3720,6 +3780,105 @@ def _abandon_stale_open_working_build(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _StaleRetirement:
+    """Result of one bounded stale-build retirement step.
+
+    ``drained`` is True only once the build has no more unbound, uncommitted
+    OPEN/COMPLETE operational preparations and its working roots and OPEN
+    analysis have been released in the same transaction.  While False, only a
+    bounded page of preparations was abandoned and every other retirement
+    write was deferred to a later turn."""
+
+    drained: bool
+    abandoned: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceDrainRetry:
+    """A handoff turn that abandoned one bounded page of a retiring build's
+    superseded preparations and must be re-issued to drain the rest.
+
+    It commits only that page; the caller's frozen snapshot, its root upload
+    claim, and every working root are untouched, so the next ROOT_HANDOFF
+    re-derives the same state and drains the following page."""
+
+    abandoned: int
+
+
+def _build_superseded_preparations_pending(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> bool:
+    """Whether the build still has an unbound, uncommitted OPEN/COMPLETE
+    operational preparation (a ``LIMIT 1`` probe)."""
+
+    build = require_uuid16(build_id, field="stale preparation probe build_id")
+    row = connector.fetch_one(
+        f"SELECT 1 FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
+        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
+        "AND NOT EXISTS (SELECT 1 "
+        "FROM operational_publication_candidate_preparations AS bound "
+        "WHERE bound.preparation_id = p.preparation_id) "
+        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
+        "WHERE committed.preparation_id = p.preparation_id) "
+        "LIMIT 1",
+        (build,),
+    )
+    return bool(row)
+
+
+def _abandon_build_preparations_page(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    now: int,
+) -> int:
+    """Abandon at most one bounded page (128 rows) of the build's unbound,
+    uncommitted OPEN/COMPLETE operational preparations, keyset-ordered by
+    preparation_id.  Idempotent: an abandoned row leaves the predicate, so a
+    replay after a lost commit response resumes from the next survivor."""
+
+    build = require_uuid16(build_id, field="stale preparation page build_id")
+    timestamp = require_int63(now, field="stale preparation page now")
+    connector = work.connector
+    stale = connector.fetch_all(
+        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
+        f"FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
+        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
+        "AND NOT EXISTS (SELECT 1 "
+        "FROM operational_publication_candidate_preparations AS bound "
+        "WHERE bound.preparation_id = p.preparation_id) "
+        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
+        "WHERE committed.preparation_id = p.preparation_id) "
+        "ORDER BY p.preparation_id LIMIT %s",
+        (build, _MAX_STALE_ABANDON_ROWS),
+    )
+    for row in stale:
+        if len(row) != 4:
+            raise SourceBuildConflictError(
+                "stale operational preparation facts are malformed"
+            )
+        prepared_at = require_int63(row[2], field="stale preparation prepared_at")
+        completed_at = (
+            max(prepared_at, timestamp)
+            if row[3] is None
+            else require_int63(row[3], field="stale preparation completed_at")
+        )
+        work.compare_and_swap(
+            f"UPDATE {_OPERATIONAL_PREPARATION_TABLE} SET state = 'ABANDONED', "
+            "completed_at = %s WHERE preparation_id = %s AND state = %s",
+            (
+                completed_at,
+                require_uuid16(row[0], field="stale preparation_id"),
+                str(row[1]),
+            ),
+            authority="stale SEALED build operational preparation",
+        )
+    return len(stale)
+
+
 def _pending_source_build_publication(
     connector: Any,
     *,
@@ -3755,81 +3914,73 @@ def _pending_source_build_publication(
     return require_uuid16(rows[0][0], field="pending source publication receipt_id")
 
 
-def _defer_to_pending_sealed_build(
-    work: VNextUnitOfWork,
+def _sole_analysis_of_build(
+    connector: Any,
     *,
     build_id: bytes,
-    generation: int,
-    manifest_policy_id: int,
-    expected_root: bytes,
-) -> SourceBuildHandoff:
-    """Resume the stale SEALED build whose publication awaits finalization.
+) -> tuple[bytes, int, str] | None:
+    """Return (analysis_id, policy_id, state) of a build's sole analysis."""
 
-    The current ingest generation is mapped to that build so the analysis and
-    publication stages resolve it, this generation's claim on the caller's
-    own root upload is consumed exactly like a replayed handoff, and the
-    handoff reports the sealed build.  The caller's snapshot is not lost: the
-    next turn re-derives it and, once this build is finalized, releases the
-    working root through the finalized-publication path."""
+    rows = connector.fetch_all(
+        f"SELECT analysis_id, policy_id, state FROM {_ANALYSIS_RUN_VIEW} "
+        "WHERE build_id = %s ORDER BY analysis_id LIMIT 2",
+        (build_id,),
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise SourceBuildConflictError(
+            "source build has more than one analysis run or malformed facts"
+        )
+    return (
+        require_uuid16(rows[0][0], field="source build analysis_id"),
+        require_positive_int63(rows[0][1], field="source build analysis policy_id"),
+        str(rows[0][2]),
+    )
 
-    connector = work.connector
-    build = require_uuid16(build_id, field="deferred source build_id")
-    row = connector.fetch_one(
-        "SELECT descriptor.scope_key, descriptor.manifest_policy_id, "
-        "scope.source_root_sha256, discovery.gallery_count "
-        "FROM catalog_source_build_descriptor AS descriptor "
-        "JOIN catalog_source_scopes AS scope "
-        "ON scope.scope_key = descriptor.scope_key "
-        "JOIN catalog_source_build_discoveries AS discovery "
-        "ON discovery.build_id = descriptor.build_id "
-        "WHERE descriptor.build_id = %s",
-        (build,),
+
+def _retire_policy_mismatched_working_build(
+    work: VNextUnitOfWork,
+    *,
+    working: tuple[Any, ...],
+    catalog_working: tuple[Any, ...],
+    analysis_policy_id: int,
+    current_generation: int,
+    now: int,
+) -> _StaleRetirement | None:
+    """Retire the SEALED working build whose OPEN analysis has another policy.
+
+    The manifest forbids a different-policy sibling analysis of one build, so
+    a session that resolved another analysis policy cannot continue that
+    analysis.  Its OPEN analysis becomes ABANDONED and the working roots are
+    released (after its superseded preparations drain in bounded pages),
+    exactly like a stale SEALED build; the caller then derives a successor
+    build of the same snapshot.  A COMPLETE analysis is never retired here:
+    with a durable publication commit it is replayed so the publication can
+    finalize, and without one the analysis stage fails closed.
+
+    Returns the retirement outcome, or ``None`` when this working build is not
+    a policy-mismatched retirement target."""
+
+    if len(working) != 3 or working[0] != 1:
+        raise SourceBuildConflictError("the sole source working slot is malformed")
+    build = require_uuid16(working[1], field="policy check source working build_id")
+    assigned_at = require_int63(
+        working[2], field="policy check source working assigned_at"
     )
-    if len(row) != 4:
-        raise SourceBuildConflictError(
-            "deferred source build lacks its sealed scope and discovery"
-        )
-    scope_key = require_digest32(row[0], field="deferred source build scope_key")
-    if (
-        require_positive_int63(row[1], field="deferred source build policy")
-        != manifest_policy_id
-    ):
-        raise SourceBuildConflictError(
-            "deferred source build was sealed under another manifest policy"
-        )
-    root = require_digest32(row[2], field="deferred source build root")
-    gallery_count = require_int63(row[3], field="deferred source build galleries")
-    _insert_or_validate(
-        connector,
-        label="source build generation",
-        select_sql=(
-            "SELECT build_id, generation "
-            "FROM operational_source_build_generations WHERE generation = %s"
-        ),
-        select_data=(generation,),
-        insert_sql=(
-            "INSERT INTO operational_source_build_generations "
-            "(build_id, generation) VALUES (%s, %s)"
-        ),
-        expected=(build, generation),
-    )
-    affected = connector.execute_affected(
-        "DELETE FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (generation, expected_root),
-    )
-    if affected != 1:
-        raise SourceBuildNotReadyError(
-            "deferred source-root claim changed before release"
-        )
-    return SourceBuildHandoff(
-        build,
-        generation,
-        scope_key,
-        root,
-        manifest_policy_id,
-        True,
-        gallery_count,
+    family = _load_source_build_or_conflict(work.connector, build)
+    if family.state != "SEALED" or assigned_at != family.created_at:
+        return None
+    analysis = _sole_analysis_of_build(work.connector, build_id=build)
+    if analysis is None or analysis[1] == analysis_policy_id or analysis[2] != "OPEN":
+        return None
+    return _abandon_stale_sealed_working_build(
+        work,
+        current_generation=current_generation,
+        build_id=build,
+        assigned_at=assigned_at,
+        catalog_working=catalog_working,
+        now=now,
     )
 
 
@@ -3841,15 +3992,18 @@ def _abandon_stale_sealed_working_build(
     assigned_at: int,
     catalog_working: tuple[Any, ...],
     now: int,
-) -> None:
+) -> _StaleRetirement:
     """Release a SEALED root that never published and is fenced behind the
     current generation.
 
     The build row itself stays SEALED (an immutable terminal fact with its
-    sealed_at); its working roots are released, its OPEN analysis becomes
-    ABANDONED, and its unbound uncommitted operational attempts are
-    ABANDONED, which makes the whole family reclaimable by generic cleanup
-    once nothing references it."""
+    sealed_at); its unbound uncommitted operational attempts are ABANDONED in
+    bounded, keyset-paged, replayable pages of at most 128 rows, and only once
+    none remain are its working roots released and its OPEN analysis
+    ABANDONED, which makes the whole family reclaimable by generic cleanup.
+
+    A page that does not fully drain returns ``drained=False`` and touches no
+    working root, so the caller re-issues the handoff to drain the rest."""
 
     generation = require_positive_int63(
         current_generation, field="stale SEALED recovery current_generation"
@@ -3872,6 +4026,11 @@ def _abandon_stale_sealed_working_build(
         raise SourceBuildConflictError(
             "stale SEALED source working root is not fenced by this generation"
         )
+    # Drain a bounded page of the build's superseded preparations first; defer
+    # every irreversible working-root release until the build is fully drained.
+    abandoned = _abandon_build_preparations_page(work, build_id=build, now=now)
+    if _build_superseded_preparations_pending(connector, build_id=build):
+        return _StaleRetirement(drained=False, abandoned=abandoned)
     if catalog_working:
         if len(catalog_working) != 3 or catalog_working[0] != 1:
             raise SourceBuildConflictError("catalog working root is malformed")
@@ -3921,38 +4080,7 @@ def _abandon_stale_sealed_working_build(
                 successor="ABANDONED",
                 authority="stale SEALED source build recovery",
             )
-    for row in connector.fetch_all(
-        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
-        f"FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
-        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
-        "AND NOT EXISTS (SELECT 1 "
-        "FROM operational_publication_candidate_preparations AS bound "
-        "WHERE bound.preparation_id = p.preparation_id) "
-        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
-        "WHERE committed.preparation_id = p.preparation_id) "
-        "ORDER BY p.preparation_id",
-        (build,),
-    ):
-        if len(row) != 4:
-            raise SourceBuildConflictError(
-                "stale operational preparation facts are malformed"
-            )
-        prepared_at = require_int63(row[2], field="stale preparation prepared_at")
-        completed_at = (
-            max(prepared_at, now)
-            if row[3] is None
-            else require_int63(row[3], field="stale preparation completed_at")
-        )
-        work.compare_and_swap(
-            f"UPDATE {_OPERATIONAL_PREPARATION_TABLE} SET state = 'ABANDONED', "
-            "completed_at = %s WHERE preparation_id = %s AND state = %s",
-            (
-                completed_at,
-                require_uuid16(row[0], field="stale preparation_id"),
-                str(row[1]),
-            ),
-            authority="stale SEALED build operational preparation",
-        )
+    return _StaleRetirement(drained=True, abandoned=abandoned)
 
 
 def _matching_working_snapshot_build(
@@ -4405,16 +4533,24 @@ def _select_source_build_id(
     command: SourceRootBuildCommand,
     scope: bytes,
     manifest_policy_id: int,
+    analysis_policy_id: int,
     base_source: _SourceHead | None,
     generation: int,
     working: tuple[Any, ...],
     catalog_working: tuple[Any, ...],
 ) -> _SourceBuildSelection:
-    """Reuse only the exact current snapshot; otherwise derive its successor."""
+    """Reuse only the exact current snapshot; otherwise derive its successor.
+
+    The live published head build is reused for an unchanged snapshot only
+    when its analysis was made under the session's analysis policy; another
+    policy needs a successor build of the same snapshot (its analysis then
+    starts from a self-only depth-zero overlay by the layout rule)."""
 
     connector = work.connector
     summary = command.manifest_summary
     summary.__post_init__()
+    current_head_build: bytes | None = None
+    head_policy_matches = True
     if command.build_attempt_id != source_build_snapshot_attempt_id(
         command.source_root_sha256,
         summary,
@@ -4478,10 +4614,16 @@ def _select_source_build_id(
             scope=current_build.scope_key,
             manifest_policy_id=current_build.manifest_policy_id,
         )
+        current_head_build = current.build_id
+        head_analysis = _sole_analysis_of_build(connector, build_id=current.build_id)
+        head_policy_matches = (
+            head_analysis is None or head_analysis[1] == analysis_policy_id
+        )
         if (
             current_build.scope_key == scope
             and current_build.manifest_policy_id == manifest_policy_id
             and current_summary == summary
+            and head_policy_matches
         ):
             return _SourceBuildSelection(current.build_id)
 
@@ -4530,6 +4672,10 @@ def _select_source_build_id(
             connector,
             build_id=canonical,
         )
+    elif canonical == current_head_build and not head_policy_matches:
+        # The live published head is this very snapshot, analyzed under
+        # another policy: the successor below carries the new policy.
+        pass
     elif not _is_exact_retired_sealed_source_build(
         connector,
         build_id=canonical,

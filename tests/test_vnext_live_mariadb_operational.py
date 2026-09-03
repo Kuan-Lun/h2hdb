@@ -20,6 +20,7 @@ from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
+from h2hdb import vnext_source_build_repository as source_build_module
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
@@ -1035,6 +1036,7 @@ def test_live_mariadb_operational_writer_workflows(
                 ingest_turn=current_turn,
                 command=root_command,
                 root_plan=root_plan,
+                analysis_policy_id=1,
                 now=504,
             )
     build_id = source.build_id
@@ -1365,3 +1367,175 @@ def test_live_mariadb_operational_writer_workflows(
         query.rstrip().upper().endswith(" FOR UPDATE")
         for query in connector.for_update_queries
     )
+
+
+_DRAIN_BUILD = b"b" * 16
+
+
+def _seed_mariadb_drain_preparations(
+    connector: MariaDBConnector,
+    *,
+    count: int,
+    policy_id: int,
+    current_generation: int,
+) -> None:
+    """Seed ``count`` unbound, uncommitted OPEN/COMPLETE preparations of the
+    build, each under a distinct deletion generation, for bounded drainage.
+
+    Foreign key checks are disabled only for this focused injection; the live
+    physical matrix exercises FK integrity."""
+
+    connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+    connector.execute(
+        "INSERT INTO catalog_source_build_descriptor "
+        "(build_id, scope_key, manifest_policy_id, created_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (_DRAIN_BUILD, b"s" * 32, 1, 5),
+    )
+    connector.execute(
+        "INSERT INTO operational_source_build_generations "
+        "(build_id, generation) VALUES (%s, %s)",
+        (_DRAIN_BUILD, current_generation),
+    )
+    connector.execute(
+        "INSERT INTO operational_source_working_builds "
+        "(slot, build_id, assigned_at) VALUES (1, %s, %s)",
+        (_DRAIN_BUILD, 6),
+    )
+    with connector.transaction():
+        for offset in range(count):
+            generation = current_generation + 1 + offset
+            preparation_id = f"prp{generation:013d}".encode()
+            connector.execute(
+                "INSERT INTO operational_deletion_request_generations "
+                "(generation, allocated_at) VALUES (%s, %s)",
+                (generation, 1),
+            )
+            connector.execute(
+                "INSERT INTO operational_operational_event_streams "
+                "(preparation_id, created_at) VALUES (%s, %s)",
+                (preparation_id, 1),
+            )
+            if offset % 2:
+                state, completed = "COMPLETE", 6
+            else:
+                state, completed = "OPEN", None
+            connector.execute(
+                "INSERT INTO operational_operational_preparations "
+                "(preparation_id, build_id, deletion_request_generation, "
+                "operational_policy_id, state, prepared_at, completed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    preparation_id,
+                    _DRAIN_BUILD,
+                    generation,
+                    policy_id,
+                    state,
+                    4,
+                    completed,
+                ),
+            )
+    connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+
+def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
+    return int(
+        _read_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_preparations "
+            "WHERE build_id = %s AND state IN ('OPEN', 'COMPLETE')",
+            (_DRAIN_BUILD,),
+        )[0]
+    )
+
+
+def test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable(
+    generated_mariadb: _LiveMariaDBConnector,
+) -> None:
+    """The source-side stale-build preparation drainage abandons at most 128
+    rows per transaction on live MariaDB, converges over 257 rows, rolls back
+    an interrupted page, and replays a lost page response idempotently."""
+
+    connector = generated_mariadb
+    _seed_mariadb_drain_preparations(
+        connector, count=257, policy_id=1, current_generation=0
+    )
+    # Interrupted page: nothing is abandoned.
+    with pytest.raises(RuntimeError, match="interrupted"):
+        with connector.transaction():
+            source_build_module._abandon_build_preparations_page(
+                _work(connector), build_id=_DRAIN_BUILD, now=100
+            )
+            raise RuntimeError("interrupted before commit")
+    assert _mariadb_non_abandoned(connector) == 257
+    # Bounded, keyset-paged drainage; the lost-response replay resumes.
+    pages: list[int] = []
+    now = 200
+    while source_build_module._build_superseded_preparations_pending(
+        connector, build_id=_DRAIN_BUILD
+    ):
+        with connector.transaction():
+            pages.append(
+                source_build_module._abandon_build_preparations_page(
+                    _work(connector), build_id=_DRAIN_BUILD, now=now
+                )
+            )
+        now += 1
+    assert pages == [128, 128, 1]
+    assert _mariadb_non_abandoned(connector) == 0
+
+
+def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
+    generated_mariadb: _LiveMariaDBConnector,
+) -> None:
+    """The operational superseded-preparation drainage abandons at most 128
+    rows per authorized transaction on live MariaDB and converges over 129
+    rows."""
+
+    connector = generated_mariadb
+    _seed_mariadb_drain_preparations(
+        connector, count=129, policy_id=2, current_generation=0
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_policys "
+        "(operational_policy_id, operational_schema_version, algorithm_version, "
+        "max_batch_rows) VALUES (%s, %s, %s, %s)",
+        (2, 1, 1, 64),
+    )
+    gate = _claim_shared(connector, b"gate-drain-00001", now=5, duration=1_000_000)
+    with connector.transaction():
+        turn = IngestFenceRepository.claim(
+            _work(connector),
+            owner_token=b"ingest-drain-0001",
+            now=6,
+            lease_duration=1_000_000,
+        )
+    # Map the live generation to the build so the writer authorizes.
+    connector.execute(
+        "UPDATE operational_source_build_generations SET generation = %s "
+        "WHERE build_id = %s",
+        (turn.generation, _DRAIN_BUILD),
+    )
+    pages: list[int] = []
+    now = 300
+    while OperationalEffectRepository.superseded_preparations_pending(
+        _work(connector),
+        build_id=_DRAIN_BUILD,
+        policy_id=1,
+        deletion_generation=0,
+    ):
+        with connector.transaction():
+            pages.append(
+                OperationalEffectRepository.abandon_superseded_preparations(
+                    _work(connector),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    build_id=_DRAIN_BUILD,
+                    policy_id=1,
+                    deletion_generation=0,
+                    now=now,
+                )
+            )
+        now += 1
+    assert pages == [128, 1]
+    assert _mariadb_non_abandoned(connector) == 0

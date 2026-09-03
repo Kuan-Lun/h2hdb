@@ -54,9 +54,11 @@ from h2hdb import (
     VNextCatalogFacade,
     VNextDownloadQueueFacade,
     VNextIngestFacade,
+    VNextIngestPolicy,
 )
 from h2hdb.vnext_operational_event_repository import OperationalEffectStateError
 from h2hdb.vnext_publication_repository import PublicationHeadRaceError
+from h2hdb.vnext_source_build_repository import SourceBuildConflictError
 
 
 @dataclass
@@ -71,6 +73,7 @@ class Pipeline:
         clock: Clock | None = None,
         periodic: bool = True,
         drain: bool = True,
+        policy: VNextIngestPolicy | None = None,
     ) -> tuple[IngestTurnReceipts, int]:
         facade = VNextIngestFacade(self.config, clock=clock or Clock())
         try:
@@ -78,6 +81,7 @@ class Pipeline:
                 facade,
                 source=self.source,
                 library=self.library,
+                policy=policy,
                 periodic=periodic,
             )
             progressed = drain_maintenance(facade) if drain else 0
@@ -645,7 +649,12 @@ def _abandon_turn_with_short_lease(pipeline: Pipeline, label: str) -> None:
     time.sleep(lease / 1_000_000 + 0.5)
 
 
-def _fresh_reference(pipeline: Pipeline, tag: str) -> dict[str, Any] | None:
+def _fresh_reference(
+    pipeline: Pipeline,
+    tag: str,
+    *,
+    policy: VNextIngestPolicy | None = None,
+) -> dict[str, Any] | None:
     """The catalog a fresh database reaches from the current source (SQLite
     only; MariaDB compares publication counts)."""
 
@@ -656,7 +665,7 @@ def _fresh_reference(pipeline: Pipeline, tag: str) -> dict[str, Any] | None:
     initialize_database(config)
     source = copy.deepcopy(pipeline.source)
     fresh = Pipeline(config, source, MemoryLibrary(source))
-    fresh.turn()
+    fresh.turn(policy=policy)
     return catalog_view(config)
 
 
@@ -700,14 +709,18 @@ def test_source_change_after_an_abandoned_sealed_build_converges(
     "label",
     ("publication.commit:LIBRARY_ACTIVATION", "publication.commit:FINALIZE"),
 )
-def test_source_change_after_a_sealed_commit_finalizes_before_the_new_build(
+def test_source_change_after_a_sealed_commit_fails_closed_until_it_is_finalized(
     pipeline: Pipeline,
     label: str,
 ) -> None:
-    """A durable but unfinalized publication commit is completed before any
-    new build starts: the first turn after the restart resumes and finalizes
-    the pending publication (the new snapshot is deferred), and the next turn
-    publishes the new snapshot."""
+    """A durable but unfinalized publication commit pins the source working
+    root.  A later turn that scanned a *different* snapshot must neither defer
+    nor silently discard that snapshot: its source handoff fails closed with a
+    typed conflict and touches no build, analysis or publication state.  Only
+    a turn that ingests the committed snapshot again finalizes the pending
+    publication, after which the new snapshot publishes normally.  (Restoring
+    liveness without re-ingesting the old snapshot needs a public protocol
+    decision; see the verification README.)"""
 
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
@@ -715,14 +728,103 @@ def test_source_change_after_a_sealed_commit_finalizes_before_the_new_build(
     pending_count = len(pipeline.source.galleries)
     pipeline.source.remove(("gallery-1006",))
     pipeline.source.put(gallery(1007, pages=[b"p0-g"], artists=["gina"]))
-    receipts, _progress = pipeline.turn()
-    assert receipts.source.sealed
+    before = snapshot_database(pipeline.config)
+    lease = _short_lease(pipeline)
+    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    try:
+        session = claim_session(facade, lease=lease)
+        with pytest.raises(SourceBuildConflictError, match="awaiting finalization"):
+            run_ingest_turn(
+                facade,
+                source=pipeline.source,
+                library=pipeline.library,
+                session=session,
+            )
+    finally:
+        facade.close()
+    touched = set(snapshot_difference(before, snapshot_database(pipeline.config)))
+    assert not {
+        table
+        for table in touched
+        if table.startswith(
+            (
+                "catalog_source_build",
+                "catalog_analysis",
+                "catalog_publication",
+                "operational_source",
+            )
+        )
+    }, sorted(touched)
+    # The failed session's short lease expires; the committed snapshot then
+    # finalizes its own publication ...
+    time.sleep(lease / 1_000_000 + 0.5)
+    pipeline.source.remove(("gallery-1007",))
+    pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
+    pipeline.turn()
     pipeline.ready()
     assert pipeline.view()["publication_count"] == pending_count
+    # ... and only then does the new snapshot publish.
+    pipeline.source.remove(("gallery-1006",))
+    pipeline.source.put(gallery(1007, pages=[b"p0-g"], artists=["gina"]))
     pipeline.turn()
     pipeline.ready()
     assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
     reference = _fresh_reference(pipeline, "reference")
+    if reference is not None:
+        assert _publication_titles(pipeline.view()) == _publication_titles(reference)
+
+
+# A different spam-occurrence threshold resolves to a different analysis
+# policy while the manifest (source) policy stays the same.
+CHANGED_POLICY_THRESHOLD = 7
+
+
+@pytest.mark.parametrize("label", ("analysis.commit:content_owner",))
+def test_policy_change_at_takeover_after_a_mid_analysis_crash_converges(
+    pipeline: Pipeline,
+    label: str,
+) -> None:
+    """A process dies mid-analysis and the restarted process registers a
+    different analysis policy for the unchanged snapshot.  The manifest forbids
+    a different-policy sibling analysis of the same build, so the takeover must
+    retire the abandoned analysis and analyze a successor build of the same
+    snapshot under the new policy, converging to the catalog a fresh ingest
+    under that policy produces."""
+
+    _abandon_turn_before(pipeline, label)
+    changed = ingest_policy(spam_occurrence_threshold=CHANGED_POLICY_THRESHOLD)
+    pipeline.turn(clock=takeover_clock(), policy=changed)
+    pipeline.ready()
+    assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
+    reference = _fresh_reference(pipeline, "policy", policy=changed)
+    if reference is not None:
+        assert _publication_titles(pipeline.view()) == _publication_titles(reference)
+
+
+@pytest.mark.parametrize(
+    "label",
+    ("publication.commit:LIBRARY_ACTIVATION", "publication.commit:FINALIZE"),
+)
+def test_policy_change_at_takeover_after_a_durable_commit_finalizes_then_converges(
+    pipeline: Pipeline,
+    label: str,
+) -> None:
+    """The commit is durable (DB_COMMITTED) but neither activated nor finalized
+    when the process dies, and the restarted process registers a different
+    analysis policy.  The pending publication is durable authority: the
+    takeover turn must finalize it (the reader head advances to it) instead of
+    wedging on the policy, and the following turn must re-analyze the
+    unchanged snapshot under the new policy as a successor build."""
+
+    _abandon_turn_before(pipeline, label)
+    changed = ingest_policy(spam_occurrence_threshold=CHANGED_POLICY_THRESHOLD)
+    pipeline.turn(clock=takeover_clock(), policy=changed)
+    pipeline.ready()
+    assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
+    pipeline.turn(clock=takeover_clock(), policy=changed)
+    pipeline.ready()
+    assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
+    reference = _fresh_reference(pipeline, "policy", policy=changed)
     if reference is not None:
         assert _publication_titles(pipeline.view()) == _publication_titles(reference)
 

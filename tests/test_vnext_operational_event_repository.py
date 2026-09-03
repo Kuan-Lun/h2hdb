@@ -596,3 +596,189 @@ def test_database_policy_caps_transient_event_batches(
         ) == (4,)
     finally:
         connector.close()
+
+
+_SUPERSEDED_BUILD = b"b" * 16
+_CURRENT_GENERATION = 0
+
+
+def _seed_superseded_preparations(
+    connector: SQLiteConnector,
+    *,
+    count: int,
+    first_generation: int = 1,
+) -> list[bytes]:
+    """Seed ``count`` unbound, uncommitted OPEN/COMPLETE preparations of the
+    build, each under a distinct deletion generation other than the current
+    one, so every row is superseded by policy/generation."""
+
+    ids: list[bytes] = []
+    with connector.transaction():
+        for offset in range(count):
+            generation = first_generation + offset
+            preparation_id = f"sup{generation:013d}".encode()
+            assert len(preparation_id) == 16
+            connector.execute(
+                "INSERT INTO operational_deletion_request_generations "
+                "(generation, allocated_at) VALUES (%s, %s)",
+                (generation, 1),
+            )
+            connector.execute(
+                "INSERT INTO operational_operational_event_streams "
+                "(preparation_id, created_at) VALUES (%s, %s)",
+                (preparation_id, 1),
+            )
+            if offset % 2:
+                state: tuple[str, int | None] = ("COMPLETE", 5)
+            else:
+                state = ("OPEN", None)
+            connector.execute(
+                "INSERT INTO operational_operational_preparations "
+                "(preparation_id, build_id, deletion_request_generation, "
+                "operational_policy_id, state, prepared_at, completed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    preparation_id,
+                    _SUPERSEDED_BUILD,
+                    generation,
+                    1,
+                    state[0],
+                    3,
+                    state[1],
+                ),
+            )
+            ids.append(preparation_id)
+    return ids
+
+
+def _superseded_pending(connector: SQLiteConnector) -> bool:
+    with connector.transaction():
+        return OperationalEffectRepository.superseded_preparations_pending(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            build_id=_SUPERSEDED_BUILD,
+            policy_id=1,
+            deletion_generation=_CURRENT_GENERATION,
+        )
+
+
+def _abandon_one_page(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    turn: IngestTurn,
+    *,
+    now: int,
+) -> int:
+    with connector.transaction():
+        return OperationalEffectRepository.abandon_superseded_preparations(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            build_id=_SUPERSEDED_BUILD,
+            policy_id=1,
+            deletion_generation=_CURRENT_GENERATION,
+            now=now,
+        )
+
+
+def _non_abandoned_count(connector: SQLiteConnector) -> int:
+    row = connector.fetch_one(
+        "SELECT COUNT(*) FROM operational_operational_preparations "
+        "WHERE build_id = %s AND state IN ('OPEN', 'COMPLETE')",
+        (_SUPERSEDED_BUILD,),
+    )
+    return int(row[0])
+
+
+@pytest.mark.parametrize("count", (129, 257))
+def test_superseded_drainage_is_bounded_keyset_paged_and_converges(
+    tmp_path: Path,
+    count: int,
+) -> None:
+    """More than one page of superseded preparations drains 128 at a time,
+    keyset-ordered, until none remain and every row is ABANDONED exactly once."""
+
+    connector = _generated_database(tmp_path / "drain.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        _seed_superseded_preparations(connector, count=count)
+        pages: list[int] = []
+        now = 100
+        while _superseded_pending(connector):
+            pages.append(_abandon_one_page(connector, gate, turn, now=now))
+            now += 1
+            assert len(pages) <= count // 128 + 2
+        assert all(page <= 128 for page in pages)
+        assert sum(pages) == count
+        assert pages == [128] * (count // 128) + ([count % 128] if count % 128 else [])
+        assert _non_abandoned_count(connector) == 0
+        abandoned = connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_operational_preparations "
+            "WHERE build_id = %s AND state = 'ABANDONED'",
+            (_SUPERSEDED_BUILD,),
+        )
+        assert abandoned == (count,)
+        # A redundant page after full drainage is an idempotent no-op.
+        assert _abandon_one_page(connector, gate, turn, now=now) == 0
+    finally:
+        connector.close()
+
+
+def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
+    tmp_path: Path,
+) -> None:
+    """A page interrupted before its transaction commits abandons nothing:
+    the whole page is atomic."""
+
+    connector = _generated_database(tmp_path / "fault.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        _seed_superseded_preparations(connector, count=200)
+        before = _non_abandoned_count(connector)
+        assert before == 200
+        with pytest.raises(RuntimeError, match="interrupted"):
+            with connector.transaction():
+                OperationalEffectRepository.abandon_superseded_preparations(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    build_id=_SUPERSEDED_BUILD,
+                    policy_id=1,
+                    deletion_generation=_CURRENT_GENERATION,
+                    now=100,
+                )
+                raise RuntimeError("interrupted before commit")
+        assert _non_abandoned_count(connector) == 200
+        # Recovery drains normally.
+        now = 200
+        while _superseded_pending(connector):
+            _abandon_one_page(connector, gate, turn, now=now)
+            now += 1
+        assert _non_abandoned_count(connector) == 0
+    finally:
+        connector.close()
+
+
+def test_superseded_drainage_replays_a_lost_page_response_idempotently(
+    tmp_path: Path,
+) -> None:
+    """A page whose commit response was lost is safe to replay: the committed
+    rows are already ABANDONED and excluded, so the driver simply resumes."""
+
+    connector = _generated_database(tmp_path / "replay.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        _seed_superseded_preparations(connector, count=257)
+        # First page commits durably; its response is "lost", so the driver
+        # re-checks and finds work still pending.
+        first = _abandon_one_page(connector, gate, turn, now=100)
+        assert first == 128
+        assert _superseded_pending(connector)
+        # The replay of that logical step advances past the committed rows.
+        second = _abandon_one_page(connector, gate, turn, now=101)
+        assert second == 128
+        third = _abandon_one_page(connector, gate, turn, now=102)
+        assert third == 1
+        assert not _superseded_pending(connector)
+        assert _non_abandoned_count(connector) == 0
+    finally:
+        connector.close()

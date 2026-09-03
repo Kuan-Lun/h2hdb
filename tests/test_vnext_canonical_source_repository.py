@@ -301,6 +301,7 @@ def test_batched_single_page_read_matches_streaming_and_omits_large_values(
                 ingest_turn=turn,
                 command=root_command,
                 root_plan=root_plan,
+                analysis_policy_id=1,
                 now=23,
             )
         for plan in plans:
@@ -678,6 +679,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
                     ingest_turn=turn,
                     command=command,
                     root_plan=plan,
+                    analysis_policy_id=1,
                     now=31,
                 )
         assert result.build_id == expected_build_id
@@ -735,6 +737,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
                     ingest_turn=turn,
                     command=retry_command,
                     root_plan=plan,
+                    analysis_policy_id=1,
                     now=33,
                 )
         assert replay.replayed
@@ -778,6 +781,7 @@ def test_absolute_slash_source_root_handoff(tmp_path: Path) -> None:
                 ingest_turn=turn,
                 command=command,
                 root_plan=plan,
+                analysis_policy_id=1,
                 now=41,
             )
         assert handoff.source_root_sha256 == plan.value_sha256
@@ -836,6 +840,7 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
                     ingest_turn=turn,
                     command=new_command,
                     root_plan=new_plan,
+                    analysis_policy_id=1,
                     now=61,
                 )
         assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
@@ -913,6 +918,7 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
                             ingest_turn=turn,
                             command=command,
                             root_plan=plan,
+                            analysis_policy_id=1,
                             now=51,
                         )
 

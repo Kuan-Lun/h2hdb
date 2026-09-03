@@ -293,6 +293,7 @@ def _open_build(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root,
+                analysis_policy_id=1,
                 now=24,
             )
     return gate, turn, command
@@ -434,6 +435,7 @@ def test_source_build_database_clock_and_abandonment_replay(
                     ingest_turn=turn,
                     command=replacement,
                     root_plan=root,
+                    analysis_policy_id=1,
                     now=30,
                 )
     finally:
@@ -775,6 +777,7 @@ def _handoff_snapshot_command(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root_plan,
+                analysis_policy_id=1,
                 now=now + 3,
             )
     return handoff.build_id
@@ -1991,6 +1994,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
+                    analysis_policy_id=1,
                     now=51,
                 )
             assert tuple(connector.connection.iterdump()) == before
@@ -2003,6 +2007,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
+                    analysis_policy_id=1,
                     now=52,
                 )
         assert next_handoff.build_id not in {canonical_build, recovery_build}
@@ -2165,6 +2170,7 @@ def test_sealed_v3_without_working_root_fails_closed_for_missing_or_live_analysi
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
+                    analysis_policy_id=1,
                     now=74,
                 )
             assert tuple(connector.connection.iterdump()) == before
@@ -2258,6 +2264,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                     ingest_turn=turn,
                     command=command,
                     root_plan=root,
+                    analysis_policy_id=1,
                     now=33,
                 )
             assert not first.replayed
@@ -2308,6 +2315,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                         ingest_turn=turn,
                         command=command,
                         root_plan=replay_root,
+                        analysis_policy_id=1,
                         now=35,
                     )
             assert replay.replayed and replay.build_id == first.build_id
@@ -2397,6 +2405,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
                     ingest_turn=second_turn,
                     command=command,
                     root_plan=replay_root,
+                    analysis_policy_id=1,
                     now=56,
                 )
 
@@ -2520,6 +2529,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                     ingest_turn=replay_turn,
                     command=published,
                     root_plan=replay_root,
+                    analysis_policy_id=1,
                     now=50,
                 )
         assert replay.generation == 2
@@ -2584,6 +2594,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                         ingest_turn=replacement_turn,
                         command=replacement,
                         root_plan=replacement_root,
+                        analysis_policy_id=1,
                         now=60,
                     )
             assert _reservation_snapshot(connector) == before_fault
@@ -2595,6 +2606,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=61,
                 )
 
@@ -2649,6 +2661,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                     ingest_turn=stale_turn,
                     command=foreign,
                     root_plan=foreign_root,
+                    analysis_policy_id=1,
                     now=50,
                 )
         with SourceDiscoveryPlan.from_locators(()) as plan:
@@ -2737,6 +2750,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=60,
                 )
         assert _reservation_snapshot(connector) == before
@@ -2794,6 +2808,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=60,
                 )
         assert _reservation_snapshot(connector) == before
@@ -2836,6 +2851,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                     ingest_turn=stale_turn,
                     command=published,
                     root_plan=published_root,
+                    analysis_policy_id=1,
                     now=50,
                 )
         assert (
@@ -2871,6 +2887,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=60,
                 )
         assert connector.fetch_one(
@@ -2910,6 +2927,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                     ingest_turn=stale_turn,
                     command=stale,
                     root_plan=stale_root,
+                    analysis_policy_id=1,
                     now=50,
                 )
         with connector.transaction():
@@ -2931,6 +2949,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=60,
                 )
 
@@ -3005,6 +3024,7 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
+                    analysis_policy_id=1,
                     now=35,
                 )
         assert _reservation_snapshot(connector) == before
@@ -3555,6 +3575,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         ingest_turn=turn2,
                         command=root_command,
                         root_plan=root2,
+                        analysis_policy_id=1,
                         now=45,
                     )
             assert handoff2.generation == 2
@@ -3687,6 +3708,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         ingest_turn=turn2,
                         command=root_command,
                         root_plan=sealed_root_retry,
+                        analysis_policy_id=1,
                         now=58,
                     )
             assert root_replay.replayed
@@ -4560,3 +4582,164 @@ def test_mariadb_abandonment_locks_exact_root_and_keeps_generation_mapping(
         "WHERE build_id = %s AND state = %s",
     ]
     assert not any("source_build_generations" in query for query in connector.mutations)
+
+
+_STALE_BUILD = b"b" * 16
+
+
+def _seed_stale_build_with_preparations(
+    connector: SQLiteConnector,
+    *,
+    count: int,
+) -> None:
+    """Seed a source build and ``count`` unbound, uncommitted OPEN/COMPLETE
+    operational preparations of it for the bounded drainage.
+
+    Foreign keys are disabled only for this focused injection of preparation
+    rows; the drainage predicate and its FK integrity are exercised by the
+    physical and identity matrices, not here."""
+
+    connector.execute("PRAGMA foreign_keys = OFF")
+    connector.execute(
+        "INSERT INTO catalog_source_scopes "
+        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
+        "VALUES (%s, %s, %s, %s)",
+        (b"s" * 32, b"filesystem", b"r" * 32, 1),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_build_descriptor "
+        "(build_id, scope_key, manifest_policy_id, created_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (_STALE_BUILD, b"s" * 32, 1, 5),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_policys "
+        "(operational_policy_id, operational_schema_version, algorithm_version, "
+        "max_batch_rows) VALUES (%s, %s, %s, %s)",
+        (1, 1, 1, 2),
+    )
+    with connector.transaction():
+        for offset in range(count):
+            generation = offset + 1
+            preparation_id = f"prp{generation:013d}".encode()
+            assert len(preparation_id) == 16
+            connector.execute(
+                "INSERT INTO operational_deletion_request_generations "
+                "(generation, allocated_at) VALUES (%s, %s)",
+                (generation, 1),
+            )
+            connector.execute(
+                "INSERT INTO operational_operational_event_streams "
+                "(preparation_id, created_at) VALUES (%s, %s)",
+                (preparation_id, 1),
+            )
+            if offset % 2:
+                state, completed = "COMPLETE", 6
+            else:
+                state, completed = "OPEN", None
+            connector.execute(
+                "INSERT INTO operational_operational_preparations "
+                "(preparation_id, build_id, deletion_request_generation, "
+                "operational_policy_id, state, prepared_at, completed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (preparation_id, _STALE_BUILD, generation, 1, state, 4, completed),
+            )
+    connector.execute("PRAGMA foreign_keys = ON")
+
+
+def _stale_pending(connector: SQLiteConnector) -> bool:
+    return source_build_module._build_superseded_preparations_pending(
+        connector, build_id=_STALE_BUILD
+    )
+
+
+def _stale_page(connector: SQLiteConnector, *, now: int) -> int:
+    with connector.transaction():
+        return source_build_module._abandon_build_preparations_page(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            build_id=_STALE_BUILD,
+            now=now,
+        )
+
+
+def _stale_non_abandoned(connector: SQLiteConnector) -> int:
+    return int(
+        connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_operational_preparations "
+            "WHERE build_id = %s AND state IN ('OPEN', 'COMPLETE')",
+            (_STALE_BUILD,),
+        )[0]
+    )
+
+
+@pytest.mark.parametrize("count", (129, 257))
+def test_stale_build_preparation_drainage_is_bounded_and_converges(
+    tmp_path: Path,
+    count: int,
+) -> None:
+    """A retiring build's superseded preparations drain 128 per transaction,
+    keyset-ordered, until none remain and every row is ABANDONED once."""
+
+    connector = _generated_database(tmp_path / "stale-drain.sqlite3")
+    try:
+        _seed_stale_build_with_preparations(connector, count=count)
+        pages: list[int] = []
+        now = 100
+        while _stale_pending(connector):
+            pages.append(_stale_page(connector, now=now))
+            now += 1
+            assert len(pages) <= count // 128 + 2
+        assert all(page <= 128 for page in pages)
+        assert sum(pages) == count
+        assert pages == [128] * (count // 128) + ([count % 128] if count % 128 else [])
+        assert _stale_non_abandoned(connector) == 0
+        assert _stale_page(connector, now=now) == 0
+    finally:
+        connector.close()
+
+
+def test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit(
+    tmp_path: Path,
+) -> None:
+    """A page interrupted before its commit abandons nothing; recovery drains
+    normally."""
+
+    connector = _generated_database(tmp_path / "stale-fault.sqlite3")
+    try:
+        _seed_stale_build_with_preparations(connector, count=200)
+        assert _stale_non_abandoned(connector) == 200
+        with pytest.raises(RuntimeError, match="interrupted"):
+            with connector.transaction():
+                source_build_module._abandon_build_preparations_page(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    build_id=_STALE_BUILD,
+                    now=100,
+                )
+                raise RuntimeError("interrupted before commit")
+        assert _stale_non_abandoned(connector) == 200
+        now = 200
+        while _stale_pending(connector):
+            _stale_page(connector, now=now)
+            now += 1
+        assert _stale_non_abandoned(connector) == 0
+    finally:
+        connector.close()
+
+
+def test_stale_build_preparation_replays_a_lost_page_response(
+    tmp_path: Path,
+) -> None:
+    """A page whose commit response was lost is safe to replay: committed rows
+    are already ABANDONED and excluded, so the driver resumes at the next."""
+
+    connector = _generated_database(tmp_path / "stale-replay.sqlite3")
+    try:
+        _seed_stale_build_with_preparations(connector, count=257)
+        assert _stale_page(connector, now=100) == 128
+        assert _stale_pending(connector)
+        assert _stale_page(connector, now=101) == 128
+        assert _stale_page(connector, now=102) == 1
+        assert not _stale_pending(connector)
+        assert _stale_non_abandoned(connector) == 0
+    finally:
+        connector.close()

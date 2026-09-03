@@ -117,6 +117,7 @@ def _working_build(
             ingest_turn=turn,
             command=root_command,
             root_plan=root_plan,
+            analysis_policy_id=1,
             now=23,
         )
     return gate, turn, handoff.build_id, root_plan

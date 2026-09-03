@@ -995,7 +995,7 @@ def test_zero_artifact_candidate_binds_effect_seal_before_stage_eight(
 
         def fetch_one(self, query: str, _parameters: object = ()) -> tuple[object, ...]:
             if "preparation_checkpoints" in query:
-                return (preparation_id, "COMPLETE", "COMPLETE")
+                return (preparation_id, "COMPLETE", "COMPLETE", 1)
             if "catalog_artifact_operations" in query:
                 return ()
             if "publication_candidate_preparations" in query:

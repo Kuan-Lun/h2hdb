@@ -234,6 +234,7 @@ class _Action(StrEnum):
     BUILD_ARTIFACT_INPUT = "BUILD_ARTIFACT_INPUT"
     BUILD_ARTIFACT_DELTA = "BUILD_ARTIFACT_DELTA"
     VALIDATE_ARTIFACT_INPUT = "VALIDATE_ARTIFACT_INPUT"
+    ABANDON_SUPERSEDED = "ABANDON_SUPERSEDED"
     BEGIN_OPERATIONAL = "BEGIN_OPERATIONAL"
     APPEND_OPERATIONAL = "APPEND_OPERATIONAL"
     SEAL_OPERATIONAL = "SEAL_OPERATIONAL"
@@ -1645,7 +1646,7 @@ def _issue_artifact_or_operational(
     now: int,
 ) -> tuple[_Action, object] | None:
     preparation = work.connector.fetch_one(
-        "SELECT p.preparation_id, p.state, checkpoint.state "
+        "SELECT p.preparation_id, p.state, checkpoint.state, head.current_generation "
         "FROM operational_deletion_request_generation_heads AS head "
         "LEFT JOIN operational_operational_preparations AS p "
         "ON p.build_id = %s AND p.deletion_request_generation = "
@@ -1655,13 +1656,29 @@ def _issue_artifact_or_operational(
         "AND checkpoint.phase = 'EFFECTS' WHERE head.singleton_id = 1",
         (build_id, operational_policy_id),
     )
-    if not preparation or preparation[0] is None:
+    if not preparation or len(preparation) != 4:
+        raise RuntimeError("operational preparation head authority is malformed")
+    current_generation = require_int63(
+        preparation[3], field="operational preparation current generation"
+    )
+    if preparation[0] is None:
+        # Drain any superseded (wrong-policy or wrong-generation) attempts of
+        # this build in bounded pages before creating the current one, so no
+        # single transaction abandons an unbounded set.
+        if OperationalEffectRepository.superseded_preparations_pending(
+            work,
+            build_id=build_id,
+            policy_id=operational_policy_id,
+            deletion_generation=current_generation,
+        ):
+            return (
+                _Action.ABANDON_SUPERSEDED,
+                _OperationalWork(candidate_id, build_id, operational_policy_id),
+            )
         return (
             _Action.BEGIN_OPERATIONAL,
             _OperationalWork(candidate_id, build_id, operational_policy_id),
         )
-    if len(preparation) != 3:
-        raise RuntimeError("operational preparation authority is malformed")
     preparation_id = require_uuid16(
         preparation[0], field="publication operational preparation_id"
     )
@@ -1837,6 +1854,27 @@ def _commit_action(
             now=now,
             **keyword,
         )
+    if action is _Action.ABANDON_SUPERSEDED:
+        operational = cast(_OperationalWork, payload)
+        generation_row = work.connector.fetch_one(
+            "SELECT current_generation "
+            "FROM operational_deletion_request_generation_heads "
+            "WHERE singleton_id = 1",
+        )
+        if len(generation_row) != 1:
+            raise RuntimeError("deletion-request generation head is missing")
+        abandoned = OperationalEffectRepository.abandon_superseded_preparations(
+            work,
+            gate_lease=gate,
+            ingest_turn=turn,
+            build_id=operational.build_id,
+            policy_id=operational.operational_policy_id,
+            deletion_generation=require_int63(
+                generation_row[0], field="abandon current generation"
+            ),
+            now=now,
+        )
+        return _SupersededAbandonment(abandoned)
     if action is _Action.BEGIN_OPERATIONAL:
         operational = cast(_OperationalWork, payload)
         return OperationalEffectRepository.begin(
@@ -2038,16 +2076,34 @@ def _load_root(
         raise RuntimeError("ingest generation has no exact source build")
     build_id = require_uuid16(build_row[0], field="publication source build_id")
     analyses = connector.fetch_all(
-        "SELECT analysis_id FROM catalog_analysis_runs "
-        "WHERE build_id = %s AND policy_id = %s AND state = 'COMPLETE' "
+        "SELECT analysis_id, policy_id FROM catalog_analysis_runs "
+        "WHERE build_id = %s AND state = 'COMPLETE' "
         "ORDER BY analysis_id LIMIT 2",
-        (build_id, policy.analysis_policy_id),
+        (build_id,),
     )
-    if len(analyses) != 1:
+    if len(analyses) != 1 or len(analyses[0]) != 2:
         raise RuntimeError("source build lacks one exact completed analysis")
     analysis_id = require_uuid16(
         analyses[0][0], field="publication completed analysis_id"
     )
+    analysis_policy_id = require_positive_int63(
+        analyses[0][1], field="publication completed analysis policy_id"
+    )
+    if analysis_policy_id != policy.analysis_policy_id:
+        # Another session policy may only finalize an analysis whose
+        # publication commit is already durable; it never publishes one.
+        durable = connector.fetch_one(
+            "SELECT committed.receipt_id FROM catalog_publication_commits "
+            "AS committed JOIN catalog_publication_candidates AS candidate "
+            "ON candidate.candidate_id = committed.candidate_id "
+            "WHERE candidate.analysis_id = %s LIMIT 1",
+            (analysis_id,),
+        )
+        if not durable:
+            raise RuntimeError(
+                "source build's completed analysis belongs to another policy "
+                "and has no durable publication commit"
+            )
     artifact = connector.fetch_one(
         "SELECT artifact_policy_id FROM catalog_artifact_policies "
         "WHERE policy_component_sha256 = %s",
@@ -2720,6 +2776,14 @@ def _owned_resource(payload: object) -> object:
     if isinstance(payload, _ArtifactPrepared):
         return payload.receipt_owner
     return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _SupersededAbandonment:
+    """Outcome of one bounded superseded-preparation drainage page."""
+
+    row_count: int
+    replayed: bool = False
 
 
 def _advance_result(action: _Action, outcome: object) -> VNextIngestAdvanceResult:

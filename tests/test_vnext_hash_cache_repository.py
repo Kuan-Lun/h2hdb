@@ -114,6 +114,7 @@ def _ready_build(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root,
+                analysis_policy_id=1,
                 now=23,
             )
     finally:

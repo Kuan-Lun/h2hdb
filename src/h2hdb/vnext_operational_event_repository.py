@@ -62,6 +62,7 @@ _BUILD_GENERATION_TABLE = "operational_source_build_generations"
 _SOURCE_WORKING_TABLE = "operational_source_working_builds"
 
 _EFFECT_PHASE = "EFFECTS"
+_MAX_SUPERSEDED_ABANDON_ROWS = 128
 _REMOVED_TYPE = "REMOVED_GID"
 _DELETION_TYPE = "DELETION_CONSUMPTION"
 
@@ -289,13 +290,6 @@ class OperationalEffectRepository:
                 "canonical preparation identity collides with another natural key"
             )
 
-        OperationalEffectRepository._abandon_superseded_preparations(
-            work,
-            build_id=build,
-            policy_id=policy_id,
-            deletion_generation=deletion_generation,
-            now=timestamp,
-        )
         chain = _empty_chain()
         cursor = _encode_cursor(0)
         work.connector.execute(
@@ -776,24 +770,74 @@ class OperationalEffectRepository:
         return checkpoint
 
     @staticmethod
-    def _abandon_superseded_preparations(
+    def superseded_preparations_pending(
         work: VNextUnitOfWork,
         *,
         build_id: bytes,
         policy_id: int,
         deletion_generation: int,
+    ) -> bool:
+        """Return whether one superseded preparation of the build still exists.
+
+        A superseded preparation is an unbound, uncommitted OPEN or COMPLETE
+        attempt whose policy or deletion-request generation differs from the
+        attempt about to begin.  This bounded ``LIMIT 1`` probe lets the issue
+        path emit one drainage page per transaction until none remain."""
+
+        build = require_uuid16(build_id, field="superseded probe build_id")
+        row = work.connector.fetch_one(
+            f"SELECT 1 FROM {_PREPARATION_TABLE} AS p "
+            "WHERE p.build_id = %s "
+            "AND (p.operational_policy_id <> %s "
+            "OR p.deletion_request_generation <> %s) "
+            "AND p.state IN ('OPEN', 'COMPLETE') "
+            "AND NOT EXISTS (SELECT 1 "
+            "FROM operational_publication_candidate_preparations AS bound "
+            "WHERE bound.preparation_id = p.preparation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
+            "WHERE committed.preparation_id = p.preparation_id) "
+            "LIMIT 1",
+            (build, policy_id, deletion_generation),
+        )
+        return bool(row)
+
+    @staticmethod
+    def abandon_superseded_preparations(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        policy_id: int,
+        deletion_generation: int,
         now: int,
-    ) -> None:
-        """Abandon this build's unbound, uncommitted attempts whose policy or
-        deletion-request generation differs from the attempt about to begin.
+    ) -> int:
+        """Abandon at most one bounded page of this build's superseded attempts.
 
         Generations only advance and a replaced policy is never re-issued for
-        the same build, so such an OPEN or COMPLETE preparation can never be
-        published; left alone it would retain its build forever because generic
-        cleanup reclaims only ABANDONED attempts.  A bound attempt is superseded
-        by the binding path instead, and a committed one is publication
-        lineage."""
+        the same build, so an unbound, uncommitted OPEN or COMPLETE preparation
+        whose policy or generation differs can never be published; left alone
+        it would retain its build forever because generic cleanup reclaims only
+        ABANDONED attempts.  A bound attempt is superseded by the binding path
+        instead, and a committed one is publication lineage.
 
+        The scan is hard-capped at 128 rows, keyset-ordered by preparation_id,
+        and idempotent: because each abandoned row leaves the OPEN/COMPLETE
+        predicate, repeated pages drain the build and a replay after a lost
+        commit response simply resumes from the next surviving row.  The caller
+        drives one page per transaction until :meth:`superseded_preparations_pending`
+        reports none.
+        """
+
+        build = require_uuid16(build_id, field="superseded abandon build_id")
+        timestamp = require_int63(now, field="superseded abandon now")
+        _authorize_build(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            build_id=build,
+            now=timestamp,
+        )
         stale = work.connector.fetch_all(
             "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
             f"FROM {_PREPARATION_TABLE} AS p "
@@ -806,8 +850,8 @@ class OperationalEffectRepository:
             "WHERE bound.preparation_id = p.preparation_id) "
             "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
             "WHERE committed.preparation_id = p.preparation_id) "
-            "ORDER BY p.preparation_id",
-            (build_id, policy_id, deletion_generation),
+            "ORDER BY p.preparation_id LIMIT %s",
+            (build, policy_id, deletion_generation, _MAX_SUPERSEDED_ABANDON_ROWS),
         )
         for row in stale:
             if len(row) != 4:
@@ -818,7 +862,7 @@ class OperationalEffectRepository:
             state = str(row[1])
             prepared_at = require_int63(row[2], field="superseded prepared_at")
             completed_at = (
-                max(prepared_at, now)
+                max(prepared_at, timestamp)
                 if row[3] is None
                 else require_int63(row[3], field="superseded completed_at")
             )
@@ -828,6 +872,7 @@ class OperationalEffectRepository:
                 (completed_at, stale_id, state),
                 authority="superseded operational preparation",
             )
+        return len(stale)
 
     @staticmethod
     def _validate_existing_root(

@@ -635,6 +635,7 @@ def test_hash_cache_handoff_replay_and_lookup_on_each_backend(
                 ingest_turn=turn,
                 command=root_command,
                 root_plan=root_plan,
+                analysis_policy_id=1,
                 now=23,
             )
         _upload(connector, backend, gate, turn, source_plan, start=30)

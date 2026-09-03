@@ -938,6 +938,12 @@ class AnalysisRepository:
         policy = _load_policy(work, policy_key)
         input_digest = _analysis_input_digest(manifest, manifest_counts, policy)
 
+        committed_sibling = _load_committed_sibling_analysis(
+            work, build_id=build, policy_id=policy_key
+        )
+        if committed_sibling is not None:
+            return committed_sibling
+
         try:
             existing_family = load_analysis_run_family_by_identity(
                 work.connector,
@@ -4326,6 +4332,61 @@ def _iter_snapshot_winners(
             previous = gid
         if len(rows) < _MAX_BATCH_ROWS:
             return
+
+
+def _load_committed_sibling_analysis(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    policy_id: int,
+) -> AnalysisRun | None:
+    """Replay a build's COMPLETE analysis of another policy when it is already
+    durable publication authority.
+
+    The manifest forbids a different-policy sibling analysis of one build.  A
+    session that resolved another policy after that build's publication
+    commit became durable (DB_COMMITTED or PUBLISHED) therefore neither
+    creates a sibling nor fails closed: the committed analysis is replayed
+    under its own stored policy so the publication stage can finalize it.
+    Every other policy mismatch stays the zero-write conflict below.
+    """
+
+    rows = work.connector.fetch_all(
+        f"SELECT analysis_id FROM {_ANALYSIS_RUN_DESCRIPTOR_TABLE} "
+        "WHERE build_id = %s ORDER BY analysis_id LIMIT 2",
+        (build_id,),
+    )
+    if len(rows) != 1 or len(rows[0]) != 1:
+        return None
+    try:
+        family = load_analysis_run_family(
+            work.connector, analysis_id=require_uuid16(rows[0][0], field="analysis_id")
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None or family.policy_id == policy_id or family.state != "COMPLETE":
+        return None
+    committed = work.connector.fetch_one(
+        "SELECT committed.receipt_id FROM catalog_publication_commits AS committed "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        "WHERE candidate.analysis_id = %s LIMIT 1",
+        (family.analysis_id,),
+    )
+    if not committed:
+        return None
+    baseline, anchor, depth, _ancestry = _load_layout(work, family.analysis_id)
+    return AnalysisRun(
+        family.analysis_id,
+        family.build_id,
+        family.policy_id,
+        family.input_manifest_sha256,
+        baseline,
+        anchor,
+        depth,
+        family.state,
+        True,
+    )
 
 
 def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
