@@ -5663,8 +5663,8 @@ def _validated_open_publication_generation_transition(
 
     rows = connector.fetch_all(
         """
-        SELECT root.frozen_root_key, checkpoint.phase, checkpoint.cursor_bytes,
-               phase.phase_order
+        SELECT root.frozen_root_key, sweep.shard_no, checkpoint.phase,
+               checkpoint.cursor_bytes, phase.phase_order
         FROM operational_cleanup_jobs AS job
         JOIN operational_cleanup_sweep_targets AS sweep
           ON sweep.target_key = job.target_key
@@ -5701,10 +5701,15 @@ def _validated_open_publication_generation_transition(
             "publication-generation gap lacks valid OPEN cleanup authority"
         ) from error
 
-    phase = rows[0][1]
-    cursor = _as_bytes(rows[0][2], field="publication-generation cleanup cursor")
+    shard_no = _as_int(rows[0][1], field="publication-generation cleanup shard")
+    if not 0 <= shard_no <= 255:
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation cleanup shard is outside 0..255"
+        )
+    phase = rows[0][2]
+    cursor = _as_bytes(rows[0][3], field="publication-generation cleanup cursor")
     phase_order = _as_int(
-        rows[0][3], field="publication-generation cleanup phase order", positive=True
+        rows[0][4], field="publication-generation cleanup phase order", positive=True
     )
     if any(row[1:] != rows[0][1:] for row in rows[1:]):
         raise CatalogSemanticValidationError(
@@ -5745,6 +5750,11 @@ def _validated_open_publication_generation_transition(
     ):
         raise CatalogSemanticValidationError(
             "OPEN publication-generation roots are not one contiguous prefix"
+        )
+    if shard_no != frozen[0] % 256:
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation cleanup slot does not match its frozen "
+            "prefix floor"
         )
     if (
         retained_commit_floor is None

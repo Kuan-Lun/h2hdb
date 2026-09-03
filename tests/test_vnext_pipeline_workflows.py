@@ -1432,6 +1432,89 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 now=clock(),
             )
         assert full_check(sqlite_config).state == "READY"
+
+        def rebind_open_generation_cleanup(
+            current_cleanup_id: bytes,
+            *,
+            shard_no: int,
+        ) -> bytes:
+            roots = tuple(
+                bytes(row[0])
+                for row in connector.fetch_all(
+                    "SELECT frozen_root_key FROM operational_cleanup_cycle_roots "
+                    "WHERE cleanup_id = %s ORDER BY frozen_root_key",
+                    (current_cleanup_id,),
+                )
+            )
+            checkpoint = connector.fetch_one(
+                "SELECT phase FROM operational_cleanup_checkpoints "
+                "WHERE cleanup_id = %s",
+                (current_cleanup_id,),
+            )
+            assert len(checkpoint) == 1
+            phase = str(checkpoint[0])
+            rebound_cleanup_id = cleanup_module._cleanup_id(
+                CleanupTargetKind.PUBLICATION_GENERATION,
+                shard_no,
+                generation_cycle.cycle_generation,
+            )
+            target_key = cleanup_module._target_key(
+                CleanupTargetKind.PUBLICATION_GENERATION,
+                shard_no,
+            )
+            connector.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connector.execute(
+                    "UPDATE operational_cleanup_cycle_roots SET cleanup_id = %s "
+                    "WHERE cleanup_id = %s",
+                    (rebound_cleanup_id, current_cleanup_id),
+                )
+                connector.execute(
+                    "UPDATE operational_cleanup_checkpoints "
+                    "SET cleanup_id = %s, chain_sha256 = %s "
+                    "WHERE cleanup_id = %s",
+                    (
+                        rebound_cleanup_id,
+                        cleanup_module._initial_chain(rebound_cleanup_id, phase),
+                        current_cleanup_id,
+                    ),
+                )
+                connector.execute(
+                    "UPDATE operational_cleanup_jobs "
+                    "SET cleanup_id = %s, target_key = %s, "
+                    "frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
+                    (
+                        rebound_cleanup_id,
+                        target_key,
+                        cleanup_module._frozen_root_set_sha256(
+                            rebound_cleanup_id,
+                            roots,
+                        ),
+                        current_cleanup_id,
+                    ),
+                )
+            finally:
+                connector.execute("PRAGMA foreign_keys = ON")
+            return rebound_cleanup_id
+
+        forged_cleanup_id = rebind_open_generation_cleanup(
+            generation_cycle.cleanup_id,
+            shard_no=1,
+        )
+        try:
+            with pytest.raises(
+                CatalogSemanticValidationError,
+                match="slot does not match its frozen prefix floor",
+            ):
+                catalog_refinement_module.check_publication_atomicity_v1(connector)
+        finally:
+            restored_cleanup_id = rebind_open_generation_cleanup(
+                forged_cleanup_id,
+                shard_no=0,
+            )
+        assert restored_cleanup_id == generation_cycle.cleanup_id
+        assert full_check(sqlite_config).state == "READY"
+
         connector.execute(
             "DELETE FROM catalog_publication_generation_successors "
             "WHERE successor_generation = 1"
