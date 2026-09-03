@@ -96,6 +96,10 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_pipeline_workflows.py",
             "test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit",
         ),
+        (
+            "test_vnext_pipeline_workflows.py",
+            "test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states",
+        ),
     }
     observed: set[tuple[str, str]] = set()
     for path in sorted((REPOSITORY_ROOT / "tests").glob("test_*.py")):

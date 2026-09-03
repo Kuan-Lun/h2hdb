@@ -2777,8 +2777,11 @@ id = "integration.live-mariadb.pipeline"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; nothing is a SQL-shape recorder."
-assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes a separate fresh-pipeline mariadb_smoke case; the liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; a bounded smoke regression also drives one exact OPEN PCOM base-release gap and one exact OPEN PG edge gap through that production audit; nothing is a SQL-shape recorder."
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes separate fresh-pipeline and representative OPEN-cleanup mariadb_smoke cases; the liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "The bounded cleanup smoke selects one representative durable state from each PCOM and PG family instead of duplicating the exhaustive SQLite phase matrices.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restarted_process_takes_over_expired_leases_and_replays"

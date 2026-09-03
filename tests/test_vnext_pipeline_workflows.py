@@ -1630,6 +1630,160 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
         connector.close()
 
 
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
+def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
+    mariadb_config: CoreConfig,
+) -> None:
+    """A live READY audit accepts exact OPEN PCOM and PG crash authority."""
+
+    initialize_database(mariadb_config)
+    source = MemorySource(_corpus())
+    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    pipeline.turn(drain=False)
+    source.put(
+        gallery(
+            1001,
+            pages=[b"p0-a", b"p1-a-live-cleanup"],
+            artists=["alice"],
+            extra_tags=[("female", "glasses")],
+        )
+    )
+    second, _ = pipeline.turn(drain=False)
+    clock = takeover_clock()
+    connector = open_connector(mariadb_config)
+
+    def work() -> VNextUnitOfWork:
+        return VNextUnitOfWork(connector, backend="mariadb")
+
+    try:
+        with connector.read_transaction():
+            predecessor = connector.fetch_one(
+                "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1"
+            )
+        assert len(predecessor) == 1
+        predecessor_receipt = bytes(predecessor[0])
+
+        with connector.transaction():
+            gate = MaintenanceGateRepository.claim_exclusive(
+                work(),
+                now=clock(),
+                lease_duration=LEASE_MICROSECONDS,
+            )
+        with connector.transaction():
+            commit_cycle = VNextCleanupRepository.begin_cycle(
+                work(),
+                gate_lease=gate,
+                target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
+                shard_no=predecessor_receipt[0],
+                cycle_cutoff_at=clock(),
+                max_rows_per_transaction=256,
+                now=clock(),
+            )
+        with connector.transaction():
+            result = VNextCleanupRepository.resume_cycle(
+                work(),
+                gate_lease=gate,
+                cycle=commit_cycle,
+                now=clock(),
+            )
+
+        checked_open_pcom = False
+        for attempt in range(40):
+            with connector.read_transaction():
+                checkpoint = connector.fetch_one(
+                    "SELECT phase, cursor_bytes FROM "
+                    "operational_cleanup_checkpoints "
+                    "WHERE cleanup_id = %s AND state = 'OPEN'",
+                    (commit_cycle.cleanup_id,),
+                )
+                build_base_absent = (
+                    connector.fetch_one(
+                        "SELECT 1 FROM "
+                        "catalog_source_build_base_publication_commits "
+                        "WHERE build_id = %s",
+                        (second.source.build_id,),
+                    )
+                    == ()
+                )
+            if (
+                len(checkpoint) == 2
+                and checkpoint[0] == "PCOM_RELEASE_BUILD_BASE"
+                and bool(checkpoint[1])
+                and build_base_absent
+            ):
+                assert full_check(mariadb_config).state == "READY"
+                checked_open_pcom = True
+            if result.cycle_complete:
+                break
+            assert result.generation is not None
+            with connector.transaction():
+                result = VNextCleanupRepository.advance(
+                    work(),
+                    gate_lease=gate,
+                    cycle=commit_cycle,
+                    command=CleanupBatchCommand(
+                        (attempt + 1).to_bytes(32, "big"),
+                        result.generation,
+                    ),
+                    now=clock(),
+                )
+        else:
+            raise AssertionError("live PCOM cleanup did not complete")
+        assert checked_open_pcom
+
+        with connector.transaction():
+            generation_cycle = VNextCleanupRepository.begin_cycle(
+                work(),
+                gate_lease=gate,
+                target_kind=CleanupTargetKind.PUBLICATION_GENERATION,
+                shard_no=0,
+                cycle_cutoff_at=clock(),
+                max_rows_per_transaction=256,
+                now=clock(),
+            )
+        with connector.transaction():
+            result = VNextCleanupRepository.resume_cycle(
+                work(),
+                gate_lease=gate,
+                cycle=generation_cycle,
+                now=clock(),
+            )
+
+        for attempt in range(8):
+            with connector.read_transaction():
+                checkpoint = connector.fetch_one(
+                    "SELECT phase, cursor_bytes FROM "
+                    "operational_cleanup_checkpoints "
+                    "WHERE cleanup_id = %s AND state = 'OPEN'",
+                    (generation_cycle.cleanup_id,),
+                )
+            if (
+                len(checkpoint) == 2
+                and checkpoint[0] == "PG_EDGE"
+                and bool(checkpoint[1])
+            ):
+                assert full_check(mariadb_config).state == "READY"
+                break
+            assert not result.cycle_complete
+            assert result.generation is not None
+            with connector.transaction():
+                result = VNextCleanupRepository.advance(
+                    work(),
+                    gate_lease=gate,
+                    cycle=generation_cycle,
+                    command=CleanupBatchCommand(
+                        (attempt + 101).to_bytes(32, "big"),
+                        result.generation,
+                    ),
+                    now=clock(),
+                )
+        else:
+            raise AssertionError("live PG cleanup did not reach its edge crash state")
+    finally:
+        connector.close()
+
+
 def _generation_build(config: CoreConfig, generation: int) -> bytes | None:
     connector = open_connector(config)
     try:
