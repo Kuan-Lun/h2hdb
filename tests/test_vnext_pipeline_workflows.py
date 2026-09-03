@@ -52,6 +52,7 @@ from h2hdb import (
     CoreConfig,
     DatabaseConfig,
     VNextCatalogFacade,
+    VNextCurrentOnlyMaintenanceOutcome,
     VNextDownloadQueueFacade,
     VNextIngestFacade,
     VNextIngestPolicy,
@@ -715,12 +716,14 @@ def test_source_change_after_a_sealed_commit_fails_closed_until_it_is_finalized(
 ) -> None:
     """A durable but unfinalized publication commit pins the source working
     root.  A later turn that scanned a *different* snapshot must neither defer
-    nor silently discard that snapshot: its source handoff fails closed with a
-    typed conflict and touches no build, analysis or publication state.  Only
-    a turn that ingests the committed snapshot again finalizes the pending
-    publication, after which the new snapshot publishes normally.  (Restoring
-    liveness without re-ingesting the old snapshot needs a public protocol
-    decision; see the verification README.)"""
+    nor silently discard that snapshot: its source handoff fails closed and
+    touches no build, analysis or publication state.  The failure is the
+    internal SourceBuildConflictError, a RuntimeError subclass that the
+    package root does not export; consumers see an untyped failure, and the
+    public protocol for this outcome is an open decision recorded in the
+    verification README.  Only a turn that ingests the committed snapshot
+    again finalizes the pending publication, after which the new snapshot
+    publishes normally."""
 
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
@@ -969,3 +972,412 @@ def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
     reference = _fresh_reference(pipeline, "reference")
     if reference is not None:
         assert _publication_titles(pipeline.view()) == _publication_titles(reference)
+
+
+# --- analysis-policy change crash matrix ----------------------------------
+
+POLICY_CRASH_BOUNDARIES = (
+    # analysis COMPLETE, publication not yet begun
+    "publication.issue",
+    # candidate BEGIN durable, no batch committed
+    "publication.commit:BUILD_SELECTION",
+    # artifact rendered by the adapter, its protection not yet durable
+    "publication.commit:PREPARE_ARTIFACT",
+    # artifact protection durable, operational preparation not begun
+    "publication.commit:BEGIN_OPERATIONAL",
+    # operational preparation OPEN with appended effects, not sealed
+    "publication.commit:SEAL_OPERATIONAL",
+    # every input sealed and bound, publication commit not durable
+    "publication.commit:COMMIT_PUBLICATION",
+    # durable DB_COMMITTED, library not activated
+    "publication.commit:LIBRARY_ACTIVATION",
+    # durable DB_COMMITTED, activated, not finalized
+    "publication.commit:FINALIZE",
+)
+DURABLE_COMMIT_BOUNDARIES = frozenset(
+    {"publication.commit:LIBRARY_ACTIVATION", "publication.commit:FINALIZE"}
+)
+
+
+def _policy_facts(config: CoreConfig) -> dict[str, Any]:
+    """Durable facts a policy takeover must leave exact: the head's revision,
+    build and analysis policy, every analysis run, and the row counts that a
+    retry loop could otherwise grow without bound."""
+
+    connector = open_connector(config)
+    try:
+        with connector.read_transaction():
+            head = connector.fetch_one(
+                "SELECT receipt.revision, run.build_id, run.policy_id "
+                "FROM catalog_publication_commit_head_receipts AS head "
+                "JOIN catalog_publication_receipts AS receipt "
+                "ON receipt.receipt_id = head.receipt_id "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.receipt_id = head.receipt_id "
+                "JOIN catalog_publication_candidates AS candidate "
+                "ON candidate.candidate_id = committed.candidate_id "
+                "JOIN catalog_analysis_runs AS run "
+                "ON run.analysis_id = candidate.analysis_id"
+            )
+            analyses = connector.fetch_all(
+                "SELECT build_id, policy_id, state FROM catalog_analysis_runs "
+                "ORDER BY started_at, analysis_id"
+            )
+            builds = connector.fetch_all(
+                "SELECT build_id, state FROM catalog_source_builds ORDER BY created_at"
+            )
+            working = connector.fetch_one(
+                "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+            )
+            counts = {
+                name: int(connector.fetch_one(f"SELECT COUNT(*) FROM {table}")[0])
+                for name, table in (
+                    ("candidates", "catalog_publication_candidates"),
+                    ("commits", "catalog_publication_commits"),
+                    ("mappings", "operational_source_build_generations"),
+                    ("working_candidates", "operational_catalog_working_candidates"),
+                )
+            }
+            protected = int(
+                connector.fetch_one(
+                    "SELECT COUNT(*) FROM catalog_prepared_artifacts "
+                    "WHERE state IN ('PENDING', 'PREPARED')"
+                )[0]
+            )
+            reserved = connector.fetch_one(
+                "SELECT COALESCE(MAX(reserved_revision), 0) "
+                "FROM catalog_publication_candidates"
+            )
+            preparations = connector.fetch_all(
+                "SELECT state, COUNT(*) FROM operational_operational_preparations "
+                "GROUP BY state ORDER BY state"
+            )
+    finally:
+        connector.close()
+    return {
+        "head": (
+            None
+            if not head
+            else {
+                "revision": int(head[0]),
+                "build_id": bytes(head[1]),
+                "policy_id": int(head[2]),
+            }
+        ),
+        "analyses": [(bytes(row[0]), int(row[1]), str(row[2])) for row in analyses],
+        "builds": [(bytes(row[0]), str(row[1])) for row in builds],
+        "working_build": None if not working else bytes(working[0]),
+        "protected": protected,
+        "max_reserved": int(reserved[0]),
+        "preparations": {str(row[0]): int(row[1]) for row in preparations},
+        **counts,
+    }
+
+
+def _maintenance_outcome(pipeline: Pipeline) -> VNextCurrentOnlyMaintenanceOutcome:
+    """Advance current-only maintenance until it is DONE or BLOCKED."""
+
+    facade = VNextIngestFacade(pipeline.config, clock=takeover_clock())
+    try:
+        for _ in range(256):
+            outcome = facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
+            if outcome is not VNextCurrentOnlyMaintenanceOutcome.PROGRESSED:
+                return outcome
+    finally:
+        facade.close()
+    raise RuntimeError("maintenance did not settle within its attempt budget")
+
+
+@pytest.mark.parametrize("first_revision", (True, False), ids=("first", "second"))
+@pytest.mark.parametrize("label", POLICY_CRASH_BOUNDARIES)
+def test_policy_change_crash_matrix_converges_under_the_requested_policy(
+    pipeline: Pipeline,
+    label: str,
+    first_revision: bool,
+) -> None:
+    """A process dies at ``label`` and the restarted process registers a
+    different analysis policy for the unchanged snapshot.
+
+    Before any durable publication commit the takeover retires the crashed
+    build (its COMPLETE or OPEN analysis can never be reused under the new
+    policy), never maps the new generation to it, and publishes a successor
+    build of the same snapshot under the requested policy in one turn.  After
+    a durable commit the pending publication is finalized under its own
+    policy first and the requested policy is applied by the following turn;
+    that deferral is pinned here explicitly because it is a documented open
+    public-protocol decision, not a hidden behavior.
+
+    Every case checks the head's actual policy, build and revision, the exact
+    analysis-run set, that no working root or OPEN analysis survives, that
+    the durable commit count equals the published revision count, and that
+    retrying the converged turn adds no build, analysis, candidate or commit
+    and at most one generation mapping per turn.  Maintenance afterwards is
+    DONE unless the crashed candidate had already protected artifacts: those
+    orphaned protections await the unwired artifact-release reconciliation
+    and leave maintenance BLOCKED after every turn (ingest still claims once
+    maintenance has settled), which is pinned here as an open owner decision
+    recorded in the README."""
+
+    if not first_revision:
+        pipeline.turn()
+        pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
+    base = _policy_facts(pipeline.config)
+    base_revision = 0 if base["head"] is None else base["head"]["revision"]
+    _abandon_turn_before(pipeline, label)
+    crashed = _policy_facts(pipeline.config)
+    assert crashed["working_build"] is not None
+    # An orphaned candidate keeps its reserved revision number: the allocator
+    # is monotone and never reuses a reservation, so the converged head is
+    # the next reservation after everything the crash reserved.
+    expected_revision = crashed["max_reserved"] + 1
+    changed = ingest_policy(spam_occurrence_threshold=CHANGED_POLICY_THRESHOLD)
+    receipts, _ = pipeline.turn(clock=takeover_clock(), policy=changed, drain=False)
+    requested = receipts.policy.analysis_policy_id
+    after_first = _policy_facts(pipeline.config)
+    assert after_first["head"] is not None
+    if label in DURABLE_COMMIT_BOUNDARIES:
+        # Hidden deferral (open decision): the durable commit finalizes under
+        # the policy it was analyzed with; the requested policy is not yet
+        # the head's policy after this turn.
+        assert after_first["head"]["policy_id"] != requested
+        assert after_first["head"]["revision"] == crashed["max_reserved"]
+        assert after_first["head"]["build_id"] == crashed["working_build"]
+        receipts, _ = pipeline.turn(clock=takeover_clock(), policy=changed, drain=False)
+    facts = _policy_facts(pipeline.config)
+    head = facts["head"]
+    assert head is not None
+    assert head["policy_id"] == requested
+    assert head["revision"] == expected_revision
+    assert head["revision"] > base_revision
+    assert head["build_id"] == receipts.source.build_id
+    assert head["build_id"] != crashed["working_build"]
+    assert [
+        (build_id, state)
+        for build_id, policy_id, state in facts["analyses"]
+        if policy_id == requested
+    ] == [(head["build_id"], "COMPLETE")]
+    assert not any(state == "OPEN" for _build, _policy, state in facts["analyses"])
+    assert facts["working_build"] is None
+    assert facts["working_candidates"] == 0
+    # A durable crashed commit is already counted at crash time; the takeover
+    # adds exactly the successor's commit in every case.
+    assert facts["commits"] == crashed["commits"] + 1
+    assert facts["mappings"] <= crashed["mappings"] + (
+        2 if label in DURABLE_COMMIT_BOUNDARIES else 1
+    )
+    orphaned_protection = (
+        crashed["protected"] > 0 and label not in DURABLE_COMMIT_BOUNDARIES
+    )
+    # Pinned open owner decision, not hidden: the retired build's orphaned
+    # candidate keeps PENDING/PREPARED artifact protections that only the
+    # unwired artifact-release reconciliation can release, so current-only
+    # maintenance settles to BLOCKED instead of DONE after every turn.  A
+    # claim refuses ingest only while maintenance is still ACTIONABLE; like
+    # the resident, every turn below settles maintenance first.
+    expected_outcome = (
+        VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+        if orphaned_protection
+        else VNextCurrentOnlyMaintenanceOutcome.DONE
+    )
+    assert _maintenance_outcome(pipeline) is expected_outcome, label
+    # Retrying the converged turn creates nothing new: no build, analysis,
+    # candidate or commit appears (bounded cleanup may reclaim the retired
+    # build), and generation mappings grow by at most one per turn.
+    for retry in range(1, 3):
+        pipeline.turn(clock=takeover_clock(), policy=changed, drain=False)
+        again = _policy_facts(pipeline.config)
+        assert again["head"] == head
+        assert set(again["builds"]) <= set(facts["builds"])
+        assert set(again["analyses"]) <= set(facts["analyses"])
+        assert again["candidates"] <= facts["candidates"]
+        assert again["commits"] == facts["commits"]
+        assert again["mappings"] <= facts["mappings"] + retry
+        assert again["working_build"] is None
+        assert again["working_candidates"] == 0
+        assert _maintenance_outcome(pipeline) is expected_outcome, label
+    pipeline.ready()
+    reference = _fresh_reference(pipeline, "policy", policy=changed)
+    if reference is not None:
+        assert _publication_titles(pipeline.view()) == _publication_titles(reference)
+
+
+# --- bounded preparation drainage through the public facade ----------------
+
+
+def _seed_superseded_preparations_of_the_working_build(
+    config: CoreConfig, *, count: int
+) -> bytes:
+    """Seed ``count`` OPEN attempts of the current working build under the
+    retained deletion generations 0 through count-1, every one superseded by
+    the current head generation ``count`` that the queue facade advanced."""
+
+    connector = open_connector(config)
+    try:
+        with connector.read_transaction():
+            build = bytes(
+                connector.fetch_one(
+                    "SELECT build_id FROM operational_source_working_builds "
+                    "WHERE slot = 1"
+                )[0]
+            )
+            policy = int(
+                connector.fetch_one(
+                    "SELECT operational_policy_id FROM operational_operational_policys "
+                    "ORDER BY operational_policy_id LIMIT 1"
+                )[0]
+            )
+            head = int(
+                connector.fetch_one(
+                    "SELECT current_generation "
+                    "FROM operational_deletion_request_generation_heads "
+                    "WHERE singleton_id = 1"
+                )[0]
+            )
+        assert head == count
+        with connector.transaction():
+            for generation in range(count):
+                preparation_id = sha256(
+                    b"seeded-superseded-attempt" + generation.to_bytes(8, "big")
+                ).digest()[:16]
+                connector.execute(
+                    "INSERT INTO operational_operational_event_streams "
+                    "(preparation_id, created_at) VALUES (%s, %s)",
+                    (preparation_id, 1),
+                )
+                connector.execute(
+                    "INSERT INTO operational_operational_preparations "
+                    "(preparation_id, build_id, deletion_request_generation, "
+                    "operational_policy_id, state, prepared_at, completed_at) "
+                    "VALUES (%s, %s, %s, %s, 'OPEN', %s, NULL)",
+                    (preparation_id, build, generation, policy, 1),
+                )
+    finally:
+        connector.close()
+    return build
+
+
+def _preparations_of(config: CoreConfig, build_id: bytes) -> int:
+    connector = open_connector(config)
+    try:
+        with connector.read_transaction():
+            return int(
+                connector.fetch_one(
+                    "SELECT COUNT(*) FROM operational_operational_preparations "
+                    "WHERE build_id = %s",
+                    (build_id,),
+                )[0]
+            )
+    finally:
+        connector.close()
+
+
+def _advance_deletion_generation(pipeline: Pipeline, *, count: int) -> None:
+    queue = VNextDownloadQueueFacade(pipeline.config, clock=Clock())
+    for _ in range(count):
+        queue.request_deletion(1003, url=None)
+
+
+@pytest.mark.parametrize("count", (129, 257))
+def test_superseded_preparations_drain_through_the_public_facade(
+    pipeline: Pipeline,
+    count: int,
+) -> None:
+    """The live build's superseded attempts drain through the public
+    publication protocol: a turn that died before its operational preparation
+    began, whose build then accumulated more than one page of superseded
+    attempts, is taken over and emits exactly ceil(count/128) bounded
+    ABANDON_SUPERSEDED commits before the single BEGIN_OPERATIONAL, publishes,
+    and generic cleanup reclaims every abandoned attempt under READY."""
+
+    pipeline.turn()
+    pipeline.source.remove(("gallery-1003",))
+    _abandon_turn_with_short_lease(pipeline, "publication.commit:BEGIN_OPERATIONAL")
+    _advance_deletion_generation(pipeline, count=count)
+    build = _seed_superseded_preparations_of_the_working_build(
+        pipeline.config, count=count
+    )
+    labels: list[str] = []
+    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    try:
+        run_ingest_turn(
+            facade,
+            source=pipeline.source,
+            library=pipeline.library,
+            boundary=labels.append,
+        )
+        drain_maintenance(facade)
+    finally:
+        facade.close()
+    pages = [
+        index
+        for index, seen in enumerate(labels)
+        if seen.endswith("ABANDON_SUPERSEDED")
+    ]
+    begins = [
+        index
+        for index, seen in enumerate(labels)
+        if seen.endswith(":BEGIN_OPERATIONAL")
+    ]
+    assert len(pages) == -(-count // 128)
+    assert len(begins) == 1 and begins[0] > pages[-1]
+    # Only the committed attempt of this build survives cleanup.
+    assert _preparations_of(pipeline.config, build) == 1
+    pipeline.ready()
+    view = pipeline.view()
+    assert (view["revision"], _publication_gids(view)) == (2, [1001, 1002])
+    reference = _fresh_reference(pipeline, "reference")
+    if reference is not None:
+        assert _publication_titles(view) == _publication_titles(reference)
+
+
+@pytest.mark.parametrize("count", (129, 257))
+def test_retiring_build_preparations_drain_through_the_public_facade(
+    pipeline: Pipeline,
+    count: int,
+) -> None:
+    """A retiring build's attempts drain through the public source protocol:
+    a build sealed by a turn that died mid-analysis, then loaded with more
+    than one page of attempts, is retired by a turn that scanned a changed
+    snapshot through exactly ceil(count/128) bounded ROOT_HANDOFF commits, the
+    last of which also reserves the new build; the new snapshot publishes and
+    cleanup reclaims the retired build's attempts under READY."""
+
+    pipeline.turn()
+    pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
+    _abandon_turn_with_short_lease(pipeline, "analysis.commit:content_owner")
+    _advance_deletion_generation(pipeline, count=count)
+    stale_build = _seed_superseded_preparations_of_the_working_build(
+        pipeline.config, count=count
+    )
+    pipeline.source.remove(("gallery-1006",))
+    pipeline.source.remove(("gallery-1003",))
+    pipeline.source.put(gallery(1007, pages=[b"p0-g"], artists=["gina"]))
+    labels: list[str] = []
+    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    try:
+        receipts = run_ingest_turn(
+            facade,
+            source=pipeline.source,
+            library=pipeline.library,
+            boundary=labels.append,
+        )
+        drain_maintenance(facade)
+    finally:
+        facade.close()
+    # ceil(count / 128) handoff commits: each non-final page is its own
+    # re-issued ROOT_HANDOFF; the final page drains the build and the same
+    # transaction releases its roots and reserves the new build.
+    assert labels.count("source.commit:ROOT_HANDOFF") == -(-count // 128)
+    assert receipts.source.build_id != stale_build
+    assert _stale_build_facts(pipeline.config) == {
+        "working_builds": 0,
+        "working_candidates": 0,
+        "open_analyses": 0,
+    }
+    assert _preparations_of(pipeline.config, stale_build) == 0
+    pipeline.ready()
+    view = pipeline.view()
+    assert (view["revision"], _publication_gids(view)) == (2, [1001, 1002, 1007])
+    reference = _fresh_reference(pipeline, "reference")
+    if reference is not None:
+        assert _publication_titles(view) == _publication_titles(reference)

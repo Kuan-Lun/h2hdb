@@ -964,20 +964,29 @@ class AnalysisRepository:
                 pinned_baseline, _revision, _generation, _channel = (
                     _derive_pinned_baseline(work, build_id=build)
                 )
-                if pinned_baseline != persisted_baseline:
-                    raise AnalysisCorruptionError(
-                        "analysis build replay differs from its pinned "
-                        "source-build baseline"
-                    )
                 replay_layout = _derive_layout(
                     work,
-                    baseline=persisted_baseline,
+                    baseline=pinned_baseline,
                     policy=policy,
                 )
             except AnalysisNotReadyError as error:
                 raise AnalysisCorruptionError(
                     "analysis build replay lost its sealed baseline"
                 ) from error
+            if pinned_baseline != persisted_baseline and not (
+                # Finalization prunes the obsolete working baseline of a
+                # published self-only depth-zero result (a policy change or
+                # a depth-16 compaction) while the build's base pin remains
+                # until cleanup releases it; that exact prune is the only
+                # legitimate difference.
+                persisted_baseline is None
+                and replay_layout[0] is None
+                and _analysis_is_finalized(work, analysis_id=existing_id)
+            ):
+                raise AnalysisCorruptionError(
+                    "analysis build replay differs from its pinned "
+                    "source-build baseline"
+                )
             expected_anchor = (
                 existing_id if replay_layout[0] is None else replay_layout[0]
             )
@@ -4387,6 +4396,21 @@ def _load_committed_sibling_analysis(
         family.state,
         True,
     )
+
+
+def _analysis_is_finalized(work: VNextUnitOfWork, *, analysis_id: bytes) -> bool:
+    """Whether the analysis is the provenance of a finalized publication."""
+
+    row = work.connector.fetch_one(
+        f"SELECT 1 FROM {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        f"JOIN {_PUBLICATION_COMMIT_TABLE} AS committed "
+        "ON committed.source_revision = provenance.source_revision "
+        "JOIN catalog_publication_commit_finalizations AS finalized "
+        "ON finalized.receipt_id = committed.receipt_id "
+        "WHERE provenance.analysis_id = %s LIMIT 1",
+        (analysis_id,),
+    )
+    return bool(row)
 
 
 def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
