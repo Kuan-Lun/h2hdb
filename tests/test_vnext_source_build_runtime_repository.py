@@ -2039,11 +2039,35 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         connector.close()
 
 
-@pytest.mark.parametrize("analysis_state", (None, "OPEN", "COMPLETE"))
-def test_sealed_v3_without_working_root_fails_closed_for_missing_or_live_analysis(
+@pytest.mark.parametrize(
+    ("analysis_state", "expected_error", "expected_match"),
+    (
+        pytest.param(
+            None,
+            SourceBuildConflictError,
+            "working|authority",
+            id="missing",
+        ),
+        pytest.param(
+            "OPEN",
+            SourceBuildConflictError,
+            "working|authority",
+            id="open",
+        ),
+        pytest.param(
+            "COMPLETE",
+            SourceBuildNotReadyError,
+            "clock.*analysis-retired",
+            id="retired-complete",
+        ),
+    ),
+)
+def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analysis(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     analysis_state: str | None,
+    expected_error: type[RuntimeError],
+    expected_match: str,
 ) -> None:
     connector = _generated_database(
         tmp_path
@@ -2165,8 +2189,8 @@ def test_sealed_v3_without_working_root_fails_closed_for_missing_or_live_analysi
             with (
                 connector.transaction(),
                 pytest.raises(
-                    SourceBuildConflictError,
-                    match="working|authority",
+                    expected_error,
+                    match=expected_match,
                 ),
             ):
                 SourceBuildRepository.handoff_root(

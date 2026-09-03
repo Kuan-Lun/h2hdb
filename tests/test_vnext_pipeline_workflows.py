@@ -1294,13 +1294,13 @@ def test_superseded_preparations_drain_through_the_public_facade(
 
     pipeline.turn()
     pipeline.source.remove(("gallery-1003",))
-    _abandon_turn_with_short_lease(pipeline, "publication.commit:BEGIN_OPERATIONAL")
+    _abandon_turn_before(pipeline, "publication.commit:BEGIN_OPERATIONAL")
     _advance_deletion_generation(pipeline, count=count)
     build = _seed_superseded_preparations_of_the_working_build(
         pipeline.config, count=count
     )
     labels: list[str] = []
-    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    facade = VNextIngestFacade(pipeline.config, clock=takeover_clock())
     try:
         run_ingest_turn(
             facade,
@@ -1347,7 +1347,7 @@ def test_retiring_build_preparations_drain_through_the_public_facade(
 
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
-    _abandon_turn_with_short_lease(pipeline, "analysis.commit:content_owner")
+    _abandon_turn_before(pipeline, "analysis.commit:content_owner")
     _advance_deletion_generation(pipeline, count=count)
     stale_build = _seed_superseded_preparations_of_the_working_build(
         pipeline.config, count=count
@@ -1356,7 +1356,7 @@ def test_retiring_build_preparations_drain_through_the_public_facade(
     pipeline.source.remove(("gallery-1003",))
     pipeline.source.put(gallery(1007, pages=[b"p0-g"], artists=["gina"]))
     labels: list[str] = []
-    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    facade = VNextIngestFacade(pipeline.config, clock=takeover_clock())
     try:
         receipts = run_ingest_turn(
             facade,
