@@ -127,6 +127,7 @@ from .vnext_source_build_repository import (
     SourceBuildSnapshotMismatchError,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
+    _SourceBuildPolicyAuthority,
     _SourceDrainRetry,
 )
 from .vnext_source_observation_spool import (
@@ -691,7 +692,7 @@ class VNextIngestFacade:
                     ingest_turn=turn.ingest_turn,
                     command=machine.root_command,
                     root_plan=_require_root_upload(machine),
-                    analysis_policy_id=machine.policy.analysis_policy_id,
+                    policy=_source_build_policy_authority(machine.policy),
                     drained_page=machine.drained_page,
                     now=now,
                 )
@@ -980,6 +981,22 @@ class VNextIngestFacade:
 
         self.__require_open()
         return self.__publication_orchestrator().issue_step(session, policy)
+
+    def try_issue_publication_recovery_step(
+        self,
+        session: VNextIngestSession,
+    ) -> VNextIssuedPublicationStep | None:
+        """Issue recovery of a durable commit before observing a new source.
+
+        The returned opaque step uses the ordinary publication
+        ``prepare -> commit`` calls.  Its terminal result means the current
+        published head's library activation is COMPLETE.  ``None`` means the
+        database has no publication yet.  Recovery never binds this ingest
+        generation to a source build.
+        """
+
+        self.__require_open()
+        return self.__publication_orchestrator().try_issue_recovery_step(session)
 
     def prepare_publication_step(
         self,
@@ -1571,6 +1588,21 @@ def _require_resolved_source_policy(policy: VNextResolvedIngestPolicy) -> None:
         or policy.policy.file_order_version != 1
     ):
         raise ValueError("source orchestration supports manifest policy v1 only")
+
+
+def _source_build_policy_authority(
+    policy: VNextResolvedIngestPolicy,
+) -> _SourceBuildPolicyAuthority:
+    _require_resolved_source_policy(policy)
+    return _SourceBuildPolicyAuthority(
+        manifest_policy_id=policy.manifest_policy_id,
+        analysis_policy_id=policy.analysis_policy_id,
+        artifact_policy_sha256=policy.artifact_policy_sha256,
+        display_title_policy_id=policy.display_title_policy_id,
+        title_sort_policy_id=policy.title_sort_policy_id,
+        operational_policy_id=policy.operational_policy_id,
+        artifacts_required=policy.policy.artifacts_required,
+    )
 
 
 def _same_resolved_policy(

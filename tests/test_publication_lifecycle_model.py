@@ -33,6 +33,8 @@ def test_publication_lifecycle_model_names_the_atomic_safety_contract() -> None:
         "CommitEquivalentKeysAreUnique",
         "GenerationChainIsExact",
         "CommonHeadIsMaximumTip",
+        "PendingCommitRetainsExactBaseAuthority",
+        "PublishedCommitConsumesCandidateBaseAuthority",
         "PublishedCandidateIffSealedCommonCommit",
         "CandidateLifecycleIsGraphDerived",
         "CommitOwnsPermanentCheckpoint",
@@ -67,7 +69,8 @@ def test_publication_lifecycle_model_names_the_atomic_safety_contract() -> None:
     assert "INSERT_13_COMMIT_MEMBERS" in model
     assert "INSERT_FINALIZATION_CHECKPOINT_FAMILY" in model
     assert "INSERT_COMMIT_SEAL_LAST" in model
-    assert "CAS_COMMON_HEAD_RECEIPT" in model
+    assert "commonHeadReceipt' = IF terminal THEN c ELSE commonHeadReceipt" in model
+    assert "PendingCommitHasExactBaseAuthority(c)" in model
     assert "operational activation are derived views" in model
     assert "CandidatePhase(c) ==" in model
     assert "ReceiptFinalizedAt(c) ==" in model
@@ -94,6 +97,8 @@ def test_publication_lifecycle_profiles_are_explicitly_bounded_safety() -> None:
         assert "INVARIANTS" in profile
         assert "CurrentFinalizationReceiptIsUnique" in profile
         assert "SuccessorCASAndPredecessorDeleteAreAtomic" in profile
+        assert "PendingCommitRetainsExactBaseAuthority" in profile
+        assert "PublishedCommitConsumesCandidateBaseAuthority" in profile
         assert "ResponseLossHasCurrentReplayAuthority" in profile
         assert "StalePredecessorRetryHasZeroDurableWrites" in profile
         assert "TerminalCurrentReceiptIsFinalizedAtAuthority" in profile

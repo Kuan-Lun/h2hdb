@@ -119,7 +119,10 @@ from .vnext_publication_finalization_repository import (
     _acknowledge,
     _resolve_adapters,
 )
-from .vnext_publication_repository import PublicationRepository
+from .vnext_publication_repository import (
+    PublicationCommitReceipt,
+    PublicationRepository,
+)
 from .vnext_transaction import VNextUnitOfWork
 
 _STEP_TOKEN = object()
@@ -254,6 +257,7 @@ class _Action(StrEnum):
     COMMIT_PUBLICATION = "COMMIT_PUBLICATION"
     LIBRARY_ACTIVATION = "LIBRARY_ACTIVATION"
     FINALIZE = "FINALIZE"
+    RECOVERY_COMPLETE = "RECOVERY_COMPLETE"
     COMPLETE = "COMPLETE"
     CANONICAL_ALLOCATE = "CANONICAL_ALLOCATE"
     CANONICAL_PAGE = "CANONICAL_PAGE"
@@ -840,6 +844,73 @@ class VNextIngestPublication:
         except BaseException:
             pass
 
+    def try_issue_recovery_step(
+        self,
+        session: VNextIngestSession,
+    ) -> VNextIssuedPublicationStep | None:
+        """Issue pending commit recovery before a caller observes its source.
+
+        The recovery path is receipt-scoped and intentionally leaves this
+        ingest generation without a source-build mapping.  A current published
+        head yields one terminal adapter-completion step; an empty catalog has
+        no recovery work and returns ``None``.
+        """
+
+        self.__require_open()
+        now = require_int63(self.__clock(), field="publication recovery issue now")
+        gate, coordinated = _repository_authority(session)
+        with self.__context.SQLConnector() as connector:
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend=self.__backend)
+                receipt = PublicationRepository.issue_recovery(
+                    work,
+                    gate_lease=gate,
+                    ingest_turn=coordinated.ingest_turn,
+                    now=now,
+                )
+        if receipt is None:
+            return None
+        if receipt.state == "DB_COMMITTED":
+            action = _Action.LIBRARY_ACTIVATION
+            payload: object = _LibraryActivationWork(
+                receipt.receipt_id,
+                receipt.revision,
+            )
+            if receipt.receipt_id in self.__activation_ready:
+                action, payload = self.__issue_finalization(
+                    gate=gate,
+                    receipt_id=receipt.receipt_id,
+                    now=now,
+                )
+            else:
+                checkpoint = self.__activation_checkpoints.get(receipt.receipt_id)
+                if checkpoint is not None:
+                    payload = replace(
+                        cast(_LibraryActivationWork, payload),
+                        checkpoint=checkpoint,
+                    )
+        elif receipt.state == "PUBLISHED":
+            action = _Action.RECOVERY_COMPLETE
+            payload = receipt
+        else:  # pragma: no cover - PublicationCommitReceipt rejects this first
+            raise RuntimeError("publication recovery receipt has an invalid state")
+
+        with self.__publication_plan_lock:
+            self.__require_open()
+            self.__retire_mismatched_plan(action, payload)
+        with self.__artifact_receipt_lock:
+            self.__require_open()
+            self.__retire_mismatched_artifact_receipt(action, payload)
+        self.__require_drain_progress(action, payload)
+
+        self.__require_open()
+        return VNextIssuedPublicationStep(
+            action=action,
+            payload=payload,
+            session=session,
+            _token=_STEP_TOKEN,
+        )
+
     def issue_step(
         self,
         session: VNextIngestSession,
@@ -982,6 +1053,13 @@ class VNextIngestPublication:
             self.__complete_library_activation(
                 cast(_Root, payload),
                 library_activation,
+            )
+        elif action is _Action.RECOVERY_COMPLETE:
+            recovered = cast(PublicationCommitReceipt, payload)
+            self.__complete_library_activation_identity(
+                revision=recovered.revision,
+                receipt_id=recovered.receipt_id,
+                adapter=library_activation,
             )
         elif action is _Action.FINALIZE:
             payload = _release_finalization_page(
@@ -1463,13 +1541,26 @@ class VNextIngestPublication:
     ) -> None:
         if root.receipt_id is None or root.revision is None:
             raise RuntimeError("completed publication lacks activation identity")
-        checkpoint = _require_library_activation_checkpoint(
-            adapter.begin(root.revision, root.receipt_id),
+        VNextIngestPublication.__complete_library_activation_identity(
             revision=root.revision,
             receipt_id=root.receipt_id,
+            adapter=adapter,
+        )
+
+    @staticmethod
+    def __complete_library_activation_identity(
+        *,
+        revision: int,
+        receipt_id: bytes,
+        adapter: VNextLibraryActivationAdapter,
+    ) -> None:
+        checkpoint = _require_library_activation_checkpoint(
+            adapter.begin(revision, receipt_id),
+            revision=revision,
+            receipt_id=receipt_id,
         )
         if checkpoint.status is LibraryActivationStatus.READY:
-            adapter.complete(root.revision, root.receipt_id)
+            adapter.complete(revision, receipt_id)
             return
         if checkpoint.status is not LibraryActivationStatus.COMPLETE:
             raise RuntimeError(
@@ -1842,6 +1933,14 @@ def _commit_action(
     if action is _Action.LIBRARY_ACTIVATION:
         _resume_authority(work, session, now)
         return payload
+    if action is _Action.RECOVERY_COMPLETE:
+        return PublicationRepository.commit_recovery_completion(
+            work,
+            gate_lease=gate,
+            ingest_turn=turn,
+            receipt=cast(PublicationCommitReceipt, payload),
+            now=now,
+        )
     if action is _Action.COMPLETE:
         root = cast(_Root, payload)
         if root.receipt_id is None:
@@ -2162,9 +2261,16 @@ def _load_root(
         artifact[0], field="publication artifact_policy_id"
     )
     candidate = connector.fetch_one(
-        "SELECT working.candidate_id FROM operational_catalog_working_candidates "
-        "AS working JOIN catalog_publication_candidates AS candidate "
+        "SELECT working.candidate_id, artifact.policy_component_sha256, "
+        "candidate.display_title_policy_id, display.title_sort_policy_id, "
+        "candidate.artifacts_required "
+        "FROM operational_catalog_working_candidates AS working "
+        "JOIN catalog_publication_candidates AS candidate "
         "ON candidate.candidate_id = working.candidate_id "
+        "JOIN catalog_artifact_policies AS artifact "
+        "ON artifact.artifact_policy_id = candidate.artifact_policy_id "
+        "JOIN catalog_display_title_policies AS display "
+        "ON display.display_title_policy_id = candidate.display_title_policy_id "
         "LEFT JOIN catalog_publication_commits AS committed "
         "ON committed.candidate_id = candidate.candidate_id "
         "WHERE working.slot = 1 AND candidate.analysis_id = %s "
@@ -2172,6 +2278,58 @@ def _load_root(
         (analysis_id,),
     )
     if candidate:
+        if (
+            len(candidate) != 5
+            or type(candidate[4]) is not int
+            or candidate[4] not in {0, 1}
+        ):
+            raise RuntimeError("working publication candidate policy is malformed")
+        frozen_policy = (
+            require_digest32(
+                candidate[1], field="working publication artifact policy digest"
+            ),
+            require_positive_int63(
+                candidate[2],
+                field="working publication display_title_policy_id",
+            ),
+            require_positive_int63(
+                candidate[3], field="working publication title_sort_policy_id"
+            ),
+            bool(candidate[4]),
+        )
+        requested_policy = (
+            policy.artifact_policy_sha256,
+            policy.display_title_policy_id,
+            policy.title_sort_policy_id,
+            policy.policy.artifacts_required,
+        )
+        if frozen_policy != requested_policy:
+            raise RuntimeError(
+                "working publication candidate belongs to another ingest policy"
+            )
+        bindings = connector.fetch_all(
+            "SELECT preparation.operational_policy_id "
+            "FROM operational_publication_candidate_preparations AS binding "
+            "JOIN operational_operational_preparations AS preparation "
+            "ON preparation.preparation_id = binding.preparation_id "
+            "WHERE binding.candidate_id = %s "
+            "ORDER BY preparation.preparation_id LIMIT 2",
+            (candidate[0],),
+        )
+        if len(bindings) > 1 or (bindings and len(bindings[0]) != 1):
+            raise RuntimeError(
+                "working publication candidate operational policy is malformed"
+            )
+        if (
+            bindings
+            and require_positive_int63(
+                bindings[0][0], field="working publication operational_policy_id"
+            )
+            != policy.operational_policy_id
+        ):
+            raise RuntimeError(
+                "working publication candidate belongs to another operational policy"
+            )
         return _Root(
             build_id,
             analysis_id,
@@ -2837,11 +2995,17 @@ class _SupersededAbandonment:
 def _advance_result(action: _Action, outcome: object) -> VNextIngestAdvanceResult:
     phase = (
         VNextIngestPhase.FINALIZATION
-        if action in {_Action.LIBRARY_ACTIVATION, _Action.FINALIZE, _Action.COMPLETE}
+        if action
+        in {
+            _Action.LIBRARY_ACTIVATION,
+            _Action.FINALIZE,
+            _Action.RECOVERY_COMPLETE,
+            _Action.COMPLETE,
+        }
         else VNextIngestPhase.PUBLICATION
     )
     rows = 0
-    terminal = action is _Action.COMPLETE
+    terminal = action in {_Action.RECOVERY_COMPLETE, _Action.COMPLETE}
     replayed = bool(getattr(outcome, "replayed", False))
     if isinstance(outcome, PublicationCandidateBatch):
         rows = outcome.row_count

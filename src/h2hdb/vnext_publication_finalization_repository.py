@@ -69,6 +69,7 @@ from .vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
     MaintenanceGateUnavailableError,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import (
     LockRank,
     StaleWriteError,
@@ -577,23 +578,45 @@ class PublicationFinalizationRepository:
                 "publication finalization generation is exhausted"
             )
 
+        artifact_transition = require_catalog_state_mutation(
+            "publication-finalization.artifact-commit",
+            previous_state="PREPARED",
+            next_state="COMMITTED",
+            timestamp=None,
+        )
+        publication_transition = (
+            require_catalog_state_mutation(
+                "publication-receipt.finalize",
+                previous_state="DB_COMMITTED",
+                next_state="PUBLISHED",
+                timestamp=timestamp,
+            )
+            if terminal
+            else None
+        )
         try:
             for item in current_items:
                 work.compare_and_swap(
-                    "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
+                    "UPDATE catalog_prepared_artifacts SET state = %s "
                     "WHERE candidate_id = %s AND publication_key = %s "
-                    "AND resource_kind = %s AND state = 'PREPARED'",
+                    "AND resource_kind = %s AND state = %s",
                     (
+                        artifact_transition.next_state,
                         item.candidate_id,
                         item.publication_key,
                         item.resource_kind.value.encode("ascii"),
+                        artifact_transition.previous_state,
                     ),
                     authority="published artifact protection release",
                 )
             _insert_batch_receipt(
                 work.connector,
                 page=page,
-                committed_at=timestamp,
+                committed_at=(
+                    publication_transition.required_timestamp
+                    if publication_transition is not None
+                    else timestamp
+                ),
             )
             _advance_checkpoint(
                 work,
@@ -616,6 +639,7 @@ class PublicationFinalizationRepository:
                         "before safe acknowledgement"
                     )
             if terminal:
+                assert publication_transition is not None
                 work.connector.execute(
                     f"INSERT INTO {_FINALIZATION_MARKER} (receipt_id) VALUES (%s)",
                     (page.receipt_id,),
@@ -754,11 +778,17 @@ def _initialize_finalization_checkpoint(
         initialized_at,
         field="publication finalization initialized_at",
     )
+    transition = require_catalog_state_mutation(
+        "publication-finalization.initialize",
+        previous_state=None,
+        next_state="OPEN",
+        timestamp=timestamp,
+    )
     connector.execute(
         f"INSERT INTO {_CHECKPOINT_TABLE} "
         "(receipt_id, generation, `cursor`, processed_count, state, updated_at) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
-        (receipt, 1, b"", 0, "OPEN", timestamp),
+        (receipt, 1, b"", 0, transition.next_state, transition.timestamp),
     )
 
 
@@ -1536,6 +1566,12 @@ def _advance_checkpoint(
     next_state: str,
     updated_at: int,
 ) -> None:
+    transition = require_catalog_state_mutation(
+        "publication-finalization.advance",
+        previous_state=checkpoint.state,
+        next_state=next_state,
+        timestamp=updated_at,
+    )
     work.compare_and_swap(
         f"UPDATE {_CHECKPOINT_TABLE} SET generation = %s, `cursor` = %s, "
         "processed_count = %s, state = %s, updated_at = %s "
@@ -1545,13 +1581,13 @@ def _advance_checkpoint(
             checkpoint.generation + 1,
             next_cursor,
             next_processed_count,
-            next_state,
-            updated_at,
+            transition.next_state,
+            transition.timestamp,
             receipt_id,
             checkpoint.generation,
             checkpoint.cursor,
             checkpoint.processed_count,
-            checkpoint.state,
+            transition.previous_state,
             checkpoint.updated_at,
         ),
         authority="publication finalization checkpoint tuple",

@@ -46,6 +46,7 @@ from .vnext_domains import (
     require_positive_int63,
     require_uuid16,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 
 _CANDIDATE = "catalog_publication_candidates"
 
@@ -343,6 +344,12 @@ def ensure_publication_candidate_family(
             )
         return existing, False
     candidate = family.candidate_id
+    require_catalog_state_mutation(
+        "publication-candidate.initialize",
+        previous_state=None,
+        next_state="OPEN",
+        timestamp=None,
+    )
     try:
         connector.execute(
             f"INSERT INTO {_CANDIDATE} "

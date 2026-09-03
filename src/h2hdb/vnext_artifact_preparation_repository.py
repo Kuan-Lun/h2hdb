@@ -125,6 +125,7 @@ from .vnext_publication_candidate_repository import (
     _MutationAuthority,
     _prepare_candidate_batch,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import VNextUnitOfWork
 
 _AUTHORITY_TOKEN = object()
@@ -4002,6 +4003,12 @@ def _seal_projection(
         raise ArtifactPreparationNotReadyError(
             "projection certification timestamp precedes a terminal receipt"
         )
+    require_catalog_state_mutation(
+        "publication-candidate.seal",
+        previous_state="OPEN",
+        next_state="SEALED",
+        timestamp=None,
+    )
     _insert_or_compare(
         work,
         "catalog_publication_candidate_projection_seals",

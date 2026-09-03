@@ -72,6 +72,7 @@ from .vnext_source_build_repository import (
     SourceBuildConflictError,
     require_source_build_publication_identity,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _CANDIDATE_TABLE = "catalog_publication_candidates"
@@ -301,6 +302,103 @@ class PublicationRepository:
     """Publish a sealed candidate and recover its immutable receipt."""
 
     @staticmethod
+    def issue_recovery(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        now: int,
+    ) -> PublicationCommitReceipt | None:
+        """Load the sole publication that must be reconciled before source I/O.
+
+        A reader-invisible ``DB_COMMITTED`` direct successor takes precedence.
+        Once it is finalized, the current ``PUBLISHED`` head is returned once
+        more so the external library adapter can durably acknowledge COMPLETE.
+        An empty catalog has no recovery work and returns ``None``.
+
+        Recovery deliberately does not create a source-build generation
+        mapping.  The caller's live ingest generation therefore remains free to
+        bind the filesystem snapshot observed after recovery completes.
+        """
+
+        timestamp = require_int63(now, field="publication recovery issue now")
+        _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        _require_schema_authorities(work)
+        pending_receipt = _sole_unfinalized_commit_receipt(work.connector)
+        if pending_receipt is not None:
+            authority = _prepare_finalized_commit_activation_authorized(
+                work,
+                receipt=pending_receipt,
+            )
+            published = authority.published
+            if published.finalized_at is not None:
+                raise PublicationCorruptionError(
+                    "pending publication recovery is already finalized"
+                )
+            candidate = authority.candidate
+            source_working = authority.source_working
+            catalog_working = authority.catalog_working
+            if source_working is None or source_working[1] != candidate.build_id:
+                raise PublicationNotReadyError(
+                    "pending publication recovery lost its source working root"
+                )
+            if catalog_working is None or catalog_working[1] != candidate.candidate_id:
+                raise PublicationNotReadyError(
+                    "pending publication recovery lost its catalog working root"
+                )
+            _require_source_working_assignment(
+                work.connector,
+                build_id=candidate.build_id,
+                assigned_at=source_working[2],
+            )
+            _require_catalog_working_assignment(
+                candidate=candidate,
+                assigned_at=catalog_working[2],
+            )
+            candidate_base = _load_base_commit(
+                work.connector,
+                candidate.candidate_id,
+            )
+            head = _lock_publication_commit_head(work, candidate.channel)
+            _require_exact_commit_base(candidate_base, head)
+            if _successor_generation(head) != published.generation:
+                raise PublicationHeadRaceError(
+                    "pending publication recovery is not the reader head's exact "
+                    "successor"
+                )
+            return _commit_receipt(published, replayed=True)
+
+        return _load_current_recovery_completion(work)
+
+    @staticmethod
+    def commit_recovery_completion(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        receipt: PublicationCommitReceipt,
+        now: int,
+    ) -> PublicationCommitReceipt:
+        """Revalidate the head after the adapter acknowledged COMPLETE."""
+
+        if not isinstance(receipt, PublicationCommitReceipt):
+            raise TypeError("publication recovery receipt is not registered")
+        receipt.__post_init__()
+        if receipt.state != "PUBLISHED":
+            raise PublicationNotReadyError(
+                "publication recovery completion requires a PUBLISHED receipt"
+            )
+        timestamp = require_int63(now, field="publication recovery completion now")
+        _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        _require_schema_authorities(work)
+        current = _load_current_recovery_completion(work)
+        if current != receipt:
+            raise PublicationHeadRaceError(
+                "publication head changed during recovery completion"
+            )
+        return current
+
+    @staticmethod
     def prepare_finalized_commit_activation(
         work: VNextUnitOfWork,
         *,
@@ -320,27 +418,9 @@ class PublicationRepository:
         timestamp = require_int63(now, field="publication activated_at")
         _authorize(work, gate_lease, ingest_turn, now=timestamp)
         _require_schema_authorities(work)
-
-        published = _load_published_commit_by_receipt(work.connector, receipt)
-        _validate_published_commit(work.connector, published)
-        candidate = _lock_candidate(work, published.candidate_id)
-        if (
-            candidate.reserved_revision != published.revision
-            or candidate.channel != published.channel
-            or candidate.artifact_policy_id != published.artifact_policy_id
-            or candidate.display_title_policy_id != published.display_title_policy_id
-        ):
-            raise PublicationCorruptionError(
-                "publication commit disagrees with its activation candidate"
-            )
-        source_working = _lock_source_working(work, candidate.build_id)
-        catalog_working = _lock_catalog_working(work, candidate.candidate_id)
-        return _FinalizedCommitActivationAuthority(
-            published,
-            candidate,
-            source_working,
-            catalog_working,
-            _ACTIVATION_AUTHORITY_TOKEN,
+        return _prepare_finalized_commit_activation_authorized(
+            work,
+            receipt=receipt,
         )
 
     @staticmethod
@@ -398,6 +478,11 @@ class PublicationRepository:
                 raise PublicationCorruptionError(
                     "activated reader head retained a publication working root"
                 )
+            if _load_base_commit(work.connector, candidate.candidate_id) is not None:
+                raise PublicationCorruptionError(
+                    "activated reader head retained its consumed candidate base "
+                    "authority"
+                )
             return False
 
         _require_exact_commit_base(
@@ -430,6 +515,11 @@ class PublicationRepository:
             channel=candidate.channel,
             base=head,
             receipt_id=published.receipt_id,
+        )
+        _consume_candidate_base_commit(
+            work,
+            candidate_id=candidate.candidate_id,
+            base=head,
         )
         _delete_working_root(
             work,
@@ -926,23 +1016,36 @@ def _require_replayed_publication_base(
             "WHERE committed.generation = %s",
             (published.generation - 1,),
         )
-        if len(row) != 2 or any(value is None for value in row):
-            raise PublicationCorruptionError(
-                "replayed publication lacks one exact sealed predecessor commit"
+        if row:
+            if len(row) != 2 or any(value is None for value in row):
+                raise PublicationCorruptionError(
+                    "replayed publication retained a malformed predecessor commit"
+                )
+            predecessor = require_uuid16(
+                row[0],
+                field="replayed publication predecessor receipt_id",
             )
-        predecessor = require_uuid16(
-            row[0],
-            field="replayed publication predecessor receipt_id",
+            if row[1] != published.channel:
+                raise PublicationCorruptionError(
+                    "replayed publication predecessor channel differs"
+                )
+
+    candidate_base = _load_base_commit(connector, published.candidate_id)
+    if published.finalized_at is None:
+        if candidate_base != predecessor:
+            raise PublicationCorruptionError(
+                "reader-invisible replay candidate base differs from the retained "
+                "generation predecessor"
+            )
+    elif candidate_base is not None:
+        raise PublicationCorruptionError(
+            "published replay retained its consumed candidate base authority"
         )
-        if row[1] != published.channel:
-            raise PublicationCorruptionError(
-                "replayed publication predecessor channel differs"
-            )
 
     if build_base != predecessor or predecessor == published.receipt_id:
         raise PublicationCorruptionError(
             "replayed publication source-build base differs from the exact "
-            "generation predecessor"
+            "retained generation predecessor"
         )
     _require_source_build_identity(
         connector,
@@ -1723,6 +1826,12 @@ def _insert_publication_commit(
     generation: int,
     committed_at: int,
 ) -> None:
+    require_catalog_state_mutation(
+        "publication-receipt.anchor",
+        previous_state=None,
+        next_state="DB_COMMITTED",
+        timestamp=None,
+    )
     connector.execute(
         f"INSERT INTO {_COMMIT_ANCHOR_TABLE} (receipt_id) VALUES (%s)",
         (receipt_id,),
@@ -1733,6 +1842,12 @@ def _insert_publication_commit(
         connector,
         receipt_id=receipt_id,
         initialized_at=committed_at,
+    )
+    require_catalog_state_mutation(
+        "publication-receipt.commit",
+        previous_state=None,
+        next_state="DB_COMMITTED",
+        timestamp=None,
     )
     connector.execute(
         f"INSERT INTO {_COMMIT_TABLE} "
@@ -1781,6 +1896,31 @@ def _advance_publication_commit_head(
     )
 
 
+def _consume_candidate_base_commit(
+    work: VNextUnitOfWork,
+    *,
+    candidate_id: bytes,
+    base: _LockedHead | None,
+) -> None:
+    """Consume the pre-activation candidate CAS authority exactly once."""
+
+    if base is None:
+        if _load_base_commit(work.connector, candidate_id) is not None:
+            raise PublicationCorruptionError(
+                "genesis publication unexpectedly retained candidate base authority"
+            )
+        return
+    affected = work.connector.execute_affected(
+        f"DELETE FROM {_BASE_COMMIT_TABLE} "
+        "WHERE candidate_id = %s AND base_receipt_id = %s",
+        (candidate_id, base.receipt_id),
+    )
+    if affected != 1:
+        raise PublicationHeadRaceError(
+            "candidate base authority changed during publication activation"
+        )
+
+
 def _delete_working_root(
     work: VNextUnitOfWork,
     *,
@@ -1823,6 +1963,103 @@ def _load_published_commit_by_candidate(
             "permanent candidate mapping disagrees with its anchor"
         )
     return _load_published_commit_by_receipt(connector, receipt_id)
+
+
+def _prepare_finalized_commit_activation_authorized(
+    work: VNextUnitOfWork,
+    *,
+    receipt: bytes,
+) -> _FinalizedCommitActivationAuthority:
+    """Load activation authority after the caller has locked live authority."""
+
+    published = _load_published_commit_by_receipt(work.connector, receipt)
+    _validate_published_commit(work.connector, published)
+    candidate = _lock_candidate(work, published.candidate_id)
+    if (
+        candidate.reserved_revision != published.revision
+        or candidate.channel != published.channel
+        or candidate.artifact_policy_id != published.artifact_policy_id
+        or candidate.display_title_policy_id != published.display_title_policy_id
+    ):
+        raise PublicationCorruptionError(
+            "publication commit disagrees with its activation candidate"
+        )
+    source_working = _lock_source_working(work, candidate.build_id)
+    catalog_working = _lock_catalog_working(work, candidate.candidate_id)
+    return _FinalizedCommitActivationAuthority(
+        published,
+        candidate,
+        source_working,
+        catalog_working,
+        _ACTIVATION_AUTHORITY_TOKEN,
+    )
+
+
+def _sole_unfinalized_commit_receipt(connector: Any) -> bytes | None:
+    rows = connector.fetch_all(
+        f"SELECT receipt_id FROM {_PUBLICATION_RECEIPT_VIEW} "
+        "WHERE state = 'DB_COMMITTED' ORDER BY receipt_id LIMIT 2"
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise PublicationCorruptionError(
+            "publication recovery found more than one unfinalized commit"
+        )
+    return require_uuid16(rows[0][0], field="pending publication receipt_id")
+
+
+def _load_current_recovery_completion(
+    work: VNextUnitOfWork,
+) -> PublicationCommitReceipt | None:
+    rows = work.connector.fetch_all(
+        f"SELECT channel FROM {_COMMIT_HEAD_TABLE} ORDER BY channel LIMIT 2"
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise PublicationCorruptionError(
+            "publication recovery found more than one current head"
+        )
+    channel = require_bounded_bytes(
+        rows[0][0],
+        field="publication recovery channel",
+        minimum=1,
+        maximum=64,
+    )
+    head = _lock_publication_commit_head(work, channel)
+    if head is None:
+        raise PublicationCorruptionError(
+            "publication recovery head disappeared while locked"
+        )
+    published = _load_published_commit_by_receipt(
+        work.connector,
+        head.receipt_id,
+    )
+    _validate_published_commit(work.connector, published)
+    if published.finalized_at is None:
+        raise PublicationCorruptionError(
+            "current publication recovery head is not finalized"
+        )
+    if (
+        published.receipt_id,
+        published.revision,
+        published.source_revision,
+        published.generation,
+        published.committed_at,
+        published.channel,
+    ) != (
+        head.receipt_id,
+        head.revision,
+        head.source_revision,
+        head.generation,
+        head.committed_at,
+        channel,
+    ):
+        raise PublicationCorruptionError(
+            "current publication recovery receipt disagrees with its head"
+        )
+    return _commit_receipt(published, replayed=True)
 
 
 def _load_published_commit_by_receipt(
@@ -1892,34 +2129,57 @@ def _validate_published_commit(connector: Any, commit: _PublishedCommit) -> None
             "publication finalization precedes its sealed commit"
         )
     node = connector.fetch_one(
-        f"SELECT edge.predecessor_generation "
-        f"FROM {_GENERATION_NODE_TABLE} AS node "
-        f"JOIN {_GENERATION_SUCCESSOR_TABLE} AS edge "
-        "ON edge.successor_generation = node.generation "
-        "WHERE node.generation = %s",
+        f"SELECT generation FROM {_GENERATION_NODE_TABLE} WHERE generation = %s",
         (commit.generation,),
     )
-    if node != (commit.generation - 1,):
+    if node != (commit.generation,):
         raise PublicationCorruptionError(
-            "publication commit has a missing or non-contiguous generation edge"
+            "publication commit generation node is missing"
         )
+    predecessor_generation = commit.generation - 1
+    edge = connector.fetch_one(
+        f"SELECT predecessor_generation FROM {_GENERATION_SUCCESSOR_TABLE} "
+        "WHERE successor_generation = %s",
+        (commit.generation,),
+    )
     predecessor_node = connector.fetch_one(
         f"SELECT generation FROM {_GENERATION_NODE_TABLE} WHERE generation = %s",
-        (commit.generation - 1,),
+        (predecessor_generation,),
     )
-    if predecessor_node != (commit.generation - 1,):
-        raise PublicationCorruptionError(
-            "publication commit predecessor generation node is missing"
-        )
-    if commit.generation > 1:
+    if commit.generation == 1:
+        if edge != (0,) or predecessor_node != (0,):
+            raise PublicationCorruptionError(
+                "publication genesis has a missing generation authority"
+            )
+    else:
         predecessor = connector.fetch_one(
             f"SELECT receipt_id FROM {_COMMIT_TABLE} WHERE generation = %s",
-            (commit.generation - 1,),
+            (predecessor_generation,),
         )
-        if len(predecessor) != 1:
-            raise PublicationCorruptionError(
-                "publication commit predecessor is not a sealed commit"
+        if predecessor:
+            if (
+                len(predecessor) != 1
+                or edge != (predecessor_generation,)
+                or predecessor_node != (predecessor_generation,)
+            ):
+                raise PublicationCorruptionError(
+                    "publication commit has a missing or non-contiguous generation edge"
+                )
+        else:
+            head = connector.fetch_one(
+                f"SELECT receipt_id FROM {_COMMIT_HEAD_TABLE} WHERE channel = %s",
+                (commit.channel,),
             )
+            if (
+                commit.finalized_at is None
+                or head != (commit.receipt_id,)
+                or edge not in ((), (predecessor_generation,))
+                or predecessor_node not in ((), (predecessor_generation,))
+                or (edge and not predecessor_node)
+            ):
+                raise PublicationCorruptionError(
+                    "publication commit predecessor is not a sealed commit"
+                )
     activation = connector.fetch_one(
         f"SELECT preparation_id, operational_policy_id, committed_at "
         f"FROM {_COMMIT_TABLE} WHERE source_revision = %s",

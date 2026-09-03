@@ -33,11 +33,12 @@ __all__ = [
     "validate_builtin_semantic_manifest",
 ]
 
+import codecs
 import re
 import sqlite3
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -67,6 +68,7 @@ from .vnext_canonical_value_repository import (
     stream_and_validate_canonical_value,
 )
 from .vnext_domains import require_ascii_bytes, require_digest32
+from .vnext_state_machine_contract import validate_catalog_state_machine_contract
 
 type SemanticValidator = Callable[[SQLConnector], None]
 
@@ -530,6 +532,125 @@ _EXPECTED_DIGEST_DOMAINS = tuple(
     value.encode("ascii")
     for _seed_id, relation, _attribute, value in _EXPECTED_DATA_SEEDS
     if relation == "canonical_digest_policy"
+)
+
+# Wheel-resident copy of the logical manifest's closed canonical-reference
+# registry.  Build-time verification compares this tuple with catalog.toml;
+# production READY checks use it without depending on repository source files.
+_CANONICAL_REFERENCE_ROLES = (
+    ("artifact_delta_new", "artifact_semantics_sha256", b"artifact_semantics_v1"),
+    ("artifact_delta_old", "artifact_semantics_sha256", b"artifact_semantics_v1"),
+    ("artifact_input", "artifact_semantics_sha256", b"artifact_semantics_v1"),
+    (
+        "artifact_semantic_input",
+        "artifact_semantics_sha256",
+        b"artifact_semantics_v1",
+    ),
+    ("catalog_artifact", "artifact_semantics_sha256", b"artifact_semantics_v1"),
+    (
+        "analysis_content_owner_candidate_resolved",
+        "content_sha256",
+        b"effective_content_v1",
+    ),
+    (
+        "analysis_content_owner_candidate_shadow",
+        "content_sha256",
+        b"effective_content_v1",
+    ),
+    ("analysis_content_owner_resolved", "content_sha256", b"effective_content_v1"),
+    ("analysis_content_owner_shadow", "content_sha256", b"effective_content_v1"),
+    (
+        "analysis_content_owner_tombstone",
+        "content_sha256",
+        b"effective_content_v1",
+    ),
+    ("analysis_impacted_content", "content_sha256", b"effective_content_v1"),
+    (
+        "analysis_impacted_content_provenance",
+        "content_sha256",
+        b"effective_content_v1",
+    ),
+    ("catalog_publication_content", "content_sha256", b"effective_content_v1"),
+    (
+        "catalog_contributor",
+        "contributor_name_sha256",
+        b"contributor_name_utf8_v1",
+    ),
+    (
+        "contributor_facet_order",
+        "contributor_name_sha256",
+        b"contributor_name_utf8_v1",
+    ),
+    (
+        "artifact_semantic_input",
+        "effective_content_component_sha256",
+        b"artifact_effective_content_v1",
+    ),
+    ("gallery_identity", "locator_sha256", b"source_relative_locator_v1"),
+    ("source_locator_identity", "locator_sha256", b"source_relative_locator_v1"),
+    (
+        "catalog_publication_storage",
+        "language_sha256",
+        b"catalog_language_utf8_v1",
+    ),
+    ("language_facet_order", "language_sha256", b"catalog_language_utf8_v1"),
+    (
+        "artifact_semantic_input",
+        "member_plan_component_sha256",
+        b"artifact_member_plan_v2",
+    ),
+    (
+        "gallery_observation",
+        "observation_identity_sha256",
+        b"gallery_observation_v1",
+    ),
+    (
+        "artifact_semantic_input",
+        "owner_component_sha256",
+        b"artifact_owner_v1",
+    ),
+    ("artifact_policy", "policy_component_sha256", b"artifact_policy_v3"),
+    (
+        "artifact_policy_semantics",
+        "policy_component_sha256",
+        b"artifact_policy_v3",
+    ),
+    (
+        "artifact_semantic_input",
+        "policy_component_sha256",
+        b"artifact_policy_v3",
+    ),
+    (
+        "artifact_semantic_input",
+        "selected_component_sha256",
+        b"artifact_selected_v1",
+    ),
+    ("title_sort", "sort_title_sha256", b"title_sort_utf8_v1"),
+    (
+        "artifact_semantic_input",
+        "source_manifest_component_sha256",
+        b"artifact_source_manifest_v1",
+    ),
+    ("source_scope", "source_root_sha256", b"source_root_v1"),
+    (
+        "source_snapshot_manifest_identity",
+        "snapshot_manifest_sha256",
+        b"source_snapshot_manifest_v1",
+    ),
+    (
+        "catalog_publication_storage",
+        "source_title_sha256",
+        b"source_title_utf8_v1",
+    ),
+    ("display_title_choice", "source_title_sha256", b"source_title_utf8_v1"),
+    (
+        "catalog_publication_storage",
+        "summary_sha256",
+        b"catalog_summary_utf8_v1",
+    ),
+    ("tag_term", "tag_value_sha256", b"tag_value_utf8_v1"),
+    ("display_title_choice", "title_sha256", b"display_title_utf8_v1"),
+    ("title_sort", "title_sha256", b"display_title_utf8_v1"),
 )
 _EXPECTED_ANALYSIS_COMPONENTS = frozenset(
     {
@@ -1660,6 +1781,67 @@ def _require_canonical_domain(
         )
 
 
+def _generated_catalog_relation_name(logical_relation: str) -> str | None:
+    """Resolve one trusted logical relation to its portable SQL object name."""
+
+    object_names: set[str] = set()
+    if logical_relation in ARTIFACT["data_inline_projections"]:
+        return None
+    for backend in ("sqlite", "mariadb"):
+        relations = ARTIFACT["backends"][backend]["relations"]
+        matches = tuple(
+            relation
+            for relation in relations
+            if relation["plane"] == "data" and relation["relation"] == logical_relation
+        )
+        if len(matches) != 1:
+            raise BuiltinSemanticRegistryError(
+                f"generated schema does not uniquely map {logical_relation!r}"
+            )
+        object_names.add(str(matches[0]["table"]))
+    if len(object_names) != 1:
+        raise BuiltinSemanticRegistryError(
+            f"generated backends disagree on {logical_relation!r}"
+        )
+    object_name = object_names.pop()
+    if _SAFE_IDENTIFIER.fullmatch(object_name) is None:
+        raise BuiltinSemanticRegistryError(
+            f"generated schema has an unsafe relation name {object_name!r}"
+        )
+    return object_name
+
+
+def _validate_retained_canonical_reference_domains(connector: SQLConnector) -> None:
+    """Reject any retained canonical FK sealed under another digest domain."""
+
+    for logical_relation, attribute, expected_domain in _CANONICAL_REFERENCE_ROLES:
+        if _SAFE_IDENTIFIER.fullmatch(attribute) is None:
+            raise BuiltinSemanticRegistryError(
+                f"canonical registry has an unsafe attribute name {attribute!r}"
+            )
+        object_name = _generated_catalog_relation_name(logical_relation)
+        if object_name is None:
+            # Inline projections have no independently stored reference; their
+            # source relations are covered by their own registry entries.
+            continue
+        invalid = connector.fetch_all(
+            f"SELECT reference_row.{attribute} FROM {object_name} AS reference_row "
+            "LEFT JOIN catalog_canonical_value_identities AS identity_row "
+            f"ON identity_row.value_sha256 = reference_row.{attribute} "
+            "LEFT JOIN catalog_canonical_value_allocations AS allocation "
+            f"ON allocation.value_sha256 = reference_row.{attribute} "
+            "WHERE identity_row.value_sha256 IS NULL "
+            "OR allocation.value_sha256 IS NULL "
+            "OR allocation.digest_domain <> %s LIMIT 1",
+            (expected_domain,),
+        )
+        if invalid:
+            raise CatalogSemanticValidationError(
+                f"{logical_relation}.{attribute} is not sealed under "
+                f"{expected_domain.decode('ascii')}"
+            )
+
+
 def _validate_live_snapshot_manifest_pins(connector: SQLConnector) -> None:
     """Require payload only for transient analysis/candidate retention pins.
 
@@ -1727,6 +1909,64 @@ def _require_compacted_current_source_handoff(
 ) -> None:
     """Prove that a missing predecessor pin was safely handed to current state."""
 
+    if generation <= 1:
+        raise CatalogSemanticValidationError(
+            "compacted current source handoff is not a successor generation"
+        )
+    predecessor_row = _one(
+        connector,
+        """
+        SELECT committed.receipt_id, descriptor.channel,
+               committed.preparation_id
+        FROM catalog_publication_commits AS committed
+        LEFT JOIN catalog_source_revision_descriptors AS descriptor
+          ON descriptor.source_revision = committed.source_revision
+        WHERE committed.generation = %s
+        LIMIT 2
+        """,
+        (generation - 1,),
+        detail="retained current source predecessor",
+        optional=True,
+    )
+    if predecessor_row is not None:
+        if len(predecessor_row) != 3 or any(value is None for value in predecessor_row):
+            raise CatalogSemanticValidationError(
+                "retained current source predecessor is malformed"
+            )
+        predecessor_receipt = _as_bytes(
+            predecessor_row[0],
+            field="retained current source predecessor receipt_id",
+        )
+        if len(predecessor_receipt) != 16:
+            raise CatalogSemanticValidationError(
+                "retained current source predecessor receipt_id is not 16 bytes"
+            )
+        if (
+            _as_bytes(
+                predecessor_row[1],
+                field="retained current source predecessor channel",
+            )
+            != channel
+        ):
+            raise CatalogSemanticValidationError(
+                "retained current source predecessor belongs to another channel"
+            )
+        predecessor_preparation = _as_bytes(
+            predecessor_row[2],
+            field="retained current source predecessor preparation_id",
+        )
+        if len(predecessor_preparation) != 16:
+            raise CatalogSemanticValidationError(
+                "retained current source predecessor preparation_id is not 16 bytes"
+            )
+        _require_open_pcom_source_build_base_release(
+            connector,
+            receipt_id=predecessor_receipt,
+            preparation_id=predecessor_preparation,
+            build_id=build_id,
+        )
+        return
+
     row = _one(
         connector,
         """
@@ -1784,6 +2024,410 @@ def _require_compacted_current_source_handoff(
             "compacted current source handoff differs from its exact "
             "build, analysis, or provenance authority"
         )
+
+
+def _require_open_pcom_source_build_base_release(
+    connector: SQLConnector,
+    *,
+    receipt_id: bytes,
+    preparation_id: bytes,
+    build_id: bytes,
+) -> None:
+    """Accept one missing build pin only under its exact durable cleanup proof.
+
+    ``PCOM_RELEASE_BUILD_BASE`` intentionally consumes the successor build's
+    one-shot predecessor pin before the predecessor commit is retired.  A
+    process may stop between those transactions.  The gap is therefore valid
+    only while the fixed cleanup state proves the exact frozen
+    receipt/preparation authority and its current phase proves that this build
+    row has already been covered.
+    """
+
+    authorities = _validated_open_pcom_transitions(connector)
+    phase, cursor, phase_order = _require_open_pcom_transition(
+        connector,
+        receipt_id=receipt_id,
+        preparation_id=preparation_id,
+        transitions=authorities,
+    )
+    if not 1 <= phase_order <= 9:
+        raise CatalogSemanticValidationError(
+            "current source build baseline gap is outside the predecessor-retirement "
+            "phase window"
+        )
+    if phase_order > 1:
+        return
+    if phase != "PCOM_RELEASE_BUILD_BASE":
+        raise CatalogSemanticValidationError(
+            "current source build baseline gap has a forged cleanup phase"
+        )
+    if (
+        len(cursor) != 42
+        or cursor[:7] != b"\x01\x00\x00\x02b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+    ):
+        raise CatalogSemanticValidationError(
+            "current source build baseline gap lacks its exact release cursor"
+        )
+    cursor_receipt = cursor[7:23]
+    cursor_build = cursor[26:42]
+    if cursor_receipt not in authorities or (cursor_receipt, cursor_build) < (
+        receipt_id,
+        build_id,
+    ):
+        raise CatalogSemanticValidationError(
+            "current source build baseline gap is not covered by its release cursor"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenPcomTransition:
+    preparation_id: bytes
+    phase: str
+    cursor: bytes
+    phase_order: int
+
+
+def _validated_open_pcom_transitions(
+    connector: SQLConnector,
+) -> dict[bytes, _OpenPcomTransition]:
+    """Validate once and load the bounded frozen OPEN PCOM capability set."""
+
+    from . import operational_refinement
+
+    try:
+        operational_refinement.check_cleanup_reachability_v1(connector)
+        operational_refinement.check_event_integrity_contract_v1(connector)
+    except (
+        operational_refinement.OperationalSemanticRegistryError,
+        operational_refinement.OperationalSemanticValidationError,
+    ) as error:
+        raise CatalogSemanticValidationError(
+            "catalog retirement gap lacks valid OPEN publication-commit cleanup "
+            "authority"
+        ) from error
+
+    rows = connector.fetch_all(
+        """
+        SELECT root.frozen_root_key, checkpoint.phase, checkpoint.cursor_bytes,
+               phase.phase_order
+        FROM operational_cleanup_jobs AS job
+        JOIN operational_cleanup_sweep_targets AS sweep
+          ON sweep.target_key = job.target_key
+        JOIN operational_cleanup_checkpoints AS checkpoint
+          ON checkpoint.cleanup_id = job.cleanup_id
+        JOIN operational_cleanup_phases AS phase
+          ON phase.target_kind = sweep.target_kind
+         AND phase.phase = checkpoint.phase
+        JOIN operational_cleanup_cycle_roots AS root
+          ON root.cleanup_id = job.cleanup_id
+        WHERE job.state = 'OPEN'
+          AND sweep.target_kind = 'PUBLICATION_COMMIT'
+          AND checkpoint.state = 'OPEN'
+        ORDER BY root.frozen_root_key
+        LIMIT 257
+        """
+    )
+    if len(rows) > 256:
+        raise CatalogSemanticValidationError(
+            "OPEN publication-commit cleanup roots exceed the hard cap"
+        )
+    transitions: dict[bytes, _OpenPcomTransition] = {}
+    for row in rows:
+        frame = _as_bytes(row[0], field="OPEN PCOM frozen root")
+        if (
+            len(frame) != 40
+            or frame[:5] != b"\x01\x02b\x00\x10"
+            or frame[21:24] != b"b\x00\x10"
+        ):
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM frozen root frame is malformed"
+            )
+        receipt_id = frame[5:21]
+        phase = row[1]
+        if not isinstance(phase, str):
+            raise CatalogSemanticValidationError(
+                "OPEN publication-commit cleanup phase is malformed"
+            )
+        transition = _OpenPcomTransition(
+            preparation_id=frame[24:40],
+            phase=phase,
+            cursor=_as_bytes(row[2], field="OPEN publication-commit cleanup cursor"),
+            phase_order=_as_int(
+                row[3],
+                field="OPEN publication-commit cleanup phase order",
+                positive=True,
+            ),
+        )
+        if receipt_id in transitions:
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM frozen receipt authority is duplicated"
+            )
+        transitions[receipt_id] = transition
+    return transitions
+
+
+def _require_open_pcom_transition(
+    connector: SQLConnector,
+    *,
+    receipt_id: bytes,
+    preparation_id: bytes,
+    transitions: Mapping[bytes, _OpenPcomTransition] | None = None,
+) -> tuple[str, bytes, int]:
+    """Return an exact, fully validated OPEN PCOM transition capability."""
+
+    authority = (
+        _validated_open_pcom_transitions(connector)
+        if transitions is None
+        else transitions
+    ).get(receipt_id)
+    if authority is None or authority.preparation_id != preparation_id:
+        raise CatalogSemanticValidationError(
+            "catalog retirement gap is outside the exact OPEN publication-commit "
+            "frozen authority"
+        )
+    return authority.phase, authority.cursor, authority.phase_order
+
+
+def _pcom_static_cursor_covers_pair(
+    cursor: bytes,
+    *,
+    receipt_id: bytes,
+    frozen_receipts: Container[bytes],
+) -> bool:
+    """Prove a canonical two-UUID cursor covered ``receipt_id``.
+
+    Static cleanup cursors are keyset positions, not per-root receipts.  A
+    cursor on a later frozen receipt therefore covers every earlier frozen
+    receipt as well.  Requiring its leading root to remain in the sealed set
+    prevents a forged out-of-range byte string from authorizing absence.
+    """
+
+    if (
+        len(cursor) != 42
+        or cursor[:7] != b"\x01\x00\x00\x02b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+    ):
+        return False
+    cursor_receipt = cursor[7:23]
+    cursor_primary = cursor[26:42]
+    return (
+        cursor_receipt == cursor_primary
+        and cursor_receipt in frozen_receipts
+        and (cursor_receipt, cursor_primary) >= (receipt_id, receipt_id)
+    )
+
+
+def _pcom_finalization_batch_cursor_covers(
+    cursor: bytes,
+    *,
+    receipt_id: bytes,
+    start_generation: int,
+    frozen_receipts: Container[bytes],
+) -> bool:
+    """Recognize a phase-8 cursor that covered the exact terminal receipt row."""
+
+    if (
+        len(cursor) != 51
+        or cursor[:7] != b"\x01\x00\x00\x03b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+        or cursor[42:43] != b"i"
+    ):
+        return False
+    cursor_receipt = cursor[7:23]
+    cursor_primary = cursor[26:42]
+    cursor_generation = int.from_bytes(cursor[43:51], "big")
+    return (
+        cursor_receipt == cursor_primary
+        and cursor_receipt in frozen_receipts
+        and (cursor_receipt, cursor_primary, cursor_generation)
+        >= (receipt_id, receipt_id, start_generation)
+    )
+
+
+def _decode_pcom_compound_cursor(cursor: bytes) -> tuple[bytes, bytes, bytes]:
+    """Decode the three-UUID phase-nine static keyset position."""
+
+    if (
+        len(cursor) != 61
+        or cursor[:7] != b"\x01\x00\x00\x03b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+        or cursor[42:45] != b"b\x00\x10"
+    ):
+        raise CatalogSemanticValidationError("OPEN PCOM compound cursor is malformed")
+    return cursor[7:23], cursor[26:42], cursor[45:61]
+
+
+def _require_open_pcom_finalization_retirement(
+    connector: SQLConnector,
+    *,
+    receipt_id: bytes,
+    preparation_id: bytes,
+    checkpoint_generation: int,
+    latest_present: bool,
+    transitions: Mapping[bytes, _OpenPcomTransition] | None = None,
+) -> None:
+    """Prove intentionally absent publication-finalization authority."""
+
+    authorities = (
+        _validated_open_pcom_transitions(connector)
+        if transitions is None
+        else transitions
+    )
+    phase, cursor, phase_order = _require_open_pcom_transition(
+        connector,
+        receipt_id=receipt_id,
+        preparation_id=preparation_id,
+        transitions=authorities,
+    )
+    marker_covered = phase_order > 7 or (
+        phase_order == 7
+        and phase == "PCOM_FINALIZATION_MARKER"
+        and _pcom_static_cursor_covers_pair(
+            cursor,
+            receipt_id=receipt_id,
+            frozen_receipts=authorities,
+        )
+    )
+    if not marker_covered:
+        raise CatalogSemanticValidationError(
+            "retained publication lost its finalization marker before its exact "
+            "cleanup cursor"
+        )
+    if latest_present:
+        return
+    batch_covered = phase_order > 8 or (
+        phase_order == 8
+        and phase == "PCOM_FINALIZATION_BATCH"
+        and _pcom_finalization_batch_cursor_covers(
+            cursor,
+            receipt_id=receipt_id,
+            start_generation=checkpoint_generation - 1,
+            frozen_receipts=authorities,
+        )
+    )
+    if not batch_covered:
+        raise CatalogSemanticValidationError(
+            "retained publication lost its finalization batch before its exact "
+            "cleanup cursor"
+        )
+
+
+def _require_open_pcom_compound_retirement(
+    connector: SQLConnector,
+    *,
+    transitions: Mapping[bytes, _OpenPcomTransition] | None = None,
+) -> tuple[frozenset[bytes], frozenset[bytes]]:
+    """Prove and return the at-most-256 receipts deleted by OPEN phase 9."""
+
+    authorities = (
+        _validated_open_pcom_transitions(connector)
+        if transitions is None
+        else dict(transitions)
+    )
+    if not authorities:
+        return frozenset(), frozenset()
+    first = next(iter(authorities.values()))
+    phase = first.phase
+    phase_order = first.phase_order
+    cursor = first.cursor
+    if any(
+        (item.phase, item.phase_order, item.cursor) != (phase, phase_order, cursor)
+        for item in authorities.values()
+    ):
+        raise CatalogSemanticValidationError(
+            "OPEN PCOM root set disagrees on its current checkpoint"
+        )
+    receipts = frozenset(authorities)
+    retired: frozenset[bytes]
+    expected_orphan_anchors: frozenset[bytes]
+    if phase_order == 9:
+        if phase != "PCOM_COMMIT_EFFECT_ROOT":
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM compound phase/order disagrees"
+            )
+        if not cursor:
+            return frozenset(), frozenset()
+        cursor_receipt, cursor_primary, cursor_preparation = (
+            _decode_pcom_compound_cursor(cursor)
+        )
+        cursor_authority = authorities.get(cursor_receipt)
+        if (
+            cursor_receipt != cursor_primary
+            or cursor_authority is None
+            or cursor_authority.preparation_id != cursor_preparation
+        ):
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM compound cursor is outside its frozen root set"
+            )
+        retired = frozenset(
+            receipt_id for receipt_id in receipts if receipt_id <= cursor_receipt
+        )
+        expected_orphan_anchors = retired
+    elif phase_order == 10:
+        if phase != "PCOM_FINALIZATION_CHECKPOINT":
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM checkpoint phase/order disagrees"
+            )
+        retired = receipts
+        expected_orphan_anchors = receipts
+    elif phase_order == 11:
+        if phase != "PCOM_ANCHOR":
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM anchor phase/order disagrees"
+            )
+        retired = receipts
+        expected_orphan_anchors = receipts
+        if cursor:
+            if not _pcom_static_cursor_covers_pair(
+                cursor,
+                receipt_id=cursor[7:23] if len(cursor) == 42 else b"",
+                frozen_receipts=receipts,
+            ):
+                raise CatalogSemanticValidationError(
+                    "OPEN PCOM anchor cursor is malformed"
+                )
+            cursor_receipt = cursor[7:23]
+            if cursor_receipt not in retired:
+                raise CatalogSemanticValidationError(
+                    "OPEN PCOM anchor cursor is outside its frozen roots"
+                )
+            expected_orphan_anchors = frozenset(
+                receipt_id for receipt_id in retired if receipt_id > cursor_receipt
+            )
+    else:
+        raise CatalogSemanticValidationError(
+            "OPEN PCOM compound retirement is outside phases 9 through 11"
+        )
+    return retired, expected_orphan_anchors
+
+
+def _has_open_pcom_compound_transition(connector: SQLConnector) -> bool:
+    """Return a bounded hint; the full authority is validated before use."""
+
+    rows = connector.fetch_all(
+        """
+        SELECT 1
+        FROM operational_cleanup_jobs AS job
+        JOIN operational_cleanup_sweep_targets AS sweep
+          ON sweep.target_key = job.target_key
+        JOIN operational_cleanup_checkpoints AS checkpoint
+          ON checkpoint.cleanup_id = job.cleanup_id
+        JOIN operational_cleanup_phases AS phase
+          ON phase.target_kind = sweep.target_kind
+         AND phase.phase = checkpoint.phase
+        WHERE job.state = 'OPEN'
+          AND sweep.target_kind = 'PUBLICATION_COMMIT'
+          AND checkpoint.state = 'OPEN'
+          AND phase.phase_order >= 9
+        LIMIT 2
+        """
+    )
+    if len(rows) > 1 or (rows and rows[0] != (1,)):
+        raise CatalogSemanticValidationError(
+            "OPEN PCOM compound transition hint is ambiguous"
+        )
+    return bool(rows)
 
 
 def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ...]:
@@ -2027,6 +2671,19 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
             optional=True,
         )
         if base_row is None:
+            malformed_base = _one(
+                connector,
+                "SELECT base_receipt_id "
+                "FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s LIMIT 2",
+                (build_id,),
+                detail="active source build raw baseline",
+                optional=True,
+            )
+            if malformed_base is not None:
+                raise CatalogSemanticValidationError(
+                    "active source build baseline lacks its sealed predecessor"
+                )
             if generation != 1:
                 _require_compacted_current_source_handoff(
                     connector,
@@ -2590,66 +3247,71 @@ def _validate_publication_candidate_source(
             "publication candidate source build belongs to another channel"
         )
 
-    candidate_base = _base_commit_tuple(
-        _one(
-            connector,
-            """
-            SELECT base.base_receipt_id, commit_row.revision,
-                   commit_row.source_revision, commit_row.generation,
-                   source_revision.channel
-            FROM catalog_publication_candidate_base_publication_commits AS base
-            JOIN catalog_publication_commits AS commit_row
-              ON commit_row.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revisions AS source_revision
-              ON source_revision.source_revision = commit_row.source_revision
-            WHERE base.candidate_id = %s
-            LIMIT 2
-            """,
-            (candidate_id,),
-            detail="publication candidate base source",
-            optional=True,
-        ),
-        detail="publication candidate base commit",
+    candidate_base = _one(
+        connector,
+        """
+        SELECT base_receipt_id
+        FROM catalog_publication_candidate_base_publication_commits
+        WHERE candidate_id = %s
+        LIMIT 2
+        """,
+        (candidate_id,),
+        detail="consumed publication candidate base authority",
+        optional=True,
     )
-    build_base = _base_commit_tuple(
-        _one(
-            connector,
-            """
-            SELECT base.base_receipt_id, commit_row.revision,
-                   commit_row.source_revision, commit_row.generation,
-                   source_revision.channel
-            FROM catalog_source_build_base_publication_commits AS base
-            JOIN catalog_publication_commits AS commit_row
-              ON commit_row.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revisions AS source_revision
-              ON source_revision.source_revision = commit_row.source_revision
-            WHERE base.build_id = %s
-            LIMIT 2
-            """,
-            (build_id,),
-            detail="publication analysis build base source",
-            optional=True,
-        ),
-        detail="publication analysis build base commit",
-    )
-    if candidate_base != build_base:
+    if candidate_base is not None:
         raise CatalogSemanticValidationError(
-            "publication candidate base-receipt CAS differs from its analysis build"
+            "PUBLISHED publication retained its consumed candidate base authority"
         )
 
-    if candidate_base is None:
-        expected_source_generation = 1
-    else:
+    build_base_row = _one(
+        connector,
+        """
+        SELECT base.base_receipt_id, commit_row.revision,
+               commit_row.source_revision, commit_row.generation,
+               source_revision.channel
+        FROM catalog_source_build_base_publication_commits AS base
+        JOIN catalog_publication_commits AS commit_row
+          ON commit_row.receipt_id = base.base_receipt_id
+        JOIN catalog_source_revisions AS source_revision
+          ON source_revision.source_revision = commit_row.source_revision
+        WHERE base.build_id = %s
+        LIMIT 2
+        """,
+        (build_id,),
+        detail="publication analysis build base source",
+        optional=True,
+    )
+    if build_base_row is None:
+        malformed_build_base = _one(
+            connector,
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s LIMIT 2",
+            (build_id,),
+            detail="publication analysis raw build baseline",
+            optional=True,
+        )
+        if malformed_build_base is not None:
+            raise CatalogSemanticValidationError(
+                "publication analysis build baseline lacks its sealed predecessor"
+            )
+    build_base = _base_commit_tuple(
+        build_base_row,
+        detail="publication analysis build base commit",
+    )
+    expected_source_generation: int | None = None
+    if build_base is not None:
         (
             _base_receipt_id,
             _base_catalog_revision,
             base_source_revision,
             base_generation,
             base_channel,
-        ) = candidate_base
+        ) = build_base
         if base_channel != channel or source_revision <= base_source_revision:
             raise CatalogSemanticValidationError(
-                "publication source revision does not advance its candidate base commit"
+                "publication source revision does not advance its build base commit"
             )
         expected_source_generation = base_generation + 1
 
@@ -2682,12 +3344,25 @@ def _validate_publication_candidate_source(
         source_head_row[1], field="publication source_head.generation", positive=True
     )
     _as_int(source_head_row[2], field="publication source_head.advanced_at")
-    if (
-        head_source_revision != source_revision
-        or head_source_generation != expected_source_generation
-    ):
+    if head_source_revision != source_revision:
         raise CatalogSemanticValidationError(
             "publication receipt does not match the active source-head CAS result"
+        )
+    if expected_source_generation is None:
+        if head_source_generation == 1:
+            return
+        _require_compacted_current_source_handoff(
+            connector,
+            channel=channel,
+            revision=source_revision,
+            generation=head_source_generation,
+            analysis_id=analysis_id,
+            build_id=build_id,
+        )
+        return
+    if head_source_generation != expected_source_generation:
+        raise CatalogSemanticValidationError(
+            "publication receipt does not match its retained build-base generation"
         )
 
 
@@ -3396,6 +4071,43 @@ def _validated_canonical_spool(
         ) from error
     except BaseException:
         spool.close()
+        raise
+
+
+def _casefolded_title_spool(
+    title: BinaryIO,
+    *,
+    byte_count: int,
+) -> tuple[BinaryIO, int]:
+    """Apply the pinned title-sort transform with bounded streaming memory."""
+
+    folded = TemporaryFile(mode="w+b")
+    written = 0
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        for part in _iter_spool_chunks(title, byte_count=byte_count):
+            text = decoder.decode(part, final=False)
+            encoded = text.casefold().encode("utf-8")
+            if encoded:
+                if folded.write(encoded) != len(encoded):
+                    raise OSError("title-sort READY spool accepted a partial write")
+                written += len(encoded)
+        tail = decoder.decode(b"", final=True)
+        encoded_tail = tail.casefold().encode("utf-8")
+        if encoded_tail:
+            if folded.write(encoded_tail) != len(encoded_tail):
+                raise OSError("title-sort READY spool accepted a partial tail write")
+            written += len(encoded_tail)
+        folded.flush()
+        folded.seek(0)
+        return folded, written
+    except UnicodeError as error:
+        folded.close()
+        raise CatalogSemanticValidationError(
+            "retained display title is not strict UTF-8"
+        ) from error
+    except BaseException:
+        folded.close()
         raise
 
 
@@ -4693,6 +5405,22 @@ def _active_publication_contexts(
             raise CatalogSemanticValidationError(
                 "permanent publication candidate_id is not 16 bytes"
             )
+        consumed_candidate_base = _one(
+            connector,
+            """
+            SELECT base_receipt_id
+            FROM catalog_publication_candidate_base_publication_commits
+            WHERE candidate_id = %s
+            LIMIT 2
+            """,
+            (candidate_id,),
+            detail="active consumed publication candidate base authority",
+            optional=True,
+        )
+        if consumed_candidate_base is not None:
+            raise CatalogSemanticValidationError(
+                "PUBLISHED publication retained its consumed candidate base authority"
+            )
 
         candidate_row = _one(
             connector,
@@ -4872,49 +5600,6 @@ def _active_publication_contexts(
             channel=channel,
         )
 
-        base_catalog = _base_commit_tuple(
-            _one(
-                connector,
-                """
-            SELECT base.base_receipt_id, commit_row.revision,
-                   commit_row.source_revision, commit_row.generation,
-                   source_revision.channel
-            FROM catalog_publication_candidate_base_publication_commits AS base
-            JOIN catalog_publication_commits AS commit_row
-              ON commit_row.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revisions AS source_revision
-              ON source_revision.source_revision = commit_row.source_revision
-            WHERE base.candidate_id = %s
-            LIMIT 2
-            """,
-                (candidate_id,),
-                detail="publication candidate base commit",
-                optional=True,
-            ),
-            detail="publication candidate base commit",
-        )
-        if base_catalog is None:
-            if generation != 1:
-                raise CatalogSemanticValidationError(
-                    "non-genesis publication_head lacks its candidate baseline"
-                )
-        else:
-            (
-                _base_receipt_id,
-                base_revision,
-                _base_source_revision,
-                base_generation,
-                base_channel,
-            ) = base_catalog
-            if (
-                base_channel != channel
-                or generation != base_generation + 1
-                or revision <= base_revision
-            ):
-                raise CatalogSemanticValidationError(
-                    "publication_head does not advance its exact candidate baseline"
-                )
-
         _validate_active_publication_policies(
             connector,
             artifact_policy_id=artifact_policy_id,
@@ -4937,193 +5622,376 @@ def _active_publication_contexts(
     return tuple(contexts)
 
 
-def _validate_publication_generation_history(connector: SQLConnector) -> None:
-    """Validate the compactable, no-fork retained publication window."""
+@dataclass(frozen=True, slots=True)
+class _OpenPublicationGenerationTransition:
+    """Exact bounded rows absent under one validated OPEN PG cleanup."""
 
-    anchors = {
-        _as_bytes(row[0], field="publication anchor receipt_id")
-        for row in connector.fetch_all(
-            "SELECT receipt_id FROM catalog_publication_commit_anchors "
-            "ORDER BY receipt_id"
-        )
-    }
-    commits = connector.fetch_all(
-        "SELECT receipt_id, candidate_id, revision, source_revision, generation, "
-        "committed_at FROM catalog_publication_commits ORDER BY generation"
-    )
-    commit_receipts: set[bytes] = set()
-    generations: list[int] = []
-    for row in commits:
-        receipt_id = _as_bytes(row[0], field="publication chain receipt_id")
-        candidate_id = _as_bytes(row[1], field="publication chain candidate_id")
-        if len(receipt_id) != 16 or len(candidate_id) != 16:
-            raise CatalogSemanticValidationError(
-                "publication chain UUID identity is not 16 bytes"
-            )
-        if receipt_id in commit_receipts:
-            raise CatalogSemanticValidationError(
-                "publication retained window repeats a receipt identity"
-            )
-        commit_receipts.add(receipt_id)
-        _as_int(row[2], field="publication chain revision", positive=True)
-        _as_int(row[3], field="publication chain source revision", positive=True)
-        generations.append(
-            _as_int(row[4], field="publication chain generation", positive=True)
-        )
-        _as_int(row[5], field="publication chain committed_at")
-    if anchors != commit_receipts:
+    canonical_floor: int
+    missing_nodes: frozenset[int]
+    missing_edge_successors: frozenset[int]
+
+
+def _decode_publication_generation_cursor(
+    cursor: bytes,
+) -> tuple[int, int, int]:
+    """Decode one canonical static cursor containing two uint63 keys."""
+
+    if (
+        len(cursor) != 22
+        or cursor[:1] != b"\x01"
+        or cursor[3:5] != b"\x02i"
+        or cursor[13:14] != b"i"
+    ):
         raise CatalogSemanticValidationError(
-            "publication anchors differ from complete retained common commits"
+            "OPEN publication-generation cleanup cursor is malformed"
         )
+    relation_index = int.from_bytes(cursor[1:3], "big")
+    root_generation = int.from_bytes(cursor[5:13], "big")
+    primary_generation = int.from_bytes(cursor[14:22], "big")
+    _as_int(root_generation, field="publication-generation cursor root")
+    _as_int(primary_generation, field="publication-generation cursor primary key")
+    return relation_index, root_generation, primary_generation
 
-    if generations:
-        floor = generations[0]
-        tip = generations[-1]
-        if tuple(generations) != tuple(range(floor, tip + 1)):
-            raise CatalogSemanticValidationError(
-                "retained publication commit generations are not contiguous"
-            )
-        expected_nodes = (
-            tuple(range(0, tip + 1)) if floor == 1 else tuple(range(floor, tip + 1))
-        )
-        edge_floor = 1 if floor == 1 else floor + 1
-        expected_edges = tuple(
-            (generation, generation - 1) for generation in range(edge_floor, tip + 1)
-        )
-    else:
-        expected_nodes = (0,)
-        expected_edges = ()
 
-    nodes = tuple(
-        _as_int(row[0], field="publication generation node")
-        for row in connector.fetch_all(
-            "SELECT generation FROM catalog_publication_generation_nodes "
-            "ORDER BY generation"
-        )
+def _validated_open_publication_generation_transition(
+    connector: SQLConnector,
+    *,
+    retained_commit_floor: int | None,
+    retained_commit_tip: int | None,
+) -> _OpenPublicationGenerationTransition | None:
+    """Load the exact bounded PG transition that may break the visible chain."""
+
+    rows = connector.fetch_all(
+        """
+        SELECT root.frozen_root_key, checkpoint.phase, checkpoint.cursor_bytes,
+               phase.phase_order
+        FROM operational_cleanup_jobs AS job
+        JOIN operational_cleanup_sweep_targets AS sweep
+          ON sweep.target_key = job.target_key
+        JOIN operational_cleanup_checkpoints AS checkpoint
+          ON checkpoint.cleanup_id = job.cleanup_id
+        JOIN operational_cleanup_phases AS phase
+          ON phase.target_kind = sweep.target_kind
+         AND phase.phase = checkpoint.phase
+        LEFT JOIN operational_cleanup_cycle_roots AS root
+          ON root.cleanup_id = job.cleanup_id
+        WHERE job.state = 'OPEN'
+          AND sweep.target_kind = 'PUBLICATION_GENERATION'
+          AND checkpoint.state = 'OPEN'
+        ORDER BY root.frozen_root_key
+        LIMIT 257
+        """
     )
-    if nodes != expected_nodes:
+    if not rows:
+        return None
+    if len(rows) > 256:
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation cleanup roots exceed the hard cap"
+        )
+
+    from . import operational_refinement
+
+    try:
+        operational_refinement.check_cleanup_reachability_v1(connector)
+    except (
+        operational_refinement.OperationalSemanticRegistryError,
+        operational_refinement.OperationalSemanticValidationError,
+    ) as error:
+        raise CatalogSemanticValidationError(
+            "publication-generation gap lacks valid OPEN cleanup authority"
+        ) from error
+
+    phase = rows[0][1]
+    cursor = _as_bytes(rows[0][2], field="publication-generation cleanup cursor")
+    phase_order = _as_int(
+        rows[0][3], field="publication-generation cleanup phase order", positive=True
+    )
+    if any(row[1:] != rows[0][1:] for row in rows[1:]):
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation roots disagree on their checkpoint"
+        )
+    if (phase, phase_order) not in {("PG_EDGE", 1), ("PG_ROOT", 2)}:
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation phase/order disagrees"
+        )
+
+    frozen: list[int] = []
+    for row in rows:
+        if row[0] is None:
+            if len(rows) != 1:
+                raise CatalogSemanticValidationError(
+                    "OPEN publication-generation NULL root is ambiguous"
+                )
+            continue
+        frame = _as_bytes(row[0], field="OPEN publication-generation frozen root")
+        if len(frame) != 11 or frame[:3] != b"\x01\x01i":
+            raise CatalogSemanticValidationError(
+                "OPEN publication-generation frozen root frame is malformed"
+            )
+        frozen.append(
+            _as_int(
+                int.from_bytes(frame[3:11], "big"),
+                field="OPEN publication-generation frozen root",
+            )
+        )
+    if not frozen:
+        if cursor:
+            raise CatalogSemanticValidationError(
+                "empty publication-generation cleanup advanced a cursor"
+            )
+        return None
+    if len(set(frozen)) != len(frozen) or any(
+        right != left + 1 for left, right in zip(frozen, frozen[1:], strict=False)
+    ):
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation roots are not one contiguous prefix"
+        )
+    if (
+        retained_commit_floor is None
+        or retained_commit_tip is None
+        or retained_commit_floor <= 1
+        or frozen[-1] >= retained_commit_floor
+    ):
+        raise CatalogSemanticValidationError(
+            "OPEN publication-generation roots cross retained commit authority"
+        )
+
+    internal_edges = frozenset(frozen[1:])
+    boundary_successor = frozen[-1] + 1
+    if phase == "PG_EDGE":
+        if not cursor:
+            return _OpenPublicationGenerationTransition(
+                frozen[0], frozenset(), frozenset()
+            )
+        index, root_generation, primary_generation = (
+            _decode_publication_generation_cursor(cursor)
+        )
+        if index == 0:
+            if (
+                root_generation != primary_generation
+                or root_generation not in frozen[1:]
+            ):
+                raise CatalogSemanticValidationError(
+                    "OPEN PG_EDGE cursor is outside its internal frozen edges"
+                )
+            missing_edges = frozenset(
+                generation for generation in frozen[1:] if generation <= root_generation
+            )
+        elif index == 1:
+            if (
+                root_generation != frozen[-1]
+                or primary_generation != boundary_successor
+            ):
+                raise CatalogSemanticValidationError(
+                    "OPEN PG_EDGE boundary cursor is outside its frozen prefix"
+                )
+            missing_edges = internal_edges | {boundary_successor}
+        else:
+            raise CatalogSemanticValidationError(
+                "OPEN PG_EDGE cursor names an unknown relation"
+            )
+        return _OpenPublicationGenerationTransition(
+            frozen[0], frozenset(), missing_edges
+        )
+
+    missing_edges = internal_edges | {boundary_successor}
+    if not cursor:
+        missing_nodes: frozenset[int] = frozenset()
+    else:
+        index, root_generation, primary_generation = (
+            _decode_publication_generation_cursor(cursor)
+        )
+        if (
+            index != 0
+            or root_generation != primary_generation
+            or root_generation not in frozen
+        ):
+            raise CatalogSemanticValidationError(
+                "OPEN PG_ROOT cursor is outside its frozen prefix"
+            )
+        missing_nodes = frozenset(
+            generation for generation in frozen if generation <= root_generation
+        )
+    return _OpenPublicationGenerationTransition(frozen[0], missing_nodes, missing_edges)
+
+
+def _validate_publication_generation_nodes(
+    connector: SQLConnector,
+    *,
+    floor: int | None,
+    tip: int | None,
+    transition: _OpenPublicationGenerationTransition | None = None,
+) -> int:
+    """Stream one contiguous retained interval and return its actual floor.
+
+    Publication-commit cleanup and generation-prefix cleanup are distinct
+    bounded transactions.  A crash between them may therefore leave a
+    structurally valid, unreferenced prefix below the oldest retained commit.
+    That conservative residue grants no publication authority and the next
+    generation cleanup can remove it.  The interval must still be exact from
+    its actual floor through the commit tip; gaps and nodes above the tip are
+    corruption.
+    """
+
+    expected_tip = 0 if tip is None else tip
+    actual_floor: int | None = None
+    expected: int | None = None
+    missing = frozenset() if transition is None else transition.missing_nodes
+    after = -1
+    while True:
+        rows = connector.fetch_all(
+            "SELECT generation FROM catalog_publication_generation_nodes "
+            "WHERE generation > %s ORDER BY generation LIMIT %s",
+            (after, _CATALOG_RESOURCE_PAGE_LIMIT),
+        )
+        for row in rows:
+            generation = _as_int(row[0], field="publication generation node")
+            if actual_floor is None:
+                actual_floor = generation
+                if transition is not None:
+                    expected = transition.canonical_floor
+                else:
+                    expected = generation
+                    if floor is None:
+                        valid_floor = generation == 0
+                    elif floor == 1:
+                        # Generation zero cannot become cleanup-eligible while the
+                        # genesis publication commit remains retained.
+                        valid_floor = generation == 0
+                    else:
+                        valid_floor = generation <= floor
+                    if not valid_floor:
+                        raise CatalogSemanticValidationError(
+                            "publication generation nodes differ from the retained "
+                            "compacted window: the interval starts after its oldest "
+                            "retained commit"
+                        )
+            assert expected is not None
+            while expected in missing:
+                expected += 1
+            if generation != expected:
+                raise CatalogSemanticValidationError(
+                    "publication generation nodes differ from the retained "
+                    "compacted window"
+                )
+            expected += 1
+            after = generation
+        if len(rows) < _CATALOG_RESOURCE_PAGE_LIMIT:
+            break
+    while expected is not None and expected in missing:
+        expected += 1
+    if actual_floor is None or expected != expected_tip + 1:
         raise CatalogSemanticValidationError(
             "publication generation nodes differ from the retained compacted window"
         )
-    edges = tuple(
-        (
-            _as_int(row[0], field="publication successor generation", positive=True),
-            _as_int(row[1], field="publication predecessor generation"),
-        )
-        for row in connector.fetch_all(
+    return transition.canonical_floor if transition is not None else actual_floor
+
+
+def _validate_publication_generation_edges(
+    connector: SQLConnector,
+    *,
+    floor: int | None,
+    tip: int | None,
+    transition: _OpenPublicationGenerationTransition | None = None,
+) -> None:
+    """Stream the unique adjacency chain with a fixed-size keyset page."""
+
+    if floor is None or tip is None or floor == tip:
+        expected_successor: int | None = None
+    else:
+        expected_successor = floor + 1
+    missing = frozenset() if transition is None else transition.missing_edge_successors
+    after = -1
+    while True:
+        rows = connector.fetch_all(
             "SELECT successor_generation, predecessor_generation "
             "FROM catalog_publication_generation_successors "
-            "ORDER BY successor_generation"
+            "WHERE successor_generation > %s "
+            "ORDER BY successor_generation LIMIT %s",
+            (after, _CATALOG_RESOURCE_PAGE_LIMIT),
         )
-    )
-    if edges != expected_edges:
-        raise CatalogSemanticValidationError(
-            "publication generation successor chain is gapped, forked, or "
-            "crosses the compacted floor"
-        )
-
-    finalization_rows = connector.fetch_all(
-        "SELECT commit_row.receipt_id, commit_row.committed_at, "
-        "checkpoint.generation, checkpoint.`cursor`, checkpoint.processed_count, "
-        "checkpoint.state, checkpoint.updated_at, marker.receipt_id "
-        "FROM catalog_publication_commits AS commit_row "
-        "JOIN catalog_publication_finalization_checkpoints AS checkpoint "
-        "ON checkpoint.receipt_id = commit_row.receipt_id "
-        "LEFT JOIN catalog_publication_commit_finalizations AS marker "
-        "ON marker.receipt_id = commit_row.receipt_id "
-        "ORDER BY commit_row.receipt_id"
-    )
-    if len(finalization_rows) != len(commits):
-        raise CatalogSemanticValidationError(
-            "retained publication commits and permanent finalization checkpoints differ"
-        )
-    finalized_receipts: set[bytes] = set()
-    for row in finalization_rows:
-        receipt_id = _as_bytes(row[0], field="finalization receipt_id")
-        commit_time = _as_int(row[1], field="publication commit time")
-        generation = _as_int(
-            row[2], field="finalization checkpoint generation", positive=True
-        )
-        cursor = _as_bytes(row[3], field="finalization checkpoint cursor")
-        processed_count = _as_int(
-            row[4], field="finalization checkpoint processed_count"
-        )
-        state = row[5]
-        updated_at = _as_int(row[6], field="finalization checkpoint updated_at")
-        marker_present = row[7] is not None
-        if updated_at < commit_time or state not in {"OPEN", "COMPLETE"}:
-            raise CatalogSemanticValidationError(
-                "permanent finalization checkpoint precedes its commit or has "
-                "an invalid state"
+        for row in rows:
+            while expected_successor in missing:
+                assert expected_successor is not None
+                expected_successor += 1
+            successor = _as_int(
+                row[0], field="publication successor generation", positive=True
             )
-        latest = _one(
-            connector,
-            """
-            SELECT start_cursor, start_processed_count, next_cursor,
-                   next_processed_count, next_state, row_count, terminal,
-                   committed_generation, committed_at
-            FROM catalog_publication_finalization_batch_receipts
-            WHERE receipt_id = %s AND committed_generation = %s
-            LIMIT 2
-            """,
-            (receipt_id, generation),
-            detail="latest permanent finalization receipt",
-            optional=True,
-        )
-        if generation == 1:
-            if latest is not None or state != "OPEN" or marker_present:
-                raise CatalogSemanticValidationError(
-                    "initial permanent finalization checkpoint is not exact OPEN genesis"
-                )
-            continue
-        if latest is None:
-            raise CatalogSemanticValidationError(
-                "advanced permanent finalization checkpoint lacks its exact receipt"
-            )
-        start_cursor = _as_bytes(latest[0], field="finalization start_cursor")
-        start_count = _as_int(latest[1], field="finalization start_processed_count")
-        next_cursor = _as_bytes(latest[2], field="finalization next_cursor")
-        next_count = _as_int(latest[3], field="finalization next_processed_count")
-        next_state = latest[4]
-        row_count = _as_int(latest[5], field="finalization row_count")
-        terminal = _as_int(latest[6], field="finalization terminal")
-        committed_generation = _as_int(
-            latest[7], field="finalization committed_generation", positive=True
-        )
-        receipt_time = _as_int(latest[8], field="finalization committed_at")
-        if (
-            next_cursor != cursor
-            or next_count != processed_count
-            or committed_generation != generation
-            or receipt_time != updated_at
-        ):
-            raise CatalogSemanticValidationError(
-                "latest permanent finalization receipt and checkpoint are incongruent"
-            )
-        if state == "OPEN":
+            predecessor = _as_int(row[1], field="publication predecessor generation")
             if (
-                marker_present
-                or terminal != 0
-                or row_count <= 0
-                or next_state != "OPEN"
-                or next_count != start_count + row_count
+                expected_successor is None
+                or successor != expected_successor
+                or predecessor != successor - 1
             ):
                 raise CatalogSemanticValidationError(
-                    "OPEN finalization checkpoint has marker or nonterminal receipt drift"
+                    "publication generation successor chain is gapped, forked, or "
+                    "crosses the compacted floor"
                 )
-        elif (
-            not marker_present
-            or terminal != 1
-            or row_count != 0
-            or next_state != "COMPLETE"
-            or start_cursor != next_cursor
-            or start_count != next_count
-        ):
+            assert expected_successor is not None
+            expected_successor += 1
+            after = successor
+        if len(rows) < _CATALOG_RESOURCE_PAGE_LIMIT:
+            break
+    if expected_successor is not None:
+        assert tip is not None
+        while expected_successor in missing:
+            expected_successor += 1
+        if expected_successor != tip + 1:
             raise CatalogSemanticValidationError(
-                "COMPLETE finalization checkpoint lacks its exact terminal marker/receipt"
+                "publication generation successor chain is gapped, forked, or "
+                "crosses the compacted floor"
             )
-        else:
-            finalized_receipts.add(receipt_id)
+
+
+def _validate_publication_generation_history(connector: SQLConnector) -> None:
+    """Validate the compactable retained window in fixed-size keyset pages."""
+
+    orphan_anchor_rows = connector.fetch_all(
+        "SELECT anchor.receipt_id FROM catalog_publication_commit_anchors AS anchor "
+        "LEFT JOIN catalog_publication_commits AS committed "
+        "ON committed.receipt_id = anchor.receipt_id "
+        "WHERE committed.receipt_id IS NULL "
+        "ORDER BY anchor.receipt_id LIMIT 257"
+    )
+    missing_anchor_rows = connector.fetch_all(
+        "SELECT 1 FROM catalog_publication_commits AS committed "
+        "LEFT JOIN catalog_publication_commit_anchors AS anchor "
+        "ON anchor.receipt_id = committed.receipt_id "
+        "WHERE anchor.receipt_id IS NULL LIMIT 1"
+    )
+    if missing_anchor_rows:
+        raise CatalogSemanticValidationError(
+            "publication anchors differ from complete retained common commits"
+        )
+    if len(orphan_anchor_rows) > 256:
+        raise CatalogSemanticValidationError(
+            "publication anchor retirement exceeds its bounded frozen root set"
+        )
+    actual_orphans = frozenset(
+        _as_bytes(row[0], field="retiring publication anchor receipt_id")
+        for row in orphan_anchor_rows
+    )
+    if any(len(receipt_id) != 16 for receipt_id in actual_orphans):
+        raise CatalogSemanticValidationError(
+            "retiring publication anchor receipt_id is not 16 bytes"
+        )
+    pcom_transitions: dict[bytes, _OpenPcomTransition] | None = None
+    has_open_compound_retirement = _has_open_pcom_compound_transition(connector)
+    if actual_orphans and not has_open_compound_retirement:
+        raise CatalogSemanticValidationError(
+            "publication anchors differ from complete retained common commits"
+        )
+    if has_open_compound_retirement:
+        pcom_transitions = _validated_open_pcom_transitions(connector)
+        _retired, expected_orphans = _require_open_pcom_compound_retirement(
+            connector,
+            transitions=pcom_transitions,
+        )
+        if actual_orphans != expected_orphans:
+            raise CatalogSemanticValidationError(
+                "publication orphan anchors differ from their exact OPEN PCOM "
+                "cursor authority"
+            )
 
     heads = connector.fetch_all(
         "SELECT registry.channel, head.receipt_id, commit_row.generation, "
@@ -5141,73 +6009,300 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
         raise CatalogSemanticValidationError(
             "common publication head exceeds the channel registry"
         )
-    if not commits:
-        if any(value is not None for value in heads[0][1:]):
-            raise CatalogSemanticValidationError(
-                "genesis publication catalog unexpectedly has a common head"
-            )
-        return
-    tip_receipt = _as_bytes(commits[-1][0], field="tip receipt_id")
-    tip_is_published = tip_receipt in finalized_receipts
     if any(value is None for value in heads[0][1:]):
         if not all(value is None for value in heads[0][1:]):
             raise CatalogSemanticValidationError(
                 "common publication head family is incomplete"
             )
-        if len(commits) != 1 or generations != [1] or tip_is_published:
+        head_receipt: bytes | None = None
+        head_generation: int | None = None
+    else:
+        head_receipt = _as_bytes(heads[0][1], field="head receipt_id")
+        head_generation = _as_int(heads[0][2], field="head generation", positive=True)
+        head_source_channel = _as_bytes(heads[0][3], field="head source channel")
+        if len(head_receipt) != 16 or head_source_channel != b"default":
+            raise CatalogSemanticValidationError(
+                "common publication head does not name a retained PUBLISHED commit"
+            )
+
+    commit_count = 0
+    floor: int | None = None
+    tip: int | None = None
+    tip_receipt: bytes | None = None
+    tip_candidate: bytes | None = None
+    tip_is_published = False
+    previous_generation: int | None = None
+    head_seen = False
+    head_is_published = False
+    last_published_receipt: bytes | None = None
+    unfinished_count = 0
+    after_generation = -1
+    while True:
+        rows = connector.fetch_all(
+            "SELECT committed.receipt_id, committed.candidate_id, "
+            "committed.revision, committed.source_revision, committed.generation, "
+            "committed.committed_at, committed.preparation_id, base.base_receipt_id, "
+            "checkpoint.generation, checkpoint.`cursor`, checkpoint.processed_count, "
+            "checkpoint.state, checkpoint.updated_at, marker.receipt_id, "
+            "latest.start_cursor, latest.start_processed_count, "
+            "latest.next_cursor, latest.next_processed_count, latest.next_state, "
+            "latest.row_count, latest.terminal, latest.committed_generation, "
+            "latest.committed_at "
+            "FROM catalog_publication_commits AS committed "
+            "LEFT JOIN catalog_publication_candidate_base_publication_commits AS base "
+            "ON base.candidate_id = committed.candidate_id "
+            "LEFT JOIN catalog_publication_finalization_checkpoints AS checkpoint "
+            "ON checkpoint.receipt_id = committed.receipt_id "
+            "LEFT JOIN catalog_publication_commit_finalizations AS marker "
+            "ON marker.receipt_id = committed.receipt_id "
+            "LEFT JOIN catalog_publication_finalization_batch_receipts AS latest "
+            "ON latest.receipt_id = committed.receipt_id "
+            "AND latest.committed_generation = checkpoint.generation "
+            "WHERE committed.generation > %s "
+            "ORDER BY committed.generation LIMIT %s",
+            (after_generation, _CATALOG_RESOURCE_PAGE_LIMIT),
+        )
+        for row in rows:
+            receipt_id = _as_bytes(row[0], field="publication chain receipt_id")
+            candidate_id = _as_bytes(row[1], field="publication chain candidate_id")
+            if len(receipt_id) != 16 or len(candidate_id) != 16:
+                raise CatalogSemanticValidationError(
+                    "publication chain UUID identity is not 16 bytes"
+                )
+            _as_int(row[2], field="publication chain revision", positive=True)
+            _as_int(row[3], field="publication chain source revision", positive=True)
+            publication_generation = _as_int(
+                row[4], field="publication chain generation", positive=True
+            )
+            committed_at = _as_int(row[5], field="publication chain committed_at")
+            if (
+                previous_generation is not None
+                and publication_generation <= previous_generation
+            ):
+                raise CatalogSemanticValidationError(
+                    "retained publication commit generations are not strictly increasing"
+                )
+            previous_generation = publication_generation
+            after_generation = publication_generation
+            floor = publication_generation if floor is None else floor
+            tip = publication_generation
+            commit_count += 1
+
+            preparation_id = _as_bytes(row[6], field="publication chain preparation_id")
+            if len(preparation_id) != 16:
+                raise CatalogSemanticValidationError(
+                    "publication chain preparation_id is not 16 bytes"
+                )
+            candidate_base = (
+                None
+                if row[7] is None
+                else _as_bytes(
+                    row[7], field="publication chain candidate base receipt_id"
+                )
+            )
+            if candidate_base is not None and len(candidate_base) != 16:
+                raise CatalogSemanticValidationError(
+                    "publication chain candidate base receipt_id is not 16 bytes"
+                )
+            if any(value is None for value in row[8:13]):
+                raise CatalogSemanticValidationError(
+                    "retained publication commits and permanent finalization "
+                    "checkpoints differ"
+                )
+            checkpoint_generation = _as_int(
+                row[8], field="finalization checkpoint generation", positive=True
+            )
+            cursor = _as_bytes(row[9], field="finalization checkpoint cursor")
+            processed_count = _as_int(
+                row[10], field="finalization checkpoint processed_count"
+            )
+            state = row[11]
+            updated_at = _as_int(row[12], field="finalization checkpoint updated_at")
+            marker_present = row[13] is not None
+            if updated_at < committed_at or state not in {"OPEN", "COMPLETE"}:
+                raise CatalogSemanticValidationError(
+                    "permanent finalization checkpoint precedes its commit or has "
+                    "an invalid state"
+                )
+            latest_values = row[14:23]
+            if all(value is None for value in latest_values):
+                latest: tuple[Any, ...] | None = None
+            elif any(value is None for value in latest_values):
+                raise CatalogSemanticValidationError(
+                    "latest permanent finalization receipt is incomplete"
+                )
+            else:
+                latest = tuple(latest_values)
+            retiring_finalization = state == "COMPLETE" and not marker_present
+            if retiring_finalization:
+                if pcom_transitions is None:
+                    pcom_transitions = _validated_open_pcom_transitions(connector)
+                _require_open_pcom_finalization_retirement(
+                    connector,
+                    receipt_id=receipt_id,
+                    preparation_id=preparation_id,
+                    checkpoint_generation=checkpoint_generation,
+                    latest_present=latest is not None,
+                    transitions=pcom_transitions,
+                )
+            published = False
+            if checkpoint_generation == 1:
+                if latest is not None or state != "OPEN" or marker_present:
+                    raise CatalogSemanticValidationError(
+                        "initial permanent finalization checkpoint is not exact OPEN "
+                        "genesis"
+                    )
+            else:
+                if latest is None:
+                    if not retiring_finalization:
+                        raise CatalogSemanticValidationError(
+                            "advanced permanent finalization checkpoint lacks its "
+                            "exact receipt"
+                        )
+                    published = True
+                else:
+                    start_cursor = _as_bytes(
+                        latest[0], field="finalization start_cursor"
+                    )
+                    start_count = _as_int(
+                        latest[1], field="finalization start_processed_count"
+                    )
+                    next_cursor = _as_bytes(latest[2], field="finalization next_cursor")
+                    next_count = _as_int(
+                        latest[3], field="finalization next_processed_count"
+                    )
+                    next_state = latest[4]
+                    row_count = _as_int(latest[5], field="finalization row_count")
+                    terminal = _as_int(latest[6], field="finalization terminal")
+                    committed_generation = _as_int(
+                        latest[7],
+                        field="finalization committed_generation",
+                        positive=True,
+                    )
+                    receipt_time = _as_int(latest[8], field="finalization committed_at")
+                    if (
+                        next_cursor != cursor
+                        or next_count != processed_count
+                        or committed_generation != checkpoint_generation
+                        or receipt_time != updated_at
+                    ):
+                        raise CatalogSemanticValidationError(
+                            "latest permanent finalization receipt and checkpoint are "
+                            "incongruent"
+                        )
+                    if state == "OPEN":
+                        if (
+                            marker_present
+                            or terminal != 0
+                            or row_count <= 0
+                            or next_state != "OPEN"
+                            or next_count != start_count + row_count
+                        ):
+                            raise CatalogSemanticValidationError(
+                                "OPEN finalization checkpoint has marker or "
+                                "nonterminal receipt drift"
+                            )
+                    elif (
+                        (not marker_present and not retiring_finalization)
+                        or terminal != 1
+                        or row_count != 0
+                        or next_state != "COMPLETE"
+                        or start_cursor != next_cursor
+                        or start_count != next_count
+                    ):
+                        raise CatalogSemanticValidationError(
+                            "COMPLETE finalization checkpoint lacks its exact terminal "
+                            "marker/receipt"
+                        )
+                    else:
+                        published = True
+            if published and candidate_base is not None:
+                raise CatalogSemanticValidationError(
+                    "PUBLISHED publication retained its consumed candidate base "
+                    "authority"
+                )
+            if not published:
+                unfinished_count += 1
+            elif unfinished_count:
+                raise CatalogSemanticValidationError(
+                    "a retained publication before the chain tip is not PUBLISHED"
+                )
+            else:
+                last_published_receipt = receipt_id
+            if head_receipt == receipt_id:
+                head_seen = True
+                head_is_published = published
+                if head_generation != publication_generation:
+                    raise CatalogSemanticValidationError(
+                        "common publication head is not an exact PUBLISHED generation"
+                    )
+            tip_receipt = receipt_id
+            tip_candidate = candidate_id
+            tip_is_published = published
+        if len(rows) < _CATALOG_RESOURCE_PAGE_LIMIT:
+            break
+
+    generation_transition = _validated_open_publication_generation_transition(
+        connector,
+        retained_commit_floor=floor,
+        retained_commit_tip=tip,
+    )
+    retained_node_floor = _validate_publication_generation_nodes(
+        connector,
+        floor=floor,
+        tip=tip,
+        transition=generation_transition,
+    )
+    _validate_publication_generation_edges(
+        connector,
+        floor=retained_node_floor,
+        tip=tip,
+        transition=generation_transition,
+    )
+
+    if commit_count == 0:
+        if head_receipt is not None:
+            raise CatalogSemanticValidationError(
+                "genesis publication catalog unexpectedly has a common head"
+            )
+        return
+    assert tip is not None and tip_receipt is not None and tip_candidate is not None
+    if head_receipt is None:
+        if commit_count != 1 or floor != 1 or tip != 1 or tip_is_published:
             raise CatalogSemanticValidationError(
                 "only one reader-invisible DB_COMMITTED genesis may precede a head"
             )
         _validate_invisible_publication_working_roots(
             connector,
-            candidate_id=_as_bytes(
-                commits[-1][1], field="invisible publication candidate_id"
-            ),
+            candidate_id=tip_candidate,
         )
         return
-    head_receipt = _as_bytes(heads[0][1], field="head receipt_id")
-    head_generation = _as_int(heads[0][2], field="head generation", positive=True)
-    head_source_channel = _as_bytes(heads[0][3], field="head source channel")
-    head_index = next(
-        (
-            index
-            for index, commit in enumerate(commits)
-            if _as_bytes(commit[0], field="retained receipt_id") == head_receipt
-        ),
-        None,
-    )
-    if head_index is None or head_source_channel != b"default":
+    if not head_seen:
         raise CatalogSemanticValidationError(
             "common publication head does not name a retained PUBLISHED commit"
         )
-    head_is_published = head_receipt in finalized_receipts
-    if not head_is_published or head_generation != generations[head_index]:
+    assert head_generation is not None
+    if not head_is_published:
         raise CatalogSemanticValidationError(
             "common publication head is not an exact PUBLISHED generation"
         )
-    if head_index == len(commits) - 1:
+    if tip_receipt == head_receipt:
         if not tip_is_published:
             raise CatalogSemanticValidationError(
                 "common publication head points at an unfinished commit"
             )
-    elif head_index == len(commits) - 2 and not tip_is_published:
+    elif unfinished_count == 1 and not tip_is_published:
+        if tip != head_generation + 1 or last_published_receipt != head_receipt:
+            raise CatalogSemanticValidationError(
+                "reader-invisible DB_COMMITTED commit is not the head's exact successor"
+            )
         _validate_invisible_publication_working_roots(
             connector,
-            candidate_id=_as_bytes(
-                commits[-1][1], field="invisible publication candidate_id"
-            ),
+            candidate_id=tip_candidate,
         )
     else:
         raise CatalogSemanticValidationError(
             "publication history has more than one commit beyond its common head"
-        )
-    if any(
-        _as_bytes(commit[0], field="pre-tip publication receipt_id")
-        not in finalized_receipts
-        for commit in commits[:-1]
-    ):
-        raise CatalogSemanticValidationError(
-            "a retained publication before the chain tip is not PUBLISHED"
         )
 
 
@@ -5222,10 +6317,15 @@ def _validate_invisible_publication_working_roots(
         connector,
         """
         SELECT candidate.candidate_id, catalog_working.candidate_id,
-               run.build_id, source_working.build_id
+               run.build_id, source_working.build_id,
+               build_channel.channel, head.receipt_id
         FROM catalog_publication_candidates AS candidate
         JOIN catalog_analysis_run_descriptor AS run
           ON run.analysis_id = candidate.analysis_id
+        JOIN catalog_source_build_channel AS build_channel
+          ON build_channel.build_id = run.build_id
+        LEFT JOIN catalog_publication_commit_head_receipts AS head
+          ON head.channel = build_channel.channel
         LEFT JOIN operational_catalog_working_candidates AS catalog_working
           ON catalog_working.candidate_id = candidate.candidate_id
         LEFT JOIN operational_source_working_builds AS source_working
@@ -5239,11 +6339,65 @@ def _validate_invisible_publication_working_roots(
     assert row is not None
     values = tuple(
         _as_bytes(value, field="reader-invisible publication working root")
-        for value in row
+        for value in row[:4]
     )
     if values[0] != candidate_id or values[1] != candidate_id or values[2] != values[3]:
         raise CatalogSemanticValidationError(
             "reader-invisible DB_COMMITTED successor lacks both exact working roots"
+        )
+    channel = _as_bytes(row[4], field="reader-invisible publication channel")
+    if channel != b"default":
+        raise CatalogSemanticValidationError(
+            "reader-invisible DB_COMMITTED successor belongs to another channel"
+        )
+    expected_base = (
+        None
+        if row[5] is None
+        else _as_bytes(row[5], field="reader-invisible publication head receipt_id")
+    )
+    if expected_base is not None and len(expected_base) != 16:
+        raise CatalogSemanticValidationError(
+            "reader-invisible publication head receipt_id is not 16 bytes"
+        )
+
+    candidate_base_row = _one(
+        connector,
+        "SELECT base_receipt_id "
+        "FROM catalog_publication_candidate_base_publication_commits "
+        "WHERE candidate_id = %s LIMIT 2",
+        (candidate_id,),
+        detail="reader-invisible publication candidate base",
+        optional=True,
+    )
+    build_base_row = _one(
+        connector,
+        "SELECT base_receipt_id "
+        "FROM catalog_source_build_base_publication_commits "
+        "WHERE build_id = %s LIMIT 2",
+        (values[2],),
+        detail="reader-invisible publication source-build base",
+        optional=True,
+    )
+    candidate_base = (
+        None
+        if candidate_base_row is None
+        else _as_bytes(
+            candidate_base_row[0],
+            field="reader-invisible publication candidate base receipt_id",
+        )
+    )
+    build_base = (
+        None
+        if build_base_row is None
+        else _as_bytes(
+            build_base_row[0],
+            field="reader-invisible publication source-build base receipt_id",
+        )
+    )
+    if candidate_base != expected_base or build_base != expected_base:
+        raise CatalogSemanticValidationError(
+            "reader-invisible DB_COMMITTED successor lacks its exact head base "
+            "authority"
         )
 
 
@@ -5338,18 +6492,111 @@ def _validate_artifact_codec_vectors() -> None:
         )
 
 
+def _validate_retained_title_sort_identities(connector: SQLConnector) -> None:
+    after_policy_id = 0
+    after_title_sha256 = b""
+    cache = _CanonicalValidationCache()
+    while True:
+        rows = connector.fetch_all(
+            """
+            SELECT title_sort.title_sort_policy_id, title_sort.title_sha256,
+                   title_sort.sort_title_sha256,
+                   policy.title_sort_algorithm_version,
+                   policy.unicode_data_version
+            FROM catalog_title_sorts AS title_sort
+            LEFT JOIN catalog_title_sort_policy AS policy
+              ON policy.title_sort_policy_id = title_sort.title_sort_policy_id
+            WHERE title_sort.title_sort_policy_id > %s
+               OR (title_sort.title_sort_policy_id = %s
+                   AND title_sort.title_sha256 > %s)
+            ORDER BY title_sort.title_sort_policy_id, title_sort.title_sha256
+            LIMIT %s
+            """,
+            (
+                after_policy_id,
+                after_policy_id,
+                after_title_sha256,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not rows:
+            break
+        for row in rows:
+            policy_id = _as_int(row[0], field="retained title-sort policy_id")
+            title_sha256 = _as_bytes(row[1], field="retained title-sort title_sha256")
+            sort_title_sha256 = _as_bytes(
+                row[2], field="retained title-sort sort_title_sha256"
+            )
+            if row[3] is None or row[4] is None:
+                raise CatalogSemanticValidationError(
+                    "retained title sort has no exact runtime policy"
+                )
+            algorithm_version = _as_int(
+                row[3],
+                field="retained title-sort algorithm version",
+                positive=True,
+            )
+            unicode_version = _as_bytes(
+                row[4], field="retained title-sort Unicode version"
+            )
+            if (algorithm_version, unicode_version) != (
+                1,
+                _RUNTIME_UNICODE_DATA_VERSION,
+            ):
+                raise CatalogSemanticValidationError(
+                    "retained title sort uses an unsupported runtime policy"
+                )
+
+            title_spool, title_byte_count = _validated_canonical_spool(
+                connector,
+                title_sha256,
+                expected_domain=b"display_title_utf8_v1",
+                detail="retained display title",
+                cache=cache,
+            )
+            sort_spool: BinaryIO | None = None
+            expected_spool: BinaryIO | None = None
+            try:
+                sort_spool, _sort_byte_count = _validated_canonical_spool(
+                    connector,
+                    sort_title_sha256,
+                    expected_domain=b"title_sort_utf8_v1",
+                    detail="retained title-sort value",
+                    cache=cache,
+                )
+                expected_spool, _expected_byte_count = _casefolded_title_spool(
+                    title_spool,
+                    byte_count=title_byte_count,
+                )
+                if _compare_canonical_spools(expected_spool, sort_spool) != 0:
+                    raise CatalogSemanticValidationError(
+                        "retained title sort differs from exact Unicode casefold"
+                    )
+            finally:
+                title_spool.close()
+                if sort_spool is not None:
+                    sort_spool.close()
+                if expected_spool is not None:
+                    expected_spool.close()
+
+            after_policy_id = policy_id
+            after_title_sha256 = title_sha256
+
+
 def check_identity_codecs_v1(connector: SQLConnector) -> None:
-    """Validate executable codec vectors and active scalar identities."""
+    """Validate executable codecs and retained reproducible identities."""
 
     _validate_exact_registries(connector)
     _validate_identity_codec_vectors()
+    _validate_retained_title_sort_identities(connector)
     _active_source_contexts(connector)
 
 
 def check_canonical_reference_domains_v1(connector: SQLConnector) -> None:
-    """Validate the closed domain registry and active canonical references."""
+    """Validate the closed registry and every retained canonical reference."""
 
     _validate_exact_registries(connector)
+    _validate_retained_canonical_reference_domains(connector)
     _active_source_contexts(connector)
     _validate_live_snapshot_manifest_pins(connector)
     _active_publication_contexts(connector)
@@ -5545,6 +6792,7 @@ def check_discovery_exactness_v1(connector: SQLConnector) -> None:
 def check_state_machines_v1(connector: SQLConnector) -> None:
     """Validate active state-machine terminals and their exact seal markers."""
 
+    validate_catalog_state_machine_contract()
     _validate_exact_registries(connector)
     for context in _active_source_contexts(connector):
         if context.analysis_id is not None:
@@ -5552,8 +6800,270 @@ def check_state_machines_v1(connector: SQLConnector) -> None:
     _active_publication_contexts(connector)
 
 
+_FILE_FAMILY_MEMBER_TABLES = (
+    "catalog_gallery_observation_file_file_nos",
+    "catalog_gallery_observation_file_file_sha256s",
+    "catalog_gallery_observation_file_artifact_role",
+    "catalog_gallery_observation_file_seals",
+)
+
+
+def _validate_file_family_totality(connector: SQLConnector) -> None:
+    """Prove every retained file anchor has one complete sealed family."""
+
+    after_gallery_id = 0
+    after_observation_id = 0
+    after_file_key = b""
+    while True:
+        rows = connector.fetch_all(
+            """
+            SELECT anchor.gallery_id, anchor.observation_id, anchor.file_key,
+                   file_no.file_no, file_sha.file_sha256,
+                   stored_role.artifact_role, sealed.file_key,
+                   name.file_key, name.name_bytes
+            FROM catalog_gallery_observation_file_anchors AS anchor
+            LEFT JOIN catalog_gallery_observation_file_file_nos AS file_no
+              ON file_no.gallery_id = anchor.gallery_id
+             AND file_no.observation_id = anchor.observation_id
+             AND file_no.file_key = anchor.file_key
+            LEFT JOIN catalog_gallery_observation_file_file_sha256s AS file_sha
+              ON file_sha.gallery_id = anchor.gallery_id
+             AND file_sha.observation_id = anchor.observation_id
+             AND file_sha.file_key = anchor.file_key
+            LEFT JOIN catalog_gallery_observation_file_artifact_role AS stored_role
+              ON stored_role.gallery_id = anchor.gallery_id
+             AND stored_role.observation_id = anchor.observation_id
+             AND stored_role.file_key = anchor.file_key
+            LEFT JOIN catalog_gallery_observation_file_seals AS sealed
+              ON sealed.gallery_id = anchor.gallery_id
+             AND sealed.observation_id = anchor.observation_id
+             AND sealed.file_key = anchor.file_key
+            LEFT JOIN catalog_file_name_identities AS name
+              ON name.file_key = anchor.file_key
+            WHERE (anchor.gallery_id, anchor.observation_id, anchor.file_key)
+                  > (%s, %s, %s)
+            ORDER BY anchor.gallery_id, anchor.observation_id, anchor.file_key
+            LIMIT %s
+            """,
+            (
+                after_gallery_id,
+                after_observation_id,
+                after_file_key,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not rows:
+            break
+        for row in rows:
+            gallery_id = _as_int(
+                row[0], field="retained file family gallery_id", positive=True
+            )
+            observation_id = _as_int(
+                row[1], field="retained file family observation_id", positive=True
+            )
+            file_key = _as_bytes(row[2], field="retained file family file_key")
+            if any(value is None for value in row[3:]):
+                raise CatalogSemanticValidationError(
+                    "retained observation file has an incomplete sealed family"
+                )
+            _as_int(row[3], field="retained file family file_no")
+            file_sha256 = _as_bytes(row[4], field="retained file family file_sha256")
+            artifact_role = _as_bytes(
+                row[5], field="retained file family artifact_role"
+            )
+            sealed_file_key = _as_bytes(
+                row[6], field="retained file family sealed file_key"
+            )
+            name_file_key = _as_bytes(
+                row[7], field="retained file family name file_key"
+            )
+            name_bytes = _as_bytes(row[8], field="retained file family name_bytes")
+            try:
+                expected_key = identity.file_key(name_bytes)
+            except (TypeError, ValueError) as error:
+                raise CatalogSemanticValidationError(
+                    "retained observation file has an invalid file-name identity"
+                ) from error
+            if (
+                len(file_sha256) != 32
+                or file_key != sealed_file_key
+                or file_key != name_file_key
+                or file_key != expected_key
+                or artifact_role not in {b"metadata", b"page", b"other"}
+            ):
+                raise CatalogSemanticValidationError(
+                    "retained observation file has invalid immutable facts"
+                )
+            after_gallery_id = gallery_id
+            after_observation_id = observation_id
+            after_file_key = file_key
+
+    # Foreign keys normally make these subset checks redundant.  READY must
+    # still reject a database damaged while foreign-key enforcement was off.
+    for table in _FILE_FAMILY_MEMBER_TABLES:
+        after_gallery_id = 0
+        after_observation_id = 0
+        after_file_key = b""
+        while True:
+            rows = connector.fetch_all(
+                f"""
+                SELECT member.gallery_id, member.observation_id, member.file_key,
+                       anchor.file_key
+                FROM {table} AS member
+                LEFT JOIN catalog_gallery_observation_file_anchors AS anchor
+                  ON anchor.gallery_id = member.gallery_id
+                 AND anchor.observation_id = member.observation_id
+                 AND anchor.file_key = member.file_key
+                WHERE (member.gallery_id, member.observation_id, member.file_key)
+                      > (%s, %s, %s)
+                ORDER BY member.gallery_id, member.observation_id, member.file_key
+                LIMIT %s
+                """,
+                (
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_key,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            if not rows:
+                break
+            for row in rows:
+                gallery_id = _as_int(
+                    row[0], field="retained file member gallery_id", positive=True
+                )
+                observation_id = _as_int(
+                    row[1], field="retained file member observation_id", positive=True
+                )
+                file_key = _as_bytes(row[2], field="retained file member file_key")
+                if row[3] is None:
+                    raise CatalogSemanticValidationError(
+                        "retained observation file member has no anchor authority"
+                    )
+                anchor_file_key = _as_bytes(
+                    row[3], field="retained file member anchor file_key"
+                )
+                if anchor_file_key != file_key:
+                    raise CatalogSemanticValidationError(
+                        "retained observation file member disagrees with its anchor"
+                    )
+                after_gallery_id = gallery_id
+                after_observation_id = observation_id
+                after_file_key = file_key
+
+
+def _iter_derived_file_hash_occurrences(
+    connector: SQLConnector,
+) -> Iterator[tuple[int, int, bytes, int]]:
+    """Derive CONTENT hash multiplicities with a constant-memory keyset scan."""
+
+    after_gallery_id = 0
+    after_observation_id = 0
+    after_file_sha256 = b""
+    after_file_key = b""
+    current_key: tuple[int, int, bytes] | None = None
+    current_count = 0
+    while True:
+        rows = connector.fetch_all(
+            """
+            SELECT file_sha.gallery_id, file_sha.observation_id,
+                   file_sha.file_sha256, file_sha.file_key
+            FROM catalog_gallery_observation_file_file_sha256s AS file_sha
+            JOIN catalog_gallery_observation_file_seals AS sealed
+              ON sealed.gallery_id = file_sha.gallery_id
+             AND sealed.observation_id = file_sha.observation_id
+             AND sealed.file_key = file_sha.file_key
+            JOIN catalog_file_name_identities AS name
+              ON name.file_key = file_sha.file_key
+            WHERE name.name_bytes <> %s
+              AND (file_sha.gallery_id, file_sha.observation_id,
+                   file_sha.file_sha256, file_sha.file_key) > (%s, %s, %s, %s)
+            ORDER BY file_sha.gallery_id, file_sha.observation_id,
+                     file_sha.file_sha256, file_sha.file_key
+            LIMIT %s
+            """,
+            (
+                b"galleryinfo.txt",
+                after_gallery_id,
+                after_observation_id,
+                after_file_sha256,
+                after_file_key,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not rows:
+            break
+        for row in rows:
+            gallery_id = _as_int(
+                row[0], field="derived hash occurrence gallery_id", positive=True
+            )
+            observation_id = _as_int(
+                row[1], field="derived hash occurrence observation_id", positive=True
+            )
+            file_sha256 = _as_bytes(row[2], field="derived hash occurrence file_sha256")
+            file_key = _as_bytes(row[3], field="derived hash occurrence file_key")
+            key = (gallery_id, observation_id, file_sha256)
+            if current_key is not None and key != current_key:
+                yield (*current_key, current_count)
+                current_count = 0
+            current_key = key
+            current_count += 1
+            after_gallery_id = gallery_id
+            after_observation_id = observation_id
+            after_file_sha256 = file_sha256
+            after_file_key = file_key
+    if current_key is not None:
+        yield (*current_key, current_count)
+
+
+def _iter_stored_file_hash_occurrences(
+    connector: SQLConnector,
+) -> Iterator[tuple[int, int, bytes, int]]:
+    after_gallery_id = 0
+    after_observation_id = 0
+    after_file_sha256 = b""
+    while True:
+        rows = connector.fetch_all(
+            """
+            SELECT gallery_id, observation_id, file_sha256, occurrence_count
+            FROM catalog_gallery_observation_file_hash_occurrences
+            WHERE (gallery_id, observation_id, file_sha256) > (%s, %s, %s)
+            ORDER BY gallery_id, observation_id, file_sha256
+            LIMIT %s
+            """,
+            (
+                after_gallery_id,
+                after_observation_id,
+                after_file_sha256,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        if not rows:
+            return
+        for row in rows:
+            gallery_id = _as_int(
+                row[0], field="stored hash occurrence gallery_id", positive=True
+            )
+            observation_id = _as_int(
+                row[1], field="stored hash occurrence observation_id", positive=True
+            )
+            file_sha256 = _as_bytes(row[2], field="stored hash occurrence file_sha256")
+            occurrence_count = _as_int(
+                row[3], field="stored hash occurrence count", positive=True
+            )
+            yield gallery_id, observation_id, file_sha256, occurrence_count
+            after_gallery_id = gallery_id
+            after_observation_id = observation_id
+            after_file_sha256 = file_sha256
+
+
 def check_role_derivation_v1(connector: SQLConnector) -> None:
-    """Validate the executable exact-name role classifier and file-key codec."""
+    """Validate the classifier and every retained file-role materialization.
+
+    The full READY audit is allowed to be linear in retained catalog data, but
+    each query and Python working set remains hard-capped.  The separate
+    ``ready`` epoch probe does not call this validator.
+    """
 
     _validate_exact_registries(connector)
     _validate_identity_codec_vectors()
@@ -5563,6 +7073,20 @@ def check_role_derivation_v1(connector: SQLConnector) -> None:
         or identity.file_role(b"image.jpg") != b"CONTENT"
     ):
         raise CatalogSemanticValidationError("exact file-role classifier drifted")
+
+    _validate_file_family_totality(connector)
+
+    expected = _iter_derived_file_hash_occurrences(connector)
+    stored = _iter_stored_file_hash_occurrences(connector)
+    while True:
+        expected_row = next(expected, None)
+        stored_row = next(stored, None)
+        if expected_row is None and stored_row is None:
+            break
+        if expected_row != stored_row:
+            raise CatalogSemanticValidationError(
+                "retained file-hash occurrences differ from exact CONTENT roles"
+            )
 
 
 def check_physical_domains_v1(connector: SQLConnector) -> None:

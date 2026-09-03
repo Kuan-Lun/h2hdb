@@ -133,6 +133,7 @@ from .vnext_source_build_repository import (
     source_build_recovery_identity,
     source_build_snapshot_attempt_id,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _STAGE_CHANGED_GALLERY = b"changed_gallery"
@@ -1308,6 +1309,7 @@ class AnalysisRepository:
             analysis_id=analysis,
             previous="OPEN",
             successor="ABANDONED",
+            timestamp=None,
             authority="analysis abandonment",
         )
         deleted = work.connector.execute_affected(
@@ -3199,6 +3201,7 @@ class AnalysisRepository:
             analysis_id=authority.analysis_id,
             previous="OPEN",
             successor="COMPLETE",
+            timestamp=timestamp,
             authority="analysis snapshot completion",
         )
         return value
@@ -4970,11 +4973,25 @@ def _initialize_checkpoint(
     cursor: bytes,
     updated_at: int,
 ) -> None:
+    transition = require_catalog_state_mutation(
+        "analysis-checkpoint.initialize",
+        previous_state=None,
+        next_state=_CHECKPOINT_OPEN,
+        timestamp=updated_at,
+    )
     work.connector.execute(
         f"INSERT INTO {_CHECKPOINT_TABLE} "
         "(analysis_id, stage, generation, `cursor`, processed_count, state, "
         "updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (analysis_id, stage, 1, cursor, 0, _CHECKPOINT_OPEN, updated_at),
+        (
+            analysis_id,
+            stage,
+            1,
+            cursor,
+            0,
+            transition.next_state,
+            transition.timestamp,
+        ),
     )
 
 
@@ -5347,6 +5364,12 @@ def _commit_batch(
         minimum=1,
         maximum=512,
     )
+    transition = require_catalog_state_mutation(
+        "analysis-checkpoint.advance",
+        previous_state=checkpoint.state,
+        next_state=next_state,
+        timestamp=timestamp,
+    )
     work.connector.execute(
         f"INSERT INTO {_RECEIPT_STORED_TABLE} "
         "(analysis_id, stage, start_generation, batch_key, start_cursor, "
@@ -5376,14 +5399,14 @@ def _commit_batch(
             next_generation,
             cursor,
             next_processed_count,
-            next_state,
-            timestamp,
+            transition.next_state,
+            transition.timestamp,
             authority.analysis_id,
             stage,
             checkpoint.generation,
             checkpoint.cursor,
             checkpoint.processed_count,
-            checkpoint.state,
+            transition.previous_state,
             checkpoint.updated_at,
         ),
         authority=f"analysis checkpoint {stage!r} complete row",

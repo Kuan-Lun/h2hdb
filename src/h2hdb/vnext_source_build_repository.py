@@ -104,6 +104,7 @@ from .vnext_operational_event_repository import (
     OperationalEffectRepository,
     SupersededDrainPosition,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _FILESYSTEM = "filesystem"
@@ -811,6 +812,38 @@ class _FinalizedSourceHead:
 
 
 @dataclass(frozen=True, slots=True)
+class _SourceBuildPolicyAuthority:
+    """Complete resolved ingest policy needed to select a source build."""
+
+    manifest_policy_id: int
+    analysis_policy_id: int
+    artifact_policy_sha256: bytes
+    display_title_policy_id: int
+    title_sort_policy_id: int
+    operational_policy_id: int
+    artifacts_required: bool
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "manifest_policy_id",
+            "analysis_policy_id",
+            "display_title_policy_id",
+            "title_sort_policy_id",
+            "operational_policy_id",
+        ):
+            require_positive_int63(
+                getattr(self, field_name),
+                field=f"source-build policy {field_name}",
+            )
+        require_digest32(
+            self.artifact_policy_sha256,
+            field="source-build policy artifact_policy_sha256",
+        )
+        if type(self.artifacts_required) is not bool:
+            raise TypeError("source-build policy artifacts_required must be bool")
+
+
+@dataclass(frozen=True, slots=True)
 class _SealedSourcePublication:
     receipt_id: bytes
     source_revision: int
@@ -894,7 +927,7 @@ class SourceBuildRepository:
         ingest_turn: IngestTurn,
         command: SourceRootBuildCommand,
         root_plan: CanonicalValueUploadPlan,
-        analysis_policy_id: int,
+        policy: _SourceBuildPolicyAuthority,
         now: int,
     ) -> SourceBuildHandoff:
         """Reserve or replay the sole source working build for this snapshot.
@@ -911,7 +944,7 @@ class SourceBuildRepository:
             ingest_turn=ingest_turn,
             command=command,
             root_plan=root_plan,
-            analysis_policy_id=analysis_policy_id,
+            policy=policy,
             drained_page=None,
             now=now,
         )
@@ -930,19 +963,20 @@ class SourceBuildRepository:
         ingest_turn: IngestTurn,
         command: SourceRootBuildCommand,
         root_plan: CanonicalValueUploadPlan,
-        analysis_policy_id: int,
+        policy: _SourceBuildPolicyAuthority,
         drained_page: _SourceDrainRetry | None,
         now: int,
     ) -> SourceBuildHandoff | _SourceDrainRetry:
         """Reserve or replay the sole source working build for this snapshot.
 
-        ``analysis_policy_id`` is the session's resolved analysis policy.  A
-        build is reusable for a snapshot only while its analysis (if any) was
-        made under that policy: the manifest forbids a different-policy sibling
-        analysis of one build, so a policy change retires a build whose
-        analysis is OPEN, or COMPLETE without a durable publication commit,
-        and derives a successor build of the same snapshot; a durably
-        committed analysis is replayed so its publication can finalize first.
+        ``policy`` is the session's complete resolved ingest policy authority.
+        A published build is reusable only when the current PUBLISHED head's
+        durable policy tuple matches it exactly.  The manifest forbids a
+        different-policy sibling analysis of one build, so an analysis-policy
+        change also retires a working build whose analysis is OPEN, or COMPLETE
+        without a durable publication commit, and derives a successor build of
+        the same snapshot; a durably committed analysis is replayed so its
+        publication can finalize first.
 
         ``drained_page`` is the previous drainage outcome of this same turn,
         if any.  The retiring build's durable drain position must have
@@ -955,9 +989,9 @@ class SourceBuildRepository:
         command.__post_init__()
         if type(root_plan) is not CanonicalValueUploadPlan:
             raise TypeError("root_plan must be an exact CanonicalValueUploadPlan")
-        session_analysis_policy = require_positive_int63(
-            analysis_policy_id, field="session analysis_policy_id"
-        )
+        if type(policy) is not _SourceBuildPolicyAuthority:
+            raise TypeError("policy must be an exact _SourceBuildPolicyAuthority")
+        policy.__post_init__()
         timestamp = require_int63(now, field="now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
         connector = work.connector
@@ -1007,6 +1041,10 @@ class SourceBuildRepository:
         )
 
         manifest_policy_id = _manifest_policy_id(connector)
+        if manifest_policy_id != policy.manifest_policy_id:
+            raise SourceBuildConflictError(
+                "session manifest policy differs from the registered source policy"
+            )
         _require_registry_value(
             connector,
             table="catalog_source_provider_registry",
@@ -1062,7 +1100,7 @@ class SourceBuildRepository:
                 work,
                 working=working,
                 catalog_working=catalog_working,
-                analysis_policy_id=session_analysis_policy,
+                policy=policy,
                 current_generation=generation,
                 drained_page=drained_page,
                 now=timestamp,
@@ -1078,8 +1116,7 @@ class SourceBuildRepository:
             work,
             command=command,
             scope=scope,
-            manifest_policy_id=manifest_policy_id,
-            analysis_policy_id=session_analysis_policy,
+            policy=policy,
             base_source=base_source,
             generation=generation,
             working=working,
@@ -1468,6 +1505,12 @@ class SourceBuildRepository:
             raise SourceBuildNotReadyError(
                 "source build is not the exact locked working root"
             )
+        transition = require_catalog_state_mutation(
+            "source-build.abandon",
+            previous_state="OPEN",
+            next_state="ABANDONED",
+            timestamp=None,
+        )
         deleted = work.connector.execute_affected(
             "DELETE FROM operational_source_working_builds "
             "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
@@ -1480,7 +1523,7 @@ class SourceBuildRepository:
         work.compare_and_swap(
             "UPDATE catalog_source_build_states SET state = %s "
             "WHERE build_id = %s AND state = %s",
-            ("ABANDONED", build, "OPEN"),
+            (transition.next_state, build, transition.previous_state),
             authority="source build abandonment",
         )
         return SourceBuildAbandonment(build, generation, False)
@@ -2256,6 +2299,16 @@ class SourceBuildRepository:
             field="assembly committed_generation",
         )
         committed_at = database_unix_microseconds(work) if terminal else timestamp
+        seal_transition = (
+            require_catalog_state_mutation(
+                "source-build.seal-state",
+                previous_state="OPEN",
+                next_state="SEALED",
+                timestamp=committed_at,
+            )
+            if terminal
+            else None
+        )
         receipt_tuple = (
             build,
             attempt.batch_key,
@@ -2339,10 +2392,15 @@ class SourceBuildRepository:
             authority="source assembly checkpoint",
         )
         if terminal:
+            assert seal_transition is not None
             work.compare_and_swap(
                 "UPDATE catalog_source_build_states SET state = %s "
                 "WHERE build_id = %s AND state = %s",
-                ("SEALED", build, "OPEN"),
+                (
+                    seal_transition.next_state,
+                    build,
+                    seal_transition.previous_state,
+                ),
                 authority="source build seal",
             )
         return AssemblyBatchReceipt(
@@ -3778,6 +3836,12 @@ def _abandon_stale_open_working_build(
         raise SourceBuildConflictError(
             "stale OPEN source working root is not fenced by this generation"
         )
+    transition = require_catalog_state_mutation(
+        "source-build.recover-abandon",
+        previous_state="OPEN",
+        next_state="ABANDONED",
+        timestamp=None,
+    )
     deleted = work.connector.execute_affected(
         "DELETE FROM operational_source_working_builds "
         "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
@@ -3790,7 +3854,7 @@ def _abandon_stale_open_working_build(
     work.compare_and_swap(
         "UPDATE catalog_source_build_states SET state = %s "
         "WHERE build_id = %s AND state = %s",
-        ("ABANDONED", build, "OPEN"),
+        (transition.next_state, build, transition.previous_state),
         authority="stale OPEN source build recovery",
     )
 
@@ -3954,26 +4018,27 @@ def _retire_policy_mismatched_working_build(
     *,
     working: tuple[Any, ...],
     catalog_working: tuple[Any, ...],
-    analysis_policy_id: int,
+    policy: _SourceBuildPolicyAuthority,
     current_generation: int,
     drained_page: _SourceDrainRetry | None,
     now: int,
 ) -> _StaleRetirement | None:
-    """Retire the SEALED working build whose analysis has another policy.
+    """Retire a SEALED working build carrying a superseded policy component.
 
     The manifest forbids a different-policy sibling analysis of one build, so
     a session that resolved another analysis policy cannot continue or reuse
-    that analysis.  Two analysis states retire the build exactly like a stale
-    SEALED build, after its preparations drain in bounded pages: an OPEN
-    analysis becomes ABANDONED, and a COMPLETE analysis without a durable
-    publication commit stays COMPLETE (an immutable terminal fact that
-    generic cleanup reclaims) while its orphaned candidate, if any, loses the
-    working slot.  In both cases the working roots are released before any
+    that analysis.  A candidate also freezes the artifact, display/title-sort
+    and artifacts-required components, while a bound operational preparation
+    freezes the operational component.  Any frozen mismatch retires the build
+    exactly like a stale SEALED build, after its preparations drain in bounded
+    pages: an OPEN analysis becomes ABANDONED, and a COMPLETE analysis without
+    a durable publication commit stays COMPLETE (an immutable terminal fact
+    that generic cleanup reclaims) while its orphaned candidate, if any, loses
+    the working slot.  In both cases the working roots are released before any
     generation mapping is written, so the caller derives a successor build of
-    the same snapshot under the requested policy and no mapping ever names a
-    build that the analysis stage would refuse.  A COMPLETE analysis with a
-    durable publication commit is never retired: the analysis stage replays
-    it so the publication can finalize first.
+    the same snapshot under the requested policy.  A COMPLETE analysis with a
+    durable publication commit is never retired: recovery must finalize that
+    immutable receipt before this session publishes the requested policy.
 
     Returns the retirement outcome, or ``None`` when this working build is not
     a policy-mismatched retirement target."""
@@ -3988,9 +4053,77 @@ def _retire_policy_mismatched_working_build(
     if family.state != "SEALED" or assigned_at != family.created_at:
         return None
     analysis = _sole_analysis_of_build(work.connector, build_id=build)
-    if analysis is None or analysis[1] == analysis_policy_id:
+    if analysis is None:
         return None
-    analysis_id, _policy, state = analysis
+    analysis_id, analysis_policy_id, state = analysis
+    policy_mismatch = analysis_policy_id != policy.analysis_policy_id
+    if catalog_working:
+        candidate_id = require_uuid16(
+            catalog_working[1],
+            field="policy check catalog working candidate_id",
+        )
+        frozen = work.connector.fetch_one(
+            f"SELECT artifact.policy_component_sha256, "
+            "candidate.display_title_policy_id, display.title_sort_policy_id, "
+            "candidate.artifacts_required "
+            f"FROM {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+            "JOIN catalog_artifact_policies AS artifact "
+            "ON artifact.artifact_policy_id = candidate.artifact_policy_id "
+            "JOIN catalog_display_title_policies AS display "
+            "ON display.display_title_policy_id = "
+            "candidate.display_title_policy_id "
+            "WHERE candidate.candidate_id = %s",
+            (candidate_id,),
+        )
+        if len(frozen) != 4 or type(frozen[3]) is not int or frozen[3] not in {0, 1}:
+            raise SourceBuildConflictError(
+                "catalog working candidate policy authority is malformed"
+            )
+        candidate_policy = (
+            require_digest32(
+                frozen[0], field="working candidate artifact policy digest"
+            ),
+            require_positive_int63(
+                frozen[1], field="working candidate display_title_policy_id"
+            ),
+            require_positive_int63(
+                frozen[2], field="working candidate title_sort_policy_id"
+            ),
+            bool(frozen[3]),
+        )
+        requested_candidate_policy = (
+            policy.artifact_policy_sha256,
+            policy.display_title_policy_id,
+            policy.title_sort_policy_id,
+            policy.artifacts_required,
+        )
+        policy_mismatch = (
+            policy_mismatch or candidate_policy != requested_candidate_policy
+        )
+        bindings = work.connector.fetch_all(
+            "SELECT preparation.operational_policy_id "
+            "FROM operational_publication_candidate_preparations AS binding "
+            f"JOIN {_OPERATIONAL_PREPARATION_TABLE} AS preparation "
+            "ON preparation.preparation_id = binding.preparation_id "
+            "WHERE binding.candidate_id = %s "
+            "ORDER BY preparation.preparation_id LIMIT 2",
+            (candidate_id,),
+        )
+        if len(bindings) > 1 or (bindings and len(bindings[0]) != 1):
+            raise SourceBuildConflictError(
+                "catalog working candidate operational policy authority is malformed"
+            )
+        if bindings:
+            bound_operational_policy_id = require_positive_int63(
+                bindings[0][0],
+                field="working candidate operational_policy_id",
+            )
+            policy_mismatch = (
+                policy_mismatch
+                or bound_operational_policy_id != policy.operational_policy_id
+            )
+    if not policy_mismatch:
+        return None
     if state == "COMPLETE":
         if _analysis_has_durable_commit(work.connector, analysis_id=analysis_id):
             return None
@@ -4120,6 +4253,7 @@ def _abandon_stale_sealed_working_build(
                 analysis_id=require_uuid16(row[0], field="stale analysis_id"),
                 previous="OPEN",
                 successor="ABANDONED",
+                timestamp=None,
                 authority="stale SEALED source build recovery",
             )
     return retirement
@@ -4590,13 +4724,123 @@ def _require_latest_source_generation_authority(
     )
 
 
+def _load_finalized_source_policy(
+    connector: Any,
+    *,
+    publication: _FinalizedSourceHead,
+    build: SourceBuildFamily,
+) -> _SourceBuildPolicyAuthority:
+    """Recompose the current PUBLISHED head's complete durable policy tuple."""
+
+    row = connector.fetch_one(
+        "SELECT committed.receipt_id, committed.candidate_id, "
+        "candidate.analysis_id, provenance.analysis_id, "
+        "analysis.build_id, analysis.policy_id, "
+        "committed.artifact_policy_id, candidate.artifact_policy_id, "
+        "artifact.policy_component_sha256, "
+        "committed.display_title_policy_id, "
+        "candidate.display_title_policy_id, display.title_sort_policy_id, "
+        "committed.operational_policy_id, candidate.artifacts_required "
+        f"FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        f"JOIN {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        "ON provenance.source_revision = committed.source_revision "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS analysis "
+        "ON analysis.analysis_id = provenance.analysis_id "
+        "JOIN catalog_artifact_policies AS artifact "
+        "ON artifact.artifact_policy_id = committed.artifact_policy_id "
+        "JOIN catalog_display_title_policies AS display "
+        "ON display.display_title_policy_id = committed.display_title_policy_id "
+        "WHERE committed.receipt_id = %s",
+        (publication.receipt_id,),
+    )
+    if len(row) != 14:
+        raise SourceBuildConflictError(
+            "current source publication lacks its complete ingest policy authority"
+        )
+    receipt_id = require_uuid16(
+        row[0],
+        field="current source policy receipt_id",
+    )
+    require_uuid16(row[1], field="current source policy candidate_id")
+    candidate_analysis_id = require_uuid16(
+        row[2],
+        field="current source policy candidate analysis_id",
+    )
+    provenance_analysis_id = require_uuid16(
+        row[3],
+        field="current source policy provenance analysis_id",
+    )
+    analysis_build_id = require_uuid16(
+        row[4],
+        field="current source policy analysis build_id",
+    )
+    analysis_policy_id = require_positive_int63(
+        row[5],
+        field="current source policy analysis_policy_id",
+    )
+    committed_artifact_policy_id = require_positive_int63(
+        row[6],
+        field="current source policy committed artifact_policy_id",
+    )
+    candidate_artifact_policy_id = require_positive_int63(
+        row[7],
+        field="current source policy candidate artifact_policy_id",
+    )
+    artifact_policy_sha256 = require_digest32(
+        row[8],
+        field="current source policy artifact_policy_sha256",
+    )
+    committed_display_policy_id = require_positive_int63(
+        row[9],
+        field="current source policy committed display_title_policy_id",
+    )
+    candidate_display_policy_id = require_positive_int63(
+        row[10],
+        field="current source policy candidate display_title_policy_id",
+    )
+    title_sort_policy_id = require_positive_int63(
+        row[11],
+        field="current source policy title_sort_policy_id",
+    )
+    operational_policy_id = require_positive_int63(
+        row[12],
+        field="current source policy operational_policy_id",
+    )
+    if type(row[13]) is not int or row[13] not in {0, 1}:
+        raise SourceBuildConflictError(
+            "current source publication artifacts_required is malformed"
+        )
+    if (
+        receipt_id != publication.receipt_id
+        or candidate_analysis_id != publication.analysis_id
+        or provenance_analysis_id != publication.analysis_id
+        or analysis_build_id != publication.build_id
+        or build.build_id != publication.build_id
+        or committed_artifact_policy_id != candidate_artifact_policy_id
+        or committed_display_policy_id != candidate_display_policy_id
+    ):
+        raise SourceBuildConflictError(
+            "current source publication ingest policy authority is inconsistent"
+        )
+    return _SourceBuildPolicyAuthority(
+        manifest_policy_id=build.manifest_policy_id,
+        analysis_policy_id=analysis_policy_id,
+        artifact_policy_sha256=artifact_policy_sha256,
+        display_title_policy_id=committed_display_policy_id,
+        title_sort_policy_id=title_sort_policy_id,
+        operational_policy_id=operational_policy_id,
+        artifacts_required=bool(row[13]),
+    )
+
+
 def _select_source_build_id(
     work: VNextUnitOfWork,
     *,
     command: SourceRootBuildCommand,
     scope: bytes,
-    manifest_policy_id: int,
-    analysis_policy_id: int,
+    policy: _SourceBuildPolicyAuthority,
     base_source: _SourceHead | None,
     generation: int,
     working: tuple[Any, ...],
@@ -4605,11 +4849,12 @@ def _select_source_build_id(
     """Reuse only the exact current snapshot; otherwise derive its successor.
 
     The live published head build is reused for an unchanged snapshot only
-    when its analysis was made under the session's analysis policy; another
-    policy needs a successor build of the same snapshot (its analysis then
-    starts from a self-only depth-zero overlay by the layout rule)."""
+    when its complete durable ingest policy equals the requested policy;
+    another policy needs a successor build of the same snapshot (its analysis
+    then starts from a self-only depth-zero overlay by the layout rule)."""
 
     connector = work.connector
+    manifest_policy_id = policy.manifest_policy_id
     summary = command.manifest_summary
     summary.__post_init__()
     current_head_build: bytes | None = None
@@ -4678,9 +4923,13 @@ def _select_source_build_id(
             manifest_policy_id=current_build.manifest_policy_id,
         )
         current_head_build = current.build_id
-        head_analysis = _sole_analysis_of_build(connector, build_id=current.build_id)
         head_policy_matches = (
-            head_analysis is None or head_analysis[1] == analysis_policy_id
+            _load_finalized_source_policy(
+                connector,
+                publication=current,
+                build=current_build,
+            )
+            == policy
         )
         if (
             current_build.scope_key == scope
@@ -4705,7 +4954,9 @@ def _select_source_build_id(
         generation=generation,
         working=working,
     )
-    if resumed is not None:
+    if resumed is not None and not (
+        resumed == current_head_build and not head_policy_matches
+    ):
         return _SourceBuildSelection(resumed)
     try:
         canonical_family = load_source_build_family(
@@ -4736,8 +4987,8 @@ def _select_source_build_id(
             build_id=canonical,
         )
     elif canonical == current_head_build and not head_policy_matches:
-        # The live published head is this very snapshot, analyzed under
-        # another policy: the successor below carries the new policy.
+        # The live published head is this very snapshot under another complete
+        # ingest policy: the successor below carries the new policy.
         pass
     elif not _is_exact_retired_sealed_source_build(
         connector,
@@ -5232,7 +5483,7 @@ def _validate_build_base_source(
             published_receipt_id,
             field="source build publication receipt_id",
         )
-        _load_finalized_source_publication_by_receipt(
+        finalized = _load_finalized_source_publication_by_receipt(
             connector,
             receipt_id=published,
             expected_build_id=build,
@@ -5253,23 +5504,40 @@ def _validate_build_base_source(
             candidate_base[0],
             field="source build publication candidate_id",
         )
-        pinned_base = (
-            None
-            if candidate_base[1] is None
-            else require_uuid16(
-                candidate_base[1],
-                field="source build publication candidate base_receipt_id",
-            )
-        )
-        if (
-            receipt_id is not None
-            and pinned_base is not None
-            and pinned_base != receipt_id
-        ):
+        if candidate_base[1] is not None:
             raise SourceBuildConflictError(
-                "source build durable base differs from its publication candidate"
+                "published source build retained its consumed candidate base authority"
             )
-        receipt_id = receipt_id if receipt_id is not None else pinned_base
+
+        retained_predecessor: bytes | None = None
+        if finalized.generation > 1:
+            predecessor = connector.fetch_one(
+                f"SELECT committed.receipt_id, descriptor.channel "
+                f"FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
+                f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_TABLE} AS descriptor "
+                "ON descriptor.source_revision = committed.source_revision "
+                "WHERE committed.generation = %s",
+                (finalized.generation - 1,),
+            )
+            if predecessor:
+                if len(predecessor) != 2 or any(value is None for value in predecessor):
+                    raise SourceBuildConflictError(
+                        "published source build retained a malformed predecessor commit"
+                    )
+                retained_predecessor = require_uuid16(
+                    predecessor[0],
+                    field="source build publication predecessor receipt_id",
+                )
+                if predecessor[1] != _DEFAULT_CHANNEL:
+                    raise SourceBuildConflictError(
+                        "source build publication predecessor belongs to another "
+                        "channel"
+                    )
+        if receipt_id != retained_predecessor:
+            raise SourceBuildConflictError(
+                "source build durable base differs from its retained publication "
+                "predecessor"
+            )
         if published == receipt_id:
             raise SourceBuildConflictError(
                 "source build cannot use its own publication as its base"

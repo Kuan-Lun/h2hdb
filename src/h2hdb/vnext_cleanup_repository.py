@@ -1842,6 +1842,7 @@ class _StaticTargetPlan:
     phases: dict[str, tuple[_StaticDeleteSpec, ...]]
     uses_cutoff: bool = False
     variable_width_shard: bool = False
+    contiguous_integer_prefix: bool = False
 
 
 _FROZEN_ROOT_INT_ATTRIBUTES = frozenset(
@@ -2176,6 +2177,8 @@ def _static_policy_parameters(
 
 
 def _static_shard_sql(plan: _StaticTargetPlan) -> str:
+    if plan.contiguous_integer_prefix:
+        return "1 = 1"
     if plan.shard_width is None:
         return f"MOD(r.{plan.shard_column}, 256) = %s"
     return f"r.{plan.shard_column} >= %s AND (%s = 1 OR r.{plan.shard_column} < %s)"
@@ -2237,6 +2240,8 @@ def _static_select_sql(
 def _static_shard_parameters(
     plan: _StaticTargetPlan, cycle: CleanupCycle
 ) -> tuple[object, ...]:
+    if plan.contiguous_integer_prefix:
+        return ()
     if plan.shard_width is None:
         return (cycle.shard_no,)
     lower = bytes((cycle.shard_no,))
@@ -2376,6 +2381,14 @@ def _freeze_static_cycle_roots(
         + (cycle.max_rows_per_transaction,),
     )
     roots = tuple(_static_values(row) for row in rows)
+    if plan.contiguous_integer_prefix and roots:
+        first_generation = require_int63(
+            roots[0][0], field="publication-generation prefix floor"
+        )
+        if cycle.shard_no != first_generation % 256:
+            raise CleanupUnavailableError(
+                "publication-generation cycle slot does not match its oldest prefix"
+            )
     for root in roots:
         _validate_frozen_root_values(plan, root)
     encoded_roots = tuple(_encode_frozen_root_key(root) for root in roots)
@@ -6157,6 +6170,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         None,
         _PUBLICATION_GENERATION_ELIGIBILITY,
         _publication_generation_phases(),
+        contiguous_integer_prefix=True,
     ),
     CleanupTargetKind.PUBLICATION_CANDIDATE: _StaticTargetPlan(
         CleanupTargetKind.PUBLICATION_CANDIDATE,

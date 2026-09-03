@@ -653,6 +653,12 @@ def test_atomic_publication_genesis_and_successor(
         "SELECT 1 FROM operational_catalog_working_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
+    assert connector.fetch_one(
+        "SELECT base_receipt_id FROM "
+        "catalog_publication_candidate_base_publication_commits "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    ) == ((b"h" * 16,) if with_base else ())
 
     _finalize_empty_publication(
         connector,
@@ -680,6 +686,111 @@ def test_atomic_publication_genesis_and_successor(
         "SELECT 1 FROM operational_catalog_working_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
+    assert not connector.fetch_one(
+        "SELECT 1 FROM catalog_publication_candidate_base_publication_commits "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    )
+    assert connector.fetch_one(
+        "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
+        "WHERE build_id = %s",
+        (_BUILD,),
+    ) == ((b"h" * 16,) if with_base else ())
+
+    with connector.transaction():
+        work = VNextUnitOfWork(connector, backend="sqlite")
+        authority = PublicationRepository.prepare_finalized_commit_activation(
+            work,
+            gate_lease=gate,
+            ingest_turn=turn,
+            receipt_id=receipt.receipt_id,
+            now=102,
+        )
+        assert not PublicationRepository.activate_finalized_commit(
+            work,
+            authority=authority,
+        )
+    connector.close()
+
+
+def test_candidate_base_consumption_fault_rolls_back_head_and_authorities(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "candidate-base-consume-fault.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_candidate(connector, turn, with_base=True)
+    receipt = _commit(connector, gate, turn)
+    original_execute_affected = connector.execute_affected
+    consumed = False
+
+    def fail_after_candidate_base_delete(
+        query: str,
+        data: tuple[Any, ...] = (),
+    ) -> int:
+        nonlocal consumed
+        affected = original_execute_affected(query, data)
+        if query.startswith(
+            "DELETE FROM catalog_publication_candidate_base_publication_commits "
+        ):
+            consumed = True
+            assert affected == 1
+            raise RuntimeError("injected fault after candidate-base consumption")
+        return affected
+
+    with pytest.raises(RuntimeError, match="candidate-base consumption"):
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend="sqlite")
+            authority = PublicationRepository.prepare_finalized_commit_activation(
+                work,
+                gate_lease=gate,
+                ingest_turn=turn,
+                receipt_id=receipt.receipt_id,
+                now=101,
+            )
+            seed_publication_finalization(
+                connector,
+                receipt_id=receipt.receipt_id,
+                cursor=b"",
+                processed_count=0,
+                finalized_at=101,
+            )
+            with patch.object(
+                connector,
+                "execute_affected",
+                side_effect=fail_after_candidate_base_delete,
+            ):
+                PublicationRepository.activate_finalized_commit(
+                    work,
+                    authority=authority,
+                )
+
+    assert consumed
+    assert connector.fetch_one(
+        "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
+        "WHERE channel = %s",
+        (_CHANNEL,),
+    ) == (b"h" * 16,)
+    assert connector.fetch_one(
+        "SELECT base_receipt_id FROM "
+        "catalog_publication_candidate_base_publication_commits "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    ) == (b"h" * 16,)
+    assert connector.fetch_one(
+        "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
+        "WHERE build_id = %s",
+        (_BUILD,),
+    ) == (b"h" * 16,)
+    assert connector.fetch_one(
+        "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
+        (receipt.receipt_id,),
+    ) == ("DB_COMMITTED",)
+    assert connector.fetch_one(
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    ) == (_BUILD,)
+    assert connector.fetch_one(
+        "SELECT candidate_id FROM operational_catalog_working_candidates WHERE slot = 1"
+    ) == (_CANDIDATE,)
     connector.close()
 
 
@@ -1240,15 +1351,16 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
         published, replay_turn = _prepare_finalized_replay(connector, gate, turn)
 
     if corruption == "deleted":
-        assert (
-            connector.execute_affected(
-                "DELETE FROM "
-                "catalog_publication_candidate_base_publication_commits "
-                "WHERE candidate_id = %s",
-                (_CANDIDATE,),
+        if pathway == "commit":
+            assert (
+                connector.execute_affected(
+                    "DELETE FROM "
+                    "catalog_publication_candidate_base_publication_commits "
+                    "WHERE candidate_id = %s",
+                    (_CANDIDATE,),
+                )
+                == 1
             )
-            == 1
-        )
         assert (
             connector.execute_affected(
                 "DELETE FROM catalog_source_build_base_publication_commits "
@@ -1257,16 +1369,25 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
             )
             == 1
         )
-        expected_base: tuple[bytes, ...] = ()
+        expected_candidate_base: tuple[bytes, ...] = ()
+        expected_build_base: tuple[bytes, ...] = ()
     else:
-        assert (
-            connector.execute_affected(
-                "UPDATE catalog_publication_candidate_base_publication_commits "
-                "SET base_receipt_id = %s WHERE candidate_id = %s",
-                (published.receipt_id, _CANDIDATE),
+        if pathway == "commit":
+            assert (
+                connector.execute_affected(
+                    "UPDATE catalog_publication_candidate_base_publication_commits "
+                    "SET base_receipt_id = %s WHERE candidate_id = %s",
+                    (published.receipt_id, _CANDIDATE),
+                )
+                == 1
             )
-            == 1
-        )
+        else:
+            connector.execute(
+                "INSERT INTO "
+                "catalog_publication_candidate_base_publication_commits "
+                "(candidate_id, base_receipt_id) VALUES (%s, %s)",
+                (_CANDIDATE, published.receipt_id),
+            )
         assert (
             connector.execute_affected(
                 "UPDATE catalog_source_build_base_publication_commits "
@@ -1275,7 +1396,8 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
             )
             == 1
         )
-        expected_base = (published.receipt_id,)
+        expected_candidate_base = (published.receipt_id,)
+        expected_build_base = (published.receipt_id,)
 
     with pytest.raises(PublicationCorruptionError, match="base|predecessor"):
         if pathway == "commit":
@@ -1297,7 +1419,7 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
             "WHERE candidate_id = %s",
             (_CANDIDATE,),
         )
-        == expected_base
+        == expected_candidate_base
     )
     assert (
         connector.fetch_one(
@@ -1305,7 +1427,7 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (_BUILD,),
         )
-        == expected_base
+        == expected_build_base
     )
     if pathway == "release":
         assert connector.fetch_one(
@@ -1348,6 +1470,38 @@ def test_response_loss_replay_rejects_corrupt_generation_chain(
     assert connector.fetch_one("SELECT COUNT(*) FROM catalog_publication_receipts") == (
         1,
     )
+    connector.close()
+
+
+def test_current_successor_replay_rejects_missing_retained_predecessor_edge(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "successor-chain-corrupt.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_candidate(connector, turn, with_base=True)
+    published, replay_turn = _prepare_finalized_replay(connector, gate, turn)
+    connector.execute("PRAGMA foreign_keys = OFF")
+    connector.execute(
+        "DELETE FROM catalog_publication_generation_successors "
+        "WHERE successor_generation = %s",
+        (2,),
+    )
+    connector.execute("PRAGMA foreign_keys = ON")
+
+    with pytest.raises(PublicationCorruptionError, match="generation edge"):
+        with connector.transaction():
+            PublicationRepository.release_replayed_source_working(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=replay_turn,
+                build_id=_BUILD,
+                receipt_id=published.receipt_id,
+                now=120,
+            )
+    assert connector.fetch_one(
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+        (1,),
+    ) == (_BUILD,)
     connector.close()
 
 

@@ -3,22 +3,27 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 (***************************************************************************
 Finite provider-neutral safety model for the Batch8 publication authority.
-One atomic publish transaction creates the fresh source descriptor, next
-generation node and successor edge, receipt anchor, all thirteen mandatory
-one-value members, an OPEN commit-owned permanent finalization checkpoint,
-the commit seal, and the single common receipt head.  Candidate lifecycle,
-old revision/generation relations, both old heads, publication receipt, and
-operational activation are derived views; there is no stored candidate state,
-candidate sealed_at, finalization timestamp, or mutable activation row.
+One atomic initial publish transaction creates the fresh source descriptor,
+next generation node and successor edge, receipt anchor, all thirteen
+mandatory one-value members, an OPEN commit-owned permanent finalization
+checkpoint, and the commit seal.  This DB_COMMITTED successor remains reader
+invisible: the common receipt head and its candidate-base one-shot authority
+are unchanged.  Candidate lifecycle, old revision/generation relations, both
+old heads, publication receipt, and operational activation are derived views;
+there is no stored candidate state, candidate sealed_at, finalization
+timestamp, or mutable activation row.
 
 PublishStatements exposes transaction-local prefix progress.  A prefix crash
 rolls every statement back.  Finalization separates an issue read, an external
 idempotent release, and one atomic current-receipt/checkpoint CAS commit.  Each
-successor replaces its owner's predecessor receipt in that transaction.  The
-current receipt replays a lost response, while retrying a pruned predecessor is
-stale.  The PK-only marker is written only with the terminal empty batch and
-COMPLETE checkpoint poststate; that terminal current receipt remains the
-finalized_at authority and survives candidate-local cleanup.
+successor replaces its owner's predecessor receipt in that transaction.  A
+lost initial-publish response replays the sole DB_COMMITTED successor from its
+exact retained base.  The PK-only marker is written only with the terminal
+empty batch and COMPLETE checkpoint poststate; that same terminal transaction
+CASes the reader head, consumes the candidate-base one-shot authority, and
+releases both initial working roots.  Its current receipt alone replays a lost
+terminal response and survives candidate-local cleanup, while retrying a
+pruned predecessor is stale.
 
 TLC exhausts only the finite companion-cfg instance.  This is bounded safety
 evidence, not an unbounded proof.  It does not establish liveness or Python,
@@ -69,7 +74,7 @@ PublishStatements == <<
     "INSERT_SOURCE_DESCRIPTOR", "INSERT_GENERATION_NODE",
     "INSERT_GENERATION_SUCCESSOR", "INSERT_COMMIT_ANCHOR",
     "INSERT_13_COMMIT_MEMBERS", "INSERT_FINALIZATION_CHECKPOINT_FAMILY",
-    "INSERT_COMMIT_SEAL_LAST", "CAS_COMMON_HEAD_RECEIPT"
+    "INSERT_COMMIT_SEAL_LAST"
 >>
 PublishStatementCount == Len(PublishStatements)
 
@@ -89,7 +94,7 @@ VARIABLES
     processUp, lostResponse,
     preparedCatalogDescriptors, preparedOperationalEffects,
     preparedOptionalRows, candidateDefinitions, projectionSeals,
-    candidateBaseReceipt,
+    candidateBaseReceipt, sourceActivationRoots, catalogActivationRoots,
     sourceDescriptors, commitAnchors, commitMemberRows, commitSeals,
     commitGeneration, generationNodes, generationSuccessors,
     commonHeadReceipt,
@@ -110,7 +115,8 @@ PreparationVariables ==
     <<preparedCatalogDescriptors, preparedOperationalEffects,
       preparedOptionalRows>>
 CandidateVariables ==
-    <<candidateDefinitions, projectionSeals, candidateBaseReceipt>>
+    <<candidateDefinitions, projectionSeals, candidateBaseReceipt,
+      sourceActivationRoots, catalogActivationRoots>>
 CommitVariables ==
     <<sourceDescriptors, commitAnchors, commitMemberRows, commitSeals,
       commitGeneration, generationNodes, generationSuccessors,
@@ -226,6 +232,14 @@ ReceiptFinalizedAt(c) ==
             ExactTerminalBatch(c, batch)]
     ELSE 0
 
+PendingCommitHasExactBaseAuthority(c) ==
+    /\ ExactCommit(c)
+    /\ ReceiptState(c) = "DB_COMMITTED"
+    /\ candidateBaseReceipt[c] = commonHeadReceipt
+    /\ commitGeneration[c] = CurrentGeneration + 1
+    /\ c \in sourceActivationRoots
+    /\ c \in catalogActivationRoots
+
 Init ==
     /\ processUp = TRUE
     /\ lostResponse = NoResponse
@@ -235,6 +249,8 @@ Init ==
     /\ candidateDefinitions = {}
     /\ projectionSeals = {}
     /\ candidateBaseReceipt = [c \in Candidates |-> NoCandidate]
+    /\ sourceActivationRoots = {}
+    /\ catalogActivationRoots = {}
     /\ sourceDescriptors = {}
     /\ commitAnchors = {}
     /\ commitMemberRows = {}
@@ -290,6 +306,8 @@ PrepareCatalogDescriptor(c, hasOptionalRow) ==
     /\ candidateDefinitions' = candidateDefinitions \cup {c}
     /\ candidateBaseReceipt' =
         [candidateBaseReceipt EXCEPT ![c] = commonHeadReceipt]
+    /\ sourceActivationRoots' = sourceActivationRoots \cup {c}
+    /\ catalogActivationRoots' = catalogActivationRoots \cup {c}
     /\ lastEvent' = "PREPARE_CATALOG_DESCRIPTOR"
     /\ UNCHANGED
         <<projectionSeals, CommitVariables, FinalizationVariables,
@@ -307,6 +325,7 @@ SealCandidate(c) ==
     /\ lastEvent' = "SEAL_CANDIDATE"
     /\ UNCHANGED
         <<PreparationVariables, candidateDefinitions, candidateBaseReceipt,
+          sourceActivationRoots, catalogActivationRoots,
           CommitVariables, FinalizationVariables,
           TransactionVariables, ClientVariables, txStartSnapshot,
           replaySnapshot, staleSnapshot, crashSnapshot>>
@@ -351,7 +370,6 @@ CommitPublish(responseLost) ==
        /\ generationNodes' = generationNodes \cup {generation}
        /\ generationSuccessors' =
             generationSuccessors \cup {<<generation, generation - 1>>}
-       /\ commonHeadReceipt' = c
        /\ finalizationCheckpoints' = finalizationCheckpoints \cup {c}
        /\ checkpointGeneration' =
             [checkpointGeneration EXCEPT ![c] = 1]
@@ -368,7 +386,7 @@ CommitPublish(responseLost) ==
        /\ lastEvent' =
             IF responseLost THEN "PUBLISH_RESPONSE_LOST" ELSE "PUBLISH_COMMIT"
        /\ UNCHANGED
-            <<PreparationVariables, CandidateVariables,
+            <<PreparationVariables, CandidateVariables, commonHeadReceipt,
               finalizedOptionalRows, receiptFinalizations, BatchVariables,
               processUp, FinalizerControlVariables, txStartSnapshot,
               replaySnapshot, staleSnapshot, crashSnapshot>>
@@ -389,7 +407,7 @@ ReplayPublication(c, responseLost) ==
     /\ txCandidate = NoCandidate
     /\ lostResponse = PublishRequest(c)
     /\ responseLost \in BOOLEAN
-    /\ ExactCommit(c)
+    /\ PendingCommitHasExactBaseAuthority(c)
     /\ CandidatePhase(c) = "PUBLISHED"
     /\ lostResponse' = IF responseLost THEN PublishRequest(c) ELSE NoResponse
     /\ lastEvent' =
@@ -457,7 +475,11 @@ IssueFinalization(c, key, includeRow, terminal) ==
             /\ c \notin finalizedOptionalRows)
        /\ (terminal =>
             /\ ~includeRow
-            /\ (c \in preparedOptionalRows <=> c \in finalizedOptionalRows))
+            /\ (c \in preparedOptionalRows <=> c \in finalizedOptionalRows)
+            /\ candidateBaseReceipt[c] = commonHeadReceipt
+            /\ commitGeneration[c] = CurrentGeneration + 1
+            /\ c \in sourceActivationRoots
+            /\ c \in catalogActivationRoots)
        /\ committedGeneration \in FinalizationGenerations
        /\ finalizeAttempt' = batch
        /\ finalizeIncludeRow' = includeRow
@@ -515,7 +537,11 @@ CommitFinalization(responseLost) ==
             /\ c \notin finalizedOptionalRows)
        /\ (terminal =>
             /\ ~includeRow
-            /\ (c \in preparedOptionalRows <=> c \in finalizedOptionalRows))
+            /\ (c \in preparedOptionalRows <=> c \in finalizedOptionalRows)
+            /\ candidateBaseReceipt[c] = commonHeadReceipt
+            /\ commitGeneration[c] = CurrentGeneration + 1
+            /\ c \in sourceActivationRoots
+            /\ c \in catalogActivationRoots)
        /\ committedGeneration \in FinalizationGenerations
        /\ finalizedOptionalRows' =
             IF includeRow THEN finalizedOptionalRows \cup {c}
@@ -554,6 +580,17 @@ CommitFinalization(responseLost) ==
        /\ receiptFinalizations' =
             IF terminal THEN receiptFinalizations \cup {c}
             ELSE receiptFinalizations
+       /\ commonHeadReceipt' = IF terminal THEN c ELSE commonHeadReceipt
+       /\ candidateBaseReceipt' =
+            IF terminal
+            THEN [candidateBaseReceipt EXCEPT ![c] = NoCandidate]
+            ELSE candidateBaseReceipt
+       /\ sourceActivationRoots' =
+            IF terminal THEN sourceActivationRoots \ {c}
+            ELSE sourceActivationRoots
+       /\ catalogActivationRoots' =
+            IF terminal THEN catalogActivationRoots \ {c}
+            ELSE catalogActivationRoots
        /\ clientCommittedFinalizationBatchKeys' =
             clientCommittedFinalizationBatchKeys \cup {batch}
        /\ finalizeAttempt' = NoResponse
@@ -565,7 +602,9 @@ CommitFinalization(responseLost) ==
             IF responseLost THEN "FINALIZE_RESPONSE_LOST"
             ELSE "FINALIZE_COMMIT"
        /\ UNCHANGED
-            <<PreparationVariables, CandidateVariables, CommitVariables,
+            <<PreparationVariables, candidateDefinitions, projectionSeals,
+              sourceDescriptors, commitAnchors, commitMemberRows, commitSeals,
+              commitGeneration, generationNodes, generationSuccessors,
               TransactionVariables, processUp, releasedFinalizationBatches,
               txStartSnapshot,
               replaySnapshot, staleSnapshot, crashSnapshot>>
@@ -613,16 +652,19 @@ CleanupCandidate(c) ==
     /\ CandidatePhase(c) = "PUBLISHED"
     /\ c \in receiptFinalizations
     /\ c \in candidateDefinitions
+    /\ candidateBaseReceipt[c] = NoCandidate
+    /\ c \notin sourceActivationRoots
+    /\ c \notin catalogActivationRoots
     /\ candidateDefinitions' = candidateDefinitions \ {c}
     /\ projectionSeals' = projectionSeals \ {c}
-    /\ candidateBaseReceipt' =
-        [candidateBaseReceipt EXCEPT ![c] = NoCandidate]
     /\ preparedCatalogDescriptors' = preparedCatalogDescriptors \ {c}
     /\ preparedOperationalEffects' = preparedOperationalEffects \ {c}
     /\ preparedOptionalRows' = preparedOptionalRows \ {c}
     /\ lastEvent' = "CANDIDATE_CLEANUP"
     /\ UNCHANGED
-        <<CommitVariables, FinalizationVariables, TransactionVariables,
+        <<candidateBaseReceipt, sourceActivationRoots, catalogActivationRoots,
+          CommitVariables, FinalizationVariables,
+          TransactionVariables,
           ClientVariables, txStartSnapshot,
           replaySnapshot, staleSnapshot, crashSnapshot>>
 
@@ -663,6 +705,8 @@ TypeOK ==
     /\ projectionSeals \subseteq Candidates
     /\ \A c \in Candidates : CandidatePhase(c) \in CandidatePhases
     /\ candidateBaseReceipt \in [Candidates -> Candidates \cup {NoCandidate}]
+    /\ sourceActivationRoots \subseteq Candidates
+    /\ catalogActivationRoots \subseteq Candidates
     /\ sourceDescriptors
         \subseteq {SourceRevision(c) : c \in Candidates}
     /\ commitAnchors \subseteq Candidates
@@ -727,13 +771,21 @@ GenerationChainIsExact ==
     /\ \A edge \in generationSuccessors : edge[1] = edge[2] + 1
 
 CommonHeadIsMaximumTip ==
-    IF commitSeals = {}
+    IF receiptFinalizations = {}
     THEN commonHeadReceipt = NoCandidate
-    ELSE /\ commonHeadReceipt \in commitSeals
-         /\ \A c \in commitSeals :
+    ELSE /\ commonHeadReceipt \in receiptFinalizations
+         /\ \A c \in receiptFinalizations :
             commitGeneration[c] <= commitGeneration[commonHeadReceipt]
-         /\ ~\E edge \in generationSuccessors :
-            edge[2] = commitGeneration[commonHeadReceipt]
+
+PendingCommitRetainsExactBaseAuthority ==
+    \A c \in commitSeals \ receiptFinalizations :
+        PendingCommitHasExactBaseAuthority(c)
+
+PublishedCommitConsumesCandidateBaseAuthority ==
+    \A c \in receiptFinalizations :
+        /\ candidateBaseReceipt[c] = NoCandidate
+        /\ c \notin sourceActivationRoots
+        /\ c \notin catalogActivationRoots
 
 PublishedCandidateIffSealedCommonCommit ==
     \A c \in Candidates :
@@ -870,7 +922,8 @@ TerminalCurrentReceiptReplaySurvivesCandidateCleanup ==
 
 ResponseLossHasCurrentReplayAuthority ==
     /\ \A c \in Candidates :
-        lostResponse = PublishRequest(c) => ExactCommit(c)
+        lostResponse = PublishRequest(c) =>
+            PendingCommitHasExactBaseAuthority(c)
     /\ \A c \in Candidates, key \in BatchKeys :
         lostResponse = FinalizeRequest(c, key) =>
             FinalizeId(c, key) \in finalizationBatchReceipts

@@ -40,6 +40,10 @@ from h2hdb.config_loader import DatabaseAccessMode
 from h2hdb.repository import RepositoryContext
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_allocator_repository import (
+    RevisionStream,
+    VNextAllocatorRepository,
+)
 from h2hdb.vnext_artifact_family import (
     ArtifactSemanticInputFamily,
     CatalogArtifactFamily,
@@ -73,6 +77,7 @@ from h2hdb.vnext_publication_family import (
     ensure_publication_identity_family,
 )
 from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
+from h2hdb.vnext_transaction import VNextUnitOfWork, encode_lock_key
 
 FIXTURE_MODE = "manifest-bound-sql"
 DEFAULT_SEED = 0x48324844425F5343
@@ -100,6 +105,7 @@ _REGULAR_TITLE = "Synthetic Catalog Publication"
 _MATCHING_TITLE = "Synthetic Needle Publication"
 _SUMMARY = "Synthetic SQL-backed catalog scalability fixture"
 _PRODUCTION_FAMILY_BINDINGS = (
+    "VNextAllocatorRepository.allocate_revision",
     "ensure_allocation_family",
     "ensure_page_family",
     "ensure_canonical_value_identity",
@@ -114,6 +120,34 @@ _PRODUCTION_FAMILY_BINDINGS = (
     "ensure_artifact_semantic_input_family",
     "ensure_catalog_artifact_family",
 )
+
+
+def _allocate_fixture_revisions(
+    connector: SQLConnector,
+    *,
+    allocated_at: int,
+) -> None:
+    work = VNextUnitOfWork(connector, backend="sqlite")
+    allocator_table = "operational_revision_allocators"
+    allocated = {
+        stream: VNextAllocatorRepository.allocate_revision(
+            work,
+            stream,
+            updated_at=allocated_at,
+        )
+        for stream in sorted(
+            RevisionStream,
+            key=lambda value: encode_lock_key(allocator_table, value.value),
+        )
+    }
+    expected = {
+        RevisionStream.SOURCE: SOURCE_REVISION,
+        RevisionStream.CATALOG: REVISION,
+    }
+    if allocated != expected:
+        raise RuntimeError(
+            f"fresh fixture revision allocation {allocated!r} differs from {expected!r}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1267,6 +1301,10 @@ def _seed_fixture(
     posting_count = 0
 
     with SQLiteConnector(str(database_path)) as connector, connector.transaction():
+        _allocate_fixture_revisions(
+            connector,
+            allocated_at=committed_at,
+        )
         policy = _seed_catalog_policies(
             connector,
             writer,

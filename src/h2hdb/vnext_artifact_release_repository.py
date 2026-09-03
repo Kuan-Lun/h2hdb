@@ -60,6 +60,7 @@ from .vnext_maintenance_gate_repository import (
     GateMode,
     MaintenanceGateRepository,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _MAX_PAGE_ROWS = 128
@@ -469,15 +470,22 @@ class ArtifactReleaseRepository:
                 )
 
         for item in current_items:
+            transition = require_catalog_state_mutation(
+                "artifact-release.commit",
+                previous_state=item.state,
+                next_state="COMMITTED",
+                timestamp=None,
+            )
             work.compare_and_swap(
-                "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
+                "UPDATE catalog_prepared_artifacts SET state = %s "
                 "WHERE candidate_id = %s AND publication_key = %s "
                 "AND resource_kind = %s AND state = %s",
                 (
+                    transition.next_state,
                     item.candidate_id,
                     item.publication_key,
                     item.resource_kind.value.encode("ascii"),
-                    item.state,
+                    transition.previous_state,
                 ),
                 authority="orphan resource protection release",
             )

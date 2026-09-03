@@ -23,6 +23,7 @@ from vnext_manifest_fixtures import (
     seed_gallery_manifest,
     seed_snapshot_manifest,
 )
+from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
 
 import h2hdb.vnext_source_build_repository as source_build_module
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -72,6 +73,7 @@ from h2hdb.vnext_source_build_repository import (
     SourceDiscoveryPlan,
     SourceDiscoveryPlanError,
     SourceRootBuildCommand,
+    _SourceBuildPolicyAuthority,
     require_source_build_publication_identity,
     source_build_recovery_identity,
     source_build_snapshot_attempt_id,
@@ -298,7 +300,7 @@ def _open_build(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root,
-                analysis_policy_id=1,
+                policy=SOURCE_BUILD_POLICY_AUTHORITY,
                 now=24,
             )
     return gate, turn, command
@@ -440,7 +442,7 @@ def test_source_build_database_clock_and_abandonment_replay(
                     ingest_turn=turn,
                     command=replacement,
                     root_plan=root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=30,
                 )
     finally:
@@ -572,6 +574,35 @@ def _link_published_candidate_to_build(
     analysis_id = sha256(b"source-working-recovery\0" + candidate_id).digest()[:16]
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
+        if not connector.fetch_one(
+            "SELECT artifact_policy_id FROM catalog_artifact_policies "
+            "WHERE artifact_policy_id = %s",
+            (1,),
+        ):
+            connector.execute(
+                "INSERT INTO catalog_artifact_policies "
+                "(artifact_policy_id, policy_component_sha256) VALUES (%s, %s)",
+                (
+                    1,
+                    SOURCE_BUILD_POLICY_AUTHORITY.artifact_policy_sha256,
+                ),
+            )
+        if not connector.fetch_one(
+            "SELECT display_title_policy_id "
+            "FROM catalog_display_title_policies "
+            "WHERE display_title_policy_id = %s",
+            (SOURCE_BUILD_POLICY_AUTHORITY.display_title_policy_id,),
+        ):
+            connector.execute(
+                "INSERT INTO catalog_display_title_policies "
+                "(display_title_policy_id, display_title_algorithm_version, "
+                "title_sort_policy_id) VALUES (%s, %s, %s)",
+                (
+                    SOURCE_BUILD_POLICY_AUTHORITY.display_title_policy_id,
+                    1,
+                    SOURCE_BUILD_POLICY_AUTHORITY.title_sort_policy_id,
+                ),
+            )
         connector.execute(
             "INSERT INTO catalog_analysis_run_descriptor "
             "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
@@ -713,7 +744,7 @@ def _seed_publication_state(
         "catalog_source_build_base_publication_commits WHERE build_id = %s",
         (build_id,),
     )
-    if build_base:
+    if build_base and not finalized:
         connector.execute(
             "INSERT INTO catalog_publication_candidate_base_publication_commits "
             "(candidate_id, base_receipt_id) VALUES (%s, %s)",
@@ -771,6 +802,7 @@ def _handoff_snapshot_command(
     turn: IngestTurn,
     command: SourceRootBuildCommand,
     *,
+    policy: _SourceBuildPolicyAuthority = SOURCE_BUILD_POLICY_AUTHORITY,
     now: int,
 ) -> bytes:
     with command.prepare_root_upload() as root_plan:
@@ -782,7 +814,7 @@ def _handoff_snapshot_command(
                 ingest_turn=turn,
                 command=command,
                 root_plan=root_plan,
-                analysis_policy_id=1,
+                policy=policy,
                 now=now + 3,
             )
     return handoff.build_id
@@ -1119,6 +1151,106 @@ def test_current_finalized_build_remains_authoritative(
             _snapshot_command(root, successor_summary),
             now=42,
         )
+        assert successor_build != current_build
+        assert connector.fetch_one(
+            "SELECT base_receipt_id FROM "
+            "catalog_source_build_base_publication_commits WHERE build_id = %s",
+            (successor_build,),
+        ) == (receipt_id,)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "requested_policy",
+    (
+        replace(
+            SOURCE_BUILD_POLICY_AUTHORITY,
+            artifact_policy_sha256=b"b" * 32,
+        ),
+        replace(
+            SOURCE_BUILD_POLICY_AUTHORITY,
+            display_title_policy_id=2,
+        ),
+        replace(
+            SOURCE_BUILD_POLICY_AUTHORITY,
+            display_title_policy_id=2,
+            title_sort_policy_id=2,
+        ),
+        replace(
+            SOURCE_BUILD_POLICY_AUTHORITY,
+            operational_policy_id=2,
+        ),
+        replace(
+            SOURCE_BUILD_POLICY_AUTHORITY,
+            artifacts_required=True,
+        ),
+    ),
+    ids=(
+        "artifact",
+        "display-title",
+        "title-sort",
+        "operational",
+        "artifacts-required",
+    ),
+)
+def test_current_finalized_build_policy_change_selects_successor(
+    tmp_path: Path,
+    requested_policy: _SourceBuildPolicyAuthority,
+) -> None:
+    connector = _generated_database(tmp_path / "snapshot-full-policy-change.sqlite3")
+    try:
+        seed_analysis_policy(connector)
+        gate, first_turn = _authorities(connector)
+        command = _snapshot_command(
+            ("full-policy-change",),
+            SourceBuildManifestSummary.empty(),
+        )
+        current_build = _handoff_snapshot_command(
+            connector,
+            gate,
+            first_turn,
+            command,
+            now=20,
+        )
+        sealed_at = _force_sealed_snapshot_build(
+            connector,
+            build_id=current_build,
+            summary=command.manifest_summary,
+        )
+        receipt_id = b"1" * 16
+        _seed_publication_state(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=b"q" * 16,
+            build_id=current_build,
+            snapshot=command.manifest_summary.manifest_sha256,
+            committed_at=sealed_at + 10,
+            finalized=True,
+        )
+        _restore_sealed_source_working(connector, build_id=current_build)
+        with connector.transaction():
+            IngestFenceRepository.complete(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                first_turn,
+                now=30,
+            )
+            successor_turn = IngestFenceRepository.claim(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                owner_token=b"s" * 16,
+                now=31,
+                lease_duration=1_000_000,
+            )
+
+        successor_build = _handoff_snapshot_command(
+            connector,
+            gate,
+            successor_turn,
+            command,
+            policy=requested_policy,
+            now=32,
+        )
+
         assert successor_build != current_build
         assert connector.fetch_one(
             "SELECT base_receipt_id FROM "
@@ -1999,7 +2131,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=51,
                 )
             assert tuple(connector.connection.iterdump()) == before
@@ -2012,7 +2144,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=52,
                 )
         assert next_handoff.build_id not in {canonical_build, recovery_build}
@@ -2199,7 +2331,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
                     ingest_turn=retry_turn,
                     command=command,
                     root_plan=root_plan,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=74,
                 )
             assert tuple(connector.connection.iterdump()) == before
@@ -2293,7 +2425,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                     ingest_turn=turn,
                     command=command,
                     root_plan=root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=33,
                 )
             assert not first.replayed
@@ -2344,7 +2476,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                         ingest_turn=turn,
                         command=command,
                         root_plan=replay_root,
-                        analysis_policy_id=1,
+                        policy=SOURCE_BUILD_POLICY_AUTHORITY,
                         now=35,
                     )
             assert replay.replayed and replay.build_id == first.build_id
@@ -2434,7 +2566,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
                     ingest_turn=second_turn,
                     command=command,
                     root_plan=replay_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=56,
                 )
 
@@ -2558,7 +2690,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                     ingest_turn=replay_turn,
                     command=published,
                     root_plan=replay_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=50,
                 )
         assert replay.generation == 2
@@ -2623,7 +2755,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                         ingest_turn=replacement_turn,
                         command=replacement,
                         root_plan=replacement_root,
-                        analysis_policy_id=1,
+                        policy=SOURCE_BUILD_POLICY_AUTHORITY,
                         now=60,
                     )
             assert _reservation_snapshot(connector) == before_fault
@@ -2635,7 +2767,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=61,
                 )
 
@@ -2690,7 +2822,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                     ingest_turn=stale_turn,
                     command=foreign,
                     root_plan=foreign_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=50,
                 )
         with SourceDiscoveryPlan.from_locators(()) as plan:
@@ -2779,7 +2911,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=60,
                 )
         assert _reservation_snapshot(connector) == before
@@ -2837,7 +2969,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=60,
                 )
         assert _reservation_snapshot(connector) == before
@@ -2880,7 +3012,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                     ingest_turn=stale_turn,
                     command=published,
                     root_plan=published_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=50,
                 )
         assert (
@@ -2916,7 +3048,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=60,
                 )
         assert connector.fetch_one(
@@ -2956,7 +3088,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                     ingest_turn=stale_turn,
                     command=stale,
                     root_plan=stale_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=50,
                 )
         with connector.transaction():
@@ -2978,7 +3110,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=60,
                 )
 
@@ -3053,7 +3185,7 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
                     ingest_turn=replacement_turn,
                     command=replacement,
                     root_plan=replacement_root,
-                    analysis_policy_id=1,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=35,
                 )
         assert _reservation_snapshot(connector) == before
@@ -3604,7 +3736,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         ingest_turn=turn2,
                         command=root_command,
                         root_plan=root2,
-                        analysis_policy_id=1,
+                        policy=SOURCE_BUILD_POLICY_AUTHORITY,
                         now=45,
                     )
             assert handoff2.generation == 2
@@ -3737,7 +3869,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         ingest_turn=turn2,
                         command=root_command,
                         root_plan=sealed_root_retry,
-                        analysis_policy_id=1,
+                        policy=SOURCE_BUILD_POLICY_AUTHORITY,
                         now=58,
                     )
             assert root_replay.replayed

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -91,6 +92,24 @@ def test_sqlite_catalog_scalability_smoke_profile(tmp_path: Path) -> None:
         hashlib.sha256(database_path.read_bytes()).hexdigest()
         == receipt["database"]["sha256"]
     )
+    with sqlite3.connect(
+        f"file:{database_path}?mode=ro",
+        uri=True,
+    ) as connection:
+        allocators = dict(
+            connection.execute(
+                "SELECT stream, next_revision FROM operational_revision_allocators"
+            )
+        )
+        source_revision = connection.execute(
+            "SELECT source_revision FROM catalog_source_revision_descriptors"
+        ).fetchone()
+        catalog_revision = connection.execute(
+            "SELECT revision FROM catalog_revision_descriptors"
+        ).fetchone()
+    assert allocators == {"CATALOG": 2, "SOURCE": 2}
+    assert source_revision == (1,)
+    assert catalog_revision == (1,)
 
 
 def test_sqlite_catalog_scalability_rejects_existing_targets(

@@ -834,6 +834,38 @@ def run_publication(
     raise RuntimeError("publication synchronization exceeded its step budget")
 
 
+def run_publication_recovery(
+    facade: VNextIngestFacade,
+    session: VNextIngestSession,
+    library: MemoryLibrary,
+    *,
+    step_budget: int = 10_000,
+    boundary: Boundary = None,
+) -> VNextIngestAdvanceResult | None:
+    """Reconcile one durable commit without binding a source build."""
+
+    adapters = {library.adapter_id: library}
+    for _ in range(step_budget):
+        _notify(boundary, "publication-recovery.issue")
+        issued = facade.try_issue_publication_recovery_step(session)
+        if issued is None:
+            return None
+        prepared = facade.prepare_publication_step(
+            issued,
+            artifact_adapters=adapters,
+            finalization_adapters=adapters,
+            library_activation=library,
+        )
+        with prepared:
+            _notify(boundary, f"publication-recovery.commit:{issued.operation}")
+            result = facade.commit_publication_step(session, prepared)
+        if result.phase is not VNextIngestPhase.FINALIZATION:
+            raise RuntimeError("publication recovery returned another phase")
+        if result.terminal:
+            return result
+    raise RuntimeError("publication recovery exceeded its step budget")
+
+
 def claim_session(
     facade: VNextIngestFacade,
     *,
@@ -875,6 +907,12 @@ def run_ingest_turn(
         session = claim_session(facade, periodic=periodic)
     _notify(boundary, "ensure_policy")
     resolved = facade.ensure_policy(session, policy or ingest_policy())
+    run_publication_recovery(
+        facade,
+        session,
+        library,
+        boundary=boundary,
+    )
     source_receipt = run_source(facade, session, resolved, source, boundary=boundary)
     analysis = run_analysis(
         facade,

@@ -39,6 +39,7 @@ from .vnext_domains import (
     require_positive_int63,
     require_uuid16,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import VNextUnitOfWork
 
 _RUN_DESCRIPTOR = "catalog_analysis_run_descriptor"
@@ -300,6 +301,12 @@ def ensure_analysis_run_family(
         raise AnalysisFamilyCollisionError(
             "analysis database start time precedes its sealed source build"
         )
+    transition = require_catalog_state_mutation(
+        "analysis-run.initialize",
+        previous_state=None,
+        next_state="OPEN",
+        timestamp=None,
+    )
     connector.execute(
         f"INSERT INTO {_RUN_DESCRIPTOR} "
         "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
@@ -314,7 +321,7 @@ def ensure_analysis_run_family(
     )
     connector.execute(
         f"INSERT INTO {_RUN_STATE} (analysis_id, state) VALUES (%s, %s)",
-        (proposed.analysis_id, "OPEN"),
+        (proposed.analysis_id, transition.next_state),
     )
     return proposed, True
 
@@ -327,9 +334,15 @@ def insert_analysis_run_completed_at(
 ) -> None:
     analysis = require_uuid16(analysis_id, field="analysis_id")
     timestamp = require_int63(completed_at, field="analysis completed_at")
+    transition = require_catalog_state_mutation(
+        "analysis-run.complete-timestamp",
+        previous_state="OPEN",
+        next_state="COMPLETE",
+        timestamp=timestamp,
+    )
     connector.execute(
         f"INSERT INTO {_RUN_COMPLETED} (analysis_id, completed_at) VALUES (%s, %s)",
-        (analysis, timestamp),
+        (analysis, transition.timestamp),
     )
 
 
@@ -339,14 +352,19 @@ def cas_analysis_run_state(
     analysis_id: bytes,
     previous: str,
     successor: str,
+    timestamp: int | None,
     authority: str,
 ) -> None:
     analysis = require_uuid16(analysis_id, field="analysis_id")
-    if previous != "OPEN" or successor not in {"COMPLETE", "ABANDONED"}:
-        raise ValueError("analysis state CAS is not a registered transition")
+    transition = require_catalog_state_mutation(
+        "analysis-run.transition",
+        previous_state=previous,
+        next_state=successor,
+        timestamp=timestamp,
+    )
     work.compare_and_swap(
         f"UPDATE {_RUN_STATE} SET state = %s WHERE analysis_id = %s AND state = %s",
-        (successor, analysis, previous),
+        (transition.next_state, analysis, transition.previous_state),
         authority=authority,
     )
 

@@ -2097,6 +2097,63 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
         connector.close()
 
 
+def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identity(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "cleanup-successor-identity.sqlite3")
+    kind = CleanupTargetKind.ARTIFACT_BLOB
+    shard = 52
+    try:
+        gate = _exclusive(connector)
+        first = _begin(connector, gate, kind, shard, max_rows=1)
+        completed = _advance(connector, gate, first, 1, b"c" * 32, now=3)
+        assert completed.cycle_complete
+        before = _cleanup_protocol_snapshot(connector)
+
+        with pytest.raises(RuntimeError, match="abort cleanup successor"):
+            with connector.transaction():
+                successor = VNextCleanupRepository.begin_cycle(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    target_kind=kind,
+                    shard_no=shard,
+                    cycle_cutoff_at=100,
+                    max_rows_per_transaction=1,
+                    now=4,
+                )
+                assert successor.cycle_generation == first.cycle_generation + 1
+                assert successor.cleanup_id == cleanup_module._cleanup_id(
+                    kind,
+                    shard,
+                    successor.cycle_generation,
+                )
+                assert successor.cleanup_id != first.cleanup_id
+                raise RuntimeError("abort cleanup successor")
+
+        assert _cleanup_protocol_snapshot(connector) == before
+
+        with (
+            patch.object(connector, "execute_affected", return_value=0),
+            pytest.raises(
+                CleanupUnavailableError,
+                match="completed cleanup cycle changed",
+            ),
+        ):
+            _begin(connector, gate, kind, shard, max_rows=1, now=5)
+        assert _cleanup_protocol_snapshot(connector) == before
+
+        successor = _begin(connector, gate, kind, shard, max_rows=1, now=6)
+        assert successor.cycle_generation == first.cycle_generation + 1
+        assert successor.cleanup_id == cleanup_module._cleanup_id(
+            kind,
+            shard,
+            successor.cycle_generation,
+        )
+        assert successor.cleanup_id != first.cleanup_id
+    finally:
+        connector.close()
+
+
 @pytest.mark.parametrize(
     ("kind", "table", "insert_sql", "values", "key"),
     (
@@ -4360,7 +4417,7 @@ def test_publication_commit_build_base_release_exactly_rechecks_active_retry(
         connector.close()
 
 
-def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floor(
+def test_state_parent_cleanup_uses_contiguous_generation_prefixes(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "state-parent-cleanup.sqlite3")
@@ -4392,7 +4449,7 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
                     "(generation) VALUES (%s)",
                     (generation,),
                 )
-                for generation in (1, 2, 258, 300)
+                for generation in (1, 2, 3, 4, 5)
             ]
             + [
                 (
@@ -4400,7 +4457,7 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
                     "(successor_generation, predecessor_generation) VALUES (%s, %s)",
                     edge,
                 )
-                for edge in ((2, 1), (258, 2), (300, 258))
+                for edge in ((1, 0), (2, 1), (3, 2), (4, 3), (5, 4))
             ]
             + [
                 (
@@ -4409,7 +4466,7 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
                     "generation, preparation_id, operational_policy_id, "
                     "artifact_policy_id, display_title_policy_id, new_galleries, "
                     "changed_galleries, removed_galleries, duplicate_losers, "
-                    "committed_at) VALUES (%s, %s, 11, 11, 300, %s, 1, 1, 1, "
+                    "committed_at) VALUES (%s, %s, 11, 11, 5, %s, 1, 1, 1, "
                     "0, 0, 0, 0, 1)",
                     (b"r" * 16, b"c" * 16, b"p" * 16),
                 ),
@@ -4445,14 +4502,18 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
         generation_cycle_index = 0
         while connector.fetch_one(
             "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation IN (2, 258)"
+            "WHERE generation < 5"
         ) != (0,):
+            oldest = connector.fetch_one(
+                "SELECT MIN(generation) FROM catalog_publication_generation_nodes"
+            )
+            assert len(oldest) == 1 and isinstance(oldest[0], int)
             generation_cycle = _begin(
                 connector,
                 gate,
                 CleanupTargetKind.PUBLICATION_GENERATION,
-                2,
-                max_rows=1,
+                oldest[0] % 256,
+                max_rows=2,
                 now=40 + generation_cycle_index * 20,
             )
             generation_results.extend(
@@ -4464,21 +4525,20 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
                 )
             )
             generation_cycle_index += 1
-            assert generation_cycle_index <= 2
-        assert all(result.row_count <= 1 for result in generation_results)
-        assert generation_cycle_index == 2
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation = 2"
-        ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation = 258"
-        ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_publication_generation_successors "
-            "WHERE successor_generation IN (2, 258, 300)"
-        ) == (0,)
+            assert generation_cycle_index <= 3
+        assert all(result.row_count <= 2 for result in generation_results)
+        assert generation_cycle_index == 3
+        assert connector.fetch_all(
+            "SELECT generation FROM catalog_publication_generation_nodes "
+            "ORDER BY generation"
+        ) == [(5,)]
+        assert (
+            connector.fetch_all(
+                "SELECT successor_generation, predecessor_generation "
+                "FROM catalog_publication_generation_successors"
+            )
+            == []
+        )
 
         retained_floor = _begin(
             connector,
@@ -4491,7 +4551,7 @@ def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floo
         assert _drain(connector, gate, retained_floor, now=101)[-1].deleted_count == 0
         assert connector.fetch_one(
             "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation = 300"
+            "WHERE generation = 5"
         ) == (1,)
     finally:
         connector.close()

@@ -101,19 +101,20 @@ def _insert_title_policies(
     connector: SQLiteConnector,
     *,
     display_policy_id: int,
+    title_sort_policy_id: int = 1,
 ) -> None:
     unicode_version = catalog_refinement._RUNTIME_UNICODE_DATA_VERSION
     connector.execute(
         "INSERT INTO catalog_title_sort_policy "
         "(title_sort_policy_id, title_sort_algorithm_version, unicode_data_version) "
-        "VALUES (1, 1, %s)",
-        (unicode_version,),
+        "VALUES (%s, 1, %s)",
+        (title_sort_policy_id, unicode_version),
     )
     connector.execute(
         "INSERT INTO catalog_display_title_policies "
         "(display_title_policy_id, display_title_algorithm_version, "
-        "title_sort_policy_id) VALUES (%s, 1, 1)",
-        (display_policy_id,),
+        "title_sort_policy_id) VALUES (%s, 1, %s)",
+        (display_policy_id, title_sort_policy_id),
     )
 
 
@@ -150,13 +151,7 @@ def test_empty_generated_catalog_passes_every_bounded_validator(
     assert all(
         query.lstrip().upper().startswith("SELECT") for query in recorder.queries
     )
-    unbounded = tuple(
-        query for query in recorder.queries if " LIMIT " not in f" {query.upper()} "
-    )
-    # Publication atomicity and retention are independently invocable contract
-    # callbacks; each audits the same five bounded-by-retention window sets.
-    assert len(unbounded) == 10
-    assert all("catalog_publication_" in query for query in unbounded)
+    assert all(" LIMIT " in f" {query.upper()} " for query in recorder.queries)
     assert not any("COUNT(" in query.upper() for query in recorder.queries)
     assert not any("FOREIGN_KEY_CHECK" in query.upper() for query in recorder.queries)
 
@@ -1078,12 +1073,14 @@ def _insert_nonempty_discovery_projection(
         "(revision, publication_key, row_count) VALUES (1, %s, %s)",
         (publication_key, len(lexemes)),
     )
+    lexeme_digests: dict[bytes, bytes] = {}
     for lexeme in (*lexemes, b"changed"):
         value_sha256 = _insert_exact_canonical_payload(
             connector,
             domain="search_lexeme_utf8_v1",
             payload=lexeme,
         )
+        lexeme_digests[lexeme] = value_sha256
         connector.execute(
             "INSERT INTO catalog_search_lexemes (value_sha256) VALUES (%s)",
             (value_sha256,),
@@ -1117,6 +1114,10 @@ def _insert_nonempty_discovery_projection(
         "source_gallery_name": source_gallery_name,
         "display_title": display_title,
         "replacement_title": replacement_title,
+        "language": language,
+        "contributor": contributor,
+        "subject": subject,
+        "first_lexeme": lexeme_digests[lexemes[0]],
     }
 
 
@@ -1485,9 +1486,8 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
             (b"c" * 16,),
         ) == [(0, 0, 0, 0, 0)]
         catalog_refinement.check_publication_atomicity_v1(cast(Any, recorder))
-        # READY audits the compacted retained commit window and the current
-        # discovery projection through disk-backed, keyset-bounded aggregation.
-        # Only the five retained-window set comparisons may omit a SQL LIMIT.
+        # READY audits both the compacted retained commit window and current
+        # discovery projection through fixed-size keyset pages.
         permitted_scans = {
             "CATALOG_ANALYSIS_STAGES",
             "CATALOG_CHANNEL_REGISTRY",
@@ -1533,11 +1533,7 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
     assert len(recorder.reads) <= 60
     # The closed neutral resource registry contributes exactly two bounded rows.
     assert sum(row_count for _query, _data, row_count in recorder.reads) <= 102
-    unbounded = tuple(
-        query for query in recorder.queries if " LIMIT " not in f" {query.upper()} "
-    )
-    assert len(unbounded) == 5
-    assert all("catalog_publication_" in query for query in unbounded)
+    assert all(" LIMIT " in f" {query.upper()} " for query in recorder.queries)
     assert not any("COUNT(" in query.upper() for query in recorder.queries)
     assert not any(
         table in query
@@ -1602,6 +1598,62 @@ def test_ready_rejects_active_discovery_projection_corruption(
 
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(mutation_sql, parameters)
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "missing_family",
+    (
+        "search_document",
+        "search_posting",
+        "language_facet",
+        "subject_facet",
+        "contributor_facet",
+    ),
+)
+def test_ready_rejects_active_discovery_projection_omission(
+    tmp_path: Path,
+    missing_family: str,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / f"active-discovery-missing-{missing_family}.sqlite3"
+    )
+    try:
+        values = _insert_nonempty_discovery_projection(connector)
+        deletion = {
+            "search_document": (
+                "DELETE FROM catalog_search_documents WHERE revision = 1 "
+                "AND publication_key = %s",
+                (values["publication_key"],),
+            ),
+            "search_posting": (
+                "DELETE FROM catalog_search_postings WHERE revision = 1 "
+                "AND value_sha256 = %s AND publication_key = %s",
+                (values["first_lexeme"], values["publication_key"]),
+            ),
+            "language_facet": (
+                "DELETE FROM catalog_language_facet_order WHERE revision = 1 "
+                "AND language_sha256 = %s",
+                (values["language"],),
+            ),
+            "subject_facet": (
+                "DELETE FROM catalog_subject_facet_order WHERE revision = 1 "
+                "AND tag_id = 1",
+                (),
+            ),
+            "contributor_facet": (
+                "DELETE FROM catalog_contributor_facet_order WHERE revision = 1 "
+                "AND contributor_name_sha256 = %s AND role = %s",
+                (values["contributor"], b"author"),
+            ),
+        }[missing_family]
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(*deletion)
         connector.execute("PRAGMA foreign_keys = ON")
 
         with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
@@ -1969,6 +2021,31 @@ def test_historical_snapshot_audit_digest_does_not_require_payload(
         connector.close()
 
 
+def test_ready_rejects_canonical_reference_sealed_under_another_domain(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "wrong-domain.sqlite3")
+    try:
+        wrong_domain_value = _insert_exact_canonical_payload(
+            connector,
+            domain="source_title_utf8_v1",
+            payload=b"not-a-tag",
+        )
+        connector.execute(
+            "INSERT INTO catalog_tag_terms (tag_id, namespace, tag_value_sha256) "
+            "VALUES (1, %s, %s)",
+            (b"artist", wrong_domain_value),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="tag_term.tag_value_sha256 is not sealed under tag_value_utf8_v1",
+        ):
+            catalog_refinement.check_canonical_reference_domains_v1(connector)
+    finally:
+        connector.close()
+
+
 def test_live_source_working_snapshot_pin_requires_payload(tmp_path: Path) -> None:
     connector = _generated_catalog_database(tmp_path / "working-snapshot-pin.sqlite3")
     try:
@@ -2053,6 +2130,310 @@ def test_current_source_snapshot_pin_requires_payload(tmp_path: Path) -> None:
             match="active source snapshot descriptor must resolve to exactly one row",
         ):
             catalog_refinement.check_retention_contract_v2(connector)
+    finally:
+        connector.close()
+
+
+def _insert_retained_file_family(
+    connector: SQLiteConnector,
+    *,
+    name_bytes: bytes,
+    file_no: int,
+    file_sha256: bytes,
+) -> bytes:
+    file_key = vnext_identity.file_key(name_bytes)
+    connector.execute(
+        "INSERT INTO catalog_file_name_identities (file_key, name_bytes) "
+        "VALUES (%s, %s)",
+        (file_key, name_bytes),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_anchors "
+        "(gallery_id, observation_id, file_key) VALUES (1, 1, %s)",
+        (file_key,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_file_nos "
+        "(gallery_id, observation_id, file_key, file_no) "
+        "VALUES (1, 1, %s, %s)",
+        (file_key, file_no),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_file_sha256s "
+        "(gallery_id, observation_id, file_key, file_sha256) "
+        "VALUES (1, 1, %s, %s)",
+        (file_key, file_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_artifact_role "
+        "(gallery_id, observation_id, file_key, artifact_role) "
+        "VALUES (1, 1, %s, %s)",
+        (file_key, b"page"),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_seals "
+        "(gallery_id, observation_id, file_key) VALUES (1, 1, %s)",
+        (file_key,),
+    )
+    return file_key
+
+
+def test_ready_rejects_retained_file_hash_occurrence_role_drift(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "retained-file-role.sqlite3")
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        file_sha256 = b"f" * 32
+        _insert_retained_file_family(
+            connector,
+            name_bytes=b"001.png",
+            file_no=0,
+            file_sha256=file_sha256,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+            "(gallery_id, observation_id, file_sha256, occurrence_count) "
+            "VALUES (1, 1, %s, 1)",
+            (file_sha256,),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        catalog_refinement.check_role_derivation_v1(connector)
+        connector.execute(
+            "DELETE FROM catalog_gallery_observation_file_hash_occurrences"
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="file-hash occurrences differ from exact CONTENT roles",
+        ):
+            catalog_refinement.check_role_derivation_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "mutation_sql",
+    (
+        "DELETE FROM catalog_file_name_identities",
+        "DELETE FROM catalog_gallery_observation_file_file_nos",
+        "DELETE FROM catalog_gallery_observation_file_file_sha256s",
+        "DELETE FROM catalog_gallery_observation_file_artifact_role",
+        "DELETE FROM catalog_gallery_observation_file_seals",
+    ),
+)
+def test_ready_rejects_a_missing_retained_file_family_member(
+    tmp_path: Path,
+    mutation_sql: str,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path
+        / f"missing-file-family-{sha256(mutation_sql.encode()).hexdigest()}.sqlite3"
+    )
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        _insert_retained_file_family(
+            connector,
+            name_bytes=b"001.png",
+            file_no=0,
+            file_sha256=b"f" * 32,
+        )
+        connector.execute(mutation_sql)
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="incomplete sealed family",
+        ):
+            catalog_refinement.check_role_derivation_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("mutation_sql", "parameters"),
+    (
+        (
+            "INSERT INTO catalog_gallery_observation_file_file_nos "
+            "(gallery_id, observation_id, file_key, file_no) "
+            "VALUES (1, 1, %s, 0)",
+            (b"x" * 32,),
+        ),
+        (
+            "INSERT INTO catalog_gallery_observation_file_file_sha256s "
+            "(gallery_id, observation_id, file_key, file_sha256) "
+            "VALUES (1, 1, %s, %s)",
+            (b"x" * 32, b"f" * 32),
+        ),
+        (
+            "INSERT INTO catalog_gallery_observation_file_artifact_role "
+            "(gallery_id, observation_id, file_key, artifact_role) "
+            "VALUES (1, 1, %s, %s)",
+            (b"x" * 32, b"page"),
+        ),
+        (
+            "INSERT INTO catalog_gallery_observation_file_seals "
+            "(gallery_id, observation_id, file_key) VALUES (1, 1, %s)",
+            (b"x" * 32,),
+        ),
+    ),
+)
+def test_ready_rejects_a_file_family_member_without_an_anchor(
+    tmp_path: Path,
+    mutation_sql: str,
+    parameters: tuple[bytes, ...],
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path
+        / f"extra-file-family-{sha256(mutation_sql.encode()).hexdigest()}.sqlite3"
+    )
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(mutation_sql, parameters)
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="no anchor authority",
+        ):
+            catalog_refinement.check_role_derivation_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_role_derivation_pages_every_file_family_and_uses_range_seeks(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "file-family-pages.sqlite3")
+    recorder = _ReadRecorder(connector)
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        file_sha256 = b"f" * 32
+        for file_no in range(129):
+            _insert_retained_file_family(
+                connector,
+                name_bytes=f"{file_no:03}.png".encode(),
+                file_no=file_no,
+                file_sha256=file_sha256,
+            )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+            "(gallery_id, observation_id, file_sha256, occurrence_count) "
+            "VALUES (1, 1, %s, 129)",
+            (file_sha256,),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        catalog_refinement.check_role_derivation_v1(cast(Any, recorder))
+
+        role_reads = tuple(
+            (query, data, row_count)
+            for query, data, row_count in recorder.reads
+            if (
+                "FROM catalog_gallery_observation_file_anchors AS anchor" in query
+                or " AS member" in query
+                or (
+                    "FROM catalog_gallery_observation_file_file_sha256s AS file_sha"
+                    in query
+                )
+                or "FROM catalog_gallery_observation_file_hash_occurrences" in query
+            )
+        )
+        assert role_reads
+        assert max(row_count for _query, _data, row_count in role_reads) <= 128
+        derived_reads = tuple(
+            row_count
+            for query, _data, row_count in role_reads
+            if (
+                "FROM catalog_gallery_observation_file_file_sha256s AS file_sha"
+                in query
+            )
+        )
+        assert derived_reads == (128, 1, 0)
+        for query, data, _row_count in role_reads:
+            plans = connector.fetch_all(f"EXPLAIN QUERY PLAN {query}", data)
+            plan_text = " ".join(str(row[3]) for row in plans).upper()
+            assert "USE TEMP B-TREE" not in plan_text
+            assert not any(str(row[3]).upper().startswith("SCAN ") for row in plans)
+            if (
+                "FROM catalog_gallery_observation_file_file_sha256s AS file_sha"
+                in query
+            ):
+                assert "IX_GALLERY_FILE_HASH_READY" in plan_text
+    finally:
+        connector.close()
+
+
+def test_ready_rejects_retained_title_sort_that_differs_from_casefold(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "retained-title-sort.sqlite3")
+    try:
+        _insert_title_policies(connector, display_policy_id=1)
+        title = _insert_exact_canonical_payload(
+            connector,
+            domain="display_title_utf8_v1",
+            payload="Straße".encode(),
+        )
+        correct_sort = _insert_exact_canonical_payload(
+            connector,
+            domain="title_sort_utf8_v1",
+            payload=b"strasse",
+        )
+        wrong_sort = _insert_exact_canonical_payload(
+            connector,
+            domain="title_sort_utf8_v1",
+            payload=b"wrong",
+        )
+        connector.execute(
+            "INSERT INTO catalog_title_sorts "
+            "(title_sort_policy_id, title_sha256, sort_title_sha256) "
+            "VALUES (1, %s, %s)",
+            (title, correct_sort),
+        )
+
+        catalog_refinement.check_identity_codecs_v1(connector)
+        connector.execute(
+            "UPDATE catalog_title_sorts SET sort_title_sha256 = %s",
+            (wrong_sort,),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="differs from exact Unicode casefold",
+        ):
+            catalog_refinement.check_identity_codecs_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_accepts_the_declared_zero_title_sort_policy_id(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(tmp_path / "zero-title-sort.sqlite3")
+    try:
+        _insert_title_policies(
+            connector,
+            display_policy_id=1,
+            title_sort_policy_id=0,
+        )
+        title = _insert_exact_canonical_payload(
+            connector,
+            domain="display_title_utf8_v1",
+            payload=b"Zero",
+        )
+        sort_title = _insert_exact_canonical_payload(
+            connector,
+            domain="title_sort_utf8_v1",
+            payload=b"zero",
+        )
+        connector.execute(
+            "INSERT INTO catalog_title_sorts "
+            "(title_sort_policy_id, title_sha256, sort_title_sha256) "
+            "VALUES (0, %s, %s)",
+            (title, sort_title),
+        )
+
+        catalog_refinement.check_identity_codecs_v1(connector)
     finally:
         connector.close()
 
@@ -2188,7 +2569,7 @@ def test_active_publication_requires_receipt_source_provenance_from_candidate(
         connector.close()
 
 
-def test_active_publication_requires_candidate_and_build_base_receipt_cas_match(
+def test_active_publication_rejects_unconsumed_candidate_base_authority(
     tmp_path: Path,
 ) -> None:
     connector = _generated_catalog_database(tmp_path / "publication-cas.sqlite3")
@@ -2202,9 +2583,125 @@ def test_active_publication_requires_candidate_and_build_base_receipt_cas_match(
         )
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
-            match="base-receipt CAS differs",
+            match="consumed candidate base authority",
         ):
             catalog_refinement.check_publication_atomicity_v1(connector)
+    finally:
+        connector.close()
+
+
+def _insert_reader_invisible_commit(
+    connector: SQLiteConnector,
+    *,
+    generation: int,
+) -> None:
+    receipt_id = bytes((0x40 + generation,)) * 16
+    candidate_id = bytes((0x50 + generation,)) * 16
+    preparation_id = bytes((0x60 + generation,)) * 16
+    connector.execute(
+        "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
+        (receipt_id,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_commits "
+        "(receipt_id, candidate_id, revision, source_revision, generation, "
+        "preparation_id, operational_policy_id, artifact_policy_id, "
+        "display_title_policy_id, new_galleries, changed_galleries, "
+        "removed_galleries, duplicate_losers, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, 1, 1, 1, 0, 0, 0, 0, 1)",
+        (
+            receipt_id,
+            candidate_id,
+            generation,
+            generation,
+            generation,
+            preparation_id,
+        ),
+    )
+    _insert_open_publication_finalization_checkpoint(
+        connector,
+        receipt_id=receipt_id,
+    )
+
+
+@pytest.mark.parametrize("missing", ("edge", "node"))
+def test_publication_history_rejects_missing_pending_successor_authority(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / f"publication-pending-missing-{missing}.sqlite3"
+    )
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (2)"
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_generation_successors "
+            "(successor_generation, predecessor_generation) VALUES (2, 1)"
+        )
+        _insert_reader_invisible_commit(connector, generation=2)
+        if missing == "edge":
+            connector.execute(
+                "DELETE FROM catalog_publication_generation_successors "
+                "WHERE successor_generation = 2"
+            )
+            error_match = "successor chain"
+        else:
+            connector.execute(
+                "DELETE FROM catalog_publication_generation_nodes WHERE generation = 2"
+            )
+            error_match = "generation nodes"
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match=error_match,
+        ):
+            catalog_refinement._validate_publication_generation_history(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("shape", ("gap", "multiple"))
+def test_publication_history_rejects_nonexact_pending_successor_shape(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / f"publication-pending-{shape}.sqlite3"
+    )
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        for generation in (2, 3):
+            connector.execute(
+                "INSERT INTO catalog_publication_generation_nodes "
+                "(generation) VALUES (%s)",
+                (generation,),
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_generation_successors "
+                "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+                (generation, generation - 1),
+            )
+        if shape == "multiple":
+            _insert_reader_invisible_commit(connector, generation=2)
+            error_match = "more than one commit beyond"
+        else:
+            error_match = "exact successor"
+        _insert_reader_invisible_commit(connector, generation=3)
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match=error_match,
+        ):
+            catalog_refinement._validate_publication_generation_history(connector)
     finally:
         connector.close()
 
@@ -2252,6 +2749,227 @@ def test_publication_history_accepts_a_positive_compacted_generation_floor(
         connector.execute("PRAGMA foreign_keys = ON")
 
         catalog_refinement._validate_publication_generation_history(connector)
+    finally:
+        connector.close()
+
+
+def test_publication_history_accepts_a_contiguous_prefix_pending_compaction(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "publication-pending-prefix.sqlite3"
+    )
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "UPDATE catalog_publication_commits SET generation = 5 "
+            "WHERE receipt_id = %s",
+            (b"t" * 16,),
+        )
+        connector.execute("DELETE FROM catalog_publication_generation_successors")
+        connector.execute("DELETE FROM catalog_publication_generation_nodes")
+        connector.execute_many(
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+            [(generation,) for generation in range(2, 6)],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_generation_successors "
+            "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+            [(generation, generation - 1) for generation in range(3, 6)],
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        catalog_refinement._validate_publication_generation_history(connector)
+    finally:
+        connector.close()
+
+
+def test_publication_generation_nodes_reject_a_gap_on_a_late_bounded_page(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "publication-late-node-gap.sqlite3"
+    )
+    try:
+        connector.execute_many(
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+            [(generation,) for generation in range(1, 131)],
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "DELETE FROM catalog_publication_generation_nodes WHERE generation = 129"
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        recorder = _ReadRecorder(connector)
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="generation nodes differ",
+        ):
+            catalog_refinement._validate_publication_generation_nodes(
+                cast(Any, recorder),
+                floor=1,
+                tip=130,
+            )
+
+        assert len(recorder.reads) == 2
+        assert max(row_count for _query, _data, row_count in recorder.reads) <= 128
+        assert all("LIMIT %s" in query for query in recorder.queries)
+    finally:
+        connector.close()
+
+
+def test_publication_generation_nodes_reject_a_gigantic_sparse_tip_without_expansion(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "publication-gigantic-node-gap.sqlite3"
+    )
+    try:
+        gigantic_tip = 9_223_372_036_854_775_807
+        connector.execute(
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+            (gigantic_tip,),
+        )
+        recorder = _ReadRecorder(connector)
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="generation nodes differ",
+        ):
+            catalog_refinement._validate_publication_generation_nodes(
+                cast(Any, recorder),
+                floor=1,
+                tip=gigantic_tip,
+            )
+
+        assert recorder.reads == [
+            (
+                "SELECT generation FROM catalog_publication_generation_nodes "
+                "WHERE generation > %s ORDER BY generation LIMIT %s",
+                (-1, 128),
+                2,
+            )
+        ]
+    finally:
+        connector.close()
+
+
+def test_publication_history_pages_257_commits_without_retirement_n_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "publication-history-query-bound.sqlite3"
+    )
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        _insert_active_publication(connector, analysis_id)
+        generations = tuple(range(2, 258))
+
+        def identity(prefix: bytes, generation: int) -> bytes:
+            return prefix + generation.to_bytes(15, "big")
+
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute_many(
+            "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
+            [(identity(b"r", generation),) for generation in generations],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_commits "
+            "(receipt_id, candidate_id, revision, source_revision, generation, "
+            "preparation_id, operational_policy_id, artifact_policy_id, "
+            "display_title_policy_id, new_galleries, changed_galleries, "
+            "removed_galleries, duplicate_losers, committed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 1, 1, 1, 0, 0, 0, 0, 1)",
+            [
+                (
+                    identity(b"r", generation),
+                    identity(b"c", generation),
+                    generation,
+                    generation,
+                    generation,
+                    identity(b"p", generation),
+                )
+                for generation in generations
+            ],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_finalization_checkpoints "
+            "(receipt_id, generation, cursor, processed_count, state, updated_at) "
+            "VALUES (%s, 2, %s, 0, 'COMPLETE', 2)",
+            [(identity(b"r", generation), b"") for generation in generations],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_finalization_batch_stored "
+            "(receipt_id, start_generation, batch_key, start_cursor, "
+            "start_processed_count, next_cursor, row_count, committed_at) "
+            "VALUES (%s, 1, %s, %s, 0, %s, 0, 2)",
+            [
+                (identity(b"r", generation), b"terminal", b"", b"")
+                for generation in generations
+            ],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+            [(generation,) for generation in generations],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_publication_generation_successors "
+            "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+            [(generation, generation - 1) for generation in generations],
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        recorder = _ReadRecorder(connector)
+        transition_loads = 0
+
+        def validated_transitions(
+            _connector: object,
+        ) -> dict[bytes, catalog_refinement._OpenPcomTransition]:
+            nonlocal transition_loads
+            transition_loads += 1
+            return {
+                identity(b"r", generation): catalog_refinement._OpenPcomTransition(
+                    preparation_id=identity(b"p", generation),
+                    phase="PCOM_COMMIT_EFFECT_ROOT",
+                    cursor=b"",
+                    phase_order=9,
+                )
+                for generation in generations
+            }
+
+        monkeypatch.setattr(
+            catalog_refinement,
+            "_validated_open_pcom_transitions",
+            validated_transitions,
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="more than one commit beyond",
+        ):
+            catalog_refinement._validate_publication_generation_history(
+                cast(Any, recorder)
+            )
+
+        assert transition_loads == 1
+        commit_page_reads = [
+            read
+            for read in recorder.reads
+            if "ORDER BY committed.generation LIMIT %s" in read[0]
+        ]
+        assert [row_count for _query, _data, row_count in commit_page_reads] == [
+            128,
+            128,
+            1,
+        ]
+        assert not any(
+            "FROM catalog_publication_finalization_batch_receipts " in query
+            and "LEFT JOIN catalog_publication_finalization_batch_receipts" not in query
+            for query in recorder.queries
+        )
     finally:
         connector.close()
 

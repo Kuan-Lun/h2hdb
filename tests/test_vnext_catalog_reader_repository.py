@@ -227,6 +227,25 @@ def _publication_commit(
     candidate_id: bytes = b"c" * 16,
     preparation_id: bytes = b"p" * 16,
 ) -> None:
+    # This reader fixture writes fixed revisions directly so tests can control
+    # exact identities.  Preserve the same postcondition as the production
+    # allocator: every published revision is strictly below next_revision.
+    for stream, allocated_revision in (
+        ("SOURCE", source_revision),
+        ("CATALOG", revision),
+    ):
+        allocator = connector.fetch_one(
+            "SELECT next_revision FROM operational_revision_allocators "
+            "WHERE stream = %s",
+            (stream,),
+        )
+        assert len(allocator) == 1 and type(allocator[0]) is int
+        if allocator[0] <= allocated_revision:
+            connector.execute(
+                "UPDATE operational_revision_allocators SET next_revision = %s "
+                "WHERE stream = %s",
+                (allocated_revision + 1, stream),
+            )
     analysis_id = _seed_commit_authorities(
         connector,
         preparation_id=preparation_id,
@@ -776,7 +795,7 @@ def _artifact_fixture(
         _canonical(connector, domain, payload)
         for domain, payload in (
             ("artifact_source_manifest_v1", b"source-manifest"),
-            ("artifact_effective_content_v1", b"member-plan"),
+            ("artifact_member_plan_v2", b"member-plan"),
             ("artifact_effective_content_v1", b"effective-content"),
             ("artifact_selected_v1", b"selected"),
             ("artifact_owner_v1", b"owner"),

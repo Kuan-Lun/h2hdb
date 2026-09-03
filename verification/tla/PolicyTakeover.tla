@@ -2,24 +2,32 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 (***************************************************************************
-Finite crash/retry model of an analysis-policy change at an ingest takeover.
+Finite crash/retry model of complete ingest-policy convergence at takeover.
 
-Each build carries the policy of its sole analysis run (the manifest forbids
-a different-policy sibling analysis of one build), the analysis state, and
-its publication commit state.  A takeover claims the next ingest generation
-and may resolve another requested policy at any point of the lifecycle.  The
-source handoff of the new generation must then never map that generation to
-a build whose analysis the analysis stage would refuse forever: a build whose
-analysis is OPEN, or COMPLETE without a durable commit, under a foreign
-policy is retired before any mapping is written and a successor build of the
-same snapshot is created under the requested policy; a foreign-policy build
-whose commit is already durable is replayed so the publication finalizes
-first, and the requested policy is applied by the following generation.
+Each Policies atom denotes the complete resolved ingest policy tuple:
+manifest, analysis, artifact, display-title, title-sort and operational policy
+identities plus artifacts-required.  Equality in this model is therefore
+exact tuple equality, not analysis-policy equality alone.
 
-TLC exhausts only the configured policies and generation bound.  The model
-does not establish the SQL retirement, drainage, cleanup or publication
-transactions, nor that Python implements it; the crash matrix and the
-fresh-ingest differential tests are the runtime evidence.
+Each build carries the complete policy of its sole analysis/publication path,
+its analysis state, and its publication commit state.  A crash takeover claims
+a fresh ingest generation and may request any complete policy.  If the prior
+publication is already DB_COMMITTED, receipt-scoped recovery finalizes it
+before the new session may hand off (and therefore observe) a source.  Recovery
+does not create a generation-to-build mapping.  The same generation then maps
+the current source: it reuses the PUBLISHED head only when the complete policy
+matches, otherwise it creates a successor under the requested policy.
+
+Consequently a successful synchronization return is never a hidden deferral:
+the current PUBLISHED head has the exact requested policy.  Crashes may delay
+that return, and may leave an older immutable publication to recover first,
+but do not change the meaning of success.
+
+TLC exhausts only the configured policy atoms and generation/build bounds.
+The model abstracts receipt recovery and source/publication transactions as
+atomic actions.  It does not establish SQL, adapter, filesystem, drainage or
+cleanup refinement; the production recovery checks and crash matrix are the
+separate executable evidence.
 ***************************************************************************)
 
 CONSTANTS Policies, MaxGeneration, MaxBuilds
@@ -35,19 +43,28 @@ AnalysisStates == {"NONE", "OPEN", "COMPLETE", "ABANDONED"}
 CommitStates == {"NONE", "DB_COMMITTED", "PUBLISHED"}
 
 VARIABLES
-    generation,   \* the live ingest generation
-    requested,    \* the live session's requested analysis policy
-    builds,       \* [1..count -> [policy, analysis, commit]]
-    count,        \* number of builds ever created
-    working,      \* the sole source working build (0 = none)
-    mapping,      \* generation -> build (0 = unmapped)
-    head          \* the published head build (0 = none)
+    generation,    \* the live ingest generation
+    requested,     \* the live session's complete requested policy
+    builds,        \* [1..count -> [policy, analysis, commit]]
+    count,         \* number of builds ever created
+    working,       \* the sole source working build (0 = none)
+    mapping,       \* generation -> build (0 = unmapped)
+    head,          \* the current PUBLISHED head build (0 = none)
+    recoveryOwed,  \* this session inherited a DB_COMMITTED publication
+    returned       \* this synchronization returned success
 
-vars == <<generation, requested, builds, count, working, mapping, head>>
+vars ==
+    <<generation, requested, builds, count, working, mapping, head,
+      recoveryOwed, returned>>
 
 Build(b) == builds[b]
 
-HeadPolicy == IF head = 0 THEN NoPolicy ELSE builds[head].policy
+HeadPolicy == IF head = 0 THEN NoPolicy ELSE Build(head).policy
+
+PendingBuilds ==
+    {b \in 1..count : Build(b).commit = "DB_COMMITTED"}
+
+NoPending == PendingBuilds = {}
 
 Init ==
     /\ generation = 1
@@ -57,51 +74,91 @@ Init ==
     /\ working = 0
     /\ mapping = [g \in 1..MaxGeneration |-> 0]
     /\ head = 0
+    /\ recoveryOwed = FALSE
+    /\ returned = FALSE
 
-NewBuild(policy) == [policy |-> policy, analysis |-> "NONE", commit |-> "NONE"]
+NewBuild(policy) ==
+    [policy |-> policy, analysis |-> "NONE", commit |-> "NONE"]
 
-Append(record) == [b \in 1..(count + 1) |-> IF b = count + 1 THEN record ELSE builds[b]]
-
-\* A crash and restart: the next generation, possibly under another policy.
-\* Takeovers stop two generations before the bound so that the bounded
-\* exploration can still observe the deferred successor of a durable replay.
-Takeover(policy) ==
-    /\ generation + 2 <= MaxGeneration
-    /\ generation' = generation + 1
-    /\ requested' = policy
-    /\ UNCHANGED <<builds, count, working, mapping, head>>
-
-\* A completed turn is followed by the next generation's turn.
-NextTurn ==
-    /\ working = 0
-    /\ mapping[generation] # 0
-    /\ generation < MaxGeneration
-    /\ generation' = generation + 1
-    /\ UNCHANGED <<requested, builds, count, working, mapping, head>>
+Append(record) ==
+    [b \in 1..(count + 1) |-> IF b = count + 1 THEN record ELSE Build(b)]
 
 DurableCommit(b) == Build(b).commit \in {"DB_COMMITTED", "PUBLISHED"}
 
 ForeignPolicy(b) == Build(b).policy \notin {NoPolicy, requested}
 
-\* Retire the working build and create the successor in one transaction.
+Mapped == mapping[generation]
+
+\* A crash/restart claims a fresh generation and carries no source mapping.
+\* If the crash inherited a durable unfinalized publication, this session
+\* owes receipt-scoped recovery before it is allowed to hand off a source.
+Takeover(policy) ==
+    /\ ~returned
+    /\ generation < MaxGeneration
+    /\ generation' = generation + 1
+    /\ requested' = policy
+    /\ recoveryOwed' = ~NoPending
+    /\ returned' = FALSE
+    /\ UNCHANGED <<builds, count, working, mapping, head>>
+
+\* A later synchronization call after a successful one keeps the requested
+\* policy.  A successful return cannot leave DB_COMMITTED work, so no recovery
+\* debt is carried into this fresh generation.
+NextSync ==
+    /\ returned
+    /\ generation < MaxGeneration
+    /\ generation' = generation + 1
+    /\ recoveryOwed' = FALSE
+    /\ returned' = FALSE
+    /\ UNCHANGED <<requested, builds, count, working, mapping, head>>
+
+\* Finalize the inherited immutable commit without binding this session's
+\* generation to its old build.  The source working root belongs to the old
+\* receipt and is released by finalization.
+RecoverPending ==
+    /\ recoveryOwed
+    /\ mapping[generation] = 0
+    /\ Cardinality(PendingBuilds) = 1
+    /\ LET b == CHOOSE candidate \in PendingBuilds : TRUE
+       IN  /\ builds' = [builds EXCEPT ![b].commit = "PUBLISHED"]
+           /\ head' = b
+    /\ working' = 0
+    /\ recoveryOwed' = FALSE
+    /\ UNCHANGED <<generation, requested, count, mapping, returned>>
+
+\* Retire a foreign-policy working build and create its successor in the same
+\* transaction.  OPEN analysis becomes ABANDONED; other immutable terminal
+\* facts remain unchanged.  A PUBLISHED head remains the head while its source
+\* working slot is replaced.
 Retire(b) ==
     /\ count < MaxBuilds
-    /\ builds' = [Append(NewBuild(NoPolicy)) EXCEPT ![b].analysis =
-                    IF Build(b).analysis = "OPEN" THEN "ABANDONED" ELSE Build(b).analysis]
+    /\ builds' =
+        [Append(NewBuild(NoPolicy)) EXCEPT
+            ![b].analysis =
+                IF Build(b).analysis = "OPEN"
+                THEN "ABANDONED"
+                ELSE Build(b).analysis]
     /\ count' = count + 1
     /\ working' = count + 1
     /\ mapping' = [mapping EXCEPT ![generation] = count + 1]
-    /\ UNCHANGED <<generation, requested, head>>
+    /\ UNCHANGED
+        <<generation, requested, head, recoveryOwed, returned>>
 
-\* The source handoff of an unmapped generation.
+\* Source handoff is forbidden while an inherited receipt is unrecovered or
+\* any DB_COMMITTED publication exists.  Reuse requires exact complete-policy
+\* equality; otherwise this generation receives a successor build.
 Handoff ==
+    /\ ~returned
+    /\ ~recoveryOwed
+    /\ NoPending
     /\ mapping[generation] = 0
     /\ \/ /\ working = 0
-          /\ \/ /\ HeadPolicy = requested
+          /\ \/ /\ head # 0
+                /\ HeadPolicy = requested
                 /\ mapping' = [mapping EXCEPT ![generation] = head]
                 /\ working' = head
                 /\ UNCHANGED <<builds, count>>
-             \/ /\ HeadPolicy # requested
+             \/ /\ (head = 0) \/ (HeadPolicy # requested)
                 /\ count < MaxBuilds
                 /\ builds' = Append(NewBuild(NoPolicy))
                 /\ count' = count + 1
@@ -113,66 +170,96 @@ Handoff ==
           /\ UNCHANGED <<builds, count, working>>
        \/ /\ working # 0
           /\ ForeignPolicy(working)
-          /\ DurableCommit(working)
-          /\ mapping' = [mapping EXCEPT ![generation] = working]
-          /\ UNCHANGED <<builds, count, working>>
-       \/ /\ working # 0
-          /\ ForeignPolicy(working)
-          /\ ~DurableCommit(working)
           /\ Retire(working)
-    /\ UNCHANGED <<generation, requested, head>>
-
-Mapped == mapping[generation]
+    /\ UNCHANGED <<generation, requested, head, recoveryOwed, returned>>
 
 BeginAnalysis ==
+    /\ ~returned
     /\ Mapped # 0
+    /\ working = Mapped
     /\ Build(Mapped).analysis = "NONE"
-    /\ builds' = [builds EXCEPT ![Mapped].analysis = "OPEN", ![Mapped].policy = requested]
-    /\ UNCHANGED <<generation, requested, count, working, mapping, head>>
+    /\ builds' =
+        [builds EXCEPT
+            ![Mapped].analysis = "OPEN",
+            ![Mapped].policy = requested]
+    /\ UNCHANGED
+        <<generation, requested, count, working, mapping, head,
+          recoveryOwed, returned>>
 
 CompleteAnalysis ==
+    /\ ~returned
     /\ Mapped # 0
+    /\ working = Mapped
     /\ Build(Mapped).analysis = "OPEN"
     /\ Build(Mapped).policy = requested
     /\ builds' = [builds EXCEPT ![Mapped].analysis = "COMPLETE"]
-    /\ UNCHANGED <<generation, requested, count, working, mapping, head>>
+    /\ UNCHANGED
+        <<generation, requested, count, working, mapping, head,
+          recoveryOwed, returned>>
 
-\* Publication of the mapped build: only its own-policy analysis, or a
-\* foreign-policy analysis whose commit is already durable, may proceed.
 CommitPublication ==
+    /\ ~returned
     /\ Mapped # 0
+    /\ working = Mapped
     /\ Build(Mapped).analysis = "COMPLETE"
     /\ Build(Mapped).commit = "NONE"
     /\ Build(Mapped).policy = requested
     /\ builds' = [builds EXCEPT ![Mapped].commit = "DB_COMMITTED"]
-    /\ UNCHANGED <<generation, requested, count, working, mapping, head>>
+    /\ UNCHANGED
+        <<generation, requested, count, working, mapping, head,
+          recoveryOwed, returned>>
 
-Finalize ==
+\* Ordinary same-session finalization of the build mapped by this generation.
+FinalizeMapped ==
+    /\ ~returned
     /\ Mapped # 0
+    /\ working = Mapped
     /\ Build(Mapped).commit = "DB_COMMITTED"
+    /\ Build(Mapped).policy = requested
     /\ builds' = [builds EXCEPT ![Mapped].commit = "PUBLISHED"]
     /\ head' = Mapped
     /\ working' = 0
-    /\ UNCHANGED <<generation, requested, count, mapping>>
+    /\ UNCHANGED
+        <<generation, requested, count, mapping, recoveryOwed, returned>>
 
-\* An unchanged snapshot replays the published head: the turn completes and
-\* releases the working root without a new candidate or commit.
+\* An unchanged snapshot under the exact complete policy replays the current
+\* head and releases its transient working root without a new commit.
 ReplayPublished ==
+    /\ ~returned
     /\ Mapped # 0
-    /\ Build(Mapped).commit = "PUBLISHED"
+    /\ Mapped = head
     /\ working = Mapped
+    /\ Build(Mapped).commit = "PUBLISHED"
+    /\ Build(Mapped).policy = requested
     /\ working' = 0
-    /\ UNCHANGED <<generation, requested, builds, count, mapping, head>>
+    /\ UNCHANGED
+        <<generation, requested, builds, count, mapping, head,
+          recoveryOwed, returned>>
+
+\* This is the public synchronization success boundary.  It deliberately has
+\* no branch that can return an older-policy head after recovering it.
+ReturnSuccess ==
+    /\ ~returned
+    /\ ~recoveryOwed
+    /\ NoPending
+    /\ working = 0
+    /\ Mapped # 0
+    /\ Mapped = head
+    /\ HeadPolicy = requested
+    /\ returned' = TRUE
+    /\ UNCHANGED
+        <<generation, requested, builds, count, working, mapping, head,
+          recoveryOwed>>
 
 Terminal ==
     /\ generation = MaxGeneration
-    /\ working = 0
-    /\ mapping[generation] # 0
+    /\ returned
     /\ UNCHANGED vars
 
 Progress ==
-    Handoff \/ BeginAnalysis \/ CompleteAnalysis \/ CommitPublication \/ Finalize
-    \/ ReplayPublished \/ NextTurn
+    RecoverPending \/ Handoff \/ BeginAnalysis \/ CompleteAnalysis
+    \/ CommitPublication \/ FinalizeMapped \/ ReplayPublished
+    \/ ReturnSuccess \/ NextSync
 
 Next == Progress \/ (\E p \in Policies : Takeover(p)) \/ Terminal
 
@@ -182,39 +269,61 @@ TypeOK ==
     /\ generation \in 1..MaxGeneration
     /\ requested \in Policies
     /\ count \in 0..MaxBuilds
-    /\ \A b \in 1..count : /\ Build(b).policy \in Policies \cup {NoPolicy}
-                           /\ Build(b).analysis \in AnalysisStates
-                           /\ Build(b).commit \in CommitStates
+    /\ \A b \in 1..count :
+        /\ Build(b).policy \in Policies \cup {NoPolicy}
+        /\ Build(b).analysis \in AnalysisStates
+        /\ Build(b).commit \in CommitStates
     /\ working \in 0..count
     /\ head \in 0..count
     /\ \A g \in 1..MaxGeneration : mapping[g] \in 0..count
+    /\ recoveryOwed \in BOOLEAN
+    /\ returned \in BOOLEAN
 
-\* Each build has at most one analysis policy for its whole life.
+\* Each build acquires exactly one complete policy before analysis begins.
 OnePolicyPerBuild ==
-    \A b \in 1..count : Build(b).analysis = "NONE" => Build(b).policy = NoPolicy
+    \A b \in 1..count :
+        (Build(b).analysis = "NONE") => (Build(b).policy = NoPolicy)
 
-\* A durable commit belongs to a COMPLETE analysis.
 CommitRequiresCompleteAnalysis ==
-    \A b \in 1..count : DurableCommit(b) => Build(b).analysis = "COMPLETE"
+    \A b \in 1..count :
+        DurableCommit(b) => Build(b).analysis = "COMPLETE"
 
-\* The live generation never names a build the analysis stage would refuse
-\* forever: a foreign-policy mapping exists only for a durable replay.
+AtMostOnePendingCommit == Cardinality(PendingBuilds) <= 1
+
+\* A takeover that owes recovery has not consumed the new generation's source
+\* mapping.  Handoff remains disabled until RecoverPending clears the debt.
+RecoveryPrecedesSourceHandoff ==
+    recoveryOwed => mapping[generation] = 0
+
+\* Any live mapping is analyzable under the complete requested policy.  A
+\* foreign durable build is recovered receipt-by-receipt and is never mapped
+\* into the takeover generation.
 MappingIsAnalyzable ==
-    Mapped # 0 => (~ForeignPolicy(Mapped) \/ DurableCommit(Mapped))
+    Mapped # 0 => ~ForeignPolicy(Mapped)
 
-\* A retired build never becomes the head.
 RetiredBuildNeverPublishes ==
     \A b \in 1..count :
-        (Build(b).analysis = "ABANDONED") => Build(b).commit = "NONE"
+        (Build(b).analysis = "ABANDONED") => (Build(b).commit = "NONE")
 
-\* Generation mappings are one per generation; builds are bounded by the
-\* generations that could create them (the head reuse creates none).
+\* Recovery creates no mapping or build, so at most one source build/mapping
+\* is added per generation even when an old publication is finalized first.
 MappingsBounded ==
-    /\ Cardinality({g \in 1..MaxGeneration : mapping[g] # 0}) <= generation
+    /\ Cardinality(
+        {g \in 1..MaxGeneration : mapping[g] # 0}
+       ) <= generation
     /\ count <= generation
 
-\* Takeovers stop before the bound; the head then converges to the
-\* requested policy and stays there.
-Converges == <>[](HeadPolicy = requested)
+\* Public success means the exact requested complete policy is already the
+\* current head.  This is the safety property that rules out hidden deferral.
+SuccessfulReturnHasRequestedPolicy ==
+    returned =>
+        /\ head # 0
+        /\ Mapped = head
+        /\ HeadPolicy = requested
+        /\ NoPending
+
+\* Takeovers are finite under MaxGeneration.  Strong fairness of Progress then
+\* makes the final synchronization return with its requested policy current.
+ConvergesBeforeReturn == <>[](returned /\ HeadPolicy = requested)
 
 =============================================================================

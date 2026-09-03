@@ -23,8 +23,8 @@ The generated contract currently contains:
 - 218 tables and 33 SQL views, for exactly 251 SQL objects across the complete
   epoch;
 - 30 versioned semantic obligations: 13 data-plane and 17 operational; and
-- 5,833 typed bootstrap rows per backend, including the real deletion-request
-  generation-zero history/head and 22 cleanup target kinds
+- every generated typed bootstrap row per backend, including the real
+  deletion-request generation-zero history/head and all cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
@@ -40,12 +40,19 @@ nontrivial determinant is a candidate key. Logical projections are excluded and
 may deliberately expose denormalized read shapes. The counts above are checked
 from the manifests rather than copied into the runtime provider by hand.
 
-Full `SchemaAdmin.check()` deliberately scans the single sealed publication
-generation chain to prove exact node/edge/commit-set equality, successor
-arithmetic, absence of forks, gaps and orphans, and that the common receipt
-head is the maximum tip. It does not scan content, projection, artifact, queue,
-or event rows. The hot `check_readiness()` probe remains epoch-only and O(1),
-while fresh publication and replay validate only the locked chain tip locally.
+Full `SchemaAdmin.check()` deliberately scans the single publication generation
+chain to prove exact adjacency through the maximum commit, successor arithmetic,
+and absence of forks, gaps, or nodes beyond the tip. Publication-commit deletion
+and generation compaction are separate bounded transactions, so a crash may
+leave a conservative contiguous prefix below the oldest commit; that prefix
+grants no publication authority and later maintenance removes it. During an
+OPEN generation cycle, the audit admits a missing edge or node only when the
+sealed contiguous-prefix roots, registered PG phase, and canonical keyset
+cursor prove that exact bounded deletion; completion is accepted only after the
+remaining suffix is contiguous again. It does not scan content, projection,
+artifact, queue, or event rows. The hot
+`check_readiness()` probe remains epoch-only and O(1), while fresh publication
+and replay validate only the locked chain tip locally.
 
 The generated provider is intentionally fail-closed: it cannot return a
 `SchemaEpochDefinition` if a recurring obligation lacks a trusted wheel-owned
@@ -114,12 +121,13 @@ The layers prove different things and are not interchangeable.
   drainage through issue, commit, lost commit responses, stale-position
   retries and crashes: bounded pages, a strictly advancing durable position,
   at most `ceil(rows/limit)` committed pages, and fair drainage.
-  `tla/PolicyTakeover.tla` finitely explores an analysis-policy change at a
-  takeover across every lifecycle point: one policy per build, no mapping of
-  a build the analysis stage would refuse forever, no retired build
-  publishing, bounded mappings, and convergence to the requested policy once
-  takeovers stop (its durable-replay branch states the policy deferral
-  explicitly).
+  `tla/PolicyTakeover.tla` finitely explores a complete ingest-policy change
+  at a takeover across every lifecycle point. Each policy atom represents the
+  manifest, analysis, artifact, display-title, title-sort and operational
+  identities plus artifacts-required. An inherited `DB_COMMITTED`
+  publication is recovered before source handoff without consuming the new
+  generation's mapping; a successful synchronization return is permitted
+  only after the exact requested policy is the current `PUBLISHED` head.
 - `invariants.toml` indexes evidence for every semantic-obligation ID. Missing
   production refinement, fault, or cross-backend integration evidence is a
   machine-readable blocker, not an implicit success.
@@ -224,17 +232,20 @@ publication-owned current/retry control, not an OPDS requirement or a durable
 delivery log, and the schema has no event-consumer registry or acknowledgement
 relations.
 
-The current publication and replayable COMPLETE work retain their exact
-preparation, stream, seal, typed events, and source-build lineage. Generic
-preparation cleanup removes only unbound ABANDONED work. Once a finalized
-non-head publication is unreachable, its dedicated frozen cleanup releases the
-safe build-base pin and candidate binding, removes the COMPLETE preparation
-control, atomically removes each exactly matching subtype/base-event pair under
-a durable `(receipt_id, preparation_id, sequence_no)` cursor, and atomically
+The current publication, a reader-invisible `DB_COMMITTED` exact successor, and
+replayable COMPLETE work retain their exact preparation, stream, seal, typed
+events, and source-build lineage. The candidate-base row is a one-shot CAS
+authority: terminal activation consumes it in the same transaction that moves
+the reader head and releases both initial working roots. Generic preparation
+cleanup removes only unbound ABANDONED work. Once a finalized non-head
+publication is unreachable, its dedicated frozen cleanup releases the safe
+build-base pin and candidate binding, removes the COMPLETE preparation control,
+atomically removes each exactly matching subtype/base-event pair under a
+durable `(receipt_id, preparation_id, sequence_no)` cursor, and atomically
 removes the commit, effect seal, and stream before the final checkpoint and
-anchor. There is no retained cross-revision event history.
+anchor. There is no retained lifetime cross-revision event history.
 
-Cleanup is a fixed 22-by-256 shard control plane. Each shard reuses one current
+Cleanup is a fixed 23-by-256 control plane. Each target slot reuses one current
 job and latest completion generation; deterministic int63 identities prevent
 ABA without unbounded attempt history. Candidate selection is keyset bounded,
 child-first phases are closed against the catalog and operational FK graphs,
@@ -242,26 +253,40 @@ and every destructive cycle requires the exclusive maintenance gate. Shared
 observation pages use allocation associations plus exact incoming-FK blockers;
 canonical pages are owner scoped.
 
-Catalog revision descriptors, common commits, and source lineage remain as
-O(revision) audit. User-facing catalog payload is current-only: readers fence
-and recheck the current finalized head, while fixed-shard cleanup removes fully
-finalized prior payload only after the new head is also published
-and no live candidate/build predecessor pins it.
+Catalog revision descriptors, common commits, generation nodes, and source
+lineage are not lifetime audit history. They may remain while a current build or
+candidate still pins its predecessor, then fixed-shard cleanup removes the
+unreachable prefix after the replacement head is PUBLISHED. Full READY audit is
+valid after every durable publication-commit and publication-generation phase,
+including PCOM multi-root keyset positions and the crash window before the next
+generation cleanup. It accepts an intact conservative prefix between cycles;
+within PG_EDGE or PG_ROOT, only exact OPEN frozen-root/cursor authority may
+explain a gap. It still rejects forged or missing anchors, out-of-set cursors,
+forks, unexplained gaps, and nodes past the tip. A two-revision public-facade regression
+then reaches the cleanup fixed point, verifies both one-shot base pins and the
+old generation edge/node are gone, replays the compacted current head, and runs
+the full READY audit. User-facing catalog payload remains current-only; current
+incremental analysis/build ancestry is retained only while the active overlay
+still references it.
 
 ## Honest production boundary
 
 The strict closed-world coverage command (`scripts/verify-formal.py coverage`)
-still exits nonzero: after two honest re-audits, twenty-six production-evidence
-layers are `blocked` because their executable evidence does not meet the
-layer's original quantifier. `scripts/check-full.sh` therefore runs the
-`--validate-only` contract gate (the evidence index is well-formed and every
-symbol resolves), not the strict gate; the strict gate is the production
-readiness bar and is not yet met. The evidence below is real and executable,
-but this section is exact about where it stops. The coverage checker only
-validates metadata (statuses, evidence layers, symbol existence); it cannot
-tell whether a test meets an obligation's quantifier, so the second re-audit
-read the referenced tests and READY validators against each obligation's
-"every"/"exact" wording and re-blocked thirteen more layers below.
+still exits nonzero. Exactly four evidence layers remain blocked, all describing
+one missing production workflow: current-only maintenance does not yet drive an
+abandoned candidate's protected artifacts through the external adapter's
+terminal tombstone acknowledgement and then into database cleanup. The
+repository-level bounded release protocol and its SQLite fault/integration
+tests exist, but automatically deleting external bytes is intentionally not
+wired without explicit product authorization.
+
+The four layers are fault and integration evidence for
+`h2hdb.operational.maintenance-gate.v1` and
+`h2hdb.operational.cleanup-reachability.v1`. `scripts/check-full.sh` therefore
+runs the `--validate-only` contract gate, which proves that the evidence index
+is well formed and every cited symbol resolves, rather than claiming the strict
+production-readiness gate passed. Plain `coverage` remains the strict bar and
+fails while those four layers are blocked.
 
 The end-to-end workflow and liveness evidence runs only through the public
 facades on a fresh temporary database per case. The fault matrices are
@@ -270,18 +295,22 @@ rendered SQL boundary and at the writer-binding guards, and they seed some
 fixtures with foreign keys disabled, so they are not themselves pure
 facade-only runs.
 
-The evidence inventory below records what an executable check establishes
-when it is run; it is not the per-merge execution manifest. Plain `pytest`
-selects `not deep` and does not enable a live service. The canonical bounded
-merge runner, `scripts/run-pytest.py merge`, gives its SQLite
+The evidence inventory records what an executable check establishes when it is
+run; it is not the per-merge execution manifest. Plain `pytest` selects
+`not deep` and does not enable a live service, but has no aggregate wall-clock
+deadline. The canonical bounded merge runner, `scripts/run-pytest.py merge`,
+gives its SQLite
 `not deep and not mariadb` phase and its single-worker live-MariaDB
 `mariadb_smoke and mariadb and not deep` phase one shared 300-second hard
-deadline. The
-exact-tree release receipt attests only that bounded profile. High-cost SQLite
-and non-smoke live-MariaDB matrices are marked `deep`; they remain executable
-through the explicit, unlimited-by-default `scripts/check-pytest-deep.sh`, but
-neither their existence nor their evidence status means that every merge ran
-them.
+deadline, including termination and reaping of the pytest/xdist POSIX process
+group; on Windows, interrupted runs use `taskkill /T`. A test that deliberately
+creates a detached operating-system session is outside that process-group
+guarantee. Testcontainers/Ryuk cleanup inside the Docker daemon may complete
+after the runner exits and is not evidence covered by that deadline. The
+exact-tree release receipt attests only that bounded profile.
+High-cost SQLite and non-smoke live-MariaDB matrices are marked `deep`; they
+remain executable through `scripts/check-pytest-deep.sh`, but their existence
+does not mean that every merge ran them.
 
 Executable evidence added, and what it establishes:
 
@@ -303,7 +332,7 @@ Executable evidence added, and what it establishes:
   production audit and the production turns as oracles, and authority
   exhaustion, expiry-takeover, response-loss and policy-replacement races
   through the facades.
-- An analysis-policy crash matrix: for a first and a later revision, a turn
+- An ingest-policy crash matrix: for a first and a later revision, a turn
   dies at each of eight boundaries (analysis complete before publication,
   candidate begin durable, artifact rendered but not persisted, artifact
   persisted before the operational preparation, preparation sealed, every
@@ -317,12 +346,36 @@ Executable evidence added, and what it establishes:
   and equality with a fresh ingest under the requested policy. Before a
   durable commit the crashed build is retired (a COMPLETE analysis without a
   commit stays an immutable terminal fact that cleanup reclaims) before any
-  generation mapping is written; after a durable commit the pending
-  publication finalizes under its own policy first (see the open decision
-  below). The matrix also exposed and fixed a liveness bug: replaying a
+  generation mapping is written. After a durable commit, the restarted
+  synchronization first finalizes the pending immutable receipt without a
+  source mapping, then observes the current filesystem and publishes the
+  requested-policy successor in that same session before returning. The
+  matrix varies the analysis component; a separate parameterized repository
+  test varies artifact, display-title, title-sort, operational and
+  artifacts-required components and proves that each mismatch prevents head
+  reuse. The matrix also exposed and fixed a liveness bug: replaying a
   published self-only depth-zero analysis (a policy change or a depth-16
   compaction) after finalization pruned its working baseline failed as
   corruption while the build's base pin remained.
+- Publication activation has a matching finite TLA+ model and concrete SQLite
+  rollback evidence. The model keeps DB_COMMITTED reader-invisible, requires
+  its exact current predecessor authority, and places finalization marker,
+  reader-head CAS, candidate-base consumption, and both initial working-root
+  releases in one terminal action. A fault immediately after the production
+  base delete proves the concrete SQL transaction restores every authority.
+- Generated SQLite DDL now gives every base column a closed storage-class
+  domain and gives every MariaDB `UNSIGNED` column the same nonnegative lower
+  bound. A complete static contract plus direct DDL negatives cover all 867
+  columns, including relations without a production writer. The manual deep
+  matrix remains useful for backend normalization observations, not for finding
+  unguarded SQLite storage domains.
+- A central executable state-machine contract exhausts all declared finite
+  lifecycle transitions and terminal timestamp-presence combinations, scans
+  the source tree for the exact 24 lifecycle DML sites and 47 public writer
+  entrypoints, and is invoked by the production READY audit. The generated DDL
+  guards five enum families; publication-finalization checkpoint enum validity
+  is deliberately enforced by its repository decoder and READY audit because
+  that table has no enum CHECK.
 - Both preparation drains (the live build's superseded attempts and a
   retiring build's attempts) page from a durable position: the least
   `(state, preparation_id)` still matching, read by one seek per drain state
@@ -352,26 +405,11 @@ Explicit assumptions and limits (each is also recorded on the evidence):
   identity is digest plus byte count; every other stored identity is accepted
   only after full preimage comparison, and the collision fixture proves those
   writers fail closed. Nothing claims SHA-256 is collision-free.
-- SQLite has no strict storage classes and no unsigned integers. The physical
-  matrix pins an exact inventory (282 of 4668 injected classes) of manifest
-  domains that the rendered SQLite checks do not enforce; the installed
-  writer-binding guards refuse those values before a production writer binds
-  them. Rendering those checks is a schema decision left to the owner. Live
-  MariaDB enforces every rendered check; its only leniency, pinned by class
-  (about forty columns, depending on the sampled row), is that fixed-width
-  `BINARY(n)` columns pad a shorter value with zero bytes.
-- The READY audit is bounded: it does not recompute every derived digest of
-  retained history or published data. Corruption of such a row is refused by
-  the next production turn or reader that consumes it, or stays inert for
-  the ingest (the public catalog is unchanged); for seven published and
-  analysis-history columns that nothing re-derives it is reader-visible, and
-  the corruption matrix pins exactly those columns instead of counting them
-  as refusals.
-- Sixteen of the twenty-three cleanup strategies never become eligible from
-  any facade-reachable state, because the published head's candidate-base
-  chain retains every committed revision by manifest design; only their
-  direct repository tests interrupt their phases. Whether committed history
-  should ever be reclaimed is an owner decision.
+- SQLite applies type affinity before CHECK evaluation, so values that normalize
+  to the declared storage class are accepted as that normalized value. MariaDB
+  fixed-width `BINARY(n)` columns may pad a shorter value with zero bytes. Both
+  backend-specific normalizations are pinned by the deep matrix and are not
+  classified as missing domain guards.
 - Orphaned artifact protections of a candidate abandoned mid-publication can
   only be released by the artifact-release reconciliation, which no
   maintenance entry point drives yet; maintenance reports `BLOCKED` until it
@@ -383,105 +421,34 @@ Explicit assumptions and limits (each is also recorded on the evidence):
   ACTIONABLE), but current-only maintenance settles to `BLOCKED` after every
   turn and the orphaned payload is never reclaimed until the reconciliation
   is wired.
-- Three manifest relations have no production writer and rest in no corpus.
+- Three manifest relations have no production writer and rest in no runtime
+  corpus; direct generated-DDL tests insert valid rows and reject wrong storage
+  classes and negative portable-unsigned values for them.
 - Every TLC result is a finite model check of the declared small profile; the
   Lean theorems are unbounded only for the abstract models they state.
 
-The thirteen layers the first re-audit keeps `blocked`, and why:
+## Synchronization policy semantics
 
-- `catalog.physical-domains` and `h2hdb.operational.physical-domains` (fault):
-  SQLite renders no check for 282 of 4668 injected classes; the writer-binding
-  guards refuse them but the schema boundary does not, and three relations
-  have no writer. (integration): live MariaDB spans one corpus, not every
-  relation through every writer callsite.
-- `catalog.retention` and `h2hdb.operational.cleanup-reachability` (fault and
-  integration): sixteen of the twenty-three cleanup strategies never become
-  eligible from a facade-reachable state, so no matrix or live workflow
-  exercises all twenty-three.
-- `h2hdb.operational.maintenance-gate` (fault and integration): the
-  orphan-protection reconciliation for a candidate abandoned mid-publication
-  is unwired, so the complete exclusive release-and-cleanup cycle after that
-  abandonment is undriven and maintenance reports `BLOCKED`.
-- `catalog.bootstrap` and `h2hdb.operational.bootstrap-genesis` (fault): the
-  matrices corrupt one representative column per seed and the READY audit
-  checks one representative row per registry; no matrix corrupts every column
-  of every row, injects a duplicate, or partially commits each row.
-- `catalog.state-machines` (fault): no matrix attempts every illegal enum
-  transition and timestamp-presence edge at every repository callsite.
+The public meaning of a successful synchronization is exact and has no
+deferred-policy outcome: when `synchronize_once` returns normally, the current
+`PUBLISHED` catalog head was produced under the complete policy requested by
+that call.
 
-The thirteen layers the second re-audit re-blocked, and why (each blocker
-is recorded verbatim on the invariant):
+If a crashed predecessor already left an immutable `DB_COMMITTED` publication,
+the new session drives receipt-scoped library activation and finalization
+before it constructs or scans the filesystem source. That recovery deliberately
+does not bind the new ingest generation to the old build. The same session then
+observes the source that exists now and reuses a current build only if all seven
+policy components match; otherwise it creates and publishes a successor. One
+call can therefore publish the old durable revision and its requested-policy
+successor, but it cannot return success between those two outcomes.
 
-- `catalog.identity-codecs` (runtime refinement): the obligation recomputes
-  every stable identity, but READY recomputes only the active source and
-  publication contexts, and seven published and analysis-history identity
-  columns are re-derived by nothing. (fault): the corruption matrix proves
-  refusal or inertness for every identity column except those seven, and the
-  collision fixture covers three seams, not every codec.
-- `catalog.canonical-reference-domains` (runtime refinement): READY resolves
-  canonical FKs only for the active contexts and live pins, not every FK in
-  retained history. (fault): no matrix repoints a canonical FK at a value of
-  another digest domain.
-- `catalog.discovery-exactness` (fault): the regressions inject excess rows
-  and a count drift, never an omission with preserved counts or corrupted
-  lexeme bytes, so the "no omission" half has no negative control.
-- `catalog.role-derivation` (runtime refinement): READY checks the classifier
-  constant, not every stored role against its file-name bytes. (fault): no
-  matrix flips a stored role and proves rejection.
-- `h2hdb.operational.canonical-hash-cache` (runtime refinement): the READY
-  check is manifest-shape only; framed digests are recomputed only by the
-  writer.
-- `h2hdb.operational.revision-allocation` (runtime refinement): manifest-shape
-  READY check; no validator proves every published revision is below its
-  stream's `next_revision`. (fault): no forced stale allocator CAS.
-- `h2hdb.operational.attempt-identity` (runtime refinement): manifest-shape
-  READY check; monotone attempt numbers are proved by no validator.
-- `h2hdb.operational.queue-history` (runtime refinement): manifest-shape READY
-  check; contiguity from genesis to the head is proved by no validator.
-- `h2hdb.operational.gallery-staging` (fault): the staging matrix admits it
-  does not inject every page, branch, parser, match and reuse statement, and
-  the statement matrix reaches only its three corpora's shapes.
-
-A further honest limit that is documented on the evidence but does not, on its
-own, keep a layer blocked: for seven published and analysis-history columns
-the bounded READY audit does not re-derive the value, so a corruption there is
-reader-visible; the identity-corruption matrix pins exactly those columns.
-
-## Open public-protocol decisions
-
-Two behaviors are deliberately not decided by this repository and are recorded
-as blockers rather than settled by a hidden default.
-
-1. **Applying a new analysis policy when a durable commit already exists.**
-   A takeover that resolves another analysis policy while the working build's
-   publication commit is durable (`DB_COMMITTED`) finalizes that publication
-   under the policy it was analyzed with; the requested policy takes effect
-   only on the following turn, which analyzes a successor build of the same
-   snapshot. Today this deferral is invisible to a consumer: the ingest
-   service's `synchronize_once` returns a normal terminal result whose catalog
-   head is not yet under the requested policy. The crash matrix pins the
-   deferral explicitly. The two candidate public semantics are:
-   - **A. Converge before returning.** `synchronize_once` drives a second turn
-     until the head is under the requested policy. No new public type; the
-     call becomes longer and publishes two revisions from one call. Consumers
-     see one result whose head policy always equals the request; the core
-     needs no API change (ingest-side loop), so a compatible core bump and an
-     ingest compatible bump.
-   - **B. An explicit deferred outcome.** The core publication result (and the
-     ingest synchronization result) gains an explicit outcome such as
-     `POLICY_DEFERRED`, returned when the finalized head's policy differs from
-     the requested one; consumers decide whether to re-run. This adds a public
-     enum/field to `VNextIngestAdvanceResult` and the ingest result: a core
-     compatibility-lane bump (new public protocol) and an ingest lane bump,
-     and every consumer must handle the new outcome.
-   Until the owner chooses, the deferral stays a documented blocker.
-2. **The changed-snapshot conflict.** A snapshot that changed while a prior
-   commit is durable but unfinalized fails the source handoff closed with
-   `SourceBuildConflictError`. That class is an internal `RuntimeError`
-   subclass: it is not exported from the package root, is not part of the
-   facade surface, and consumers see an untyped failure. Making it a typed
-   public contract (export it, decide whether the resident retries, backs off
-   or requires the old snapshot) is part of the same undecided protocol.
+This replaces the former hidden one-turn deferral and the related changed-
+snapshot failure behavior. A caller no longer has to retry manually, interpret
+a new `POLICY_DEFERRED` result, or recreate the old filesystem snapshot merely
+to finish durable database work. The old commit remains authoritative and is
+completed idempotently from its receipt; response loss may repeat bounded
+adapter/database steps without changing the successful-return contract.
 
 FD completeness remains a domain-audit assumption. The checker and Lean can
 prove consequences of the declared FD set; they cannot infer an omitted real

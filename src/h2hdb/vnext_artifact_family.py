@@ -37,6 +37,7 @@ from .vnext_domains import (
     require_utf8_bytes,
     require_uuid16,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import VNextUnitOfWork
 
 _SEMANTIC_TABLE = "catalog_artifact_semantic_inputs"
@@ -472,6 +473,12 @@ def ensure_prepared_artifact_family(
             )
         assert existing_key is not None
         return existing_key, False
+    transition = require_catalog_state_mutation(
+        "prepared-artifact.initialize",
+        previous_state=None,
+        next_state=family.state,
+        timestamp=None,
+    )
     try:
         connector.execute(
             f"INSERT INTO {_PREPARED_TABLE} "
@@ -485,7 +492,7 @@ def ensure_prepared_artifact_family(
                 family.storage_object_key_sha256,
                 family.storage_generation,
                 family.protection_token,
-                family.state,
+                transition.next_state,
             ),
         )
     except DatabaseDuplicateKeyError:
@@ -514,9 +521,12 @@ def cas_prepared_artifact_state(
     expected_state: str,
     next_state: str,
 ) -> PreparedArtifactFamily:
-    allowed = {("PENDING", "PREPARED"), ("PREPARED", "COMMITTED")}
-    if (expected_state, next_state) not in allowed:
-        raise ValueError("prepared resource state transition is not registered")
+    transition = require_catalog_state_mutation(
+        "prepared-artifact.transition",
+        previous_state=expected_state,
+        next_state=next_state,
+        timestamp=None,
+    )
     current = load_prepared_artifact_family(
         work.connector,
         candidate_id=candidate_id,
@@ -527,9 +537,9 @@ def cas_prepared_artifact_state(
     )
     if current is None:
         raise ArtifactFamilyPartialError("prepared resource family is absent")
-    if current.state == next_state:
+    if current.state == transition.next_state:
         return current
-    if current.state != expected_state:
+    if current.state != transition.previous_state:
         raise ArtifactFamilyCollisionError(
             "prepared resource state does not match transition authority"
         )
@@ -537,11 +547,11 @@ def cas_prepared_artifact_state(
         f"UPDATE {_PREPARED_TABLE} SET state = %s WHERE candidate_id = %s "
         "AND publication_key = %s AND resource_kind = %s AND state = %s",
         (
-            next_state,
+            transition.next_state,
             current.candidate_id,
             current.publication_key,
             current.resource_kind.value.encode("ascii"),
-            expected_state,
+            transition.previous_state,
         ),
         authority="prepared resource state",
     )
@@ -552,7 +562,7 @@ def cas_prepared_artifact_state(
         resource_kind=current.resource_kind,
         backend=work.backend,
     )
-    if updated is None or updated.state != next_state:
+    if updated is None or updated.state != transition.next_state:
         raise ArtifactFamilyCollisionError(
             "prepared resource vanished after compare-and-swap"
         )

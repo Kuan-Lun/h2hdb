@@ -36,6 +36,7 @@ from .vnext_domains import (
     require_uuid16,
 )
 from .vnext_identity import artifact_source_manifest_digest
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _SOURCE_BUILD_DESCRIPTOR = "catalog_source_build_descriptor"
@@ -217,6 +218,12 @@ def ensure_source_build_family(
                 "source build attempt capability conflicts with durable facts"
             )
         return existing
+    transition = require_catalog_state_mutation(
+        "source-build.initialize",
+        previous_state=None,
+        next_state="OPEN",
+        timestamp=None,
+    )
     connector.execute(
         f"INSERT INTO {_SOURCE_BUILD_DESCRIPTOR} "
         "(build_id, scope_key, manifest_policy_id, created_at) "
@@ -230,7 +237,7 @@ def ensure_source_build_family(
     )
     connector.execute(
         f"INSERT INTO {_SOURCE_BUILD_STATE} (build_id, state) VALUES (%s, %s)",
-        (proposed.build_id, "OPEN"),
+        (proposed.build_id, transition.next_state),
     )
     return proposed
 
@@ -303,6 +310,12 @@ def ensure_build_manifest_family(
         raise ManifestFamilyPartialError(
             "source build sealed_at exists without its manifest core"
         )
+    transition = require_catalog_state_mutation(
+        "source-build.seal-timestamp",
+        previous_state="OPEN",
+        next_state="SEALED",
+        timestamp=proposed.computed_at,
+    )
     connector.execute(
         f"INSERT INTO {_BUILD_MANIFEST_CORE} "
         "(build_id, manifest_sha256, file_count, byte_count) "
@@ -316,7 +329,7 @@ def ensure_build_manifest_family(
     )
     connector.execute(
         f"INSERT INTO {_SOURCE_BUILD_SEALED} (build_id, sealed_at) VALUES (%s, %s)",
-        (proposed.build_id, proposed.computed_at),
+        (proposed.build_id, transition.timestamp),
     )
     return proposed
 

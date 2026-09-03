@@ -61,14 +61,14 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    # The honest re-audit keeps every layer blocked where the executable
-    # evidence does not meet the obligation's original quantifier.  Pinning the
-    # split makes any later reclassification an explicit reviewed change.
-    assert len(report.blockers) == 26
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 13
+    # The remaining blockers are the four evidence layers for the single
+    # deliberately unwired external orphan-artifact deletion workflow.
+    # Pinning the split makes any later reclassification an explicit review.
+    assert len(report.blockers) == 4
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 0
     assert (
         sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 13
+        == 4
     )
 
 
@@ -252,10 +252,9 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 1, result.stdout
-    assert "formal coverage blocked: invariants=31 evidence=145 blockers=26" in (
+    assert "formal coverage blocked: invariants=31 evidence=155 blockers=4" in (
         result.stdout
     )
-    assert "catalog.physical-domains.v1:fault:" in result.stdout
     assert "h2hdb.operational.maintenance-gate.v1:fault:" in result.stdout
 
 
@@ -278,9 +277,9 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     assert validate_only.returncode == 0, validate_only.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=31 evidence=145 blockers=26"
+        "invariants=31 evidence=155 blockers=4"
     ) in validate_only.stdout
-    assert "catalog.retention.v2:fault:" in validate_only.stdout
+    assert "h2hdb.operational.cleanup-reachability.v1:fault:" in validate_only.stdout
     strict = subprocess.run(
         [sys.executable, str(COVERAGE_CHECKER), str(COVERAGE_MANIFEST)],
         cwd=ROOT,
@@ -290,7 +289,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     )
     assert strict.returncode == 1
     assert (
-        "formal coverage blocked: invariants=31 evidence=145 blockers=26"
+        "formal coverage blocked: invariants=31 evidence=155 blockers=4"
         in strict.stdout
     )
 

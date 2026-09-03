@@ -135,6 +135,7 @@ def test_public_ingest_facade_context_closes_owned_cache_and_fails_closed(
         lambda: facade.prepare_analysis_step(cast(Any, object()), cast(Any, object())),
         lambda: facade.commit_analysis_step(cast(Any, object()), cast(Any, object())),
         lambda: facade.issue_publication_step(cast(Any, object()), cast(Any, object())),
+        lambda: facade.try_issue_publication_recovery_step(cast(Any, object())),
         lambda: facade.prepare_publication_step(
             cast(Any, object()),
             artifact_adapters={},

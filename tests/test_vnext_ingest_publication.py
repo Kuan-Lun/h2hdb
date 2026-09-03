@@ -121,6 +121,11 @@ def test_publication_contract_is_top_level_and_facade_owned() -> None:
         inspect.signature(h2hdb.VNextIngestFacade.issue_publication_step).parameters
     ) == ("self", "session", "policy")
     assert tuple(
+        inspect.signature(
+            h2hdb.VNextIngestFacade.try_issue_publication_recovery_step
+        ).parameters
+    ) == ("self", "session")
+    assert tuple(
         inspect.signature(h2hdb.VNextIngestFacade.prepare_publication_step).parameters
     ) == (
         "self",

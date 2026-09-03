@@ -101,6 +101,7 @@ from .vnext_publication_family import (
     load_catalog_publication_title_family,
     load_publication_candidate_family,
 )
+from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _CANDIDATE_TABLE = "catalog_publication_candidates"
@@ -3092,6 +3093,12 @@ def _ensure_reserved_catalog_revision(
                 "reserved catalog revision differs from selection authority"
             )
         return
+    require_catalog_state_mutation(
+        "publication-candidate.reserve-revision",
+        previous_state=None,
+        next_state="OPEN",
+        timestamp=None,
+    )
     work.connector.execute(
         f"INSERT INTO {_CATALOG_REVISION_DESCRIPTOR_TABLE} "
         "(revision, publication_count, artifact_count) VALUES (%s, %s, %s)",
@@ -5361,6 +5368,12 @@ def _commit_candidate_batch(
         )
     successor = checkpoint.generation + 1
     timestamp = require_int63(now, field="publication batch committed_at")
+    transition = require_catalog_state_mutation(
+        "publication-checkpoint.advance",
+        previous_state=checkpoint.state,
+        next_state=next_state,
+        timestamp=timestamp,
+    )
     work.connector.execute(
         f"INSERT INTO {_PUBLICATION_BATCH_RECEIPT_STORED_TABLE} "
         "(candidate_id, stage, start_generation, batch_key, start_cursor, "
@@ -5378,7 +5391,6 @@ def _commit_candidate_batch(
             timestamp,
         ),
     )
-    checkpoint_key = (authority.candidate.candidate_id, stage)
     work.compare_and_swap(
         f"UPDATE {_PUBLICATION_CHECKPOINT_TABLE} "
         "SET generation = %s, `cursor` = %s, processed_count = %s, state = %s, "
@@ -5389,13 +5401,14 @@ def _commit_candidate_batch(
             successor,
             next_cursor,
             next_count,
-            next_state,
-            timestamp,
-            *checkpoint_key,
+            transition.next_state,
+            transition.timestamp,
+            authority.candidate.candidate_id,
+            stage,
             checkpoint.generation,
             checkpoint.cursor,
             checkpoint.processed_count,
-            checkpoint.state,
+            transition.previous_state,
             checkpoint.updated_at,
         ),
         authority=f"publication candidate stage {stage!r} checkpoint",
@@ -5748,6 +5761,12 @@ def _initialize_candidate_checkpoints(
     now: int,
 ) -> None:
     timestamp = require_int63(now, field="publication checkpoint initialized_at")
+    transition = require_catalog_state_mutation(
+        "publication-checkpoint.initialize",
+        previous_state=None,
+        next_state=_CHECKPOINT_OPEN,
+        timestamp=timestamp,
+    )
     affected = work.connector.execute_affected(
         f"INSERT INTO {_PUBLICATION_CHECKPOINT_TABLE} "
         "(candidate_id, stage, generation, `cursor`, processed_count, state, "
@@ -5758,8 +5777,8 @@ def _initialize_candidate_checkpoints(
             1,
             b"",
             0,
-            _CHECKPOINT_OPEN,
-            timestamp,
+            transition.next_state,
+            transition.timestamp,
             _FINALIZATION_STAGE.name,
         ),
     )
