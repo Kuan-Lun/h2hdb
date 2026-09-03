@@ -62,7 +62,10 @@ from h2hdb.vnext_maintenance_gate_repository import (
 from h2hdb.vnext_operational_event_repository import (
     DeletionConsumption,
     OperationalEffectRepository,
+    OperationalEffectStateError,
     RemovedGid,
+    SupersededDrainPosition,
+    drain_page_sql,
 )
 from h2hdb.vnext_queue_repository import (
     QueueIdentityConflictError,
@@ -1370,6 +1373,7 @@ def test_live_mariadb_operational_writer_workflows(
 
 
 _DRAIN_BUILD = b"b" * 16
+_DRAIN_SEEK_INDEX = "ix_operational_preparation_drain_seek"
 
 
 def _seed_mariadb_drain_preparations(
@@ -1378,9 +1382,9 @@ def _seed_mariadb_drain_preparations(
     count: int,
     policy_id: int,
     current_generation: int,
-) -> None:
-    """Seed ``count`` unbound, uncommitted OPEN/COMPLETE preparations of the
-    build, each under a distinct deletion generation, for bounded drainage.
+) -> list[bytes]:
+    """Seed ``count`` unbound, uncommitted OPEN preparations of the build, each
+    under a distinct deletion generation, for bounded drainage.
 
     Foreign key checks are disabled only for this focused injection; the live
     physical matrix exercises FK integrity."""
@@ -1402,6 +1406,7 @@ def _seed_mariadb_drain_preparations(
         "(slot, build_id, assigned_at) VALUES (1, %s, %s)",
         (_DRAIN_BUILD, 6),
     )
+    ids: list[bytes] = []
     with connector.transaction():
         for offset in range(count):
             generation = current_generation + 1 + offset
@@ -1416,29 +1421,19 @@ def _seed_mariadb_drain_preparations(
                 "(preparation_id, created_at) VALUES (%s, %s)",
                 (preparation_id, 1),
             )
-            if offset % 2:
-                state, completed = "COMPLETE", 6
-            else:
-                state, completed = "OPEN", None
             connector.execute(
                 "INSERT INTO operational_operational_preparations "
                 "(preparation_id, build_id, deletion_request_generation, "
                 "operational_policy_id, state, prepared_at, completed_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
-                    preparation_id,
-                    _DRAIN_BUILD,
-                    generation,
-                    policy_id,
-                    state,
-                    4,
-                    completed,
-                ),
+                "VALUES (%s, %s, %s, %s, 'OPEN', 4, NULL)",
+                (preparation_id, _DRAIN_BUILD, generation, policy_id),
             )
+            ids.append(preparation_id)
     connector.execute("SET FOREIGN_KEY_CHECKS = 1")
     # SET opens an implicit transaction that no auto-commit statement
     # closes; commit it so the caller can start its own transactions.
     connector.commit()
+    return ids
 
 
 def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
@@ -1452,53 +1447,102 @@ def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
     )
 
 
+def _assert_mariadb_drain_page_seeks_the_index(
+    connector: MariaDBConnector, *, exclusion: bool
+) -> None:
+    """Query-plan evidence on live MariaDB: the page reads the preparation
+    table through the (build_id, state, preparation_id) index as a range."""
+
+    data: tuple[object, ...] = (_DRAIN_BUILD, "OPEN")
+    if exclusion:
+        data += (1, 0)
+    data += (b"\0" * 16, 128)
+    with connector.read_transaction():
+        plan = connector.fetch_all(
+            "EXPLAIN " + drain_page_sql(exclusion=exclusion), data
+        )
+    rows = [row for row in plan if row[2] == "p"]
+    assert len(rows) == 1, plan
+    (row,) = rows
+    assert row[5] == _DRAIN_SEEK_INDEX, plan
+    assert row[3] in {"range", "ref"}, plan
+
+
 def test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable(
     generated_mariadb: _LiveMariaDBConnector,
 ) -> None:
-    """The source-side stale-build preparation drainage abandons at most 128
-    rows per transaction on live MariaDB, converges over 257 rows, rolls back
-    an interrupted page, and replays a lost page response idempotently."""
+    """The source-side retiring-build drainage abandons at most 128 rows per
+    transaction on live MariaDB from the durable position, converges over 257
+    rows, rolls back an interrupted page, refuses a stale position and a
+    non-advancing fence with zero writes, and seeks the drain index."""
 
     connector = generated_mariadb
-    _seed_mariadb_drain_preparations(
+    ids = _seed_mariadb_drain_preparations(
         connector, count=257, policy_id=1, current_generation=0
     )
+    _assert_mariadb_drain_page_seeks_the_index(connector, exclusion=False)
     # Interrupted page: nothing is abandoned.
     with pytest.raises(RuntimeError, match="interrupted"):
         with connector.transaction():
-            source_build_module._abandon_build_preparations_page(
-                _work(connector), build_id=_DRAIN_BUILD, now=100
+            source_build_module._drain_retiring_build_page(
+                _work(connector), build_id=_DRAIN_BUILD, drained_page=None, now=100
             )
             raise RuntimeError("interrupted before commit")
     assert _mariadb_non_abandoned(connector) == 257
 
-    # Bounded, keyset-paged drainage; the lost-response replay resumes.
-    def stale_pending() -> bool:
-        with connector.read_transaction():
-            return source_build_module._build_superseded_preparations_pending(
-                connector, build_id=_DRAIN_BUILD
-            )
-
     pages: list[int] = []
+    positions: list[SupersededDrainPosition] = []
+    drained_page: source_build_module._SourceDrainRetry | None = None
     now = 200
-    while stale_pending():
+    while True:
         with connector.transaction():
-            pages.append(
-                source_build_module._abandon_build_preparations_page(
-                    _work(connector), build_id=_DRAIN_BUILD, now=now
-                )
+            retirement = source_build_module._drain_retiring_build_page(
+                _work(connector),
+                build_id=_DRAIN_BUILD,
+                drained_page=drained_page,
+                now=now,
             )
         now += 1
+        assert retirement is not None and retirement.position is not None
+        pages.append(retirement.abandoned)
+        positions.append(retirement.position)
+        assert len(pages) <= 3
+        if retirement.drained:
+            break
+        drained_page = retirement.retry(_DRAIN_BUILD)
+        if len(pages) == 1:
+            # A delayed retry of the committed page is refused with zero writes.
+            with pytest.raises(OperationalEffectStateError, match="stale"):
+                with connector.transaction():
+                    OperationalEffectRepository.abandon_retiring_build_preparations(
+                        _work(connector),
+                        build_id=_DRAIN_BUILD,
+                        position=retirement.position,
+                        now=now,
+                    )
+            assert _mariadb_non_abandoned(connector) == 129
     assert pages == [128, 128, 1]
+    assert [position.preparation_id for position in positions] == [
+        ids[0],
+        ids[128],
+        ids[256],
+    ]
     assert _mariadb_non_abandoned(connector) == 0
+    with connector.transaction():
+        assert (
+            source_build_module._drain_retiring_build_page(
+                _work(connector), build_id=_DRAIN_BUILD, drained_page=None, now=now
+            )
+            is None
+        )
 
 
 def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
     generated_mariadb: _LiveMariaDBConnector,
 ) -> None:
     """The operational superseded-preparation drainage abandons at most 128
-    rows per authorized transaction on live MariaDB and converges over 129
-    rows."""
+    rows per authorized transaction on live MariaDB from the durable position,
+    converges over 129 rows, refuses a stale position, and seeks the index."""
 
     connector = generated_mariadb
     _seed_mariadb_drain_preparations(
@@ -1510,6 +1554,7 @@ def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
         "max_batch_rows) VALUES (%s, %s, %s, %s)",
         (2, 1, 1, 63),
     )
+    _assert_mariadb_drain_page_seeks_the_index(connector, exclusion=True)
     gate = _claim_shared(connector, b"gate-drain-00001", now=5, duration=1_000_000)
     with connector.transaction():
         turn = IngestFenceRepository.claim(
@@ -1525,30 +1570,40 @@ def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
         (turn.generation, _DRAIN_BUILD),
     )
 
-    def superseded_pending() -> bool:
+    def superseded_position() -> SupersededDrainPosition | None:
         with connector.read_transaction():
-            return OperationalEffectRepository.superseded_preparations_pending(
+            return OperationalEffectRepository.superseded_drain_position(
                 _work(connector),
                 build_id=_DRAIN_BUILD,
                 policy_id=1,
                 deletion_generation=0,
             )
 
-    pages: list[int] = []
-    now = 300
-    while superseded_pending():
+    def abandon(position: SupersededDrainPosition, *, now: int) -> int:
         with connector.transaction():
-            pages.append(
-                OperationalEffectRepository.abandon_superseded_preparations(
-                    _work(connector),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    build_id=_DRAIN_BUILD,
-                    policy_id=1,
-                    deletion_generation=0,
-                    now=now,
-                )
+            return OperationalEffectRepository.abandon_superseded_preparations(
+                _work(connector),
+                gate_lease=gate,
+                ingest_turn=turn,
+                build_id=_DRAIN_BUILD,
+                policy_id=1,
+                deletion_generation=0,
+                position=position,
+                now=now,
             )
-        now += 1
+
+    pages: list[int] = []
+    previous: SupersededDrainPosition | None = None
+    now = 300
+    while (position := superseded_position()) is not None:
+        assert position.advances_past(previous)
+        pages.append(abandon(position, now=now))
+        if previous is None:
+            with pytest.raises(OperationalEffectStateError, match="stale"):
+                abandon(position, now=now + 1)
+            assert _mariadb_non_abandoned(connector) == 1
+        previous = position
+        now += 2
+        assert len(pages) <= 2
     assert pages == [128, 1]
     assert _mariadb_non_abandoned(connector) == 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -35,8 +36,12 @@ from h2hdb.vnext_operational_event_repository import (
     OperationalEffectCorruptionError,
     OperationalEffectRepository,
     OperationalEffectSeal,
+    OperationalEffectStateError,
     OperationalPreparation,
     RemovedGid,
+    SupersededDrainPosition,
+    drain_page_sql,
+    drain_position_sql,
 )
 from h2hdb.vnext_queue_repository import VNextQueueRepository
 from h2hdb.vnext_transaction import StaleWriteError, VNextUnitOfWork
@@ -600,6 +605,9 @@ def test_database_policy_caps_transient_event_batches(
 
 _SUPERSEDED_BUILD = b"b" * 16
 _CURRENT_GENERATION = 0
+_CURRENT_POLICY = 1
+_SEEK_INDEX = "ix_operational_preparation_drain_seek"
+_ZERO_UUID = b"\0" * 16
 
 
 def _seed_superseded_preparations(
@@ -607,10 +615,11 @@ def _seed_superseded_preparations(
     *,
     count: int,
     first_generation: int = 1,
+    states: tuple[str, ...] = ("OPEN",),
 ) -> list[bytes]:
-    """Seed ``count`` unbound, uncommitted OPEN/COMPLETE preparations of the
-    build, each under a distinct deletion generation other than the current
-    one, so every row is superseded by policy/generation."""
+    """Seed ``count`` unbound, uncommitted preparations of the build, each
+    under a distinct deletion generation other than the current one, so every
+    row is superseded by generation.  ``states`` cycles over the rows."""
 
     ids: list[bytes] = []
     with connector.transaction():
@@ -628,10 +637,7 @@ def _seed_superseded_preparations(
                 "(preparation_id, created_at) VALUES (%s, %s)",
                 (preparation_id, 1),
             )
-            if offset % 2:
-                state: tuple[str, int | None] = ("COMPLETE", 5)
-            else:
-                state = ("OPEN", None)
+            state = states[offset % len(states)]
             connector.execute(
                 "INSERT INTO operational_operational_preparations "
                 "(preparation_id, build_id, deletion_request_generation, "
@@ -641,22 +647,22 @@ def _seed_superseded_preparations(
                     preparation_id,
                     _SUPERSEDED_BUILD,
                     generation,
-                    1,
-                    state[0],
+                    _CURRENT_POLICY,
+                    state,
                     3,
-                    state[1],
+                    5 if state == "COMPLETE" else None,
                 ),
             )
             ids.append(preparation_id)
     return ids
 
 
-def _superseded_pending(connector: SQLiteConnector) -> bool:
+def _superseded_position(connector: SQLiteConnector) -> SupersededDrainPosition | None:
     with connector.transaction():
-        return OperationalEffectRepository.superseded_preparations_pending(
+        return OperationalEffectRepository.superseded_drain_position(
             VNextUnitOfWork(connector, backend="sqlite"),
             build_id=_SUPERSEDED_BUILD,
-            policy_id=1,
+            policy_id=_CURRENT_POLICY,
             deletion_generation=_CURRENT_GENERATION,
         )
 
@@ -667,17 +673,46 @@ def _abandon_one_page(
     turn: IngestTurn,
     *,
     now: int,
+    position: SupersededDrainPosition | None = None,
 ) -> int:
+    if position is None:
+        position = _superseded_position(connector)
+        assert position is not None
     with connector.transaction():
         return OperationalEffectRepository.abandon_superseded_preparations(
             VNextUnitOfWork(connector, backend="sqlite"),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=_SUPERSEDED_BUILD,
-            policy_id=1,
+            policy_id=_CURRENT_POLICY,
             deletion_generation=_CURRENT_GENERATION,
+            position=position,
             now=now,
         )
+
+
+def _drain_all(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    turn: IngestTurn,
+    *,
+    now: int,
+    page_budget: int,
+) -> tuple[list[int], list[SupersededDrainPosition]]:
+    """Drive drainage from the durable position until it is None; every
+    issued position must strictly advance past the previously committed one."""
+
+    pages: list[int] = []
+    positions: list[SupersededDrainPosition] = []
+    while (position := _superseded_position(connector)) is not None:
+        assert position.advances_past(positions[-1] if positions else None)
+        positions.append(position)
+        pages.append(
+            _abandon_one_page(connector, gate, turn, now=now, position=position)
+        )
+        now += 1
+        assert len(pages) <= page_budget
+    return pages, positions
 
 
 def _non_abandoned_count(connector: SQLiteConnector) -> int:
@@ -690,26 +725,27 @@ def _non_abandoned_count(connector: SQLiteConnector) -> int:
 
 
 @pytest.mark.parametrize("count", (129, 257))
-def test_superseded_drainage_is_bounded_keyset_paged_and_converges(
+def test_superseded_drainage_is_bounded_seek_paged_and_converges(
     tmp_path: Path,
     count: int,
 ) -> None:
-    """More than one page of superseded preparations drains 128 at a time,
-    keyset-ordered, until none remain and every row is ABANDONED exactly once."""
+    """More than one page of superseded preparations drains 128 at a time from
+    the durable position, which strictly advances after every committed page,
+    until none remain and every row is ABANDONED exactly once."""
 
     connector = _generated_database(tmp_path / "drain.sqlite3")
     try:
         gate, turn = _authorities(connector)
-        _seed_superseded_preparations(connector, count=count)
-        pages: list[int] = []
-        now = 100
-        while _superseded_pending(connector):
-            pages.append(_abandon_one_page(connector, gate, turn, now=now))
-            now += 1
-            assert len(pages) <= count // 128 + 2
-        assert all(page <= 128 for page in pages)
-        assert sum(pages) == count
+        ids = _seed_superseded_preparations(connector, count=count)
+        pages, positions = _drain_all(
+            connector, gate, turn, now=100, page_budget=count // 128 + 1
+        )
         assert pages == [128] * (count // 128) + ([count % 128] if count % 128 else [])
+        # Each page started at the least surviving row: the seek is exact.
+        assert [position.preparation_id for position in positions] == [
+            ids[index * 128] for index in range(len(pages))
+        ]
+        assert all(position.state == "OPEN" for position in positions)
         assert _non_abandoned_count(connector) == 0
         abandoned = connector.fetch_one(
             "SELECT COUNT(*) FROM operational_operational_preparations "
@@ -717,8 +753,32 @@ def test_superseded_drainage_is_bounded_keyset_paged_and_converges(
             (_SUPERSEDED_BUILD,),
         )
         assert abandoned == (count,)
-        # A redundant page after full drainage is an idempotent no-op.
-        assert _abandon_one_page(connector, gate, turn, now=now) == 0
+        assert _superseded_position(connector) is None
+    finally:
+        connector.close()
+
+
+def test_superseded_drainage_drains_each_state_as_one_seek_range(
+    tmp_path: Path,
+) -> None:
+    """Mixed states drain as single-state index ranges in drain order:
+    every COMPLETE row before the first OPEN page, each page within one
+    state, and the position's (state, preparation_id) key strictly ascending."""
+
+    connector = _generated_database(tmp_path / "states.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        _seed_superseded_preparations(connector, count=257, states=("OPEN", "COMPLETE"))
+        pages, positions = _drain_all(connector, gate, turn, now=100, page_budget=3)
+        assert [(position.state, page) for position, page in zip(positions, pages)] == [
+            ("COMPLETE", 128),
+            ("OPEN", 128),
+            ("OPEN", 1),
+        ]
+        assert [position.key for position in positions] == sorted(
+            position.key for position in positions
+        )
+        assert _non_abandoned_count(connector) == 0
     finally:
         connector.close()
 
@@ -727,14 +787,15 @@ def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
     tmp_path: Path,
 ) -> None:
     """A page interrupted before its transaction commits abandons nothing:
-    the whole page is atomic."""
+    the whole page is atomic and the durable position is unchanged."""
 
     connector = _generated_database(tmp_path / "fault.sqlite3")
     try:
         gate, turn = _authorities(connector)
         _seed_superseded_preparations(connector, count=200)
-        before = _non_abandoned_count(connector)
-        assert before == 200
+        assert _non_abandoned_count(connector) == 200
+        position = _superseded_position(connector)
+        assert position is not None
         with pytest.raises(RuntimeError, match="interrupted"):
             with connector.transaction():
                 OperationalEffectRepository.abandon_superseded_preparations(
@@ -742,43 +803,163 @@ def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
                     gate_lease=gate,
                     ingest_turn=turn,
                     build_id=_SUPERSEDED_BUILD,
-                    policy_id=1,
+                    policy_id=_CURRENT_POLICY,
                     deletion_generation=_CURRENT_GENERATION,
+                    position=position,
                     now=100,
                 )
                 raise RuntimeError("interrupted before commit")
         assert _non_abandoned_count(connector) == 200
-        # Recovery drains normally.
-        now = 200
-        while _superseded_pending(connector):
-            _abandon_one_page(connector, gate, turn, now=now)
-            now += 1
+        assert _superseded_position(connector) == position
+        pages, _positions = _drain_all(connector, gate, turn, now=200, page_budget=2)
+        assert pages == [128, 72]
         assert _non_abandoned_count(connector) == 0
     finally:
         connector.close()
 
 
-def test_superseded_drainage_replays_a_lost_page_response_idempotently(
+def test_superseded_drainage_rejects_a_stale_position_with_zero_writes(
     tmp_path: Path,
 ) -> None:
-    """A page whose commit response was lost is safe to replay: the committed
-    rows are already ABANDONED and excluded, so the driver simply resumes."""
+    """A page whose commit response was lost is durable; a delayed retry that
+    still carries the committed page's position fails closed with zero writes,
+    and the driver resumes from the re-read durable position, which is
+    strictly past the committed page."""
 
     connector = _generated_database(tmp_path / "replay.sqlite3")
     try:
         gate, turn = _authorities(connector)
         _seed_superseded_preparations(connector, count=257)
-        # First page commits durably; its response is "lost", so the driver
-        # re-checks and finds work still pending.
-        first = _abandon_one_page(connector, gate, turn, now=100)
-        assert first == 128
-        assert _superseded_pending(connector)
-        # The replay of that logical step advances past the committed rows.
-        second = _abandon_one_page(connector, gate, turn, now=101)
-        assert second == 128
-        third = _abandon_one_page(connector, gate, turn, now=102)
-        assert third == 1
-        assert not _superseded_pending(connector)
+        first = _superseded_position(connector)
+        assert first is not None
+        assert _abandon_one_page(connector, gate, turn, now=100, position=first) == 128
+        with pytest.raises(OperationalEffectStateError, match="stale"):
+            _abandon_one_page(connector, gate, turn, now=101, position=first)
+        assert _non_abandoned_count(connector) == 129
+        second = _superseded_position(connector)
+        assert second is not None and second.advances_past(first)
+        assert _abandon_one_page(connector, gate, turn, now=102, position=second) == 128
+        third = _superseded_position(connector)
+        assert third is not None and third.advances_past(second)
+        assert _abandon_one_page(connector, gate, turn, now=103, position=third) == 1
+        assert _superseded_position(connector) is None
         assert _non_abandoned_count(connector) == 0
+    finally:
+        connector.close()
+
+
+def test_superseded_drainage_excludes_bound_and_current_attempts(
+    tmp_path: Path,
+) -> None:
+    """The live build's drainage never touches the current attempt (same
+    policy and generation) nor an attempt bound to a candidate; the retiring
+    build's drainage abandons the bound attempt too, because its orphaned
+    candidate can never publish."""
+
+    connector = _generated_database(tmp_path / "exclusion.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        ids = _seed_superseded_preparations(connector, count=3)
+        current = b"current-attempt!"
+        connector.execute(
+            "INSERT INTO operational_operational_event_streams "
+            "(preparation_id, created_at) VALUES (%s, %s)",
+            (current, 1),
+        )
+        connector.execute(
+            "INSERT INTO operational_operational_preparations "
+            "(preparation_id, build_id, deletion_request_generation, "
+            "operational_policy_id, state, prepared_at, completed_at) "
+            "VALUES (%s, %s, %s, %s, 'OPEN', 3, NULL)",
+            (current, _SUPERSEDED_BUILD, _CURRENT_GENERATION, _CURRENT_POLICY),
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "INSERT INTO operational_publication_candidate_preparations "
+            "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
+            (b"c" * 16, ids[1], 7),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        pages, positions = _drain_all(connector, gate, turn, now=100, page_budget=1)
+        assert pages == [2]
+        assert positions[0].preparation_id == ids[0]
+        states = dict(
+            connector.fetch_all(
+                "SELECT preparation_id, state FROM operational_operational_preparations "
+                "WHERE build_id = %s",
+                (_SUPERSEDED_BUILD,),
+            )
+        )
+        assert states == {
+            ids[0]: "ABANDONED",
+            ids[1]: "OPEN",
+            ids[2]: "ABANDONED",
+            current: "OPEN",
+        }
+        # The retiring build drains the bound attempt as well; the current
+        # attempt is not excluded either because the build is being retired.
+        work = VNextUnitOfWork(connector, backend="sqlite")
+        with connector.transaction():
+            position = OperationalEffectRepository.retiring_build_drain_position(
+                work, build_id=_SUPERSEDED_BUILD
+            )
+            assert position is not None
+            assert position.preparation_id == min(ids[1], current)
+            assert (
+                OperationalEffectRepository.abandon_retiring_build_preparations(
+                    work, build_id=_SUPERSEDED_BUILD, position=position, now=200
+                )
+                == 2
+            )
+            assert (
+                OperationalEffectRepository.retiring_build_drain_position(
+                    work, build_id=_SUPERSEDED_BUILD
+                )
+                is None
+            )
+        assert _non_abandoned_count(connector) == 0
+    finally:
+        connector.close()
+
+
+def test_superseded_drainage_sql_seeks_the_drain_index(tmp_path: Path) -> None:
+    """Query-plan evidence: both the position probe and the page of either
+    drain mode are one range seek on the (build_id, state, preparation_id)
+    index, never a table scan, so a page costs its rows regardless of how many
+    rows earlier pages already abandoned."""
+
+    connector = _generated_database(tmp_path / "plan.sqlite3")
+    try:
+        _seed_superseded_preparations(connector, count=8, states=("OPEN", "COMPLETE"))
+        probes: list[tuple[str, tuple[object, ...], bool]] = [
+            (
+                drain_position_sql(exclusion=True),
+                (_SUPERSEDED_BUILD, "OPEN", 1, 0),
+                False,
+            ),
+            (
+                drain_page_sql(exclusion=True),
+                (_SUPERSEDED_BUILD, "OPEN", 1, 0, _ZERO_UUID, 128),
+                True,
+            ),
+            (drain_position_sql(exclusion=False), (_SUPERSEDED_BUILD, "OPEN"), False),
+            (
+                drain_page_sql(exclusion=False),
+                (_SUPERSEDED_BUILD, "OPEN", _ZERO_UUID, 128),
+                True,
+            ),
+        ]
+        for sql, data, seeks_preparation in probes:
+            with connector.read_transaction():
+                plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, data)
+            details = [str(row[-1]) for row in plan]
+            expected = re.compile(
+                rf"^SEARCH p USING (?:COVERING )?INDEX {_SEEK_INDEX} "
+                r"\(build_id=\? AND state=\?"
+                + (r" AND preparation_id>\?\)$" if seeks_preparation else r"\)$")
+            )
+            assert any(expected.match(detail) for detail in details), details
+            assert not any(detail.startswith("SCAN p") for detail in details), details
+            assert not any("TEMP B-TREE" in detail for detail in details), details
     finally:
         connector.close()

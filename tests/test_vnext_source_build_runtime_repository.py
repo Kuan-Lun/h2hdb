@@ -58,6 +58,11 @@ from h2hdb.vnext_manifest_family import (
     load_snapshot_manifest_family,
     load_source_build_family,
 )
+from h2hdb.vnext_operational_event_repository import (
+    OperationalEffectRepository,
+    OperationalEffectStateError,
+    SupersededDrainPosition,
+)
 from h2hdb.vnext_source_build_repository import (
     AssemblyBatchAttempt,
     SourceBuildConflictError,
@@ -4591,13 +4596,15 @@ def _seed_stale_build_with_preparations(
     connector: SQLiteConnector,
     *,
     count: int,
-) -> None:
-    """Seed a source build and ``count`` unbound, uncommitted OPEN/COMPLETE
-    operational preparations of it for the bounded drainage.
+    states: tuple[str, ...] = ("OPEN",),
+    bound_offsets: tuple[int, ...] = (),
+) -> list[bytes]:
+    """Seed a source build and ``count`` uncommitted preparations of it for
+    the bounded drainage; ``bound_offsets`` are bound to an orphaned candidate.
 
     Foreign keys are disabled only for this focused injection of preparation
-    rows; the drainage predicate and its FK integrity are exercised by the
-    physical and identity matrices, not here."""
+    and binding rows; the drainage predicate and its FK integrity are
+    exercised by the physical and identity matrices, not here."""
 
     connector.execute("PRAGMA foreign_keys = OFF")
     connector.execute(
@@ -4618,6 +4625,7 @@ def _seed_stale_build_with_preparations(
         "max_batch_rows) VALUES (%s, %s, %s, %s)",
         (1, 1, 1, 2),
     )
+    ids: list[bytes] = []
     with connector.transaction():
         for offset in range(count):
             generation = offset + 1
@@ -4633,33 +4641,76 @@ def _seed_stale_build_with_preparations(
                 "(preparation_id, created_at) VALUES (%s, %s)",
                 (preparation_id, 1),
             )
-            if offset % 2:
-                state, completed = "COMPLETE", 6
-            else:
-                state, completed = "OPEN", None
+            state = states[offset % len(states)]
             connector.execute(
                 "INSERT INTO operational_operational_preparations "
                 "(preparation_id, build_id, deletion_request_generation, "
                 "operational_policy_id, state, prepared_at, completed_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (preparation_id, _STALE_BUILD, generation, 1, state, 4, completed),
+                (
+                    preparation_id,
+                    _STALE_BUILD,
+                    generation,
+                    1,
+                    state,
+                    4,
+                    6 if state == "COMPLETE" else None,
+                ),
             )
+            if offset in bound_offsets:
+                connector.execute(
+                    "INSERT INTO operational_publication_candidate_preparations "
+                    "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
+                    (f"cnd{generation:013d}".encode(), preparation_id, 7),
+                )
+            ids.append(preparation_id)
     connector.execute("PRAGMA foreign_keys = ON")
+    return ids
 
 
-def _stale_pending(connector: SQLiteConnector) -> bool:
-    return source_build_module._build_superseded_preparations_pending(
-        connector, build_id=_STALE_BUILD
-    )
-
-
-def _stale_page(connector: SQLiteConnector, *, now: int) -> int:
+def _stale_position(connector: SQLiteConnector) -> SupersededDrainPosition | None:
     with connector.transaction():
-        return source_build_module._abandon_build_preparations_page(
+        return OperationalEffectRepository.retiring_build_drain_position(
+            VNextUnitOfWork(connector, backend="sqlite"), build_id=_STALE_BUILD
+        )
+
+
+def _stale_page(
+    connector: SQLiteConnector,
+    *,
+    now: int,
+    drained_page: source_build_module._SourceDrainRetry | None,
+) -> source_build_module._StaleRetirement | None:
+    with connector.transaction():
+        return source_build_module._drain_retiring_build_page(
             VNextUnitOfWork(connector, backend="sqlite"),
             build_id=_STALE_BUILD,
+            drained_page=drained_page,
             now=now,
         )
+
+
+def _drain_stale_build(
+    connector: SQLiteConnector, *, now: int, page_budget: int
+) -> tuple[list[int], list[SupersededDrainPosition]]:
+    """Drive the retiring-build drainage exactly like re-issued handoffs: each
+    page carries the previous committed page as its liveness fence."""
+
+    pages: list[int] = []
+    positions: list[SupersededDrainPosition] = []
+    drained_page: source_build_module._SourceDrainRetry | None = None
+    while True:
+        retirement = _stale_page(connector, now=now, drained_page=drained_page)
+        now += 1
+        if retirement is None:
+            return pages, positions
+        assert retirement.position is not None
+        pages.append(retirement.abandoned)
+        positions.append(retirement.position)
+        assert len(pages) <= page_budget
+        if retirement.drained:
+            return pages, positions
+        drained_page = retirement.retry(_STALE_BUILD)
 
 
 def _stale_non_abandoned(connector: SQLiteConnector) -> int:
@@ -4677,23 +4728,23 @@ def test_stale_build_preparation_drainage_is_bounded_and_converges(
     tmp_path: Path,
     count: int,
 ) -> None:
-    """A retiring build's superseded preparations drain 128 per transaction,
-    keyset-ordered, until none remain and every row is ABANDONED once."""
+    """A retiring build's preparations drain 128 per transaction from the
+    durable position, which strictly advances per committed page, until none
+    remain and every row is ABANDONED once; the final page reports drained."""
 
     connector = _generated_database(tmp_path / "stale-drain.sqlite3")
     try:
-        _seed_stale_build_with_preparations(connector, count=count)
-        pages: list[int] = []
-        now = 100
-        while _stale_pending(connector):
-            pages.append(_stale_page(connector, now=now))
-            now += 1
-            assert len(pages) <= count // 128 + 2
-        assert all(page <= 128 for page in pages)
-        assert sum(pages) == count
+        ids = _seed_stale_build_with_preparations(connector, count=count)
+        pages, positions = _drain_stale_build(
+            connector, now=100, page_budget=count // 128 + 1
+        )
         assert pages == [128] * (count // 128) + ([count % 128] if count % 128 else [])
+        assert [position.preparation_id for position in positions] == [
+            ids[index * 128] for index in range(len(pages))
+        ]
         assert _stale_non_abandoned(connector) == 0
-        assert _stale_page(connector, now=now) == 0
+        assert _stale_position(connector) is None
+        assert _stale_page(connector, now=500, drained_page=None) is None
     finally:
         connector.close()
 
@@ -4702,44 +4753,102 @@ def test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit(
     tmp_path: Path,
 ) -> None:
     """A page interrupted before its commit abandons nothing; recovery drains
-    normally."""
+    normally from the unchanged durable position."""
 
     connector = _generated_database(tmp_path / "stale-fault.sqlite3")
     try:
         _seed_stale_build_with_preparations(connector, count=200)
         assert _stale_non_abandoned(connector) == 200
+        before = _stale_position(connector)
         with pytest.raises(RuntimeError, match="interrupted"):
             with connector.transaction():
-                source_build_module._abandon_build_preparations_page(
+                source_build_module._drain_retiring_build_page(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     build_id=_STALE_BUILD,
+                    drained_page=None,
                     now=100,
                 )
                 raise RuntimeError("interrupted before commit")
         assert _stale_non_abandoned(connector) == 200
-        now = 200
-        while _stale_pending(connector):
-            _stale_page(connector, now=now)
-            now += 1
+        assert _stale_position(connector) == before
+        pages, _positions = _drain_stale_build(connector, now=200, page_budget=2)
+        assert pages == [128, 72]
         assert _stale_non_abandoned(connector) == 0
     finally:
         connector.close()
 
 
-def test_stale_build_preparation_replays_a_lost_page_response(
+def test_stale_build_drainage_fails_closed_when_the_position_does_not_advance(
     tmp_path: Path,
 ) -> None:
-    """A page whose commit response was lost is safe to replay: committed rows
-    are already ABANDONED and excluded, so the driver resumes at the next."""
+    """Liveness fence: a re-issued handoff whose durable position is not
+    strictly past the page it just committed proves the page was lost, and
+    fails closed with zero writes; a delayed retry carrying the committed
+    page's position is likewise refused at the repository."""
 
-    connector = _generated_database(tmp_path / "stale-replay.sqlite3")
+    connector = _generated_database(tmp_path / "stale-fence.sqlite3")
     try:
         _seed_stale_build_with_preparations(connector, count=257)
-        assert _stale_page(connector, now=100) == 128
-        assert _stale_pending(connector)
-        assert _stale_page(connector, now=101) == 128
-        assert _stale_page(connector, now=102) == 1
-        assert not _stale_pending(connector)
+        first = _stale_page(connector, now=100, drained_page=None)
+        assert first is not None and not first.drained and first.abandoned == 128
+        assert first.position is not None
+        second_position = _stale_position(connector)
+        assert second_position is not None
+        assert second_position.advances_past(first.position)
+        # Claim the second page was already committed: the position must
+        # then be past it, and it is not.
+        forged = source_build_module._SourceDrainRetry(
+            _STALE_BUILD, 128, second_position
+        )
+        with pytest.raises(SourceBuildConflictError, match="did not advance"):
+            _stale_page(connector, now=101, drained_page=forged)
+        assert _stale_non_abandoned(connector) == 129
+        # A delayed retry of the committed first page is refused with zero
+        # writes at the repository boundary.
+        with pytest.raises(OperationalEffectStateError, match="stale"):
+            with connector.transaction():
+                OperationalEffectRepository.abandon_retiring_build_preparations(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    build_id=_STALE_BUILD,
+                    position=first.position,
+                    now=102,
+                )
+        assert _stale_non_abandoned(connector) == 129
+        # Another retiring build mid-turn is a conflict, not a silent reset.
+        other = source_build_module._SourceDrainRetry(b"o" * 16, 128, first.position)
+        with pytest.raises(SourceBuildConflictError, match="switched"):
+            _stale_page(connector, now=103, drained_page=other)
+        # The honest continuation drains the rest.
+        second = _stale_page(connector, now=104, drained_page=first.retry(_STALE_BUILD))
+        assert second is not None and second.abandoned == 128 and not second.drained
+        third = _stale_page(connector, now=105, drained_page=second.retry(_STALE_BUILD))
+        assert third is not None and third.abandoned == 1 and third.drained
         assert _stale_non_abandoned(connector) == 0
+    finally:
+        connector.close()
+
+
+def test_stale_build_drainage_abandons_attempts_bound_to_the_orphaned_candidate(
+    tmp_path: Path,
+) -> None:
+    """A retiring build's candidate can never publish, so an attempt bound to
+    it is drained with the rest and mixed states drain COMPLETE before OPEN."""
+
+    connector = _generated_database(tmp_path / "stale-bound.sqlite3")
+    try:
+        ids = _seed_stale_build_with_preparations(
+            connector, count=5, states=("OPEN", "COMPLETE"), bound_offsets=(1, 2)
+        )
+        pages, positions = _drain_stale_build(connector, now=100, page_budget=2)
+        assert pages == [2, 3]
+        assert [position.state for position in positions] == ["COMPLETE", "OPEN"]
+        assert positions[0].preparation_id == ids[1]
+        assert positions[1].preparation_id == ids[0]
+        assert _stale_non_abandoned(connector) == 0
+        bindings = connector.fetch_all(
+            "SELECT preparation_id "
+            "FROM operational_publication_candidate_preparations ORDER BY 1"
+        )
+        assert [row[0] for row in bindings] == [ids[1], ids[2]]
     finally:
         connector.close()

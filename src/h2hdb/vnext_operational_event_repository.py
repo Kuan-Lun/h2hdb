@@ -23,6 +23,8 @@ __all__ = [
     "OperationalEffectStateError",
     "OperationalPreparation",
     "RemovedGid",
+    "SUPERSEDED_DRAIN_STATES",
+    "SupersededDrainPosition",
 ]
 
 from collections.abc import Sequence
@@ -63,6 +65,23 @@ _SOURCE_WORKING_TABLE = "operational_source_working_builds"
 
 _EFFECT_PHASE = "EFFECTS"
 _MAX_SUPERSEDED_ABANDON_ROWS = 128
+SUPERSEDED_DRAIN_STATES: tuple[str, ...] = ("COMPLETE", "OPEN")
+"""Drain order of the two non-terminal preparation states.
+
+A drainage position orders by ``(state index, preparation_id)``, so the two
+single-state index ranges form one total keyset over every superseded row."""
+
+_DRAIN_ROW_PREDICATE = (
+    "p.build_id = %s AND p.state = %s "
+    "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
+    "WHERE committed.preparation_id = p.preparation_id)"
+)
+_CURRENT_ATTEMPT_EXCLUSION = (
+    " AND NOT EXISTS (SELECT 1 "
+    "FROM operational_publication_candidate_preparations AS bound "
+    "WHERE bound.preparation_id = p.preparation_id)"
+    " AND (p.operational_policy_id <> %s OR p.deletion_request_generation <> %s)"
+)
 _REMOVED_TYPE = "REMOVED_GID"
 _DELETION_TYPE = "DELETION_CONSUMPTION"
 
@@ -90,6 +109,36 @@ class OperationalEffectCorruptionError(RuntimeError):
 
 class OperationalBatchLimitError(ValueError):
     """One mutation exceeds the operational policy's database-owned cap."""
+
+
+@dataclass(frozen=True, slots=True)
+class SupersededDrainPosition:
+    """Durable seek authority of one superseded-preparation drainage page.
+
+    It is the least ``(state, preparation_id)`` of the build's superseded rows
+    at the time it was read from the database, never a caller-invented
+    cursor: the page writer reloads it and fails closed when the caller's copy
+    differs.  Every committed page abandons the least matching rows, so the
+    position read after a committed page is strictly greater than the one
+    that page was taken from; that strict advance is the liveness fence the
+    orchestrators check between pages."""
+
+    state: str
+    preparation_id: bytes
+
+    def __post_init__(self) -> None:
+        if self.state not in SUPERSEDED_DRAIN_STATES:
+            raise ValueError("drain position state is not a drain state")
+        require_uuid16(self.preparation_id, field="drain position preparation_id")
+
+    @property
+    def key(self) -> tuple[int, bytes]:
+        return (SUPERSEDED_DRAIN_STATES.index(self.state), self.preparation_id)
+
+    def advances_past(self, previous: SupersededDrainPosition | None) -> bool:
+        """Whether this position is strictly after ``previous`` in drain order."""
+
+        return previous is None or self.key > previous.key
 
 
 @dataclass(frozen=True, slots=True)
@@ -770,36 +819,34 @@ class OperationalEffectRepository:
         return checkpoint
 
     @staticmethod
-    def superseded_preparations_pending(
+    def superseded_drain_position(
         work: VNextUnitOfWork,
         *,
         build_id: bytes,
         policy_id: int,
         deletion_generation: int,
-    ) -> bool:
-        """Return whether one superseded preparation of the build still exists.
+    ) -> SupersededDrainPosition | None:
+        """Load the durable position of the build's next drainage page.
 
         A superseded preparation is an unbound, uncommitted OPEN or COMPLETE
-        attempt whose policy or deletion-request generation differs from the
-        attempt about to begin.  This bounded ``LIMIT 1`` probe lets the issue
-        path emit one drainage page per transaction until none remain."""
+        attempt of the build whose policy or deletion-request generation
+        differs from the attempt about to begin.  The position is the least
+        ``(state, preparation_id)`` still matching, read by one bounded
+        ``LIMIT 1`` seek on the ``(build_id, state, preparation_id)`` index per
+        drain state; ``None`` means the build is drained.  The issue path
+        emits one drainage page per transaction from this position until it
+        is ``None``; a replay after a lost commit response simply re-reads
+        it."""
 
         build = require_uuid16(build_id, field="superseded probe build_id")
-        row = work.connector.fetch_one(
-            f"SELECT 1 FROM {_PREPARATION_TABLE} AS p "
-            "WHERE p.build_id = %s "
-            "AND (p.operational_policy_id <> %s "
-            "OR p.deletion_request_generation <> %s) "
-            "AND p.state IN ('OPEN', 'COMPLETE') "
-            "AND NOT EXISTS (SELECT 1 "
-            "FROM operational_publication_candidate_preparations AS bound "
-            "WHERE bound.preparation_id = p.preparation_id) "
-            "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
-            "WHERE committed.preparation_id = p.preparation_id) "
-            "LIMIT 1",
-            (build, policy_id, deletion_generation),
+        return _drain_position(
+            work,
+            build_id=build,
+            exclusion=(
+                require_positive_int63(policy_id, field="superseded probe policy"),
+                require_int63(deletion_generation, field="superseded probe generation"),
+            ),
         )
-        return bool(row)
 
     @staticmethod
     def abandon_superseded_preparations(
@@ -810,9 +857,10 @@ class OperationalEffectRepository:
         build_id: bytes,
         policy_id: int,
         deletion_generation: int,
+        position: SupersededDrainPosition,
         now: int,
     ) -> int:
-        """Abandon at most one bounded page of this build's superseded attempts.
+        """Abandon one bounded page of this build's superseded attempts.
 
         Generations only advance and a replaced policy is never re-issued for
         the same build, so an unbound, uncommitted OPEN or COMPLETE preparation
@@ -821,16 +869,20 @@ class OperationalEffectRepository:
         ABANDONED attempts.  A bound attempt is superseded by the binding path
         instead, and a committed one is publication lineage.
 
-        The scan is hard-capped at 128 rows, keyset-ordered by preparation_id,
-        and idempotent: because each abandoned row leaves the OPEN/COMPLETE
-        predicate, repeated pages drain the build and a replay after a lost
-        commit response simply resumes from the next surviving row.  The caller
-        drives one page per transaction until :meth:`superseded_preparations_pending`
-        reports none.
-        """
+        The page is one index range seek: the rows of ``position.state`` with
+        ``preparation_id >= position.preparation_id``, in preparation_id order,
+        hard-capped at 128.  ``position`` is caller-carried authority and is
+        therefore not trusted: the durable position is reloaded first and a
+        stale copy fails closed with zero writes.  Each abandoned row leaves
+        the predicate, so the page is idempotent under response loss and the
+        next durable position is strictly greater."""
 
         build = require_uuid16(build_id, field="superseded abandon build_id")
         timestamp = require_int63(now, field="superseded abandon now")
+        exclusion = (
+            require_positive_int63(policy_id, field="superseded abandon policy"),
+            require_int63(deletion_generation, field="superseded abandon generation"),
+        )
         _authorize_build(
             work,
             gate_lease=gate_lease,
@@ -838,41 +890,58 @@ class OperationalEffectRepository:
             build_id=build,
             now=timestamp,
         )
-        stale = work.connector.fetch_all(
-            "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
-            f"FROM {_PREPARATION_TABLE} AS p "
-            "WHERE p.build_id = %s "
-            "AND (p.operational_policy_id <> %s "
-            "OR p.deletion_request_generation <> %s) "
-            "AND p.state IN ('OPEN', 'COMPLETE') "
-            "AND NOT EXISTS (SELECT 1 "
-            "FROM operational_publication_candidate_preparations AS bound "
-            "WHERE bound.preparation_id = p.preparation_id) "
-            "AND NOT EXISTS (SELECT 1 FROM catalog_publication_commits AS committed "
-            "WHERE committed.preparation_id = p.preparation_id) "
-            "ORDER BY p.preparation_id LIMIT %s",
-            (build, policy_id, deletion_generation, _MAX_SUPERSEDED_ABANDON_ROWS),
+        return _abandon_drain_page(
+            work,
+            build_id=build,
+            exclusion=exclusion,
+            position=position,
+            now=timestamp,
+            authority="superseded operational preparation",
         )
-        for row in stale:
-            if len(row) != 4:
-                raise OperationalEffectCorruptionError(
-                    "superseded operational preparation facts are malformed"
-                )
-            stale_id = require_uuid16(row[0], field="superseded preparation_id")
-            state = str(row[1])
-            prepared_at = require_int63(row[2], field="superseded prepared_at")
-            completed_at = (
-                max(prepared_at, timestamp)
-                if row[3] is None
-                else require_int63(row[3], field="superseded completed_at")
-            )
-            work.compare_and_swap(
-                f"UPDATE {_PREPARATION_TABLE} SET state = 'ABANDONED', "
-                "completed_at = %s WHERE preparation_id = %s AND state = %s",
-                (completed_at, stale_id, state),
-                authority="superseded operational preparation",
-            )
-        return len(stale)
+
+    @staticmethod
+    def retiring_build_drain_position(
+        work: VNextUnitOfWork,
+        *,
+        build_id: bytes,
+    ) -> SupersededDrainPosition | None:
+        """Durable position of a retiring build's next drainage page.
+
+        A build being retired (a SEALED working build that will never publish)
+        drains every uncommitted OPEN or COMPLETE preparation, bound to its
+        orphaned candidate or not, with no current attempt to exclude.  The
+        caller holds the source working-root lock; this reads the least
+        matching ``(state, preparation_id)`` or ``None`` when drained."""
+
+        build = require_uuid16(build_id, field="retiring build probe build_id")
+        return _drain_position(work, build_id=build, exclusion=None)
+
+    @staticmethod
+    def abandon_retiring_build_preparations(
+        work: VNextUnitOfWork,
+        *,
+        build_id: bytes,
+        position: SupersededDrainPosition,
+        now: int,
+    ) -> int:
+        """Abandon one bounded page of a retiring build's preparations.
+
+        The same seek page as :meth:`abandon_superseded_preparations` without
+        a current-attempt exclusion and without the live-generation build
+        authorization, which the retiring build no longer satisfies; the
+        source handoff that calls this already holds the gate, the ingest
+        turn and the sole working-root lock."""
+
+        build = require_uuid16(build_id, field="retiring build page build_id")
+        timestamp = require_int63(now, field="retiring build page now")
+        return _abandon_drain_page(
+            work,
+            build_id=build,
+            exclusion=None,
+            position=position,
+            now=timestamp,
+            authority="retiring build operational preparation",
+        )
 
     @staticmethod
     def _validate_existing_root(
@@ -1088,6 +1157,128 @@ def _load_preparation_build(
     if len(row) != 1:
         raise OperationalEffectStateError("operational preparation is missing")
     return require_uuid16(row[0], field="operational preparation build_id")
+
+
+def _drain_sql(*, exclusion: tuple[int, int] | None) -> str:
+    """The drain predicate of one state of one build.
+
+    With a current-attempt ``exclusion`` (policy, deletion generation) the
+    predicate names the live build's superseded attempts: uncommitted, not
+    bound to a candidate, and of another policy or generation.  Without one
+    it names every uncommitted attempt of a retiring build, bound or not: the
+    retiring build's orphaned candidate can never publish, so its binding is
+    no longer retention authority and candidate cleanup removes it later."""
+
+    predicate = _DRAIN_ROW_PREDICATE
+    if exclusion is not None:
+        predicate += _CURRENT_ATTEMPT_EXCLUSION
+    return predicate
+
+
+def _drain_position(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    exclusion: tuple[int, int] | None,
+) -> SupersededDrainPosition | None:
+    predicate = _drain_sql(exclusion=exclusion)
+    for state in SUPERSEDED_DRAIN_STATES:
+        data: tuple[object, ...] = (build_id, state)
+        if exclusion is not None:
+            data += exclusion
+        row = work.connector.fetch_one(
+            f"SELECT p.preparation_id FROM {_PREPARATION_TABLE} AS p "
+            f"WHERE {predicate} ORDER BY p.preparation_id LIMIT 1",
+            data,
+        )
+        if row:
+            if len(row) != 1:
+                raise OperationalEffectCorruptionError(
+                    "superseded drainage position row is malformed"
+                )
+            return SupersededDrainPosition(
+                state,
+                require_uuid16(row[0], field="superseded drain preparation_id"),
+            )
+    return None
+
+
+def _abandon_drain_page(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    exclusion: tuple[int, int] | None,
+    position: SupersededDrainPosition,
+    now: int,
+    authority: str,
+) -> int:
+    if type(position) is not SupersededDrainPosition:
+        raise TypeError("position must be an exact SupersededDrainPosition")
+    position.__post_init__()
+    durable = _drain_position(work, build_id=build_id, exclusion=exclusion)
+    if durable != position:
+        raise OperationalEffectStateError(
+            "superseded drainage position is stale; the durable position "
+            "must be re-issued before another page"
+        )
+    data: tuple[object, ...] = (build_id, position.state)
+    if exclusion is not None:
+        data += exclusion
+    stale = work.connector.fetch_all(
+        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
+        f"FROM {_PREPARATION_TABLE} AS p WHERE {_drain_sql(exclusion=exclusion)} "
+        "AND p.preparation_id >= %s ORDER BY p.preparation_id LIMIT %s",
+        (*data, position.preparation_id, _MAX_SUPERSEDED_ABANDON_ROWS),
+    )
+    if not stale:
+        raise OperationalEffectCorruptionError(
+            "superseded drainage page is empty at its durable position"
+        )
+    for row in stale:
+        if len(row) != 4:
+            raise OperationalEffectCorruptionError(
+                "superseded operational preparation facts are malformed"
+            )
+        stale_id = require_uuid16(row[0], field="superseded preparation_id")
+        state = str(row[1])
+        if state != position.state:
+            raise OperationalEffectCorruptionError(
+                "superseded drainage page crossed its drain state"
+            )
+        prepared_at = require_int63(row[2], field="superseded prepared_at")
+        completed_at = (
+            max(prepared_at, now)
+            if row[3] is None
+            else require_int63(row[3], field="superseded completed_at")
+        )
+        work.compare_and_swap(
+            f"UPDATE {_PREPARATION_TABLE} SET state = 'ABANDONED', "
+            "completed_at = %s WHERE preparation_id = %s AND state = %s",
+            (completed_at, stale_id, state),
+            authority=authority,
+        )
+    return len(stale)
+
+
+def drain_page_sql(*, exclusion: bool) -> str:
+    """The exact page SQL, exposed for query-plan evidence tests."""
+
+    predicate = _drain_sql(exclusion=(0, 0) if exclusion else None)
+    return (
+        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
+        f"FROM {_PREPARATION_TABLE} AS p WHERE {predicate} "
+        "AND p.preparation_id >= %s ORDER BY p.preparation_id LIMIT %s"
+    )
+
+
+def drain_position_sql(*, exclusion: bool) -> str:
+    """The exact position-probe SQL, exposed for query-plan evidence tests."""
+
+    predicate = _drain_sql(exclusion=(0, 0) if exclusion else None)
+    return (
+        f"SELECT p.preparation_id FROM {_PREPARATION_TABLE} AS p "
+        f"WHERE {predicate} ORDER BY p.preparation_id LIMIT 1"
+    )
 
 
 def _authorize_build(

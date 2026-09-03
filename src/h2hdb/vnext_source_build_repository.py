@@ -100,6 +100,10 @@ from .vnext_manifest_family import (
     load_build_manifest_family,
     load_source_build_family,
 )
+from .vnext_operational_event_repository import (
+    OperationalEffectRepository,
+    SupersededDrainPosition,
+)
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _FILESYSTEM = "filesystem"
@@ -140,7 +144,6 @@ _ANALYSIS_RUN_DESCRIPTOR_TABLE = "catalog_analysis_run_descriptor"
 _ANALYSIS_SNAPSHOT_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
 _CATALOG_WORKING_CANDIDATE_TABLE = "operational_catalog_working_candidates"
 _OPERATIONAL_PREPARATION_TABLE = "operational_operational_preparations"
-_MAX_STALE_ABANDON_ROWS = 128
 _SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
 _PENDING_SOURCE_GALLERY_QUERY = (
     "SELECT expected.position, expected.gallery_id, identity.locator_sha256 "
@@ -909,6 +912,7 @@ class SourceBuildRepository:
             command=command,
             root_plan=root_plan,
             analysis_policy_id=analysis_policy_id,
+            drained_page=None,
             now=now,
         )
         if isinstance(outcome, _SourceDrainRetry):
@@ -927,6 +931,7 @@ class SourceBuildRepository:
         command: SourceRootBuildCommand,
         root_plan: CanonicalValueUploadPlan,
         analysis_policy_id: int,
+        drained_page: _SourceDrainRetry | None,
         now: int,
     ) -> SourceBuildHandoff | _SourceDrainRetry:
         """Reserve or replay the sole source working build for this snapshot.
@@ -934,9 +939,15 @@ class SourceBuildRepository:
         ``analysis_policy_id`` is the session's resolved analysis policy.  A
         build is reusable for a snapshot only while its analysis (if any) was
         made under that policy: the manifest forbids a different-policy sibling
-        analysis of one build, so a policy change retires an OPEN analysis and
-        derives a successor build, while a durably committed analysis is
-        replayed so its publication can finalize first.
+        analysis of one build, so a policy change retires a build whose
+        analysis is OPEN, or COMPLETE without a durable publication commit,
+        and derives a successor build of the same snapshot; a durably
+        committed analysis is replayed so its publication can finalize first.
+
+        ``drained_page`` is the previous drainage outcome of this same turn,
+        if any.  The retiring build's durable drain position must have
+        advanced strictly past it; a position that did not advance after a
+        committed page proves the database lost that page and fails closed.
         """
 
         if type(command) is not SourceRootBuildCommand:
@@ -1053,11 +1064,14 @@ class SourceBuildRepository:
                 catalog_working=catalog_working,
                 analysis_policy_id=session_analysis_policy,
                 current_generation=generation,
+                drained_page=drained_page,
                 now=timestamp,
             )
             if policy_retirement is not None:
                 if not policy_retirement.drained:
-                    return _SourceDrainRetry(policy_retirement.abandoned)
+                    return policy_retirement.retry(
+                        require_uuid16(working[1], field="retiring build_id")
+                    )
                 working = ()
                 catalog_working = ()
         selection = _select_source_build_id(
@@ -1197,10 +1211,11 @@ class SourceBuildRepository:
                         build_id=stale_build,
                         assigned_at=stale_assigned_at,
                         catalog_working=catalog_working,
+                        drained_page=drained_page,
                         now=timestamp,
                     )
                     if not sealed_retirement.drained:
-                        return _SourceDrainRetry(sealed_retirement.abandoned)
+                        return sealed_retirement.retry(stale_build)
                     catalog_working = ()
                 else:
                     if (
@@ -3781,102 +3796,97 @@ def _abandon_stale_open_working_build(
 
 
 @dataclass(frozen=True, slots=True)
-class _StaleRetirement:
-    """Result of one bounded stale-build retirement step.
-
-    ``drained`` is True only once the build has no more unbound, uncommitted
-    OPEN/COMPLETE operational preparations and its working roots and OPEN
-    analysis have been released in the same transaction.  While False, only a
-    bounded page of preparations was abandoned and every other retirement
-    write was deferred to a later turn."""
-
-    drained: bool
-    abandoned: int
-
-
-@dataclass(frozen=True, slots=True)
 class _SourceDrainRetry:
     """A handoff turn that abandoned one bounded page of a retiring build's
-    superseded preparations and must be re-issued to drain the rest.
+    preparations and must be re-issued to drain the rest.
 
     It commits only that page; the caller's frozen snapshot, its root upload
     claim, and every working root are untouched, so the next ROOT_HANDOFF
-    re-derives the same state and drains the following page."""
+    re-derives the same state and drains the following page.  ``position`` is
+    the durable position the committed page was taken from; the next handoff
+    proves the build's position advanced strictly past it."""
 
+    build_id: bytes
     abandoned: int
+    position: SupersededDrainPosition
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.build_id, field="drain retry build_id")
+        require_positive_int63(self.abandoned, field="drain retry abandoned")
+        if type(self.position) is not SupersededDrainPosition:
+            raise TypeError("drain retry position must be a SupersededDrainPosition")
 
 
-def _build_superseded_preparations_pending(
-    connector: Any,
+@dataclass(frozen=True, slots=True)
+class _StaleRetirement:
+    """Result of one bounded stale-build retirement step.
+
+    ``drained`` is True only once the build has no more uncommitted OPEN or
+    COMPLETE operational preparations and its working roots and OPEN analysis
+    have been released in the same transaction.  While False, only a bounded
+    page of preparations from ``position`` was abandoned and every other
+    retirement write was deferred to a later turn."""
+
+    drained: bool
+    abandoned: int
+    position: SupersededDrainPosition | None
+
+    def retry(self, build_id: bytes) -> _SourceDrainRetry:
+        if self.drained or self.position is None:
+            raise RuntimeError("a drained retirement has no page to retry")
+        return _SourceDrainRetry(build_id, self.abandoned, self.position)
+
+
+def _drain_after(
+    drained_page: _SourceDrainRetry | None,
     *,
     build_id: bytes,
-) -> bool:
-    """Whether the build still has an unbound, uncommitted OPEN/COMPLETE
-    operational preparation (a ``LIMIT 1`` probe)."""
+) -> SupersededDrainPosition | None:
+    """The position the previous committed page of this build started from."""
 
-    build = require_uuid16(build_id, field="stale preparation probe build_id")
-    row = connector.fetch_one(
-        f"SELECT 1 FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
-        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
-        "AND NOT EXISTS (SELECT 1 "
-        "FROM operational_publication_candidate_preparations AS bound "
-        "WHERE bound.preparation_id = p.preparation_id) "
-        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
-        "WHERE committed.preparation_id = p.preparation_id) "
-        "LIMIT 1",
-        (build,),
-    )
-    return bool(row)
+    if drained_page is None:
+        return None
+    if type(drained_page) is not _SourceDrainRetry:
+        raise TypeError("drained_page must be a _SourceDrainRetry")
+    drained_page.__post_init__()
+    if drained_page.build_id != build_id:
+        raise SourceBuildConflictError(
+            "superseded preparation drainage switched retiring builds mid-turn"
+        )
+    return drained_page.position
 
 
-def _abandon_build_preparations_page(
+def _drain_retiring_build_page(
     work: VNextUnitOfWork,
     *,
     build_id: bytes,
+    drained_page: _SourceDrainRetry | None,
     now: int,
-) -> int:
-    """Abandon at most one bounded page (128 rows) of the build's unbound,
-    uncommitted OPEN/COMPLETE operational preparations, keyset-ordered by
-    preparation_id.  Idempotent: an abandoned row leaves the predicate, so a
-    replay after a lost commit response resumes from the next survivor."""
+) -> _StaleRetirement | None:
+    """Abandon one bounded page of the retiring build's preparations.
 
-    build = require_uuid16(build_id, field="stale preparation page build_id")
-    timestamp = require_int63(now, field="stale preparation page now")
-    connector = work.connector
-    stale = connector.fetch_all(
-        "SELECT p.preparation_id, p.state, p.prepared_at, p.completed_at "
-        f"FROM {_OPERATIONAL_PREPARATION_TABLE} AS p "
-        "WHERE p.build_id = %s AND p.state IN ('OPEN', 'COMPLETE') "
-        "AND NOT EXISTS (SELECT 1 "
-        "FROM operational_publication_candidate_preparations AS bound "
-        "WHERE bound.preparation_id = p.preparation_id) "
-        f"AND NOT EXISTS (SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} AS committed "
-        "WHERE committed.preparation_id = p.preparation_id) "
-        "ORDER BY p.preparation_id LIMIT %s",
-        (build, _MAX_STALE_ABANDON_ROWS),
+    Returns ``None`` when the build is already drained, a not-drained
+    retirement when more pages remain, or a drained retirement carrying the
+    final page when this page emptied the build.  The durable position must
+    advance strictly past the previous committed page of this turn."""
+
+    after = _drain_after(drained_page, build_id=build_id)
+    position = OperationalEffectRepository.retiring_build_drain_position(
+        work, build_id=build_id
     )
-    for row in stale:
-        if len(row) != 4:
-            raise SourceBuildConflictError(
-                "stale operational preparation facts are malformed"
-            )
-        prepared_at = require_int63(row[2], field="stale preparation prepared_at")
-        completed_at = (
-            max(prepared_at, timestamp)
-            if row[3] is None
-            else require_int63(row[3], field="stale preparation completed_at")
+    if position is None:
+        return None
+    if not position.advances_past(after):
+        raise SourceBuildConflictError(
+            "superseded preparation drainage did not advance past the committed page"
         )
-        work.compare_and_swap(
-            f"UPDATE {_OPERATIONAL_PREPARATION_TABLE} SET state = 'ABANDONED', "
-            "completed_at = %s WHERE preparation_id = %s AND state = %s",
-            (
-                completed_at,
-                require_uuid16(row[0], field="stale preparation_id"),
-                str(row[1]),
-            ),
-            authority="stale SEALED build operational preparation",
-        )
-    return len(stale)
+    abandoned = OperationalEffectRepository.abandon_retiring_build_preparations(
+        work, build_id=build_id, position=position, now=now
+    )
+    remaining = OperationalEffectRepository.retiring_build_drain_position(
+        work, build_id=build_id
+    )
+    return _StaleRetirement(remaining is None, abandoned, position)
 
 
 def _pending_source_build_publication(
@@ -3946,18 +3956,24 @@ def _retire_policy_mismatched_working_build(
     catalog_working: tuple[Any, ...],
     analysis_policy_id: int,
     current_generation: int,
+    drained_page: _SourceDrainRetry | None,
     now: int,
 ) -> _StaleRetirement | None:
-    """Retire the SEALED working build whose OPEN analysis has another policy.
+    """Retire the SEALED working build whose analysis has another policy.
 
     The manifest forbids a different-policy sibling analysis of one build, so
-    a session that resolved another analysis policy cannot continue that
-    analysis.  Its OPEN analysis becomes ABANDONED and the working roots are
-    released (after its superseded preparations drain in bounded pages),
-    exactly like a stale SEALED build; the caller then derives a successor
-    build of the same snapshot.  A COMPLETE analysis is never retired here:
-    with a durable publication commit it is replayed so the publication can
-    finalize, and without one the analysis stage fails closed.
+    a session that resolved another analysis policy cannot continue or reuse
+    that analysis.  Two analysis states retire the build exactly like a stale
+    SEALED build, after its preparations drain in bounded pages: an OPEN
+    analysis becomes ABANDONED, and a COMPLETE analysis without a durable
+    publication commit stays COMPLETE (an immutable terminal fact that
+    generic cleanup reclaims) while its orphaned candidate, if any, loses the
+    working slot.  In both cases the working roots are released before any
+    generation mapping is written, so the caller derives a successor build of
+    the same snapshot under the requested policy and no mapping ever names a
+    build that the analysis stage would refuse.  A COMPLETE analysis with a
+    durable publication commit is never retired: the analysis stage replays
+    it so the publication can finalize first.
 
     Returns the retirement outcome, or ``None`` when this working build is not
     a policy-mismatched retirement target."""
@@ -3972,7 +3988,13 @@ def _retire_policy_mismatched_working_build(
     if family.state != "SEALED" or assigned_at != family.created_at:
         return None
     analysis = _sole_analysis_of_build(work.connector, build_id=build)
-    if analysis is None or analysis[1] == analysis_policy_id or analysis[2] != "OPEN":
+    if analysis is None or analysis[1] == analysis_policy_id:
+        return None
+    analysis_id, _policy, state = analysis
+    if state == "COMPLETE":
+        if _analysis_has_durable_commit(work.connector, analysis_id=analysis_id):
+            return None
+    elif state != "OPEN":
         return None
     return _abandon_stale_sealed_working_build(
         work,
@@ -3980,8 +4002,23 @@ def _retire_policy_mismatched_working_build(
         build_id=build,
         assigned_at=assigned_at,
         catalog_working=catalog_working,
+        drained_page=drained_page,
         now=now,
     )
+
+
+def _analysis_has_durable_commit(connector: Any, *, analysis_id: bytes) -> bool:
+    """Whether any candidate of the analysis reached a durable publication
+    commit (DB_COMMITTED or PUBLISHED)."""
+
+    row = connector.fetch_one(
+        "SELECT 1 FROM catalog_publication_commits AS committed "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        "WHERE candidate.analysis_id = %s LIMIT 1",
+        (analysis_id,),
+    )
+    return bool(row)
 
 
 def _abandon_stale_sealed_working_build(
@@ -3991,15 +4028,16 @@ def _abandon_stale_sealed_working_build(
     build_id: bytes,
     assigned_at: int,
     catalog_working: tuple[Any, ...],
+    drained_page: _SourceDrainRetry | None,
     now: int,
 ) -> _StaleRetirement:
     """Release a SEALED root that never published and is fenced behind the
     current generation.
 
     The build row itself stays SEALED (an immutable terminal fact with its
-    sealed_at); its unbound uncommitted operational attempts are ABANDONED in
-    bounded, keyset-paged, replayable pages of at most 128 rows, and only once
-    none remain are its working roots released and its OPEN analysis
+    sealed_at); its uncommitted operational attempts are ABANDONED in bounded
+    seek pages of at most 128 rows from the durable drain position, and only
+    once none remain are its working roots released and its OPEN analysis
     ABANDONED, which makes the whole family reclaimable by generic cleanup.
 
     A page that does not fully drain returns ``drained=False`` and touches no
@@ -4026,11 +4064,15 @@ def _abandon_stale_sealed_working_build(
         raise SourceBuildConflictError(
             "stale SEALED source working root is not fenced by this generation"
         )
-    # Drain a bounded page of the build's superseded preparations first; defer
-    # every irreversible working-root release until the build is fully drained.
-    abandoned = _abandon_build_preparations_page(work, build_id=build, now=now)
-    if _build_superseded_preparations_pending(connector, build_id=build):
-        return _StaleRetirement(drained=False, abandoned=abandoned)
+    # Drain a bounded page of the build's preparations first; defer every
+    # irreversible working-root release until the build is fully drained.
+    retirement = _drain_retiring_build_page(
+        work, build_id=build, drained_page=drained_page, now=now
+    )
+    if retirement is None:
+        retirement = _StaleRetirement(True, 0, None)
+    if not retirement.drained:
+        return retirement
     if catalog_working:
         if len(catalog_working) != 3 or catalog_working[0] != 1:
             raise SourceBuildConflictError("catalog working root is malformed")
@@ -4080,7 +4122,7 @@ def _abandon_stale_sealed_working_build(
                 successor="ABANDONED",
                 authority="stale SEALED source build recovery",
             )
-    return _StaleRetirement(drained=True, abandoned=abandoned)
+    return retirement
 
 
 def _matching_working_snapshot_build(
@@ -4283,46 +4325,67 @@ def _is_exact_retired_sealed_source_build(
         raise SourceBuildConflictError(
             "retired source build analysis family is missing or changed"
         )
-    if family.state != "ABANDONED":
-        return False
-    if family.completed_at is not None:
-        raise SourceBuildConflictError(
-            "ABANDONED source build analysis retained a completion time"
+    if family.state == "COMPLETE":
+        # A policy-mismatch retirement leaves the analysis COMPLETE: it is an
+        # immutable terminal fact.  The build is retired only while no
+        # candidate of that analysis reached a durable publication commit.
+        if _analysis_has_durable_commit(connector, analysis_id=analysis_id):
+            return False
+        blockers: tuple[tuple[str, str, bytes, str], ...] = (
+            (
+                _SOURCE_REVISION_PROVENANCE_TABLE,
+                "analysis_id",
+                analysis_id,
+                "source revision provenance",
+            ),
         )
-    blockers: tuple[tuple[str, str, bytes, str], ...] = (
-        (
-            _ANALYSIS_SNAPSHOT_MANIFEST_TABLE,
-            "analysis_id",
-            analysis_id,
-            "snapshot manifest",
-        ),
-        (
-            _PUBLICATION_CANDIDATE_TABLE,
-            "analysis_id",
-            analysis_id,
-            "publication candidate",
-        ),
-        (
-            _SOURCE_REVISION_PROVENANCE_TABLE,
-            "analysis_id",
-            analysis_id,
-            "source revision provenance",
-        ),
-        (
-            _OPERATIONAL_PREPARATION_TABLE,
-            "build_id",
-            build,
-            "operational preparation",
-        ),
-    )
+        label_prefix = "COMPLETE"
+    elif family.state == "ABANDONED":
+        if family.completed_at is not None:
+            raise SourceBuildConflictError(
+                "ABANDONED source build analysis retained a completion time"
+            )
+        blockers = (
+            (
+                _ANALYSIS_SNAPSHOT_MANIFEST_TABLE,
+                "analysis_id",
+                analysis_id,
+                "snapshot manifest",
+            ),
+            (
+                _PUBLICATION_CANDIDATE_TABLE,
+                "analysis_id",
+                analysis_id,
+                "publication candidate",
+            ),
+            (
+                _SOURCE_REVISION_PROVENANCE_TABLE,
+                "analysis_id",
+                analysis_id,
+                "source revision provenance",
+            ),
+        )
+        label_prefix = "ABANDONED"
+    else:
+        return False
     for table, column, value, label in blockers:
         if connector.fetch_one(
             f"SELECT 1 FROM {table} WHERE {column} = %s LIMIT 1",
             (value,),
         ):
             raise SourceBuildConflictError(
-                f"ABANDONED analysis retained a {label} authority"
+                f"{label_prefix} analysis retained a {label} authority"
             )
+    # Drained (ABANDONED) preparations are reclaimable and pin nothing; any
+    # OPEN or COMPLETE attempt would still be able to publish the build.
+    if connector.fetch_one(
+        f"SELECT 1 FROM {_OPERATIONAL_PREPARATION_TABLE} "
+        "WHERE build_id = %s AND state <> 'ABANDONED' LIMIT 1",
+        (build,),
+    ):
+        raise SourceBuildConflictError(
+            f"{label_prefix} analysis retained an operational preparation authority"
+        )
     latest = connector.fetch_one(
         "SELECT generation FROM operational_source_build_generations "
         "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",

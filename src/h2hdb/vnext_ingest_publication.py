@@ -98,10 +98,12 @@ from .vnext_maintenance_gate_repository import (
 from .vnext_operational_event_repository import (
     DeletionConsumption,
     OperationalEffect,
+    OperationalEffectCorruptionError,
     OperationalEffectRepository,
     OperationalEffectSeal,
     OperationalEffectStateError,
     RemovedGid,
+    SupersededDrainPosition,
 )
 from .vnext_publication_candidate_repository import (
     PublicationCandidateBatch,
@@ -305,6 +307,8 @@ class _OperationalWork:
     preparation_id: bytes | None = None
     effect_seal: OperationalEffectSeal | None = None
     supersedes: bytes | None = None
+    drain_generation: int | None = None
+    drain_position: SupersededDrainPosition | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,6 +770,7 @@ class VNextIngestPublication:
         "__context",
         "__activation_checkpoints",
         "__activation_ready",
+        "__drained_page",
         "__artifact_receipt",
         "__artifact_receipt_lock",
         "__publication_plan",
@@ -790,6 +795,7 @@ class VNextIngestPublication:
         # library adapter before it performs any irreversible work.
         self.__activation_checkpoints: dict[bytes, LibraryActivationCheckpoint] = {}
         self.__activation_ready: set[bytes] = set()
+        self.__drained_page: _OperationalWork | None = None
         self.__artifact_receipt: _ArtifactReceiptCache | None = None
         self.__artifact_receipt_lock = Lock()
         self.__publication_plan: _PublicationPlanCache | None = None
@@ -877,6 +883,7 @@ class VNextIngestPublication:
         with self.__artifact_receipt_lock:
             self.__require_open()
             self.__retire_mismatched_artifact_receipt(action, payload)
+        self.__require_drain_progress(action, payload)
 
         self.__require_open()
         return VNextIssuedPublicationStep(
@@ -1028,6 +1035,8 @@ class VNextIngestPublication:
                     )
                 if activation.ready_for_finalization:
                     self.__activation_ready.add(activation.receipt_id)
+            elif exact._action is _Action.ABANDON_SUPERSEDED:
+                self.__drained_page = cast(_OperationalWork, exact._payload)
             elif exact._action is _Action.FINALIZE and bool(
                 getattr(outcome, "terminal", False)
             ):
@@ -1052,6 +1061,33 @@ class VNextIngestPublication:
             return result
         finally:
             exact.close()
+
+    def __require_drain_progress(self, action: _Action, payload: object) -> None:
+        """Fence superseded drainage liveness between committed pages.
+
+        Every committed drainage page abandons the least matching rows of its
+        build and attempt, so the next durable position of the same build,
+        policy and deletion generation must be strictly greater.  A position
+        that did not advance proves the database lost the committed page; it
+        fails closed instead of re-abandoning forever."""
+
+        if action is not _Action.ABANDON_SUPERSEDED:
+            self.__drained_page = None
+            return
+        work = cast(_OperationalWork, payload)
+        if work.drain_position is None or work.drain_generation is None:
+            raise RuntimeError("superseded drainage was issued without a position")
+        previous = self.__drained_page
+        if previous is None or (
+            previous.build_id,
+            previous.operational_policy_id,
+            previous.drain_generation,
+        ) != (work.build_id, work.operational_policy_id, work.drain_generation):
+            return
+        if not work.drain_position.advances_past(previous.drain_position):
+            raise OperationalEffectCorruptionError(
+                "superseded drainage position did not advance past the committed page"
+            )
 
     def __prepare_plan_action(
         self,
@@ -1663,17 +1699,25 @@ def _issue_artifact_or_operational(
     )
     if preparation[0] is None:
         # Drain any superseded (wrong-policy or wrong-generation) attempts of
-        # this build in bounded pages before creating the current one, so no
-        # single transaction abandons an unbounded set.
-        if OperationalEffectRepository.superseded_preparations_pending(
+        # this build in bounded seek pages before creating the current one, so
+        # no single transaction abandons an unbounded set.  The durable drain
+        # position issued here is revalidated by the page commit.
+        position = OperationalEffectRepository.superseded_drain_position(
             work,
             build_id=build_id,
             policy_id=operational_policy_id,
             deletion_generation=current_generation,
-        ):
+        )
+        if position is not None:
             return (
                 _Action.ABANDON_SUPERSEDED,
-                _OperationalWork(candidate_id, build_id, operational_policy_id),
+                _OperationalWork(
+                    candidate_id,
+                    build_id,
+                    operational_policy_id,
+                    drain_generation=current_generation,
+                    drain_position=position,
+                ),
             )
         return (
             _Action.BEGIN_OPERATIONAL,
@@ -1863,6 +1907,8 @@ def _commit_action(
         )
         if len(generation_row) != 1:
             raise RuntimeError("deletion-request generation head is missing")
+        if operational.drain_position is None:
+            raise RuntimeError("superseded drainage lacks its issued position")
         abandoned = OperationalEffectRepository.abandon_superseded_preparations(
             work,
             gate_lease=gate,
@@ -1872,9 +1918,10 @@ def _commit_action(
             deletion_generation=require_int63(
                 generation_row[0], field="abandon current generation"
             ),
+            position=operational.drain_position,
             now=now,
         )
-        return _SupersededAbandonment(abandoned)
+        return _SupersededAbandonment(abandoned, operational.drain_position)
     if action is _Action.BEGIN_OPERATIONAL:
         operational = cast(_OperationalWork, payload)
         return OperationalEffectRepository.begin(
@@ -2783,6 +2830,7 @@ class _SupersededAbandonment:
     """Outcome of one bounded superseded-preparation drainage page."""
 
     row_count: int
+    position: SupersededDrainPosition
     replayed: bool = False
 
 

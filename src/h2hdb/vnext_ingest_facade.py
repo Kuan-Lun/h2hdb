@@ -223,6 +223,7 @@ class _SourceMachine:
     metadata_chunks: Iterator[tuple[bytes, bool]] | None = None
     previous_operation_id: bytes | None = None
     match_previous_operation_id: bytes | None = None
+    drained_page: _SourceDrainRetry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +692,7 @@ class VNextIngestFacade:
                     command=machine.root_command,
                     root_plan=_require_root_upload(machine),
                     analysis_policy_id=machine.policy.analysis_policy_id,
+                    drained_page=machine.drained_page,
                     now=now,
                 )
             if action is _SourceAction.DISCOVERY_BATCH:
@@ -1960,14 +1962,17 @@ def _apply_source_outcome(
         machine.action = _SourceAction.ROOT_HANDOFF
     elif action is _SourceAction.ROOT_HANDOFF:
         if isinstance(outcome, _SourceDrainRetry):
-            # One bounded page of a retiring build's superseded preparations
-            # was abandoned; the root upload and frozen snapshot are untouched.
-            # Re-issue the handoff to drain the rest before any new build.
+            # One bounded page of a retiring build's preparations was
+            # abandoned; the root upload and frozen snapshot are untouched.
+            # Re-issue the handoff to drain the rest before any new build; the
+            # next page must start strictly past this committed one.
             processed_rows = outcome.abandoned
+            machine.drained_page = outcome
             machine.action = _SourceAction.ROOT_HANDOFF
             return processed_rows, replayed
         if not isinstance(outcome, SourceBuildHandoff):
             raise RuntimeError("source-root handoff returned an invalid receipt")
+        machine.drained_page = None
         policy = machine.policy
         if policy is None or outcome.manifest_policy_id != policy.manifest_policy_id:
             raise RuntimeError("source-root handoff used another manifest policy")
