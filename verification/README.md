@@ -237,13 +237,22 @@ and no live candidate/build predecessor pins it.
 ## Honest production boundary
 
 The strict closed-world coverage command (`scripts/verify-formal.py coverage`)
-exits zero: every production-evidence layer of every required invariant cites
-direct evidence, and `scripts/check-full.sh` runs that strict gate. The
-evidence is executable, runs only through the public facades on a fresh
-temporary database per case, and is exact about what it does and does not
-prove.
+still exits nonzero: after an honest re-audit, thirteen production-evidence
+layers remain `blocked` because their executable evidence does not meet the
+layer's original quantifier. `scripts/check-full.sh` therefore runs the
+`--validate-only` contract gate (the evidence index is well-formed and every
+symbol resolves), not the strict gate; the strict gate is the production
+readiness bar and is not yet met. The evidence below is real and executable,
+but this section is exact about where it stops.
 
-Executable evidence added for the production blockers:
+The end-to-end workflow and liveness evidence runs only through the public
+facades on a fresh temporary database per case. The fault matrices are
+deliberately lower-level: they inject invalid values and corruption at the
+rendered SQL boundary and at the writer-binding guards, and they seed some
+fixtures with foreign keys disabled, so they are not themselves pure
+facade-only runs.
+
+Executable evidence added, and what it establishes:
 
 - A statement-fault and response-loss matrix interrupts every distinct write
   transaction shape of a production turn (fresh, incremental with a pending
@@ -255,15 +264,20 @@ Executable evidence added for the production blockers:
   gate and ingest generation over before every fenced boundary and races
   every boundary against a concurrent deletion-request writer.
 - Per-stage analysis authority (rollback, stored `page_limit` replay,
-  corrupted-limit rejection), bootstrap seed omission/corruption/foreign-row
-  and interrupted-batch resume, a SHA-256 collision fixture at every digest
-  seam, a physical-domain matrix over every manifest column on both backends,
-  an identity-corruption matrix with the production audit and the production
-  turns as oracles, and authority exhaustion, expiry-takeover, response-loss
-  and policy-replacement races through the facades.
+  corrupted-limit rejection), bootstrap seed omission, a representative-column
+  corruption and foreign-row rejection with interrupted-batch resume, a
+  SHA-256 collision fixture at the canonical-value, file-name and page-staging
+  seams, a physical-domain matrix over every column of the reachable manifest
+  relations on both backends, an identity-corruption matrix with the
+  production audit and the production turns as oracles, and authority
+  exhaustion, expiry-takeover, response-loss and policy-replacement races
+  through the facades.
 - Live MariaDB 10.11.11 runs the same facade workflows, the liveness
-  regressions, the authority races, the interrupted seed batch, the physical
-  matrix and six sampled statement faults, only under `H2HDB_TEST_MARIADB=1`.
+  regressions, the authority races, the interrupted seed batch, the two
+  bounded preparation drains, the physical matrix (one corpus) and six
+  sampled statement faults. It runs only under `H2HDB_TEST_MARIADB=1`, which a
+  plain `pytest` and the check-fast commit hook leave unset; the release/merge
+  gate (`scripts/check-full.sh`) sets it and does run live MariaDB.
 
 Explicit assumptions and limits (each is also recorded on the evidence):
 
@@ -298,6 +312,33 @@ Explicit assumptions and limits (each is also recorded on the evidence):
 - Three manifest relations have no production writer and rest in no corpus.
 - Every TLC result is a finite model check of the declared small profile; the
   Lean theorems are unbounded only for the abstract models they state.
+
+The thirteen layers the re-audit keeps `blocked`, and why:
+
+- `catalog.physical-domains` and `h2hdb.operational.physical-domains` (fault):
+  SQLite renders no check for 282 of 4668 injected classes; the writer-binding
+  guards refuse them but the schema boundary does not, and three relations
+  have no writer. (integration): live MariaDB spans one corpus, not every
+  relation through every writer callsite.
+- `catalog.retention` and `h2hdb.operational.cleanup-reachability` (fault and
+  integration): sixteen of the twenty-three cleanup strategies never become
+  eligible from a facade-reachable state, so no matrix or live workflow
+  exercises all twenty-three.
+- `h2hdb.operational.maintenance-gate` (fault and integration): the
+  orphan-protection reconciliation for a candidate abandoned mid-publication
+  is unwired, so the complete exclusive release-and-cleanup cycle after that
+  abandonment is undriven and maintenance reports `BLOCKED`.
+- `catalog.bootstrap` and `h2hdb.operational.bootstrap-genesis` (fault): the
+  matrices corrupt one representative column per seed and the READY audit
+  checks one representative row per registry; no matrix corrupts every column
+  of every row, injects a duplicate, or partially commits each row.
+- `catalog.state-machines` (fault): no matrix attempts every illegal enum
+  transition and timestamp-presence edge at every repository callsite.
+
+A further honest limit that is documented on the evidence but does not, on its
+own, keep a layer blocked: for seven published and analysis-history columns
+the bounded READY audit does not re-derive the value, so a corruption there is
+reader-visible; the identity-corruption matrix pins exactly those columns.
 
 FD completeness remains a domain-audit assumption. The checker and Lean can
 prove consequences of the declared FD set; they cannot infer an omitted real

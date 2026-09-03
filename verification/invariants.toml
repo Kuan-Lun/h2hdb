@@ -2055,7 +2055,7 @@ id = "fault.pipeline.bootstrap-matrix"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Every generated bootstrap seed row of every catalog and operational registry and shard is omitted, corrupted column by column, and replaced by a foreign row; the BUILDING validator or the schema rejects each, the READY full audit rejects registry omission, corruption and foreign rows on a populated catalog (runtime-advancing registries are classified explicitly), and a committed seed prefix resumes on SQLite and an interrupted 256-row seed batch resumes on live MariaDB to the exact READY seed set."
+claim = "Every generated bootstrap seed row of every catalog and operational registry and shard is omitted, corrupted at one representative column, and replaced by a foreign row; the BUILDING validator or the schema rejects each, and the READY full audit rejects omission, a representative corruption and foreign rows for one representative seed row per registry on a populated catalog (runtime-advancing registries are classified explicitly). A committed seed prefix resumes on SQLite and an interrupted 256-row seed batch resumes on live MariaDB to the exact READY seed set. It does not corrupt every column of every seed row, inject a duplicate, or partially commit each row."
 assumptions = ["The generated seed manifest is closed over the physical tables; registries the READY audit does not revalidate are listed explicitly as advancing-at-runtime or inert."]
 [[evidence.location]]
 path = "tests/test_vnext_bootstrap_fault_matrix.py"
@@ -2075,7 +2075,7 @@ id = "fault.pipeline.digest-collision"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "A collision fixture (SHA-256 with two equal-length markers identified) is injected at every production digest seam; canonical value upload, file-name identity, and gallery page staging fail closed with their typed collision errors and zero writes when two different preimages share a digest, and the one identity that retains no preimage (file content, digest plus byte count) is pinned as the explicit collision-resistance assumption: a colliding digest with another byte count is refused, an equal byte count cannot be distinguished."
+claim = "A collision fixture (SHA-256 with two equal-length markers identified) is injected at the canonical-value, file-name-identity, and gallery-page-staging digest seams: each fails closed with its typed collision error and zero writes when two different preimages share a digest, and the one identity that retains no preimage (file content, digest plus byte count) is pinned as the explicit collision-resistance assumption (a colliding digest with another byte count is refused; an equal byte count cannot be distinguished). It is a targeted fixture at those seams, not an exhaustive sweep of every SHA-256 call site in the core."
 assumptions = ["SHA-256 collision resistance is assumed only for file content blobs identified by digest plus byte count; every other stored identity is accepted after full preimage comparison.", "Nothing here claims SHA-256 is collision-free."]
 [[evidence.location]]
 path = "tests/test_vnext_digest_collision_fixture.py"
@@ -2152,8 +2152,8 @@ id = "fault.pipeline.liveness-regressions"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Regressions for the liveness gaps the matrices exposed, each proved against a fresh-ingest reference: a deletion request or policy replacement after operational preparation supersedes the stale attempt; a stale session cannot register a policy; a restart after a durable commit finalizes the pending publication (first and later revisions); a source that changed after an abandoned sealed build or after a pending commit converges (the pending commit is finalized before the new build); content ownership transferred by removing co-owners, a spam exclusion flip, and the depth-sixteen compaction all publish exactly what a fresh ingest publishes."
-assumptions = ["A build abandoned after its candidate protected artifacts converges the same way, but its orphaned storage protections await the artifact-release reconciliation that no maintenance entry point drives; maintenance reports BLOCKED until that is wired (open policy item)."]
+claim = "Regressions for the liveness gaps the matrices exposed, each proved against a fresh-ingest reference: a deletion request or policy replacement after operational preparation supersedes the stale attempt; a stale session cannot register a policy; a restart after a durable commit finalizes the pending publication (first and later revisions); a source that changed while a durable commit is unfinalized fails closed until that commit is re-ingested and finalized; an analysis-policy change at a mid-analysis-crash takeover retires the abandoned analysis and analyzes a successor build under the new policy, and at a durable-commit takeover finalizes the pending publication first; content ownership transferred by removing co-owners, a spam exclusion flip, and the depth-sixteen compaction all publish exactly what a fresh ingest publishes."
+assumptions = ["A build abandoned after its candidate protected artifacts converges the same way, but its orphaned storage protections await the artifact-release reconciliation that no maintenance entry point drives; maintenance reports BLOCKED until that is wired (open policy item).", "A snapshot that changed while a prior commit is durable but unfinalized is not silently deferred: this repository fails the handoff closed until the committed snapshot is ingested again and finalized; restoring liveness without re-ingesting it is an open public-protocol decision."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restart_after_a_sealed_commit_finalizes_the_pending_publication"
@@ -2162,7 +2162,13 @@ path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_source_change_after_an_abandoned_sealed_build_converges"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
-symbol = "test_source_change_after_a_sealed_commit_finalizes_before_the_new_build"
+symbol = "test_source_change_after_a_sealed_commit_fails_closed_until_it_is_finalized"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_policy_change_at_takeover_after_a_mid_analysis_crash_converges"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_policy_change_at_takeover_after_a_durable_commit_finalizes_then_converges"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_content_ownership_transfer_matches_a_fresh_ingest"
@@ -2199,7 +2205,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; nothing is a SQL-shape recorder."
-assumptions = ["MariaDB evidence is produced only by the explicit release-validation run; the default test run, commit hook and merge gate start no live service.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1: a plain pytest run and the check-fast commit hook start no live service, but the release/merge gate (scripts/check-full.sh) sets that variable and does run live MariaDB.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restarted_process_takes_over_expired_leases_and_replays"
@@ -2306,7 +2312,7 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.state-machines", "runtime.production.writer-bindings", "runtime.production.source-build", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.artifact-release", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.source-build", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.artifact-release", "fault.production.publication", "fault.pipeline.physical-domains", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"] }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.source-build", "fault.production.analysis", "fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.artifact-release", "fault.production.publication", "fault.pipeline.physical-domains", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"], blocker = "The corpus-driven physical, takeover, and statement matrices reject invalid enum values and interrupt the fenced boundaries, but no closed matrix attempts every illegal state-machine transition (each disallowed enum edge and each timestamp-presence edge) at every repository callsite." }
 integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite", "integration.sqlite.source-build", "integration.sqlite.analysis", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.artifact-release", "integration.sqlite.publication", "integration.mariadb-shape.source-build", "integration.mariadb-shape.analysis", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
@@ -2324,8 +2330,8 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no SQLite storage class, MariaDB binary type, byte width, collation, unsigned-counter, or timestamp-domain state." }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.physical-domains", "runtime.production.writer-bindings"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.physical-domains"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite", "integration.live-mariadb.pipeline"] }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.pipeline.physical-domains"], blocker = "The corpus-driven matrix injects every declared class at every reachable manifest column, but SQLite renders no check for 282 of 4668 injected classes (storage classes without typeof, unsigned ranges without a lower bound, conditional bounds), which the writer-binding guards refuse but the rendered schema does not, and three manifest relations have no production writer to inject at." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite", "integration.live-mariadb.pipeline"], blocker = "Live MariaDB runs the physical matrix over one populated corpus only; no live workflow reaches every catalog relation and physical domain through all writer callsites." }
 
 [[invariant]]
 id = "catalog.bootstrap.v1"
@@ -2333,7 +2339,7 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore starts from abstract lifecycle state and has no schema epoch, generated seed rows, exact registries, or BUILDING-only validation." }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.bootstrap", "runtime.production.schema-epoch"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.bootstrap-matrix"] }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.pipeline.bootstrap-matrix"], blocker = "The BUILDING validator matrix omits every seed row and corrupts one representative column per seed plus a foreign row, and the READY full audit checks one representative row per registry; no matrix corrupts every column of every seed row, injects a duplicate, or partially commits each row and proves convergence." }
 integration = { status = "covered", evidence = ["integration.data.bootstrap-sqlite", "integration.sqlite.schema-epoch", "integration.live-mariadb.schema-epoch"] }
 
 [[invariant]]
@@ -2342,8 +2348,8 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "covered", evidence = ["lean.data.retention"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.retention", "runtime.production.writer-bindings", "runtime.production.cleanup"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races", "fault.pipeline.takeover-matrix"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races", "fault.pipeline.takeover-matrix"], blocker = "The statement, authority-race, and takeover matrices interrupt the cleanup phases reachable from facade states, but 16 of the 23 cleanup strategies never become eligible from any facade-reachable state (the head's candidate-base chain retains every committed revision), so no matrix races every retention root or interrupts every phase of all 23 strategies." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"], blocker = "Live MariaDB runs the cleanup reachable from facade states, but no live workflow exercises all 23 cleanup strategies end to end because 16 of them are unreachable from those states." }
 
 [[invariant]]
 id = "h2hdb.operational.physical-domains.v1"
@@ -2351,8 +2357,8 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no SQL storage-class, backend type, collation, or byte-width state to model this physical-domain invariant." }
 runtime_refinement = { status = "covered", evidence = ["runtime.physical-domains", "runtime.production.writer-bindings"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.pipeline.physical-domains"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.pipeline"] }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.pipeline.physical-domains"], blocker = "The corpus-driven matrix injects every declared class at every reachable manifest column, but SQLite renders no check for 282 of 4668 injected classes (storage classes without typeof, unsigned ranges without a lower bound, conditional bounds), which the writer-binding guards refuse but the rendered schema does not, and three manifest relations have no production writer to inject at." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.pipeline"], blocker = "Live MariaDB runs the physical matrix over one populated corpus only; no live workflow spans every operational physical domain through all repository and schema-epoch writer callsites." }
 
 [[invariant]]
 id = "h2hdb.operational.epoch-manifest.v1"
@@ -2387,8 +2393,8 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models an ingest lease, not the distinct 64-slot shared and exclusive maintenance-gate ownership protocol." }
 runtime_refinement = { status = "covered", evidence = ["runtime.maintenance-gate", "runtime.production.writer-bindings", "runtime.production.maintenance-gate", "runtime.production.canonical-value", "runtime.production.gallery-identity", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.hash-cache", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.artifact-release", "runtime.production.operational-event", "runtime.production.publication", "runtime.production.cleanup"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.maintenance-gate", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-release", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.maintenance-gate", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"], blocker = "The takeover and statement matrices cover the gate and shared-writer boundaries, but the orphan artifact-protection reconciliation a candidate abandoned mid-publication requires is unwired: current-only maintenance reports BLOCKED and no matrix drives the complete exclusive release-and-cleanup cycle after that abandonment." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-release", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"], blocker = "Live MariaDB runs the gate and pipeline workflows, but no live workflow drives the exclusive artifact-release-and-cleanup cycle through the unwired orphan-protection reconciliation." }
 
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
@@ -2450,8 +2456,8 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "covered", evidence = ["lean.operational.cleanup-reachability"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models retained publications abstractly but does not model the concrete closed-world cleanup target codecs, catalog FK descendant graph, or child-first SQL phase registry." }
 runtime_refinement = { status = "covered", evidence = ["runtime.cleanup-reachability", "runtime.production.writer-bindings", "runtime.production.artifact-release", "runtime.production.cleanup"] }
-fault = { status = "covered", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races"] }
-integration = { status = "covered", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup", "integration.live-mariadb.pipeline"] }
+fault = { status = "blocked", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races"], blocker = "The statement and authority-race matrices interrupt the cleanup reachable from facade states, but 16 of the 23 strategies are unreachable from those states and the orphan artifact-protection reconciliation is unwired, so no matrix races every retention root or interrupts every phase after an external tombstone." }
+integration = { status = "blocked", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup", "integration.live-mariadb.pipeline"], blocker = "Live MariaDB runs the reachable cleanup, but no live workflow exercises all 23 strategies (16 are unreachable from facade states) or the unwired orphan-protection reconciliation." }
 
 [[invariant]]
 id = "h2hdb.operational.cleanup-frozen-root-set.v1"
@@ -2477,7 +2483,7 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore begins from an abstract lifecycle Init and does not model typed database bootstrap seeds or required row absence." }
 runtime_refinement = { status = "covered", evidence = ["runtime.bootstrap-genesis", "runtime.production.schema-epoch"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.pipeline.bootstrap-matrix"] }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.pipeline.bootstrap-matrix"], blocker = "The BUILDING validator matrix omits every seed row and corrupts one representative column per seed plus a foreign row, and the READY full audit checks one representative row per registry; no matrix corrupts every column of every seed row, injects a duplicate, or partially commits each row and proves convergence." }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.schema-epoch", "integration.live-mariadb.schema-epoch"] }
 
 [[invariant]]

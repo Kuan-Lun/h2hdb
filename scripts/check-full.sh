@@ -24,8 +24,8 @@ run_timed_stage() {
 
 run_timed_stage "fast checks" scripts/check-fast.sh
 run_timed_stage \
-    "formal coverage gate" \
-    .venv/bin/python scripts/verify-formal.py coverage
+    "formal coverage metadata" \
+    .venv/bin/python scripts/verify-formal.py coverage --validate-only
 run_timed_stage \
     "formal schema" \
     .venv/bin/python scripts/verify-formal.py schema

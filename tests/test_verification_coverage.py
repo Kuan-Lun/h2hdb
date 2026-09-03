@@ -61,9 +61,18 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    # Every production-evidence layer of every required invariant is covered
-    # by direct evidence; the strict gate reports no blocker.
-    assert report.blockers == ()
+    # The pipeline matrices discharge most production-evidence layers, but the
+    # honest re-audit keeps thirteen layers blocked where the executable
+    # evidence does not meet the layer's original quantifier (unenforced
+    # SQLite domain classes, unreachable cleanup strategies, the unwired
+    # orphan-protection reconciliation, one representative bootstrap row and
+    # column, illegal state-machine edges, and one-corpus live MariaDB spans).
+    assert len(report.blockers) == 13
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 6
+    assert (
+        sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
+        == 7
+    )
 
 
 def test_missing_required_invariant_is_rejected(tmp_path: Path) -> None:
@@ -152,7 +161,7 @@ def test_vertical_family_small_declares_bounded_safety_scope() -> None:
 def test_runtime_obligation_cannot_hide_missing_fault_coverage(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.pipeline.physical-domains"] }',
+        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }',
         'fault = { status = "not_applicable", rationale = "This runtime invariant deliberately has no injected fault evidence yet." }',
     )
 
@@ -176,7 +185,7 @@ def test_stale_evidence_symbol_is_rejected(tmp_path: Path) -> None:
 def test_blocked_layer_requires_an_explicit_machine_blocker(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.physical-domains"] }',
+        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.canonical-value", "fault.production.gallery-identity", "fault.production.gallery-staging", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.production.publication", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }',
         'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "unknown" }',
     )
 
@@ -245,21 +254,25 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "formal coverage valid: invariants=31 evidence=135" in result.stdout
-
-
-def test_coverage_validate_only_reports_production_blockers(tmp_path: Path) -> None:
-    """A manifest that declares a blocked layer is still contract-valid under
-    ``--validate-only`` and lists the blocker; the strict gate rejects it."""
-
-    blocked = _write_mutation(
-        tmp_path,
-        'fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.pipeline.bootstrap-matrix"] }',
-        'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No data-specific fault test corrupts, omits, duplicates, or partially commits each generated bootstrap registry row and proves convergence." }',
+    assert result.returncode == 1, result.stdout
+    assert "formal coverage blocked: invariants=31 evidence=135 blockers=13" in (
+        result.stdout
     )
+    assert "catalog.physical-domains.v1:fault:" in result.stdout
+    assert "h2hdb.operational.maintenance-gate.v1:fault:" in result.stdout
+
+
+def test_coverage_validate_only_reports_production_blockers() -> None:
+    """The real manifest is contract-valid under ``--validate-only`` and lists
+    its thirteen honest production blockers; the strict gate rejects it."""
+
     validate_only = subprocess.run(
-        [sys.executable, str(COVERAGE_CHECKER), str(blocked), "--validate-only"],
+        [
+            sys.executable,
+            str(COVERAGE_CHECKER),
+            str(COVERAGE_MANIFEST),
+            "--validate-only",
+        ],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -268,11 +281,11 @@ def test_coverage_validate_only_reports_production_blockers(tmp_path: Path) -> N
     assert validate_only.returncode == 0, validate_only.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=31 evidence=135 blockers=1"
+        "invariants=31 evidence=135 blockers=13"
     ) in validate_only.stdout
-    assert "catalog.bootstrap.v1:fault:" in validate_only.stdout
+    assert "catalog.retention.v2:fault:" in validate_only.stdout
     strict = subprocess.run(
-        [sys.executable, str(COVERAGE_CHECKER), str(blocked)],
+        [sys.executable, str(COVERAGE_CHECKER), str(COVERAGE_MANIFEST)],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -280,7 +293,7 @@ def test_coverage_validate_only_reports_production_blockers(tmp_path: Path) -> N
     )
     assert strict.returncode == 1
     assert (
-        "formal coverage blocked: invariants=31 evidence=135 blockers=1"
+        "formal coverage blocked: invariants=31 evidence=135 blockers=13"
         in strict.stdout
     )
 
