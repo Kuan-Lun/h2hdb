@@ -244,7 +244,7 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "formal coverage valid: invariants=32 evidence=162" in result.stdout
+    assert "formal coverage valid: invariants=32 evidence=163" in result.stdout
 
 
 def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
@@ -263,7 +263,7 @@ def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
         text=True,
     )
     assert validate_only.returncode == 0, validate_only.stderr
-    assert "formal coverage valid: invariants=32 evidence=162" in validate_only.stdout
+    assert "formal coverage valid: invariants=32 evidence=163" in validate_only.stdout
     strict = subprocess.run(
         [sys.executable, str(COVERAGE_CHECKER), str(COVERAGE_MANIFEST)],
         cwd=ROOT,
@@ -272,7 +272,7 @@ def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
         text=True,
     )
     assert strict.returncode == 0, strict.stderr
-    assert "formal coverage valid: invariants=32 evidence=162" in strict.stdout
+    assert "formal coverage valid: invariants=32 evidence=163" in strict.stdout
 
 
 def test_coverage_validate_only_still_rejects_invalid_manifest(
