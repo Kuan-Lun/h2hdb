@@ -324,6 +324,47 @@ timeout and requires Docker. Deep matrix results are not part of the
 exact-tree release receipt and must not be reported as though every merge ran
 them.
 
+Run `scripts/check-mariadb-server-crash-deep.sh` for the separately bounded
+MariaDB 10.11.11 server-crash case. It sends `SIGKILL` only to its uniquely
+named disposable database container, restarts MariaDB on the same uniquely
+named volume, and cleans up those exact resources. Docker, the host kernel, and
+the physical storage remain alive, so this is server-process crash evidence,
+not host or guest power-loss evidence.
+
+### Manual disposable-VM power-cut experiment
+
+`scripts/storage-guest-powercut.py` provides a deliberately manual two-stage
+SQLite storage-binding experiment. The external whole-guest hard stop is never
+performed by any pytest gate. A deep-only regression test exercises the
+harness protocol with an ordinary process restart; it is excluded from the
+bounded merge profile and is not power-cut evidence. Run `prepare` inside a
+disposable POSIX VM, passing an absolute path for a new, dedicated state
+directory on storage that survives a guest restart:
+
+```bash
+.venv/bin/python scripts/storage-guest-powercut.py prepare \
+  --state-directory /var/lib/h2hdb-powercut/case-001
+```
+
+After it prints `H2HDB_GUEST_POWERCUT_READY`, hard-stop the entire guest from
+the hypervisor without asking the guest OS to shut down. Reboot the same guest
+with the same storage attached, then run:
+
+```bash
+.venv/bin/python scripts/storage-guest-powercut.py verify \
+  --state-directory /var/lib/h2hdb-powercut/case-001
+```
+
+The harness refuses to prepare an existing directory or verify one containing
+unexpected entries. It verifies the full schema, SQLite integrity, foreign
+keys, the response-lost storage-binding commit, exact replay, and rejection of
+a different storage UUID. The tool never powers off the VM itself. Killing
+only the `prepare` process and restarting it validates the harness protocol,
+but is **not** guest power-cut evidence. Even an external guest hard stop does
+not reproduce loss of the physical host, storage controller, or their caches,
+and this core-only experiment does not cover CBZ or other ingest filesystem
+artifacts.
+
 For an isolated editable-install smoke containing explicit consumer sources,
 run:
 

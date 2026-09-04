@@ -69,6 +69,7 @@ def test_live_mariadb_group_rejects_a_conflicting_existing_group() -> None:
 
 def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
     assert DEEP_TEST_FILES == {
+        "test_storage_guest_powercut_harness.py",
         "test_operational_refinement_runtime.py",
         "test_vnext_schema_provider_generation.py",
         "test_vnext_bootstrap_fault_matrix.py",
@@ -133,6 +134,7 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     ("test_file_name", "marker_names", "live_mariadb", "expected"),
     (
         ("test_vnext_pipeline_workflows.py", (), False, True),
+        ("test_storage_guest_powercut_harness.py", (), False, True),
         ("test_vnext_pipeline_workflows.py", ("merge_smoke",), False, False),
         ("test_vnext_domains.py", (), False, False),
         ("test_vnext_domains.py", (), True, True),
@@ -208,6 +210,7 @@ def test_pytest_xdist_is_a_required_bounded_development_dependency() -> None:
         "merge_smoke: representative coverage retained in the bounded merge profile",
         "mariadb: requires the single live MariaDB testcontainer worker",
         "mariadb_smoke: representative live MariaDB coverage retained in the bounded merge profile",
+        "mariadb_server_crash: isolated disposable MariaDB server SIGKILL evidence",
     ]
 
 

@@ -2072,6 +2072,17 @@ path = "tests/test_vnext_storage_instance_repository.py"
 symbol = "test_live_mariadb_fresh_facades_serialize_competing_first_bind"
 
 [[evidence]]
+id = "integration.live-mariadb.storage-instance-server-crash"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "On MariaDB 10.11.11, two production storage-binding transactions pause immediately before connector commit and after the server commit response reaches the connector but before the public facade returns it. The disposable database server container then receives SIGKILL, both clients are killed and reaped, and a new container attaches the same uniquely owned named volume. Recovery retains the response-lost committed binding, rolls back the open binding, permits only the exact committed replay, accepts a fresh bind after rollback, and passes the complete READY audit for both databases."
+assumptions = ["The Docker daemon, its Linux kernel, host page cache and physical storage remain running; this establishes MariaDB server-process crash recovery across a persistent named volume, not operating-system, host-power or storage-controller failure.", "The two synchronized connector commit boundaries do not explore arbitrary instruction timings or torn block-device writes."]
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_server_crash_deep.py"
+symbol = "test_live_mariadb_server_sigkill_recreated_container_recovers_named_volume_transactions"
+
+[[evidence]]
 id = "integration.mariadb-shape.source-build"
 layer = "integration"
 strength = "runtime_integration"
@@ -3089,7 +3100,7 @@ lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.oper
 tla = { status = "not_applicable", rationale = "CatalogCore does not model the storage-instance UUID, its immutable singleton bind transaction, or consumer-owned external marker durability; the pure transition is instead proved unbounded in Lean and connected to SQL by runtime, fault, and integration evidence." }
 runtime_refinement = { status = "covered", evidence = ["runtime.storage-instance-binding", "runtime.production.writer-bindings", "runtime.production.storage-instance-binding"] }
 fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.storage-instance-binding"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.storage-instance-binding", "integration.live-mariadb.storage-instance-binding"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.storage-instance-binding", "integration.live-mariadb.storage-instance-binding", "integration.live-mariadb.storage-instance-server-crash"] }
 
 [[invariant]]
 id = "h2hdb.operational.fencing.v1"

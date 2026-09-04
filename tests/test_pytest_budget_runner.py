@@ -73,13 +73,28 @@ def test_merge_profile_selectors_split_sqlite_from_mariadb_smoke() -> None:
 
 def test_deep_profile_is_complete_unbounded_and_separate_from_merge() -> None:
     arguments = runner._arguments(["deep"])
-    sqlite_phase, mariadb_phase = runner.DEEP_PHASES
+    sqlite_phase, mariadb_phase, server_crash_phase = runner.DEEP_PHASES
 
     assert arguments.budget_seconds is None
     assert sqlite_phase.marker_expression == "not mariadb"
-    assert mariadb_phase.marker_expression == "mariadb"
+    assert mariadb_phase.marker_expression == ("mariadb and not mariadb_server_crash")
+    assert server_crash_phase is runner.MARIADB_SERVER_CRASH_PHASE
+    assert server_crash_phase.marker_expression == "mariadb_server_crash"
     assert not sqlite_phase.stop_after_first_failure
     assert not mariadb_phase.stop_after_first_failure
+    assert server_crash_phase.stop_after_first_failure
+
+
+def test_server_crash_profile_is_isolated_and_explicitly_bounded_by_its_entry() -> None:
+    arguments = runner._arguments(["mariadb-server-crash", "--budget-seconds", "300"])
+
+    assert arguments.profile == "mariadb-server-crash"
+    assert arguments.budget_seconds == 300.0
+    assert runner._phases("mariadb-server-crash") == (
+        runner.MARIADB_SERVER_CRASH_PHASE,
+    )
+    assert runner.MARIADB_SERVER_CRASH_PHASE.worker_count == "0"
+    assert runner.MARIADB_SERVER_CRASH_PHASE.mariadb_enabled
 
 
 def test_phase_environment_isolates_backend_and_pytest_options(
@@ -520,6 +535,16 @@ def test_full_gate_uses_merge_runner_and_manual_deep_entry_is_not_in_gate() -> N
     assert "scripts/run-pytest.py deep" not in full_gate
     assert ".venv/bin/pytest" not in full_gate
     assert "scripts/run-pytest.py deep" in deep_gate
+
+
+def test_server_crash_entry_states_scope_and_uses_a_hard_deadline() -> None:
+    entry = (ROOT / "scripts" / "check-mariadb-server-crash-deep.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "server SIGKILL" in entry
+    assert "not a host power-loss test" in entry
+    assert "mariadb-server-crash --budget-seconds 300" in " ".join(entry.split())
 
 
 def test_deadline_contract_does_not_claim_docker_daemon_cleanup() -> None:

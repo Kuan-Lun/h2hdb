@@ -61,6 +61,7 @@ markers = [
     "merge_smoke: representative coverage retained in the bounded merge profile",
     "mariadb: requires the single live MariaDB testcontainer worker",
     "mariadb_smoke: representative live MariaDB coverage retained in the bounded merge profile",
+    "mariadb_server_crash: isolated disposable MariaDB server SIGKILL evidence",
 ]
 
 [tool.h2h.version]

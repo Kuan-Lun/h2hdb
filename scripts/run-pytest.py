@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded merge pytest profile or the unbounded manual deep profile."""
+"""Run bounded merge/server-crash profiles or the manual deep profile."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ TERMINATION_POLL_SECONDS = 0.05
 TIMEOUT_EXIT_CODE = 124
 TERMINATION_FAILED_EXIT_CODE = 125
 INTERRUPTED_EXIT_CODE = 130
-ProfileName = Literal["merge", "deep"]
+ProfileName = Literal["merge", "deep", "mariadb-server-crash"]
 
 
 class RunnerSignalInterrupt(BaseException):
@@ -150,6 +150,15 @@ MERGE_PHASES = (
     ),
 )
 
+MARIADB_SERVER_CRASH_PHASE = PytestPhase(
+    label="Disposable MariaDB 10.11.11 server SIGKILL profile",
+    marker_expression="mariadb_server_crash",
+    worker_count="0",
+    mariadb_enabled=True,
+    durations=10,
+    stop_after_first_failure=True,
+)
+
 DEEP_PHASES = (
     PytestPhase(
         label="SQLite complete manual profile",
@@ -161,12 +170,13 @@ DEEP_PHASES = (
     ),
     PytestPhase(
         label="MariaDB 10.11.11 complete manual profile",
-        marker_expression="mariadb",
+        marker_expression="mariadb and not mariadb_server_crash",
         worker_count="0",
         mariadb_enabled=True,
         durations=50,
         stop_after_first_failure=False,
     ),
+    MARIADB_SERVER_CRASH_PHASE,
 )
 
 
@@ -183,7 +193,11 @@ def _positive_seconds(value: str) -> float:
 
 
 def _phases(profile: ProfileName) -> tuple[PytestPhase, ...]:
-    return MERGE_PHASES if profile == "merge" else DEEP_PHASES
+    if profile == "merge":
+        return MERGE_PHASES
+    if profile == "mariadb-server-crash":
+        return (MARIADB_SERVER_CRASH_PHASE,)
+    return DEEP_PHASES
 
 
 def _pytest_command(phase: PytestPhase) -> tuple[str, ...]:
@@ -512,10 +526,13 @@ def _arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "profile",
-        choices=("merge", "deep"),
+        choices=("merge", "deep", "mariadb-server-crash"),
         nargs="?",
         default="merge",
-        help="merge is bounded and selective; deep is complete and manual-only",
+        help=(
+            "merge is bounded and selective; deep is complete and manual-only; "
+            "mariadb-server-crash is its isolated destructive-container phase"
+        ),
     )
     parser.add_argument(
         "--budget-seconds",

@@ -25,6 +25,7 @@ MACOS_PERFORMANCE_CORE_SYSCTL = "hw.perflevel0.physicalcpu"
 MACOS_SYSCTL_TIMEOUT_SECONDS = 2
 DEEP_TEST_FILES = frozenset(
     {
+        "test_storage_guest_powercut_harness.py",
         "test_operational_refinement_runtime.py",
         "test_vnext_schema_provider_generation.py",
         "test_vnext_bootstrap_fault_matrix.py",
