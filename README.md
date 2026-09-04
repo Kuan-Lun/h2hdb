@@ -306,13 +306,24 @@ profile with a 300-second aggregate hard deadline. Its canonical runner is
 `scripts/run-pytest.py merge`: the first phase selects
 `not deep and not mariadb` with automatic xdist workers; the second uses one
 worker and `H2HDB_TEST_MARIADB=1` for only
-`mariadb_smoke and mariadb and not deep` against pinned MariaDB 10.11.11. Docker is
-therefore required for the release check's MariaDB smoke phase. The deadline
-includes termination and reaping of the pytest/xdist POSIX process group; on
-Windows, interrupted runs use `taskkill /T`. A test that deliberately creates a
-detached operating-system session is outside that process-group guarantee.
+`mariadb_smoke and mariadb and not deep` against pinned MariaDB 10.11.11. Docker
+is therefore required for the release check's MariaDB smoke phase. The deadline
+includes termination and reaping of the owned pytest/xdist process tree and the
+handoff between phases. POSIX uses a new session/process group. Windows assigns
+a start-gated supervisor to a kill-on-close Job Object before pytest can start;
+`taskkill /T` is only a bounded fallback when Job termination fails. Every phase
+gets a fresh owner, and the next phase cannot start until the previous phase has
+an empty-tree receipt. A test that deliberately creates a detached POSIX
+operating-system session is outside that platform's process-group guarantee.
 Testcontainers/Ryuk cleanup inside the Docker daemon can finish after the runner
-exits and is not claimed by that deadline.
+exits and is not part of the deadline or owned process-tree evidence.
+
+An independent `windows-latest` target exercises the real Job Object, timeout,
+console-break, forced-parent-exit, descendant, virtual-environment redirector,
+and multi-phase handoff behavior without starting MariaDB. The finite
+`PytestProcessSupervision` model checks one-, two-, and three-phase profiles and
+the fail-closed result rules. Neither target claims that terminating pytest also
+removes Docker containers or volumes.
 
 Plain `pytest` defaults to `not deep` with automatic bounded xdist workers and
 does not enable the live service, but that direct command has no aggregate

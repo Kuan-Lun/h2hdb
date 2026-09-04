@@ -124,10 +124,14 @@
 - `scripts/run-pytest.py merge`是 canonical bounded pytest runner。它先執行
   `not deep and not mariadb`，再以單一 worker、`H2HDB_TEST_MARIADB=1`執行
   `mariadb_smoke and mariadb and not deep`；collection、execution、teardown、
-  pytest/xdist POSIX process-group cleanup與兩階段間 overhead共用 300 秒 hard
-  deadline；Windows中斷則使用`taskkill /T`。刻意脫離process group/session的
-  test child不在此保證內。Docker daemon內的Testcontainers/Ryuk resource
-  cleanup可能在runner結束後才完成，不屬於此deadline的證據。
+  pytest/xdist owned process-tree cleanup與兩階段間 overhead共用 300 秒 hard
+  deadline。POSIX使用新session/process group；Windows必須先把 start-gated
+  supervisor指派到 kill-on-close Job Object，才可啟動pytest，`taskkill /T`只可
+  作為Job termination失敗的 bounded fallback。每一phase使用新的owner，且前一
+  phase未取得empty-tree receipt時不得啟動下一phase。刻意脫離POSIX process
+  group/session的test child不在該平台保證內。Docker daemon內的
+  Testcontainers/Ryuk resource cleanup可能在runner結束後才完成，不屬於此
+  deadline或owned process-tree的證據。
 - `scripts/check-full.sh`：fast gate、coverage contract、schema與 generated
   artifact drift、schema surface、Lean、上述 bounded pytest merge profile、
   small TLC profiles，以及 distribution boundary。
@@ -147,7 +151,9 @@
 - dependency audit可連網；commit hooks只驗證 candidate內既有 evidence，
   不在一般 commit過程連網。
 - GitHub Actions只保留 trusted publishing、手動 formal profile、平台特有
-  或本機無法可靠重現的檢查。
+  或本機無法可靠重現的檢查。Windows Job Object、console break、強制parent
+  exit、真實descendant cleanup、venv redirector與multi-phase handoff由獨立
+  `windows-latest` target驗證。
 - 不使用 Claude、Codex或其他 provider-specific Stop hooks重複檢查。
 
 ## 測試與例外

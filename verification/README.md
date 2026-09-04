@@ -128,6 +128,14 @@ The layers prove different things and are not interchangeable.
   publication is recovered before source handoff without consuming the new
   generation's mapping; a successful synchronization return is permitted
   only after the exact requested policy is the current `PUBLISHED` head.
+  `tla/PytestProcessSupervision.tla` finitely explores the test runner's
+  one-phase server-crash, two-phase merge, and three-phase deep profile shapes.
+  It checks start-gate ownership, phase-local cleanup, timeout and signal exit
+  receipts, termination and `taskkill` failure, a configured aggregate
+  deadline, and the rule that only a clean phase with a synchronous empty-tree
+  receipt may start its successor. The real deep profile remains unbounded by
+  default; its three-phase sequencing is the modeled part unless a caller
+  supplies `--budget-seconds`.
 - `invariants.toml` indexes evidence for every semantic-obligation ID. Missing
   production refinement, fault, or cross-backend integration evidence is a
   machine-readable blocker, not an implicit success.
@@ -302,15 +310,33 @@ deadline. The canonical bounded merge runner, `scripts/run-pytest.py merge`,
 gives its SQLite
 `not deep and not mariadb` phase and its single-worker live-MariaDB
 `mariadb_smoke and mariadb and not deep` phase one shared 300-second hard
-deadline, including termination and reaping of the pytest/xdist POSIX process
-group; on Windows, interrupted runs use `taskkill /T`. A test that deliberately
-creates a detached operating-system session is outside that process-group
-guarantee. Testcontainers/Ryuk cleanup inside the Docker daemon may complete
-after the runner exits and is not evidence covered by that deadline. The
-exact-tree release receipt attests only that bounded profile.
+deadline, including termination and reaping of the owned pytest/xdist process
+tree and the phase handoff. POSIX uses a new session/process group. Windows
+assigns a start-gated supervisor to a kill-on-close Job Object before starting
+pytest, and uses `taskkill /T` only as a bounded fallback. A successor phase
+requires a synchronous empty-tree receipt from its predecessor. A test that
+deliberately creates a detached POSIX operating-system session is outside that
+platform's process-group guarantee. Testcontainers/Ryuk cleanup inside the
+Docker daemon may complete after the runner exits and is not evidence covered
+by that deadline or Job Object. The exact-tree release receipt attests only
+that bounded profile.
 High-cost SQLite and non-smoke live-MariaDB matrices are marked `deep`; they
 remain executable through `scripts/check-pytest-deep.sh`, but their existence
 does not mean that every merge ran them.
+
+The pytest-supervision model treats process creation, Job assignment,
+termination, kill-on-close, POSIX group termination, and an empty-tree query as
+abstract transitions. It does not prove Win32 or POSIX kernel behavior, Python
+signal delivery, `taskkill`, the venv launcher, or Docker cleanup. Deterministic
+API and fake-clock tests refine the exit and deadline choices; the independent
+`windows-latest` matrix supplies real Job Object, console-break, forced-exit,
+descendant, venv-redirector, and multi-phase evidence. Exit `0`, an ordinary
+pytest failure, timeout `124`, or handled signal `129`, `130`, `143`, or `149`
+requires a synchronous empty-tree query. Infrastructure failure `125` may
+instead rely on the documented kill-on-last-Job-handle behavior when the runner
+process exits; this is not reported as an observed empty-tree receipt. The
+one-phase MariaDB server-crash profile deliberately kills a container through
+the Docker daemon, which remains outside both this model and Job ownership.
 
 Executable evidence added, and what it establishes:
 
