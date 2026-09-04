@@ -39,6 +39,7 @@ from .domain import (
     CatalogRecentWindow,
     CatalogRevision,
     DownloadCandidateState,
+    StorageInstanceBinding,
 )
 from .repository import RepositoryContext
 from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
@@ -73,14 +74,15 @@ def _now_microseconds() -> int:
 
 
 class VNextDatabaseAdminFacade:
-    """Expose only greenfield schema-epoch administration to applications."""
+    """Expose greenfield schema and immutable storage administration."""
 
     __slots__ = ("__admin",)
 
     def __init__(self, config: CoreConfig) -> None:
         if not isinstance(config, CoreConfig):
             raise TypeError("config must be CoreConfig")
-        self.__admin = VNextSchemaAdmin(RepositoryContext.from_config(config))
+        context = RepositoryContext.from_config(config)
+        self.__admin = VNextSchemaAdmin(context)
 
     def initialize(self) -> SchemaEpochReport:
         return self.__admin.initialize()
@@ -90,6 +92,14 @@ class VNextDatabaseAdminFacade:
 
     def check_readiness(self) -> SchemaEpochReadiness:
         return self.__admin.check_readiness()
+
+    def bind_storage_instance(
+        self,
+        storage_instance_uuid: bytes,
+    ) -> StorageInstanceBinding:
+        """Bind this database once to one durable external storage instance."""
+
+        return self.__admin.bind_storage_instance(storage_instance_uuid)
 
 
 class VNextCatalogFacade:

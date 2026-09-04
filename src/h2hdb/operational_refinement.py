@@ -42,6 +42,7 @@ __all__ = [
     "check_physical_domains_v1",
     "check_queue_history_contract_v1",
     "check_revision_allocator_contract_v1",
+    "check_storage_instance_binding_contract_v1",
     "validate_builtin_operational_manifest",
 ]
 
@@ -126,6 +127,12 @@ _SPECS = (
         "building_to_ready",
         "operational_refinement.check_epoch_manifest_v1",
         "schema_epoch.validate_operational_manifest",
+    ),
+    (
+        "h2hdb.operational.storage-instance-binding.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_storage_instance_binding_contract_v1",
+        "operational_writer.bind_storage_instance",
     ),
     (
         "h2hdb.operational.fencing.v1",
@@ -298,6 +305,11 @@ OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
         "h2hdb.operational.revision-allocation.v1": (
             "allocation must return-and-increment the exact stream row under lock/CAS, "
             "and publication must prove revision < current next_revision"
+        ),
+        "h2hdb.operational.storage-instance-binding.v1": (
+            "the first bind must serialize on durable singleton authority; exact "
+            "replay writes nothing and a different UUID can never replace the "
+            "stored identity"
         ),
         "h2hdb.operational.gallery-staging.v1": (
             "staging writers must enforce live claims, complete request bytes and "
@@ -3131,6 +3143,34 @@ def check_revision_allocator_contract_v1(connector: SQLConnector) -> None:
         relation_name="catalog_revision",
         revision_column="revision",
     )
+
+
+def check_storage_instance_binding_contract_v1(connector: SQLConnector) -> None:
+    """Validate the optional immutable storage binding through one bounded lookup."""
+
+    obligation_id = "h2hdb.operational.storage-instance-binding.v1"
+    backend = _ready_context(connector, obligation_id)
+    table = _table(backend, "storage_instance_binding")
+    rows = _fetch_all(
+        connector,
+        "storage instance binding",
+        f"SELECT singleton_id, storage_instance_uuid FROM {table} LIMIT 2",
+    )
+    if not rows:
+        return
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][0] != 1:
+        raise OperationalSemanticValidationError(
+            "operational READY storage instance binding is not singular"
+        )
+    value = _as_bytes(
+        rows[0][1],
+        label="storage_instance_binding.storage_instance_uuid",
+        length=16,
+    )
+    if value == bytes(16):
+        raise OperationalSemanticValidationError(
+            "operational READY storage instance UUID is nil"
+        )
 
 
 def check_gallery_staging_contract_v1(connector: SQLConnector) -> None:

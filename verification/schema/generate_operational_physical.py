@@ -28,8 +28,10 @@ UUID16 = {
     "preparation_id",
     "request_token",
     "staging_id",
+    "storage_instance_uuid",
     "deletion_request_token",
 }
+NON_NIL_UUID16 = {"storage_instance_uuid"}
 DIGEST32 = {
     "batch_key",
     "chain_sha256",
@@ -202,6 +204,11 @@ SEMANTIC_OBLIGATION_CHECKS = {
         "manifest_integrity",
         "operational_refinement.check_epoch_manifest_v1",
     ),
+    "h2hdb.operational.storage-instance-binding.v1": (
+        "ready_and_runtime",
+        "identity_protocol",
+        "operational_refinement.check_storage_instance_binding_contract_v1",
+    ),
     "h2hdb.operational.fencing.v1": (
         "ready_and_runtime",
         "transaction_protocol",
@@ -282,6 +289,10 @@ SEMANTIC_VALIDATOR_HOOK = (
     "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 )
 GENERATION_OBLIGATION_BINDINGS = {
+    "h2hdb.operational.storage-instance-binding.v1": (
+        ("storage_instance_binding",),
+        "Validate an initially absent, one-time immutable non-nil storage-instance UUID binding whose exact replay is write-free and whose mismatch fails closed without replacing the retained identity.",
+    ),
     "h2hdb.operational.download-ingest-handoff.v1": (
         (
             "download_generation",
@@ -416,7 +427,7 @@ GENERATION_OBLIGATION_BINDINGS = {
             "deletion_request_generation_head",
             "gallery_observation_staging_request_budget",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of the storage-instance binding plus all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -1339,6 +1350,15 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 _identifier(f"ck_{name}_{attribute}_len"),
                 f"length({attribute}) = 16",
                 f"octet_length({attribute}) = 16",
+            )
+        )
+    for attribute in sorted(attributes & NON_NIL_UUID16):
+        nil_uuid = "00000000000000000000000000000000"
+        checks.append(
+            (
+                _identifier(f"ck_{name}_{attribute}_non_nil"),
+                f"{attribute} <> X'{nil_uuid}'",
+                f"{attribute} <> X'{nil_uuid}'",
             )
         )
     for attribute in sorted(attributes & DIGEST32):

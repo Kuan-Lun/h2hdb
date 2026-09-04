@@ -41,6 +41,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
 type PhysicalDomainEntrypoint = Callable[..., object]
 type PhysicalDomainGuard = Callable[..., Any]
@@ -311,6 +312,7 @@ CATALOG_PHYSICAL_DOMAIN_GUARDS: tuple[PhysicalDomainGuard, ...] = (
 OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS = frozenset(
     {
         "schema_epoch_control",
+        "storage_instance_binding",
         "download_request",
         "deletion_request_url",
         "operational_preparation_checkpoint",
@@ -333,6 +335,7 @@ OPERATIONAL_PHYSICAL_DOMAIN_WRITERS: tuple[PhysicalDomainEntrypoint, ...] = (
     OperationalEffectRepository.seal,
     VNextCleanupRepository.begin_cycle,
     VNextCleanupRepository.advance,
+    VNextStorageInstanceRepository.bind,
 )
 
 # Epoch control has a different transaction owner.  Keep it as an explicit

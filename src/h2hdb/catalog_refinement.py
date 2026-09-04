@@ -166,6 +166,11 @@ _SPECS = (
         "operational_refinement.check_epoch_manifest_v1",
     ),
     (
+        "h2hdb.operational.storage-instance-binding.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_storage_instance_binding_contract_v1",
+    ),
+    (
         "h2hdb.operational.fencing.v1",
         "ready_and_runtime",
         "operational_refinement.check_fencing_contract_v1",

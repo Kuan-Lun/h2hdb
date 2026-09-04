@@ -84,7 +84,8 @@ schema-v2 public contract; mixed schema versions are unsupported.
 
 Applications import these public entry points from `h2hdb`:
 
-- `VNextDatabaseAdminFacade` for initialization, full checks, and readiness.
+- `VNextDatabaseAdminFacade` for initialization, full checks, readiness, and
+  the immutable external-storage instance binding.
 - `VNextCatalogFacade` for current-head catalog reads; a descriptor is accepted
   only while it still exactly equals that head. Its public discovery surface is
   `discover_publications()`, `list_publication_facets()`,
@@ -145,12 +146,17 @@ A deployment integration follows this order:
 1. Create a truly empty SQLite database or MariaDB schema.
 2. Run core `migrate` with read-write credentials.
 3. Run core `check` with the same read-only configuration consumers will use.
-4. Run the ingest consumer with its concrete source, acquisition, and
+4. Have the storage-owning integration durably create or load its non-nil
+   16-byte storage UUID, then call
+   `VNextDatabaseAdminFacade.bind_storage_instance()`. The first call binds the
+   database; an exact restart is write-free and a different storage root fails
+   before maintenance or ingest work.
+5. Run the ingest consumer with its concrete source, acquisition, and
    presentation adapters to populate and publish data through bounded vNext
    workflows.
-5. Start catalog readers, download workers, and other consumers only after the
+6. Start catalog readers, download workers, and other consumers only after the
    required initial publication exists.
-6. Use core `ready` for frequent liveness/readiness probes; keep full `check`
+7. Use core `ready` for frequent liveness/readiness probes; keep full `check`
    as the stronger startup or deployment audit.
 
 Schema `READY` means the exact database contract is present; it does not mean

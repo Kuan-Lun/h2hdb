@@ -278,7 +278,7 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
         sum(value.get("kind", "table") == "table" for value in data["relation"]) == 170
     )
     assert sum(value.get("kind", "table") == "view" for value in data["relation"]) == 33
-    assert len(operational["relation"]) == 66
+    assert len(operational["relation"]) == 67
     assert all(
         value.get("kind", "table") == "table" for value in operational["relation"]
     )
@@ -885,7 +885,7 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
         assert tuple(provider.writer_hook_bindings) == (
             expected_recurring_obligation_ids
         )
-        assert len(provider.writer_hook_bindings) == 29
+        assert len(provider.writer_hook_bindings) == 30
         assert not provider.blockers
         assert not any("validators are missing" in value for value in provider.blockers)
         assert not any("undeclared IDs" in value for value in provider.blockers)
@@ -942,8 +942,8 @@ def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> Non
         obligation for obligation in recurring if obligation["id"] not in installed_ids
     )
 
-    assert len(recurring) == 29
-    assert len(installed_ids) == 29
+    assert len(recurring) == 30
+    assert len(installed_ids) == 30
     assert len(writer_blockers) == len(unresolved) == 0
     assert installed_ids == frozenset(value["id"] for value in recurring)
     assert installed_ids.isdisjoint(building_only_ids)

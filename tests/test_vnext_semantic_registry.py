@@ -68,7 +68,7 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
     with pytest.raises(TypeError):
         validators["catalog.bootstrap.v1"] = catalog_refinement.check_bootstrap_v1  # type: ignore[index]
 
-    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 29
+    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 30
     hook = catalog_writer.BUILTIN_WRITER_HOOKS[0]
     binding = catalog_writer.resolve_writer_hook(
         hook.obligation_id,

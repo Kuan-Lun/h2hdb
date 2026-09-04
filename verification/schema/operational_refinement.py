@@ -420,6 +420,12 @@ _OBLIGATION_BINDINGS = {
         "manifest_integrity",
         "operational_refinement.check_epoch_manifest_v1",
     ),
+    "h2hdb.operational.storage-instance-binding.v1": (
+        "operational.storage-instance-binding",
+        "ready_and_runtime",
+        "identity_protocol",
+        "operational_refinement.check_storage_instance_binding_contract_v1",
+    ),
     "h2hdb.operational.fencing.v1": (
         "operational.ingest-fencing",
         "ready_and_runtime",
@@ -513,6 +519,10 @@ _OBLIGATION_BINDINGS = {
 }
 
 _GENERATION_OBLIGATION_RELATION_BINDINGS = {
+    "h2hdb.operational.storage-instance-binding.v1": (
+        ("storage_instance_binding",),
+        "Validate an initially absent, one-time immutable non-nil storage-instance UUID binding whose exact replay is write-free and whose mismatch fails closed without replacing the retained identity.",
+    ),
     "h2hdb.operational.download-ingest-handoff.v1": (
         (
             "download_generation",
@@ -647,7 +657,7 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "deletion_request_generation_head",
             "gallery_observation_staging_request_budget",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of the storage-instance binding plus all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -774,6 +784,7 @@ def validate_operational_machine_contract_documents(
     checks: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], None]] = {
         "operational_refinement.check_physical_domains_v1": check_physical_domains_v1,
         "operational_refinement.check_epoch_manifest_v1": check_epoch_manifest_v1,
+        "operational_refinement.check_storage_instance_binding_contract_v1": check_storage_instance_binding_contract_v1,
         "operational_refinement.check_fencing_contract_v1": check_fencing_contract_v1,
         "operational_refinement.check_download_ingest_handoff_contract_v1": check_download_ingest_handoff_contract_v1,
         "operational_refinement.check_maintenance_gate_contract_v1": check_maintenance_gate_contract_v1,
@@ -805,6 +816,101 @@ def validate_operational_machine_contract_documents(
         absent_relations,
         epoch_owned,
     )
+
+
+def check_storage_instance_binding_contract_v1(
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
+) -> None:
+    """Validate the immutable one-time storage-root identity binding."""
+
+    _require_exact_table(
+        logical,
+        "storage_instance_binding_contract",
+        {
+            "version": 1,
+            "relation": "storage_instance_binding",
+            "singleton_id": 1,
+            "uuid_bytes": 16,
+            "initial_rule": "a fresh database has no storage-instance binding row and is therefore unbound",
+            "bind_rule": "after an external storage adapter has durably created and read back one non-nil 16-byte storage-instance UUID, the first bind transaction locks the exact READY schema-epoch singleton and inserts that UUID into the immutable singleton relation",
+            "replay_rule": "an exact UUID replay returns the retained binding with zero writes; a different UUID fails closed with zero writes, and the binding has no update, delete, or unbind transition",
+            "external_marker_rule": "the consumer-owned storage adapter creates, persists, and reads the filesystem or object-storage marker before database binding; external byte I/O never occurs inside the core database transaction",
+        },
+    )
+    relation = _raw_relation_map(logical).get("storage_instance_binding")
+    if relation is None or {
+        "kind": relation.get("kind"),
+        "attributes": relation.get("attributes"),
+        "declared_keys": relation.get("declared_keys"),
+        "fds": relation.get("fds"),
+        "foreign_keys": relation.get("foreign_keys", []),
+    } != {
+        "kind": "source_of_truth",
+        "attributes": ["singleton_id", "storage_instance_uuid"],
+        "declared_keys": [["singleton_id"]],
+        "fds": [
+            {
+                "determinant": ["singleton_id"],
+                "dependent": ["storage_instance_uuid"],
+            }
+        ],
+        "foreign_keys": [],
+    }:
+        raise ValueError("storage instance binding relation drifts")
+
+    physical_relation = _raw_relation_map(physical).get("storage_instance_binding")
+    if physical_relation is None or {
+        "table": physical_relation.get("table"),
+        "primary_key": physical_relation.get("primary_key"),
+        "columns": [
+            (
+                column.get("attribute"),
+                column.get("sqlite", {}).get("type"),
+                column.get("mariadb", {}).get("type"),
+            )
+            for column in _raw_tables(
+                physical_relation.get("column", []),
+                "storage_instance_binding.column",
+            )
+        ],
+    } != {
+        "table": "operational_storage_instance_bindings",
+        "primary_key": ["singleton_id"],
+        "columns": [
+            ("singleton_id", "INTEGER", "SMALLINT UNSIGNED"),
+            ("storage_instance_uuid", "BLOB", "BINARY(16)"),
+        ],
+    }:
+        raise ValueError("storage instance binding physical shape drifts")
+
+    checks = {
+        _required_text(value, "name", "storage instance binding check"): value
+        for value in _raw_tables(
+            physical_relation.get("check", []),
+            "storage_instance_binding.check",
+        )
+    }
+    expected_checks = {
+        "ck_storage_instance_binding_singleton": (
+            "singleton_id = 1",
+            "singleton_id = 1",
+        ),
+        "ck_storage_instance_binding_storage_instance_uuid_len": (
+            "length(storage_instance_uuid) = 16",
+            "octet_length(storage_instance_uuid) = 16",
+        ),
+        "ck_storage_instance_binding_storage_instance_uuid_non_nil": (
+            "storage_instance_uuid <> X'00000000000000000000000000000000'",
+            "storage_instance_uuid <> X'00000000000000000000000000000000'",
+        ),
+    }
+    for name, (expected_sqlite, expected_mariadb) in expected_checks.items():
+        check = checks.get(name)
+        if not isinstance(check, Mapping) or (
+            check.get("sqlite_expression") != expected_sqlite
+            or check.get("mariadb_expression") != expected_mariadb
+        ):
+            raise ValueError("storage instance binding physical check drifts")
 
 
 def check_fencing_contract_v1(
@@ -4605,6 +4711,7 @@ def check_physical_domains_v1(
         "owner_token",
         "preparation_id",
         "request_token",
+        "storage_instance_uuid",
     }
     digest32 = {
         "batch_key",

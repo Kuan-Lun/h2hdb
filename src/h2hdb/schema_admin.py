@@ -11,6 +11,7 @@ __all__ = ["SchemaEpochReadiness", "VNextSchemaAdmin"]
 
 from dataclasses import dataclass
 
+from .domain import StorageInstanceBinding
 from .repository import RepositoryContext
 from .schema_epoch import (
     SCHEMA_EPOCH_CONTROL_TABLE,
@@ -25,6 +26,12 @@ from .schema_epoch import (
     validate_sqlite_schema_epoch,
 )
 from .sql_connector import SQLConnector
+from .vnext_storage_instance_repository import (
+    StorageInstanceBindingError,
+    StorageInstanceBindingUnavailableError,
+    VNextStorageInstanceRepository,
+)
+from .vnext_transaction import VNextUnitOfWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +81,41 @@ class VNextSchemaAdmin:
         with self._context.SQLConnector() as connector:
             with connector.read_transaction():
                 return self._readiness_with_connector(connector, definition)
+
+    def bind_storage_instance(
+        self,
+        storage_instance_uuid: bytes,
+    ) -> StorageInstanceBinding:
+        """Bind the exact generated READY schema to one external identity."""
+
+        requested = StorageInstanceBinding(storage_instance_uuid)
+        try:
+            _, definition = self._resolve_provider()
+        except Exception as error:
+            raise StorageInstanceBindingUnavailableError(
+                "storage binding schema provider is unavailable"
+            ) from error
+        try:
+            with self._context.SQLConnector() as connector:
+                with connector.transaction():
+                    return VNextStorageInstanceRepository.bind(
+                        VNextUnitOfWork(
+                            connector,
+                            backend=self._context.sql_type,
+                        ),
+                        storage_instance_uuid=requested.storage_instance_uuid,
+                        expected_epoch=definition.epoch,
+                        expected_schema_version=definition.schema_version,
+                        expected_manifest_sha256=bytes.fromhex(
+                            definition.manifest_sha256
+                        ),
+                    )
+        except StorageInstanceBindingError:
+            raise
+        except Exception as error:
+            raise StorageInstanceBindingUnavailableError(
+                "storage binding database authority is unavailable"
+            ) from error
 
     def _resolve_provider(
         self,

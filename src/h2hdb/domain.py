@@ -56,6 +56,7 @@ __all__ = [
     "PreparedThumbnailResource",
     "StorageObjectDescriptor",
     "StorageObjectKey",
+    "StorageInstanceBinding",
     "CatalogResourceKind",
     "CatalogContributor",
     "CatalogPublishResult",
@@ -151,6 +152,7 @@ from .vnext_domains import (
     require_int63,
     require_positive_int63,
     require_uint32,
+    require_uuid16,
 )
 from .vnext_identity import (
     GalleryObservationDirectoryFileType,
@@ -2846,6 +2848,21 @@ class VNextArtifactAdapterPolicy:
             self.policy_fingerprint_sha256,
             field="artifact adapter policy_fingerprint_sha256",
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StorageInstanceBinding:
+    """Immutable identity binding for one consumer-owned storage instance."""
+
+    storage_instance_uuid: bytes
+
+    def __post_init__(self) -> None:
+        value = require_uuid16(
+            self.storage_instance_uuid,
+            field="storage instance UUID",
+        )
+        if value == bytes(16):
+            raise ValueError("storage instance UUID must not be nil")
 
 
 @dataclass(frozen=True, slots=True)

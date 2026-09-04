@@ -64,6 +64,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
 
 class WriterHookUnavailableError(RuntimeError):
@@ -123,6 +124,10 @@ _SPECS: tuple[tuple[str, str], ...] = (
     (
         "h2hdb.operational.epoch-manifest.v1",
         "schema_epoch.validate_operational_manifest",
+    ),
+    (
+        "h2hdb.operational.storage-instance-binding.v1",
+        "operational_writer.bind_storage_instance",
     ),
     (
         "h2hdb.operational.fencing.v1",
@@ -260,6 +265,9 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_publication_repository": frozenset({"PublicationRepository"}),
         "h2hdb.vnext_queue_repository": frozenset({"VNextQueueRepository"}),
         "h2hdb.vnext_source_build_repository": frozenset({"SourceBuildRepository"}),
+        "h2hdb.vnext_storage_instance_repository": frozenset(
+            {"VNextStorageInstanceRepository"}
+        ),
     }
 )
 
@@ -977,6 +985,11 @@ _BOUND_BINDINGS = (
         (SchemaEpochRunner.run,),
         frozenset({"schema_epoch_control"}),
         transaction_owner=WriterTransactionOwner.SCHEMA_EPOCH_RUNNER,
+    ),
+    _binding(
+        "h2hdb.operational.storage-instance-binding.v1",
+        (VNextStorageInstanceRepository.bind,),
+        _contract_relations("h2hdb.operational.storage-instance-binding.v1"),
     ),
     _binding(
         "h2hdb.operational.fencing.v1",

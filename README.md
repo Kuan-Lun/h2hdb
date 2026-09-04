@@ -153,6 +153,8 @@ admin = VNextDatabaseAdminFacade(config)
 admin.initialize()  # deployment init job only
 admin.check()  # full read-only audit
 admin.check_readiness()  # lightweight probe
+# A storage-owning integration supplies its durable filesystem/object-store UUID.
+admin.bind_storage_instance(storage_instance_uuid)
 ```
 
 ## Public application API
@@ -160,6 +162,11 @@ admin.check_readiness()  # lightweight probe
 Consumers should import the public facades and immutable domain values from
 `h2hdb`; they must not import connector, repository, generated-schema, or table
 implementation modules.
+
+`bind_storage_instance()` is a one-time immutable database-to-storage binding.
+The first call stores the integration-supplied non-nil 16-byte UUID; an exact
+retry is write-free, while a different UUID fails closed. There is no rebind,
+unbind, migration, or path-derived identity compatibility surface.
 
 Current-head catalog reads use `open_database`, which performs the full
 manifest-bound `READY` audit before returning a `VNextCatalogFacade`. The

@@ -41,6 +41,26 @@ path = "verification/lean/OperationalSchema.lean"
 symbol = "all_manifest_base_relations_bcnf"
 
 [[evidence]]
+id = "lean.operational.storage-instance-binding"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "For arbitrary abstract UUID values, Lean proves that the first bind records the proposal, exact replay preserves it, mismatch preserves the retained identity, and no later proposal can replace an existing binding."
+assumptions = ["The production non-nil 16-byte validation, exact READY singleton lock, SQL transaction, and external-marker durability refine the pure transition model; filesystem or object-storage I/O is not modeled by this theorem."]
+[[evidence.location]]
+path = "verification/lean/StorageInstanceBinding.lean"
+symbol = "first_bind_records_proposal"
+[[evidence.location]]
+path = "verification/lean/StorageInstanceBinding.lean"
+symbol = "exact_replay_preserves_binding"
+[[evidence.location]]
+path = "verification/lean/StorageInstanceBinding.lean"
+symbol = "mismatch_preserves_existing"
+[[evidence.location]]
+path = "verification/lean/StorageInstanceBinding.lean"
+symbol = "successful_bind_never_rebinds"
+
+[[evidence]]
 id = "tla.fencing.small"
 layer = "tla"
 strength = "bounded_model_check"
@@ -73,7 +93,7 @@ id = "integration.operational.sqlite-refinement"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "supporting"
-claim = "A complete generated SQLite operational schema is introspected and required to refine all 76 logical operational relations."
+claim = "A complete generated SQLite operational schema is introspected and required to refine all 67 physical operational relations."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_verification_operational_schema.py"
@@ -184,6 +204,17 @@ assumptions = []
 [[evidence.location]]
 path = "verification/schema/operational_refinement.py"
 symbol = "check_epoch_manifest_v1"
+
+[[evidence]]
+id = "runtime.storage-instance-binding"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker pins the optional singleton relation, BINARY(16) domain, singleton key, non-nil constraint, initial absence, immutable bind, exact replay, mismatch, and external-marker ordering contract."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_storage_instance_binding_contract_v1"
 
 [[evidence]]
 id = "runtime.fencing"
@@ -1961,6 +1992,86 @@ path = "tests/test_vnext_source_build_runtime_repository.py"
 symbol = "test_assembly_pages_257_rows_in_bounded_keyset_queries"
 
 [[evidence]]
+id = "runtime.production.storage-instance-binding"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The public administration facade resolves the wheel-owned generated provider before opening the database, then opens one bounded transaction; the production repository validates a non-nil UUID, locks and matches the exact READY epoch/version/manifest singleton, inserts only the absent binding, returns an exact replay without DML, and rejects a mismatch without replacing the retained identity. The READY validator reads at most two rows and fails closed on corrupt shape or bytes."
+assumptions = ["The consumer-owned storage adapter durably creates and reads back its marker before calling the core bind operation; external byte I/O remains outside the database transaction."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_storage_instance_repository.py"
+symbol = "VNextStorageInstanceRepository"
+[[evidence.location]]
+path = "src/h2hdb/vnext_storage_instance_repository.py"
+symbol = "VNextStorageInstanceRepository.bind"
+[[evidence.location]]
+path = "src/h2hdb/vnext_facade.py"
+symbol = "VNextDatabaseAdminFacade.bind_storage_instance"
+[[evidence.location]]
+path = "src/h2hdb/schema_admin.py"
+symbol = "VNextSchemaAdmin.bind_storage_instance"
+[[evidence.location]]
+path = "src/h2hdb/operational_refinement.py"
+symbol = "check_storage_instance_binding_contract_v1"
+
+[[evidence]]
+id = "fault.production.storage-instance-binding"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "SQLite negative controls prove a different UUID performs zero DML, an injected post-insert failure rolls back and a retry converges, a durable commit with a lost response replays through a fresh connector without DML, generated-provider failure occurs before opening the database, manifest drift and an uninitialized schema fail with typed errors without binding, malformed or nil UUID proposals leave the binding absent, and the manifest-derived physical fault matrix rejects the database-level nil UUID value."
+assumptions = ["SQLite transaction rollback represents the production connector contract; live MariaDB concurrency is covered separately by integration evidence."]
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_mismatch_is_zero_write"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_insert_fault_rolls_back_and_retry_converges"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_committed_bind_with_lost_response_replays_through_fresh_connector"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_facade_rejects_manifest_drift_without_binding"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_facade_rejects_uninitialized_database_with_typed_error"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_facade_rejects_blocked_provider_before_opening_database"
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_binding_rejects_invalid_or_nil_uuid"
+[[evidence.location]]
+path = "tests/test_vnext_physical_domain_fault_matrix.py"
+symbol = "test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
+
+[[evidence]]
+id = "integration.sqlite.storage-instance-binding"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated-schema SQLite integration executes the first bind and exact write-free replay through the production repository, then exercises the public administration facade and verifies the one retained UUID."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_first_bind_and_exact_replay_preserve_one_uuid"
+[[evidence.location]]
+path = "tests/test_vnext_facade.py"
+symbol = "test_database_admin_facade_binds_storage_instance_once"
+
+[[evidence]]
+id = "integration.live-mariadb.storage-instance-binding"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "Two fresh public administration facades concurrently propose different UUIDs on MariaDB 10.11.11; exactly one first bind wins, the other fails closed as a mismatch, and an exact replay of the winner succeeds."
+assumptions = ["This representative mariadb_smoke case covers first-bind serialization and replay, not arbitrary connector failures."]
+[[evidence.location]]
+path = "tests/test_vnext_storage_instance_repository.py"
+symbol = "test_live_mariadb_fresh_facades_serialize_competing_first_bind"
+
+[[evidence]]
 id = "integration.mariadb-shape.source-build"
 layer = "integration"
 strength = "runtime_integration"
@@ -2061,7 +2172,7 @@ id = "runtime.production.writer-bindings"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The wheel-owned closed registry installs all 28 recurring exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 128-relation catalog physical-domain authority set with exactly 106 mutation relations, and the exact exclusion of all 22 read-only catalog relations from mutation authority while rejecting forged values before SQL or event derivation."
+claim = "The wheel-owned closed registry installs all 30 recurring exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, ten operational and one schema-epoch writer families, the 128-relation catalog physical-domain authority set with exactly 106 mutation relations, and the exact exclusion of all 22 read-only catalog relations from mutation authority while rejecting forged values before SQL or event derivation."
 assumptions = ["Binding evidence identifies the complete mutation-owner family; each referenced repository evidence record establishes the corresponding runtime semantics at those entrypoints. The adversarial boundary set is representative and does not constitute the exhaustive cross-backend fault matrix required by the fault layer."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_writer.py"
@@ -2970,6 +3081,15 @@ tla = { status = "not_applicable", rationale = "CatalogCore does not model schem
 runtime_refinement = { status = "covered", evidence = ["runtime.epoch-manifest", "runtime.production.writer-bindings", "runtime.production.schema-epoch"] }
 fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.schema-epoch"] }
 integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.schema-epoch", "integration.live-mariadb.schema-epoch"] }
+
+[[invariant]]
+id = "h2hdb.operational.storage-instance-binding.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.storage-instance-binding"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model the storage-instance UUID, its immutable singleton bind transaction, or consumer-owned external marker durability; the pure transition is instead proved unbounded in Lean and connected to SQL by runtime, fault, and integration evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.storage-instance-binding", "runtime.production.writer-bindings", "runtime.production.storage-instance-binding"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.storage-instance-binding"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.storage-instance-binding", "integration.live-mariadb.storage-instance-binding"] }
 
 [[invariant]]
 id = "h2hdb.operational.fencing.v1"

@@ -516,7 +516,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 170, 75, 66, 381, 236)
+    ) == (306, 170, 75, 67, 381, 237)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (

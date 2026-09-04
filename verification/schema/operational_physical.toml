@@ -2,8 +2,8 @@ physical_contract_version = 1
 name = "h2hdb-vnext-operational-physical"
 logical_contract = "h2hdb-vnext-operational"
 description = "Complete verification-only SQLite/MariaDB realization of the operational control plane; production migrations are intentionally unchanged."
-complete_relations = ["schema_epoch_control", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
-source_slice = ["download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+complete_relations = ["schema_epoch_control", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+source_slice = ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 inline_projections = ["operational_activation"]
 external_inline_projections = ["gallery_observation_page_descriptor", "canonical_value_page", "canonical_value_page_descriptor", "gallery_observation_file"]
 epoch_owned_relations = ["schema_epoch_control"]
@@ -26,7 +26,7 @@ class = "physical_domain"
 lifecycle = "ready_validation"
 check = "operational_refinement.check_physical_domains_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["schema_epoch_control", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "operational_preparation_effect_seal", "operational_event", "cleanup_checkpoint"]
+relations = ["schema_epoch_control", "storage_instance_binding", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "operational_preparation_effect_seal", "operational_event", "cleanup_checkpoint"]
 description = "Validate exact fixed-width binary domains, arbitrary non-key payload domains, bounded cursor bytes, event and seal counters, and nonnegative UTC microsecond timestamps on both backends."
 
 [[semantic_obligation]]
@@ -42,6 +42,20 @@ check = "operational_refinement.check_epoch_manifest_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["schema_epoch_control"]
 description = "Validate that the epoch control row binds the exact DDL, semantic-obligation, and bootstrap-seed manifests before READY."
+
+[[semantic_obligation]]
+id = "h2hdb.operational.storage-instance-binding.v1"
+version = 1
+ready_check = "operational_refinement.check_storage_instance_binding_contract_v1"
+writer_hook = "operational_writer.bind_storage_instance"
+writer_hook_version = 1
+scope = "operational.storage-instance-binding"
+class = "identity_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_storage_instance_binding_contract_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["storage_instance_binding"]
+description = "Validate an initially absent, one-time immutable non-nil storage-instance UUID binding whose exact replay is write-free and whose mismatch fails closed without replacing the retained identity."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.fencing.v1"
@@ -251,7 +265,7 @@ lifecycle = "building_only"
 check = "operational_refinement.check_bootstrap_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget"]
-description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
+description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of the storage-instance binding plus all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
 [bootstrap_contract]
 version = 1
@@ -259,8 +273,8 @@ seed_validation_lifecycle = "building_only"
 absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
-absent_relations = ["download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
-absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; other protocols create their required generation and head before acquiring an owner or holder."
+absent_relations = ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no storage-instance binding, deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; the storage-instance binding and other protocols create their required identity, generation, or head only through their runtime transition."
 epoch_rule = "schema_epoch_control is created and managed exclusively by SchemaEpochCatalog and is not a provider bootstrap seed."
 
 [[bootstrap_seed]]
@@ -2932,6 +2946,44 @@ mariadb_expression = "state = 'BUILDING' AND ready_at IS NULL OR state = 'READY'
 name = "ck_schema_epoch_manifest_blob"
 sqlite_expression = "typeof(manifest_sha256) = 'blob'"
 mariadb_expression = "octet_length(manifest_sha256) = 32"
+
+[[relation]]
+name = "storage_instance_binding"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for storage_instance_binding."
+table = "operational_storage_instance_bindings"
+primary_key = ["singleton_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "singleton_id"
+name = "singleton_id"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "storage_instance_uuid"
+name = "storage_instance_uuid"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_storage_instance_binding_storage_domain"
+sqlite_expression = "typeof(singleton_id) = 'integer' AND singleton_id >= 0 AND typeof(storage_instance_uuid) = 'blob'"
+mariadb_expression = "singleton_id IS NOT NULL AND singleton_id >= 0 AND storage_instance_uuid IS NOT NULL"
+[[relation.check]]
+name = "ck_storage_instance_binding_singleton"
+sqlite_expression = "singleton_id = 1"
+mariadb_expression = "singleton_id = 1"
+[[relation.check]]
+name = "ck_storage_instance_binding_storage_instance_uuid_len"
+sqlite_expression = "length(storage_instance_uuid) = 16"
+mariadb_expression = "octet_length(storage_instance_uuid) = 16"
+[[relation.check]]
+name = "ck_storage_instance_binding_storage_instance_uuid_non_nil"
+sqlite_expression = "storage_instance_uuid <> X'00000000000000000000000000000000'"
+mariadb_expression = "storage_instance_uuid <> X'00000000000000000000000000000000'"
+[[relation.check]]
+name = "ck_storage_instance_binding_singleton_id_portable"
+sqlite_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
+mariadb_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
 
 [[relation]]
 name = "download_generation"

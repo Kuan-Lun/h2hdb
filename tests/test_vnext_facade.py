@@ -31,6 +31,7 @@ from h2hdb import (
     CatalogDiscoveryPage,
     CatalogFacetKind,
     CatalogRecentOrder,
+    StorageInstanceBinding,
     StorageObjectKey,
     VNextCatalogFacade,
     VNextDatabaseAdminFacade,
@@ -142,6 +143,22 @@ def test_database_admin_facade_fully_checks_through_read_only_config(
     assert checked.state == "READY"
     assert checked.resumed_build
     assert not checked.transitioned_to_ready
+
+
+def test_database_admin_facade_binds_storage_instance_once(tmp_path: Path) -> None:
+    path = tmp_path / "admin-storage-binding.sqlite3"
+    facade = VNextDatabaseAdminFacade(_config(path))
+    facade.initialize()
+    value = bytes.fromhex("00112233445546778899aabbccddeeff")
+
+    assert facade.bind_storage_instance(value) == StorageInstanceBinding(value)
+    assert facade.bind_storage_instance(value) == StorageInstanceBinding(value)
+
+    with SQLiteConnector(str(path), read_only=True) as connector:
+        assert connector.fetch_one(
+            "SELECT storage_instance_uuid "
+            "FROM operational_storage_instance_bindings WHERE singleton_id = 1"
+        ) == (value,)
 
 
 def test_public_open_database_fully_checks_epoch_before_returning_catalog_facade(

@@ -787,7 +787,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     ):
         raise ValueError("operational machine contracts are missing")
     obligation_ids = [str(value.get("id")) for value in raw_obligations]
-    if len(obligation_ids) != 17 or len(obligation_ids) != len(set(obligation_ids)):
+    if len(obligation_ids) != 18 or len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("operational semantic-obligation IDs are incomplete")
     obligation_lifecycles = {
         str(value.get("id")): str(value.get("lifecycle")) for value in raw_obligations
@@ -827,6 +827,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "publication-candidate cleanup release semantic blocker drifts"
         )
     expected_generation_obligation_relations = {
+        "h2hdb.operational.storage-instance-binding.v1": ("storage_instance_binding",),
         "h2hdb.operational.bounded-work.v1": (
             "operational_event_stream",
             "operational_preparation",
@@ -1015,6 +1016,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
         raise ValueError("bootstrap absent relation set is missing")
     absent = list(raw_absent)
     critical_absent = [
+        "storage_instance_binding",
         "ingest_generation",
         "ingest_coordination_head",
         "ingest_generation_owner",

@@ -1096,7 +1096,14 @@ def populate_catalog(
         facade.close()
     queue = VNextDownloadQueueFacade(config, clock=Clock())
     queue.request_deletion(1003, url="https://example.invalid/g/1003")
-    source.put(gallery(1001, pages=[b"p0-a", b"p1-a-modified"], artists=["alice"]))
+    source.put(
+        gallery(
+            1001,
+            pages=[b"p0-a", b"p1-a-modified"],
+            artists=["alice"],
+            extra_tags=[("female", "glasses")],
+        )
+    )
     source.put(gallery(1004, pages=[b"p0-d"], artists=["dave"]))
     source.remove(("gallery-1002",))
     source.remove(("gallery-1003",))

@@ -16,7 +16,7 @@ The generated contract currently contains:
 - 29 explicitly checked lossless and dependency-preserving decompositions;
 - an exact 128-relation catalog physical-domain closure, split into 106
   mutation relations and 22 read-only relations;
-- 66 operational BCNF base relations, including epoch control, plus one inline
+- 67 operational BCNF base relations, including epoch control, plus one inline
   activation projection and no operational SQL view for fencing,
   downloader-to-ingest handoff, staging, allocation, receipts, maintenance,
   queues, caches, and bounded cleanup;

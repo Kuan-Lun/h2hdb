@@ -75,6 +75,10 @@ __all__ = [
     "TagObservation",
     "StorageObjectDescriptor",
     "StorageObjectKey",
+    "StorageInstanceBinding",
+    "StorageInstanceBindingError",
+    "StorageInstanceBindingMismatchError",
+    "StorageInstanceBindingUnavailableError",
     "VNextAnalysisAdvanceResult",
     "VNextArtifactAdapterPolicy",
     "VNextCatalogFacade",
@@ -167,6 +171,7 @@ from .domain import (
     PreparedPageResource,
     PreparedPublicationPresentation,
     PreparedThumbnailResource,
+    StorageInstanceBinding,
     StorageObjectDescriptor,
     StorageObjectKey,
     TagObservation,
@@ -238,6 +243,11 @@ from .vnext_queue_repository import (
     PendingRedownloadCursorError,
     PendingRedownloadPage,
     VNextDownloadRequest,
+)
+from .vnext_storage_instance_repository import (
+    StorageInstanceBindingError,
+    StorageInstanceBindingMismatchError,
+    StorageInstanceBindingUnavailableError,
 )
 
 __author__ = "Kuan-Lun Wang"

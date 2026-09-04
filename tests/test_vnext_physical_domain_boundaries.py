@@ -389,7 +389,7 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )
     assert len(CATALOG_PHYSICAL_DOMAIN_WRITERS) == 54
-    assert len(OPERATIONAL_PHYSICAL_DOMAIN_WRITERS) == 9
+    assert len(OPERATIONAL_PHYSICAL_DOMAIN_WRITERS) == 10
     assert len(OPERATIONAL_SCHEMA_EPOCH_WRITERS) == 1
 
     for symbol in (

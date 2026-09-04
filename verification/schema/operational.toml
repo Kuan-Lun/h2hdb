@@ -9,6 +9,16 @@ excluded_data_plane_components = [
   "catalog publications, artifacts, catalog revision history, and publication head",
 ]
 
+[storage_instance_binding_contract]
+version = 1
+relation = "storage_instance_binding"
+singleton_id = 1
+uuid_bytes = 16
+initial_rule = "a fresh database has no storage-instance binding row and is therefore unbound"
+bind_rule = "after an external storage adapter has durably created and read back one non-nil 16-byte storage-instance UUID, the first bind transaction locks the exact READY schema-epoch singleton and inserts that UUID into the immutable singleton relation"
+replay_rule = "an exact UUID replay returns the retained binding with zero writes; a different UUID fails closed with zero writes, and the binding has no update, delete, or unbind transition"
+external_marker_rule = "the consumer-owned storage adapter creates, persists, and reads the filesystem or object-storage marker before database binding; external byte I/O never occurs inside the core database transaction"
+
 [fencing_contract]
 model = "verification/tla/CatalogCore.tla"
 head_relation = "ingest_coordination_head"
@@ -895,7 +905,7 @@ class = "physical_domain"
 lifecycle = "ready_validation"
 check = "operational_refinement.check_physical_domains_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["schema_epoch_control", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "operational_preparation_effect_seal", "operational_event", "cleanup_checkpoint"]
+relations = ["schema_epoch_control", "storage_instance_binding", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "operational_preparation_effect_seal", "operational_event", "cleanup_checkpoint"]
 description = "Validate exact fixed-width binary domains, arbitrary non-key payload domains, bounded cursor bytes, event and seal counters, and nonnegative UTC microsecond timestamps on both backends."
 
 [[semantic_obligation]]
@@ -911,6 +921,20 @@ check = "operational_refinement.check_epoch_manifest_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["schema_epoch_control"]
 description = "Validate that the epoch control row binds the exact DDL, semantic-obligation, and bootstrap-seed manifests before READY."
+
+[[semantic_obligation]]
+id = "h2hdb.operational.storage-instance-binding.v1"
+ready_check = "operational_refinement.check_storage_instance_binding_contract_v1"
+writer_hook = "operational_writer.bind_storage_instance"
+writer_hook_version = 1
+version = 1
+scope = "operational.storage-instance-binding"
+class = "identity_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_storage_instance_binding_contract_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["storage_instance_binding"]
+description = "Validate an initially absent, one-time immutable non-nil storage-instance UUID binding whose exact replay is write-free and whose mismatch fails closed without replacing the retained identity."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.fencing.v1"
@@ -1120,7 +1144,7 @@ lifecycle = "building_only"
 check = "operational_refinement.check_bootstrap_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget"]
-description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
+description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of the storage-instance binding plus all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
 [bootstrap_contract]
 version = 1
@@ -1129,6 +1153,7 @@ absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
 absent_relations = [
+  "storage_instance_binding",
   "download_generation",
   "download_coordination_head",
   "download_generation_owner",
@@ -1187,7 +1212,7 @@ absent_relations = [
   "cleanup_cycle_root",
   "cleanup_checkpoint",
 ]
-absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; other protocols create their required generation and head before acquiring an owner or holder."
+absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no storage-instance binding, deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; the storage-instance binding and other protocols create their required identity, generation, or head only through their runtime transition."
 epoch_rule = "schema_epoch_control is created and managed exclusively by SchemaEpochCatalog and is not a provider bootstrap seed."
 
 [[bootstrap_seed]]
@@ -3456,6 +3481,11 @@ classification = "audit_digest"
 rationale = "Database-derived post-batch source-build assembly audit chain, retained only for exact replay and diagnosis."
 
 [[attribute_semantic]]
+name = "storage_instance_uuid"
+classification = "domain_identifier"
+rationale = "Opaque non-nil 16-byte identity of one consumer-owned durable storage root; core assigns no path, filesystem, archive, or object-storage semantics to the value."
+
+[[attribute_semantic]]
 name = "singleton_id"
 classification = "domain_identifier"
 rationale = "Physical singleton slot; CHECK constraints restrict its sole value to one."
@@ -3479,6 +3509,16 @@ fds = [
   { determinant = ["singleton_id"], dependent = ["epoch", "schema_version", "state", "manifest_sha256", "started_at", "ready_at"] },
 ]
 rationale = "The epoch marker intentionally has no data-plane FK: BUILDING must exist before the new tables, and READY is admitted only by complete fixture refinement and activation checks."
+
+[[relation]]
+name = "storage_instance_binding"
+kind = "source_of_truth"
+attributes = ["singleton_id", "storage_instance_uuid"]
+declared_keys = [["singleton_id"]]
+fds = [
+  { determinant = ["singleton_id"], dependent = ["storage_instance_uuid"] },
+]
+rationale = "Optional immutable singleton binding between this database and one externally owned durable storage instance. Absence means unbound; the first exact bind inserts the only row, exact replay is write-free, and no update, delete, or unbind transition exists."
 
 [[relation]]
 name = "download_generation"

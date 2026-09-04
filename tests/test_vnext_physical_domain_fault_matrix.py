@@ -30,7 +30,7 @@ import pytest
 from vnext_corpora import NEVER_AT_REST, NO_PRODUCTION_WRITER, build_corpora
 from vnext_fault_harness import EPOCH_CONTROL_TABLE, open_connector
 
-from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb import CoreConfig, DatabaseConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_domains import (
     INT63_MAX,
@@ -152,6 +152,10 @@ def candidates(column: Column) -> Iterator[Candidate]:
         if column.name == "singleton_id"
         else None
     )
+    forbidden_blob = re.search(
+        rf"\b{name}\s*<>\s*X'([0-9A-Fa-f]+)'",
+        expression,
+    )
     enums = _enum_values(expression, column.name)
 
     if storage == "blob" or column.sqlite_type == "BLOB":
@@ -170,6 +174,13 @@ def candidates(column: Column) -> Iterator[Candidate]:
                 yield Candidate(column, "width-empty", b"", _BOTH)
             yield Candidate(column, "storage-text", "text", _SQLITE_ONLY)
             yield Candidate(column, "storage-integer", 7, _SQLITE_ONLY)
+        if forbidden_blob is not None:
+            yield Candidate(
+                column,
+                "nil-uuid",
+                bytes.fromhex(forbidden_blob.group(1)),
+                _BOTH,
+            )
     elif storage == "integer" or column.sqlite_type == "INTEGER":
         yield Candidate(column, "storage-real", 1.5, _SQLITE_ONLY)
         yield Candidate(column, "storage-text", "text", _SQLITE_ONLY)
@@ -226,6 +237,14 @@ def candidates(column: Column) -> Iterator[Candidate]:
 
 def _sqlite_config(path: Path) -> CoreConfig:
     return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+
+
+_MATRIX_STORAGE_UUID = bytes.fromhex("00112233445546778899aabbccddeeff")
+
+
+def _bind_matrix_storage_instances(configs: list[CoreConfig]) -> None:
+    for config in configs:
+        VNextDatabaseAdminFacade(config).bind_storage_instance(_MATRIX_STORAGE_UUID)
 
 
 def _rows_by_table(config: CoreConfig, tables: set[str]) -> dict[str, tuple[Any, ...]]:
@@ -411,12 +430,14 @@ def _leniency(candidate: Candidate) -> str | None:
 def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back(
     tmp_path: Path,
 ) -> None:
-    configs = [
-        corpus.config
-        for corpus in build_corpora(
-            tmp_path, lambda name: _sqlite_config(tmp_path / f"{name}.sqlite3")
-        )
-    ]
+    corpora = build_corpora(
+        tmp_path,
+        lambda name: _sqlite_config(tmp_path / f"{name}.sqlite3"),
+    )
+    configs = [corpus.config for corpus in corpora]
+    _bind_matrix_storage_instances(
+        [corpus.config for corpus in corpora if corpus.name != "hash-cache"]
+    )
     outcomes, unsampled = _run_matrix(configs, "sqlite")
     assert unsampled <= NEVER_AT_REST | NO_PRODUCTION_WRITER, sorted(unsampled)
     by_label = {
@@ -449,6 +470,7 @@ def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back
         "range-high",
         "enum-unregistered",
         "enum-collation",
+        "nil-uuid",
     } <= kinds
 
 
@@ -470,6 +492,7 @@ def test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_roll
             Path("."), lambda name: mariadb_config, names={"ready-populated"}
         )
     ]
+    _bind_matrix_storage_instances(configs)
     outcomes, _unsampled = _run_matrix(configs, "mariadb")
     by_label = {
         candidate.label: candidate

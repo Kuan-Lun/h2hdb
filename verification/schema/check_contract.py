@@ -1808,9 +1808,9 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "catalog_physical_table_count_before": 306,
         "catalog_physical_table_count_after": 170,
         "operational_physical_table_count_before": 75,
-        "operational_physical_table_count_after": 66,
+        "operational_physical_table_count_after": 67,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 236,
+        "total_physical_table_count_after": 237,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (

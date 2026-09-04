@@ -2100,21 +2100,21 @@ theorem ready_validation_accepts_a_legitimately_advanced_allocator :
   decide
 
 def operationalSemanticObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1"]
+  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1"]
 
 theorem operational_semantic_obligation_ids_are_unique :
     operationalSemanticObligationIds.Nodup := by
   native_decide
 
 theorem operational_semantic_obligation_count :
-    operationalSemanticObligationIds.length = 17 := by
+    operationalSemanticObligationIds.length = 18 := by
   native_decide
 
 def operationalBuildingOnlyObligationIds : List String :=
   ["h2hdb.operational.bootstrap-genesis.v1"]
 
 def operationalReadyObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1"]
+  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1"]
 
 theorem bootstrap_genesis_is_the_only_building_only_obligation :
     operationalBuildingOnlyObligationIds =
@@ -2127,10 +2127,10 @@ theorem building_only_and_ready_obligations_are_disjoint :
   native_decide
 
 def operationalBootstrapAbsentRelations : List String :=
-  ["download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+  ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 
 theorem operational_bootstrap_has_no_invented_active_control_facts :
-    ∀ relation ∈ ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
+    ∀ relation ∈ ["storage_instance_binding", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
       relation ∈ operationalBootstrapAbsentRelations := by
   native_decide
 
@@ -2149,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "80dbb395dab771eda8393e48f6b80bae0d7bcea4398ef92e425396fec975edcf"
+def operationalManifestSha256 : String := "6ff65c318c0bd3aa512978e0f7523a7da7eef035829e3df916d8a8b19d59eb59"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -2198,6 +2198,52 @@ theorem schema_epoch_control_bcnf_check :
 
 theorem schema_epoch_control_bcnf : BCNF schema_epoch_control_contract :=
   bcnfCheck_sound schema_epoch_control_contract schema_epoch_control_bcnf_check
+
+def storage_instance_binding_contract : RelationContract where
+  name := "storage_instance_binding"
+  attributes := ["singleton_id", "storage_instance_uuid"]
+  declaredKeys := [["singleton_id"]]
+  declaredFDs := [
+    { determinant := ["singleton_id"], dependent := ["storage_instance_uuid"] }
+  ]
+
+theorem storage_instance_binding_schema_well_formed :
+    schemaWellFormedCheck storage_instance_binding_contract = true := by
+  native_decide
+
+theorem storage_instance_binding_candidate_keys_check :
+    keysDetermineAllCheck storage_instance_binding_contract = true := by
+  native_decide
+
+theorem storage_instance_binding_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes storage_instance_binding_contract :=
+  keysDetermineAllCheck_sound storage_instance_binding_contract
+    storage_instance_binding_candidate_keys_check
+
+theorem storage_instance_binding_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck storage_instance_binding_contract = true := by
+  native_decide
+
+theorem storage_instance_binding_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal storage_instance_binding_contract :=
+  declaredKeysMinimalCheck_sound storage_instance_binding_contract
+    storage_instance_binding_candidate_keys_minimal_check
+
+theorem storage_instance_binding_closure_fixed_check :
+    closureFixedPointCheck storage_instance_binding_contract = true := by
+  native_decide
+
+theorem storage_instance_binding_closure_reached_fixed_point :
+    ClosureReachedFixedPoint storage_instance_binding_contract :=
+  closureFixedPointCheck_sound storage_instance_binding_contract
+    storage_instance_binding_closure_fixed_check
+
+theorem storage_instance_binding_bcnf_check :
+    bcnfCheck storage_instance_binding_contract = true := by
+  native_decide
+
+theorem storage_instance_binding_bcnf : BCNF storage_instance_binding_contract :=
+  bcnfCheck_sound storage_instance_binding_contract storage_instance_binding_bcnf_check
 
 def download_generation_contract : RelationContract where
   name := "download_generation"
@@ -5256,6 +5302,7 @@ theorem cleanup_checkpoint_bcnf : BCNF cleanup_checkpoint_contract :=
 
 def manifestContracts : List RelationContract := [
   schema_epoch_control_contract,
+  storage_instance_binding_contract,
   download_generation_contract,
   download_coordination_head_contract,
   download_generation_owner_contract,
@@ -5325,12 +5372,13 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 67 := by
+    manifestContracts.length = 68 := by
   native_decide
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_base_relations_bcnf :
     BCNF schema_epoch_control_contract ∧
+    BCNF storage_instance_binding_contract ∧
     BCNF download_generation_contract ∧
     BCNF download_coordination_head_contract ∧
     BCNF download_generation_owner_contract ∧
@@ -5397,6 +5445,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF cleanup_cycle_root_contract ∧
     BCNF cleanup_checkpoint_contract := by
   exact ⟨schema_epoch_control_bcnf,
+    storage_instance_binding_bcnf,
     download_generation_bcnf,
     download_coordination_head_bcnf,
     download_generation_owner_bcnf,
@@ -5466,6 +5515,7 @@ theorem all_manifest_base_relations_bcnf :
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes schema_epoch_control_contract ∧
+    KeysDetermineAllAttributes storage_instance_binding_contract ∧
     KeysDetermineAllAttributes download_generation_contract ∧
     KeysDetermineAllAttributes download_coordination_head_contract ∧
     KeysDetermineAllAttributes download_generation_owner_contract ∧
@@ -5533,6 +5583,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes cleanup_cycle_root_contract ∧
     KeysDetermineAllAttributes cleanup_checkpoint_contract := by
   exact ⟨schema_epoch_control_candidate_keys_determine_all_attributes,
+    storage_instance_binding_candidate_keys_determine_all_attributes,
     download_generation_candidate_keys_determine_all_attributes,
     download_coordination_head_candidate_keys_determine_all_attributes,
     download_generation_owner_candidate_keys_determine_all_attributes,
