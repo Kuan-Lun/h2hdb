@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-03T10:15:25+00:00",
+  "checked_at": "2026-09-04T09:05:02+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.30.0",
+  "project_version": "0.30.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -104,7 +104,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.5",
+      "latest": "0.16.6",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Compatibility lane bump to 0.30.0: the operational manifest gained the preparation drainage seek index, so the generated DDL manifest digest changed and an existing epoch-3 database is drift that must be rebuilt; no dependency declaration changed. Every build, runtime, optional, development and Node direct dependency admits its registry latest within the declared ranges (hatchling 1.32.0, mysql-connector-python 26.7.0, pydantic 2.13.5, build 1.6.0, hypothesis 6.167.1, mypy 2.3.1, packaging 26.3, pytest 9.1.1, pytest-xdist 3.8.0, ruff 0.16.5, testcontainers 4.15.0, markdownlint-cli2 0.23.2); the repository environment already runs those releases and the release gate for this candidate executes against them, so no bound was changed.",
+    "note": "Reviewed every direct build, runtime, optional development, and Node dependency for h2hdb 0.30.1. Every registry latest satisfies the declared range. Ruff 0.16.6 is the only candidate newer than the prior receipt; its official release notes contain preview/rule changes and bug fixes, and explicit Ruff 0.16.6 lint plus formatter checks pass on this exact tree. The orphan-release runtime change uses existing protocols and standard-library types, so no dependency bound changes are required.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
