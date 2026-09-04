@@ -1349,8 +1349,8 @@ id = "runtime.production.artifact-release"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production artifact-release repository reconstructs a bounded immutable keyset page from current sealed candidate, artifact, locator, codec, generation, token, adapter and PENDING-or-PREPARED state facts under the exact live EXCLUSIVE gate, excludes active or published candidates, commits exact revalidation before invoking terminal external tombstones outside every database transaction, accepts only its opaque acknowledgement, then relocks and exact-compares the complete page under that gate before atomically compare-and-swapping every PENDING or PREPARED row to COMMITTED; all-COMMITTED acknowledgement replay performs zero DML."
-assumptions = ["Every registered release adapter makes each exact protection-token tombstone idempotent and terminal against every delayed protect; no live MariaDB release workflow has executed that external contract."]
+claim = "The production artifact-release repository reconstructs a bounded immutable keyset page from current sealed candidate, artifact, locator, codec, generation, token, adapter and PENDING-or-PREPARED state facts under the exact live EXCLUSIVE gate, excludes active or published candidates, commits exact revalidation before invoking terminal external tombstones outside every database transaction, accepts only its opaque acknowledgement, then relocks and exact-compares the complete page under that gate before atomically compare-and-swapping every PENDING or PREPARED row to COMMITTED; the public current-only facade wires one resource at a time into the existing cleanup fixed point, and all-COMMITTED acknowledgement replay performs zero DML."
+assumptions = ["Every registered release adapter makes each exact protection-token tombstone idempotent and terminal against every delayed protect."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_artifact_release_repository.py"
 symbol = "ArtifactReleaseRepository"
@@ -1363,13 +1363,16 @@ symbol = "ArtifactReleaseRepository.release_page"
 [[evidence.location]]
 path = "src/h2hdb/vnext_artifact_release_repository.py"
 symbol = "ArtifactReleaseRepository.commit_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_facade.py"
+symbol = "VNextIngestFacade.drain_current_only_maintenance"
 
 [[evidence]]
 id = "fault.production.artifact-release"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Artifact-release tests reject active candidates before external release, reject missing committed cursor predecessors, corrupt token/key/blob authority, forged page evidence and noncanonical typed cursors, and enforce acquisition-before-thumbnail lock order for one publication."
+claim = "Artifact-release tests reject active or durably committed candidates before external release, reject missing committed cursor predecessors, corrupt token/key/blob authority, forged page evidence and noncanonical typed cursors, enforce acquisition-before-thumbnail lock order for one publication, replay an externally durable tombstone after its response is lost, and drive every pre-commit policy-crash boundary to the same terminal cleanup result."
 assumptions = ["The monotone test adapter models the required terminal tombstone but is not a live production storage service."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
@@ -1383,13 +1386,22 @@ symbol = "test_corrupt_resource_authority_fails_closed"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
 symbol = "test_forged_page_and_noncanonical_cursor_fail_closed"
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_repository.py"
+symbol = "test_durably_committed_candidate_is_never_issued_or_released"
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_repository.py"
+symbol = "test_public_facade_replays_release_after_tombstone_response_loss"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_policy_change_crash_matrix_converges_under_the_requested_policy"
 
 [[evidence]]
 id = "integration.sqlite.artifact-release"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E reconstructs acquisition and thumbnail resources after response loss, commits their exact release acknowledgements, replays with zero DML, and preserves typed resource ordering within one publication."
+claim = "Generated SQLite E2E reconstructs acquisition and thumbnail resources after response loss, commits their exact release acknowledgements, replays with zero DML, preserves typed resource ordering within one publication, and drives the public facade from an orphan protection through candidate cleanup to DONE."
 assumptions = ["This executes SQLite with a monotone test adapter and does not establish MariaDB transaction behavior or a production storage service's tombstone semantics."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
@@ -1397,6 +1409,9 @@ symbol = "test_multi_resource_response_loss_and_commit_replay"
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
 symbol = "test_same_publication_resources_commit_in_typed_lock_order"
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_repository.py"
+symbol = "test_public_facade_releases_orphan_then_reaches_cleanup_fixed_point"
 
 [[evidence]]
 id = "integration.mariadb-shape.artifact-release"
@@ -1408,6 +1423,17 @@ assumptions = ["SQL-shape recording cannot establish MariaDB isolation, row lock
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
 symbol = "test_mariadb_page_shape_uses_typed_resource_keyset"
+
+[[evidence]]
+id = "integration.live-mariadb.artifact-release"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "A public-facade workflow on generated live MariaDB abandons a candidate only after its artifact protections are durable, publishes the requested-policy successor, terminally releases the orphan page through an external adapter, removes the candidate family through the existing bounded cleanup phases, preserves the reader-visible current resources, reaches DONE, and passes the complete READY audit."
+assumptions = ["The in-memory adapter implements the same protocol and monotone token tombstone contract but is not the production filesystem adapter; that adapter is verified in the ingest integration repository."]
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_live_mariadb_facade_releases_abandoned_artifacts_then_cleans_candidate"
 
 [[evidence]]
 id = "runtime.production.publication-candidate"
@@ -2531,8 +2557,8 @@ id = "fault.pipeline.policy-crash-matrix"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "For a first and a later revision, a turn dies at each of eight boundaries (analysis COMPLETE before publication; candidate BEGIN durable; artifact rendered but not persisted; artifact persisted before operational preparation; preparation sealed; every input bound before commit; DB_COMMITTED before activation; activated before finalization) and the restarted synchronization requests another policy. Every case checks that one restarted session converges before returning: a pending immutable commit is finalized receipt-first without binding the new generation, the exact requested-policy successor becomes the current head in that same session, no working root or OPEN analysis survives, durable commits equal published revisions, replay creates no build/analysis/candidate/commit, generation mappings stay bounded, maintenance reaches its stated outcome, the full READY audit passes, and the catalog equals a fresh requested-policy ingest. A separate public-facade negative control substitutes every derived ID with the valid ID of another registered policy at source, analysis and publication ingress, and supplies absent or object-mutated natural facts; every case fails before durable writes, preserves the OPEN analysis, and proves that late mutation of the caller-owned nested policy cannot alter the already rebound source machine."
-assumptions = ["The matrix varies the analysis-policy component; repository parameterization separately proves that artifact, display-title, title-sort, operational and artifacts-required mismatches also prevent current-head build reuse.", "Where a pre-commit crashed candidate had already protected artifacts, maintenance reports BLOCKED until the separately tracked artifact-release reconciliation is wired; the matrix states that limitation rather than treating it as policy convergence success."]
+claim = "For a first and a later revision, a turn dies at each of nine boundaries (analysis COMPLETE before publication; candidate BEGIN durable; artifact input sealed; operational preparation open; artifact rendered but not persisted; every external protection durable; every input bound before commit; DB_COMMITTED before activation; activated before finalization) and the restarted synchronization requests another policy. Every case checks that one restarted session converges before returning: a pending immutable commit is finalized receipt-first without binding the new generation, the exact requested-policy successor becomes the current head in that same session, no working root or OPEN analysis survives, durable commits equal published revisions, replay creates no build/analysis/candidate/commit, generation mappings stay bounded, orphan protections reach terminal release before candidate cleanup, maintenance reaches DONE, the full READY audit passes, and the catalog equals a fresh requested-policy ingest. A separate public-facade negative control substitutes every derived ID with the valid ID of another registered policy at source, analysis and publication ingress, and supplies absent or object-mutated natural facts; every case fails before durable writes, preserves the OPEN analysis, and proves that late mutation of the caller-owned nested policy cannot alter the already rebound source machine."
+assumptions = ["The matrix varies the analysis-policy component; repository parameterization separately proves that artifact, display-title, title-sort, operational and artifacts-required mismatches also prevent current-head build reuse."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_policy_change_crash_matrix_converges_under_the_requested_policy"
@@ -2720,7 +2746,7 @@ layer = "fault"
 strength = "negative_control"
 directness = "direct"
 claim = "Regressions for the liveness gaps the matrices exposed, each checked against durable facts and where applicable a fresh-ingest reference: deletion or policy replacement after operational preparation supersedes the stale attempt; a stale session cannot register policy; receipt-scoped restart recovery finalizes a first or later durable commit without a source-generation mapping and tolerates external/database response loss; a changed filesystem snapshot is not required to recreate the committed snapshot and is observed only after recovery in the same session; mid-analysis policy takeover retires the abandoned analysis; durable-commit takeover recovers first and publishes the requested-policy successor before the same synchronization returns; ownership transfer, spam exclusion and depth-sixteen compaction match fresh ingest."
-assumptions = ["A build abandoned before commit after protecting artifacts converges in catalog policy but its orphaned storage protections remain covered by the separately tracked artifact-release reconciliation obligation; current-only maintenance reports BLOCKED until that workflow is wired."]
+assumptions = ["External artifact release is terminal and idempotent for an exact protection token; response-loss replay is covered by the artifact-release fault evidence."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restart_after_a_sealed_commit_finalizes_the_pending_publication"
@@ -2969,8 +2995,8 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models an ingest lease, not the distinct 64-slot shared and exclusive maintenance-gate ownership protocol." }
 runtime_refinement = { status = "covered", evidence = ["runtime.maintenance-gate", "runtime.production.writer-bindings", "runtime.production.maintenance-gate", "runtime.production.canonical-value", "runtime.production.gallery-identity", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.hash-cache", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.artifact-release", "runtime.production.operational-event", "runtime.production.publication", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.maintenance-gate", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"], blocker = "The takeover and statement matrices cover the gate and shared-writer boundaries, but the orphan artifact-protection reconciliation a candidate abandoned mid-publication requires is unwired: current-only maintenance reports BLOCKED and no matrix drives the complete exclusive release-and-cleanup cycle after that abandonment." }
-integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-release", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"], blocker = "Live MariaDB runs the gate and pipeline workflows, but no live workflow drives the exclusive artifact-release-and-cleanup cycle through the unwired orphan-protection reconciliation." }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.maintenance-gate", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.artifact-release", "integration.mariadb-shape.artifact-release", "integration.live-mariadb.artifact-release", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline"] }
 
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
@@ -3032,8 +3058,8 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "covered", evidence = ["lean.operational.cleanup-reachability"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models retained publications abstractly but does not model the concrete closed-world cleanup target codecs, catalog FK descendant graph, or child-first SQL phase registry." }
 runtime_refinement = { status = "covered", evidence = ["runtime.cleanup-reachability", "runtime.production.writer-bindings", "runtime.production.artifact-release", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races"], blocker = "The statement and authority-race matrices now reach the database-only cleanup fixed point from facade states, including obsolete commits, descriptors and generation prefixes, but orphan artifact-protection reconciliation remains unwired; no facade matrix drives the final database cleanup phases after the required external terminal tombstone." }
-integration = { status = "blocked", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"], blocker = "SQLite reaches the database-only cleanup fixed point through the public facade and live MariaDB runs its reachable cleanup, but no facade workflow drives the unwired orphan-protection release acknowledgement into the remaining candidate cleanup." }
+fault = { status = "covered", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.authority-races"] }
+integration = { status = "covered", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup", "integration.live-mariadb.artifact-release", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
 
 [[invariant]]
 id = "h2hdb.operational.cleanup-frozen-root-set.v1"

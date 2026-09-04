@@ -333,20 +333,22 @@ Executable evidence added, and what it establishes:
   exhaustion, expiry-takeover, response-loss and policy-replacement races
   through the facades.
 - An ingest-policy crash matrix: for a first and a later revision, a turn
-  dies at each of eight boundaries (analysis complete before publication,
-  candidate begin durable, artifact rendered but not persisted, artifact
-  persisted before the operational preparation, preparation sealed, every
-  input bound before the commit, durable commit before activation, activated
-  before finalization) and the restarted process requests another analysis
-  policy. Every case checks the head's actual policy, build and revision, the
+  dies at each of nine boundaries (analysis complete before publication,
+  candidate begin durable, artifact input sealed, operational preparation
+  open, artifact rendered but not persisted, every external protection
+  durable, every input bound before the commit, durable commit before
+  activation, activated before finalization) and the restarted process
+  requests another analysis policy. Every case checks the head's actual
+  policy, build and revision, the
   exact analysis-run set, that no working root or open analysis survives,
   that durable commits equal published revisions, that retrying the
   converged turn creates no build, analysis, candidate or commit and at most
-  one generation mapping per turn, the maintenance outcome, the READY audit
-  and equality with a fresh ingest under the requested policy. Before a
-  durable commit the crashed build is retired (a COMPLETE analysis without a
-  commit stays an immutable terminal fact that cleanup reclaims) before any
-  generation mapping is written. After a durable commit, the restarted
+  one generation mapping per turn, terminal release of any orphan protection,
+  maintenance reaching `DONE`, the READY audit and equality with a fresh
+  ingest under the requested policy. Before a durable commit the crashed build
+  is retired (a COMPLETE analysis without a commit stays an immutable terminal
+  fact that cleanup reclaims) before any generation mapping is written. After
+  a durable commit, the restarted
   synchronization first finalizes the pending immutable receipt without a
   source mapping, then observes the current filesystem and publishes the
   requested-policy successor in that same session before returning. The
@@ -393,9 +395,11 @@ Executable evidence added, and what it establishes:
   races, the interrupted seed batch, the two bounded preparation drains
   (facade-level and repository-level), the physical matrix (one corpus) and
   six sampled statement faults. The bounded release profile does not run that
-  matrix: it runs only three representative `mariadb_smoke` cases covering the
+  matrix: it runs only five representative `mariadb_smoke` cases covering the
   generated epoch end to end, one fresh public-facade pipeline plus full READY
-  audit, and catalog-reader discovery, facets and presentation over real rows.
+  audit, representative cleanup crash states, public-facade orphan release
+  through cleanup while preserving current resources, and catalog-reader
+  discovery, facets and presentation over real rows.
   Both profiles require `H2HDB_TEST_MARIADB=1`, which their canonical runners
   set; plain `pytest` and the check-fast commit hook leave it unset.
 
@@ -410,17 +414,11 @@ Explicit assumptions and limits (each is also recorded on the evidence):
   fixed-width `BINARY(n)` columns may pad a shorter value with zero bytes. Both
   backend-specific normalizations are pinned by the deep matrix and are not
   classified as missing domain guards.
-- Orphaned artifact protections of a candidate abandoned mid-publication can
-  only be released by the artifact-release reconciliation, which no
-  maintenance entry point drives yet; maintenance reports `BLOCKED` until it
-  is wired (owner decision). The policy crash matrix pins the consequence at
-  the boundary where the crashed candidate had already protected artifacts
-  (every input bound, commit not durable): the takeover still converges the
-  catalog under the requested policy, ingest keeps claiming turns once
-  maintenance has settled (a claim refuses only while maintenance is still
-  ACTIONABLE), but current-only maintenance settles to `BLOCKED` after every
-  turn and the orphaned payload is never reclaimed until the reconciliation
-  is wired.
+- External storage and the core database do not share one transaction. If a
+  process stops after a terminal storage tombstone but before its database
+  acknowledgement, current-only maintenance replays the same exact protection
+  token. The adapter contract requires that replay to be idempotent; the rare
+  recovery cost is limited to the affected bounded release page.
 - Three manifest relations have no production writer and rest in no runtime
   corpus; direct generated-DDL tests insert valid rows and reject wrong storage
   classes and negative portable-unsigned values for them.

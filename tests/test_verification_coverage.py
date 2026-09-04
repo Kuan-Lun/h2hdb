@@ -61,15 +61,7 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    # The remaining blockers are the four evidence layers for the single
-    # deliberately unwired external orphan-artifact deletion workflow.
-    # Pinning the split makes any later reclassification an explicit review.
-    assert len(report.blockers) == 4
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 0
-    assert (
-        sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 4
-    )
+    assert report.blockers == ()
 
 
 def test_missing_required_invariant_is_rejected(tmp_path: Path) -> None:
@@ -251,16 +243,12 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
         text=True,
     )
 
-    assert result.returncode == 1, result.stdout
-    assert "formal coverage blocked: invariants=31 evidence=155 blockers=4" in (
-        result.stdout
-    )
-    assert "h2hdb.operational.maintenance-gate.v1:fault:" in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert "formal coverage valid: invariants=31 evidence=156" in result.stdout
 
 
-def test_coverage_validate_only_reports_production_blockers() -> None:
-    """The real manifest is contract-valid under ``--validate-only`` and lists
-    its honest production blockers; the strict gate rejects it."""
+def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
+    """Validation-only and strict modes both accept the closed real manifest."""
 
     validate_only = subprocess.run(
         [
@@ -275,11 +263,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
         text=True,
     )
     assert validate_only.returncode == 0, validate_only.stderr
-    assert (
-        "formal coverage contract valid; production readiness blocked: "
-        "invariants=31 evidence=155 blockers=4"
-    ) in validate_only.stdout
-    assert "h2hdb.operational.cleanup-reachability.v1:fault:" in validate_only.stdout
+    assert "formal coverage valid: invariants=31 evidence=156" in validate_only.stdout
     strict = subprocess.run(
         [sys.executable, str(COVERAGE_CHECKER), str(COVERAGE_MANIFEST)],
         cwd=ROOT,
@@ -287,11 +271,8 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
         capture_output=True,
         text=True,
     )
-    assert strict.returncode == 1
-    assert (
-        "formal coverage blocked: invariants=31 evidence=155 blockers=4"
-        in strict.stdout
-    )
+    assert strict.returncode == 0, strict.stderr
+    assert "formal coverage valid: invariants=31 evidence=156" in strict.stdout
 
 
 def test_coverage_validate_only_still_rejects_invalid_manifest(

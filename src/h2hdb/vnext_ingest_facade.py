@@ -48,6 +48,7 @@ from .ports import (
 )
 from .repository import RepositoryContext
 from .sql_connector import SQLConnector
+from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -142,6 +143,7 @@ _ISSUED_SOURCE_STEP_TOKEN = object()
 _PREPARED_SOURCE_STEP_TOKEN = object()
 _SOURCE_LOCATOR_PAGE_LIMIT = 256
 _CURRENT_ONLY_BATCHES_PER_ATTEMPT = 16
+_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT = 1
 
 
 def _now_microseconds() -> int:
@@ -1187,8 +1189,17 @@ class VNextIngestFacade:
     def drain_current_only_maintenance(
         self,
         lease_duration_microseconds: int,
+        *,
+        artifact_release_adapters: Mapping[bytes, ArtifactReleaseAdapter] | None = None,
     ) -> VNextCurrentOnlyMaintenanceOutcome:
         """Advance one bounded publication/resource current-only fixed point.
+
+        When database cleanup is blocked by a resource protected by an
+        abandoned, unpublished candidate, one attempt terminally releases that
+        single protection token.  The database issues and revalidates the
+        immutable item, then adapter I/O runs outside every database transaction
+        before the acknowledgement is committed.  A lost response repeats the
+        same terminal protection-token tombstone on the next call.
 
         Each durable cleanup transaction selects at most 256 logical cleanup
         keys/families; a key can execute a schema-fixed bounded compound delete
@@ -1207,6 +1218,10 @@ class VNextIngestFacade:
         """
 
         self.__require_open()
+        if artifact_release_adapters is not None and not isinstance(
+            artifact_release_adapters, Mapping
+        ):
+            raise TypeError("artifact_release_adapters must be a mapping")
         duration = require_positive_int63(
             lease_duration_microseconds,
             field="current-only maintenance lease_duration_microseconds",
@@ -1224,7 +1239,10 @@ class VNextIngestFacade:
                 )
             if maintenance_state is CatalogPublicationMaintenanceState.DONE:
                 return VNextCurrentOnlyMaintenanceOutcome.DONE
-            if maintenance_state is CatalogPublicationMaintenanceState.BLOCKED:
+            if (
+                maintenance_state is CatalogPublicationMaintenanceState.BLOCKED
+                and artifact_release_adapters is None
+            ):
                 return VNextCurrentOnlyMaintenanceOutcome.BLOCKED
 
             try:
@@ -1245,62 +1263,74 @@ class VNextIngestFacade:
                 lease = self.__renew_current_only_lease(
                     connector, lease, duration=duration
                 )
-                advanced_batches = 0
-                while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
+                released_artifact_page = (
+                    maintenance_state is CatalogPublicationMaintenanceState.BLOCKED
+                    and artifact_release_adapters is not None
+                    and self.__release_current_only_artifact_page(
+                        connector,
+                        lease,
+                        artifact_release_adapters=artifact_release_adapters,
+                    )
+                )
+                if released_artifact_page:
+                    outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+                else:
+                    advanced_batches = 0
+                    while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
+                        lease = self.__renew_current_only_lease(
+                            connector, lease, duration=duration
+                        )
+                        cycle = self.__next_current_only_cycle(
+                            connector,
+                            lease,
+                            cycle_cutoff_at=cycle_cutoff_at,
+                        )
+                        if cycle is None:
+                            break
+                        lease = self.__renew_current_only_lease(
+                            connector, lease, duration=duration
+                        )
+                        result = self.__resume_current_only_cycle(
+                            connector, lease, cycle=cycle
+                        )
+                        while (
+                            not result.cycle_complete
+                            and advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT
+                        ):
+                            generation = result.generation
+                            if generation is None:
+                                raise RuntimeError(
+                                    "open catalog cleanup lacks a generation"
+                                )
+                            lease = self.__renew_current_only_lease(
+                                connector, lease, duration=duration
+                            )
+                            result = self.__advance_current_only_shard(
+                                connector,
+                                lease,
+                                cycle=cycle,
+                                generation=generation,
+                            )
+                            advanced_batches += 1
+                        if not result.cycle_complete:
+                            break
+                        # A later target can release a foreign-key blocker for
+                        # an earlier one, so every completed cycle restarts the
+                        # exact priority scan.
                     lease = self.__renew_current_only_lease(
                         connector, lease, duration=duration
                     )
-                    cycle = self.__next_current_only_cycle(
+                    remaining = self.__current_only_state(
                         connector,
                         lease,
                         cycle_cutoff_at=cycle_cutoff_at,
                     )
-                    if cycle is None:
-                        break
-                    lease = self.__renew_current_only_lease(
-                        connector, lease, duration=duration
-                    )
-                    result = self.__resume_current_only_cycle(
-                        connector, lease, cycle=cycle
-                    )
-                    while (
-                        not result.cycle_complete
-                        and advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT
-                    ):
-                        generation = result.generation
-                        if generation is None:
-                            raise RuntimeError(
-                                "open catalog cleanup lacks a generation"
-                            )
-                        lease = self.__renew_current_only_lease(
-                            connector, lease, duration=duration
-                        )
-                        result = self.__advance_current_only_shard(
-                            connector,
-                            lease,
-                            cycle=cycle,
-                            generation=generation,
-                        )
-                        advanced_batches += 1
-                    if not result.cycle_complete:
-                        break
-                    # A later target can release a foreign-key blocker for an
-                    # earlier one, so every completed cycle starts the exact
-                    # priority scan again instead of continuing linearly.
-                lease = self.__renew_current_only_lease(
-                    connector, lease, duration=duration
-                )
-                remaining = self.__current_only_state(
-                    connector,
-                    lease,
-                    cycle_cutoff_at=cycle_cutoff_at,
-                )
-                if remaining is CatalogPublicationMaintenanceState.DONE:
-                    outcome = VNextCurrentOnlyMaintenanceOutcome.DONE
-                elif advanced_batches:
-                    outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
-                else:
-                    outcome = VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+                    if remaining is CatalogPublicationMaintenanceState.DONE:
+                        outcome = VNextCurrentOnlyMaintenanceOutcome.DONE
+                    elif advanced_batches:
+                        outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+                    else:
+                        outcome = VNextCurrentOnlyMaintenanceOutcome.BLOCKED
             except BaseException:
                 self.__release_current_only_after_failure(connector, lease)
                 raise
@@ -1316,6 +1346,48 @@ class VNextIngestFacade:
                     now=release_now,
                 )
             return outcome
+
+    def __release_current_only_artifact_page(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        artifact_release_adapters: Mapping[bytes, ArtifactReleaseAdapter],
+    ) -> bool:
+        """Release one bounded orphan page across the database/I/O boundary."""
+
+        issue_now = require_int63(
+            self.__clock(), field="current-only artifact release issue now"
+        )
+        with connector.transaction():
+            page = ArtifactReleaseRepository.issue_page(
+                VNextUnitOfWork(connector, backend=self.__backend),
+                gate_lease=lease,
+                page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
+                now=issue_now,
+            )
+        if page.terminal:
+            return False
+
+        acknowledgement = ArtifactReleaseRepository.release_page(
+            connector,
+            backend=self.__backend,
+            page=page,
+            adapters=artifact_release_adapters,
+            now=require_int63(
+                self.__clock(), field="current-only artifact release external now"
+            ),
+        )
+        commit_now = require_int63(
+            self.__clock(), field="current-only artifact release commit now"
+        )
+        with connector.transaction():
+            ArtifactReleaseRepository.commit_page(
+                VNextUnitOfWork(connector, backend=self.__backend),
+                acknowledgement=acknowledgement,
+                now=commit_now,
+            )
+        return True
 
     def __current_only_state(
         self,

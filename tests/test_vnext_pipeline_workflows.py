@@ -701,10 +701,8 @@ def test_source_change_after_an_abandoned_sealed_build_converges(
     snapshot publishes exactly what a fresh ingest of that snapshot publishes.
 
     A build abandoned after its candidate protected artifacts (mid-publication)
-    converges the same way, but its orphaned storage protections can only be
-    released by the artifact-release reconciliation, which no maintenance entry
-    point drives yet; maintenance then reports BLOCKED until that is wired.
-    That case is therefore recorded as an open policy item, not pinned here."""
+    converges through the same takeover plus terminal artifact-release path;
+    that case is exercised by the policy crash matrix below."""
 
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
@@ -2178,12 +2176,14 @@ POLICY_CRASH_BOUNDARIES = (
     "publication.issue",
     # candidate BEGIN durable, no batch committed
     "publication.commit:BUILD_SELECTION",
-    # artifact rendered by the adapter, its protection not yet durable
-    "publication.commit:PREPARE_ARTIFACT",
-    # artifact protection durable, operational preparation not begun
+    # artifact input is sealed, operational preparation not begun
     "publication.commit:BEGIN_OPERATIONAL",
     # operational preparation OPEN with appended effects, not sealed
     "publication.commit:SEAL_OPERATIONAL",
+    # artifact rendering has completed, but no prepared family is yet durable
+    "publication.commit:PREPARE_ARTIFACT",
+    # every external protection and PREPARED resource row is durable
+    "publication.commit:VALIDATE_PREPARED",
     # every input sealed and bound, publication commit not durable
     "publication.commit:COMMIT_PUBLICATION",
     # durable DB_COMMITTED, library not activated
@@ -2234,6 +2234,10 @@ def _policy_facts(config: CoreConfig) -> dict[str, Any]:
             builds = connector.fetch_all(
                 "SELECT build_id, state FROM catalog_source_builds ORDER BY created_at"
             )
+            commit_receipts = connector.fetch_all(
+                "SELECT receipt_id FROM catalog_publication_commits "
+                "ORDER BY committed_at, receipt_id"
+            )
             working = connector.fetch_one(
                 "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
             )
@@ -2282,6 +2286,7 @@ def _policy_facts(config: CoreConfig) -> dict[str, Any]:
         ),
         "analyses": [(bytes(row[0]), int(row[1]), str(row[2])) for row in analyses],
         "builds": [(bytes(row[0]), str(row[1])) for row in builds],
+        "commit_receipts": tuple(bytes(row[0]) for row in commit_receipts),
         "working_build": None if not working else bytes(working[0]),
         "protected": protected,
         "max_reserved": int(reserved[0]),
@@ -2296,12 +2301,46 @@ def _maintenance_outcome(pipeline: Pipeline) -> VNextCurrentOnlyMaintenanceOutco
     facade = VNextIngestFacade(pipeline.config, clock=takeover_clock())
     try:
         for _ in range(256):
-            outcome = facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
+            outcome = facade.drain_current_only_maintenance(
+                LEASE_MICROSECONDS,
+                artifact_release_adapters={
+                    pipeline.library.adapter_id: pipeline.library
+                },
+            )
             if outcome is not VNextCurrentOnlyMaintenanceOutcome.PROGRESSED:
                 return outcome
     finally:
         facade.close()
     raise RuntimeError("maintenance did not settle within its attempt budget")
+
+
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
+def test_live_mariadb_facade_releases_abandoned_artifacts_then_cleans_candidate(
+    mariadb_config: CoreConfig,
+) -> None:
+    """The public facade crosses the real MariaDB/external-release boundary."""
+
+    initialize_database(mariadb_config)
+    source = MemorySource([gallery(1001, pages=[b"p0-a", b"p1-a"], artists=["alice"])])
+    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    _abandon_turn_before(pipeline, "publication.commit:VALIDATE_PREPARED")
+    crashed = _policy_facts(mariadb_config)
+    assert crashed["protected"] > 0
+
+    pipeline.turn(
+        clock=takeover_clock(),
+        policy=ingest_policy(spam_occurrence_threshold=CHANGED_POLICY_THRESHOLD),
+        drain=False,
+    )
+    current_before_release = library_view(pipeline.library)
+    release_calls_before = len(pipeline.library.release_calls)
+
+    assert _maintenance_outcome(pipeline) is VNextCurrentOnlyMaintenanceOutcome.DONE
+    assert _policy_facts(mariadb_config)["protected"] == 0
+    assert len(pipeline.library.release_calls) > release_calls_before
+    assert library_view(pipeline.library) == current_before_release
+    pipeline.ready()
 
 
 @pytest.mark.parametrize("first_revision", (True, False), ids=("first", "second"))
@@ -2327,11 +2366,8 @@ def test_policy_change_crash_matrix_converges_under_the_requested_policy(
     the durable commit count equals the published revision count, and that
     retrying the converged turn adds no build, analysis, candidate or commit
     and at most one generation mapping per turn.  Maintenance afterwards is
-    DONE unless the crashed candidate had already protected artifacts: those
-    orphaned protections await the unwired artifact-release reconciliation
-    and leave maintenance BLOCKED after every turn (ingest still claims once
-    maintenance has settled), which is pinned here as an open owner decision
-    recorded in the README."""
+    always DONE: a crashed pre-commit candidate's protected artifacts are
+    terminally released before its database family becomes cleanup-eligible."""
 
     if not first_revision:
         pipeline.turn()
@@ -2368,24 +2404,12 @@ def test_policy_change_crash_matrix_converges_under_the_requested_policy(
     # adds exactly the successor's commit in every case.
     assert facts["commits"] == crashed["commits"] + 1
     assert facts["mappings"] <= crashed["mappings"] + 1
-    orphaned_protection = (
-        crashed["protected"] > 0 and label not in DURABLE_COMMIT_BOUNDARIES
-    )
-    # Pinned open owner decision, not hidden: the retired build's orphaned
-    # candidate keeps PENDING/PREPARED artifact protections that only the
-    # unwired artifact-release reconciliation can release, so current-only
-    # maintenance settles to BLOCKED instead of DONE after every turn.  A
-    # claim refuses ingest only while maintenance is still ACTIONABLE; like
-    # the resident, every turn below settles maintenance first.
-    expected_outcome = (
-        VNextCurrentOnlyMaintenanceOutcome.BLOCKED
-        if orphaned_protection
-        else VNextCurrentOnlyMaintenanceOutcome.DONE
-    )
-    assert _maintenance_outcome(pipeline) is expected_outcome, label
+    assert _maintenance_outcome(pipeline) is VNextCurrentOnlyMaintenanceOutcome.DONE
+    if crashed["protected"] > 0 and label not in DURABLE_COMMIT_BOUNDARIES:
+        assert _policy_facts(pipeline.config)["protected"] == 0
     # Retrying the converged turn creates nothing new: no build, analysis,
-    # candidate or commit appears (bounded cleanup may reclaim the retired
-    # build), and generation mappings grow by at most one per turn.
+    # candidate or commit appears (bounded cleanup may reclaim retired builds
+    # and commits), and generation mappings grow by at most one per turn.
     for retry in range(1, 3):
         pipeline.turn(clock=takeover_clock(), policy=changed, drain=False)
         again = _policy_facts(pipeline.config)
@@ -2393,11 +2417,13 @@ def test_policy_change_crash_matrix_converges_under_the_requested_policy(
         assert set(again["builds"]) <= set(facts["builds"])
         assert set(again["analyses"]) <= set(facts["analyses"])
         assert again["candidates"] <= facts["candidates"]
-        assert again["commits"] == facts["commits"]
+        assert set(again["commit_receipts"]) <= set(facts["commit_receipts"])
         assert again["mappings"] <= facts["mappings"] + retry
         assert again["working_build"] is None
         assert again["working_candidates"] == 0
-        assert _maintenance_outcome(pipeline) is expected_outcome, label
+        assert (
+            _maintenance_outcome(pipeline) is VNextCurrentOnlyMaintenanceOutcome.DONE
+        ), label
     pipeline.ready()
     reference = _fresh_reference(pipeline, "policy", policy=changed)
     if reference is not None:

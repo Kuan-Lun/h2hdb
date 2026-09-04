@@ -4,10 +4,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import vnext_artifact_release_repository as release_repository
 from h2hdb import vnext_identity as identity
+from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
     CatalogResourceKind,
     StorageObjectKey,
@@ -22,6 +24,10 @@ from h2hdb.vnext_artifact_release_repository import (
     ArtifactReleaseRepository,
     ArtifactReleaseStorageEvidence,
     ArtifactReleaseUnavailableError,
+)
+from h2hdb.vnext_ingest_facade import (
+    VNextCurrentOnlyMaintenanceOutcome,
+    VNextIngestFacade,
 )
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
@@ -299,6 +305,179 @@ class _MonotoneAdapter:
         return ArtifactReleaseStorageEvidence(self.acknowledge)
 
 
+class _LoseFirstResponseAdapter(_MonotoneAdapter):
+    def __init__(self, *, connector: SQLiteConnector) -> None:
+        super().__init__(connector=connector)
+        self._lose_response = True
+
+    def release(
+        self,
+        storage_key: StorageObjectKey,
+        expected_sha256: bytes,
+        expected_size_bytes: int,
+        protection_token: bytes,
+    ) -> ArtifactReleaseStorageEvidence:
+        evidence = super().release(
+            storage_key,
+            expected_sha256,
+            expected_size_bytes,
+            protection_token,
+        )
+        if self._lose_response:
+            self._lose_response = False
+            raise RuntimeError("simulated response loss after durable tombstone")
+        return evidence
+
+
+def _drain_facade_to_done(
+    facade: VNextIngestFacade,
+    adapter: _MonotoneAdapter,
+) -> tuple[VNextCurrentOnlyMaintenanceOutcome, ...]:
+    outcomes: list[VNextCurrentOnlyMaintenanceOutcome] = []
+    for _attempt in range(64):
+        outcome = facade.drain_current_only_maintenance(
+            1_000_000,
+            artifact_release_adapters={adapter.adapter_id: adapter},
+        )
+        outcomes.append(outcome)
+        if outcome is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            return tuple(outcomes)
+        assert outcome is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+    raise AssertionError("orphan artifact release and cleanup did not converge")
+
+
+def _seed_policy_canonical_value(connector: SQLiteConnector) -> None:
+    seed_canonical_value(
+        connector,
+        value_sha256=_POLICY_COMPONENT,
+        digest_domain=b"artifact_policy_v3",
+        page_sha256=b"r" * 32,
+        page_bytes=b"policy",
+        subtree_item_count=1,
+        allocated_at=1,
+    )
+
+
+def test_public_facade_releases_orphan_then_reaches_cleanup_fixed_point(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "facade-artifact-release.sqlite3"
+    connector = _database(database_path)
+    try:
+        candidate_id = b"a" * 16
+        _seed_policy_canonical_value(connector)
+        _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
+        token = _seed_resource(
+            connector,
+            gid=1,
+            candidate_id=candidate_id,
+            reserved_revision=1,
+            resource_kind=CatalogResourceKind.ACQUISITION,
+            storage_object_sha256=b"a" * 32,
+            state="PREPARED",
+        )
+        adapter = _MonotoneAdapter(connector=connector)
+        facade = VNextIngestFacade(
+            CoreConfig(
+                database=DatabaseConfig(
+                    sql_type="sqlite",
+                    database=str(database_path),
+                )
+            ),
+            clock=iter(range(10, 10_000)).__next__,
+        )
+
+        try:
+            assert (
+                facade.drain_current_only_maintenance(1_000_000)
+                is VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+            )
+            assert adapter.calls == []
+            assert adapter.tombstones == set()
+            outcomes = _drain_facade_to_done(facade, adapter)
+        finally:
+            facade.close()
+
+        assert outcomes[0] is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+        assert outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
+        assert adapter.tombstones == {token}
+        assert len(adapter.calls) == 1
+        assert (
+            connector.fetch_one(
+                "SELECT candidate_id FROM catalog_publication_candidates "
+                "WHERE candidate_id = %s",
+                (candidate_id,),
+            )
+            == ()
+        )
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+    finally:
+        connector.close()
+
+
+def test_public_facade_replays_release_after_tombstone_response_loss(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "facade-artifact-release-response-loss.sqlite3"
+    connector = _database(database_path)
+    try:
+        candidate_id = b"a" * 16
+        _seed_policy_canonical_value(connector)
+        _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
+        token = _seed_resource(
+            connector,
+            gid=1,
+            candidate_id=candidate_id,
+            reserved_revision=1,
+            resource_kind=CatalogResourceKind.ACQUISITION,
+            storage_object_sha256=b"a" * 32,
+            state="PENDING",
+        )
+        adapter = _LoseFirstResponseAdapter(connector=connector)
+        facade = VNextIngestFacade(
+            CoreConfig(
+                database=DatabaseConfig(
+                    sql_type="sqlite",
+                    database=str(database_path),
+                )
+            ),
+            clock=iter(range(10, 10_000)).__next__,
+        )
+
+        try:
+            with pytest.raises(RuntimeError, match="simulated response loss"):
+                facade.drain_current_only_maintenance(
+                    1_000_000,
+                    artifact_release_adapters={adapter.adapter_id: adapter},
+                )
+            assert adapter.tombstones == {token}
+            assert connector.fetch_one(
+                "SELECT state FROM catalog_prepared_artifacts WHERE candidate_id = %s",
+                (candidate_id,),
+            ) == ("PENDING",)
+
+            outcomes = _drain_facade_to_done(facade, adapter)
+        finally:
+            facade.close()
+
+        assert outcomes[0] is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+        assert outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
+        assert len(adapter.calls) == 2
+        assert adapter.calls[0] == adapter.calls[1]
+        assert adapter.tombstones == {token}
+        assert (
+            connector.fetch_one(
+                "SELECT candidate_id FROM catalog_publication_candidates "
+                "WHERE candidate_id = %s",
+                (candidate_id,),
+            )
+            == ()
+        )
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+    finally:
+        connector.close()
+
+
 def test_multi_resource_response_loss_and_commit_replay(
     tmp_path: Path,
 ) -> None:
@@ -522,6 +701,57 @@ def test_active_candidate_blocks_external_release(tmp_path: Path) -> None:
         connector.close()
 
 
+def test_durably_committed_candidate_is_never_issued_or_released(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "artifact-release-published.sqlite3")
+    try:
+        candidate_id = b"a" * 16
+        _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
+        _seed_resource(
+            connector,
+            gid=1,
+            candidate_id=candidate_id,
+            reserved_revision=1,
+            resource_kind=CatalogResourceKind.ACQUISITION,
+            storage_object_sha256=b"a" * 32,
+            state="PREPARED",
+        )
+        gate = _exclusive(connector)
+        issued_before_commit = _issue(connector, gate, now=2)
+        assert not issued_before_commit.terminal
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 3)",
+                    (b"r" * 16, candidate_id, b"o" * 16),
+                )
+            ],
+        )
+        adapter = _MonotoneAdapter()
+
+        with pytest.raises(ArtifactReleaseUnavailableError):
+            ArtifactReleaseRepository.release_page(
+                connector,
+                backend="sqlite",
+                page=issued_before_commit,
+                adapters={adapter.adapter_id: adapter},
+                now=3,
+            )
+
+        assert adapter.calls == []
+        assert _issue(connector, gate, now=4).terminal
+    finally:
+        connector.close()
+
+
 @pytest.mark.parametrize("corruption", ("token", "segment", "blob"))
 def test_corrupt_resource_authority_fails_closed(
     tmp_path: Path,
@@ -641,6 +871,8 @@ def test_mariadb_page_shape_uses_typed_resource_keyset() -> None:
     assert "LIMIT %s" in recorder.query
     assert "prepared.resource_kind > %s" in recorder.query
     assert "catalog_prepared_resource_blob" in recorder.query
+    assert "operational_catalog_working_candidates" in recorder.query
+    assert "catalog_publication_commits" in recorder.query
     assert recorder.parameters == (
         b"c" * 16,
         b"c" * 16,

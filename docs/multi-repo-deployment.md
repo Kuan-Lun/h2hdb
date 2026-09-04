@@ -92,7 +92,10 @@ Applications import these public entry points from `h2hdb`:
   reads.
 - `VNextDownloadQueueFacade` for normalized request/list/complete operations.
 - `VNextIngestFacade.drain_current_only_maintenance()` after ingest completion
-  for renewable, response-loss-safe current-catalog cleanup. Its typed outcome
+  for renewable, response-loss-safe current-catalog cleanup. Filesystem-facing
+  integrations pass their `ArtifactReleaseAdapter` registry so abandoned,
+  unpublished protection tokens are terminally released before candidate
+  metadata cleanup; artifact-free callers may omit it. Its typed outcome
   distinguishes `PROGRESSED` (retry immediately) from `BLOCKED`/`CONTENDED`
   (retry on the ordinary resident poll cadence) and terminal `DONE`.
 

@@ -241,11 +241,21 @@ steps therefore read the same immutable bytes even if the live source changes
 mid-run; closing the prepared-source handle removes the temporary spool.
 
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
-call `VNextIngestFacade.drain_current_only_maintenance()`. Each cleanup
-transaction selects at most 256 logical cleanup keys/families under a renewable
-EXCLUSIVE lease; each selected key executes only a schema-fixed bounded set of
-physical deletes. One public attempt advances at most 16 cleanup batches. The
-typed result is `DONE`,
+call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact
+release-adapter registry. If an unpublished abandoned candidate still protects
+external resources and blocks database cleanup, one attempt terminally releases
+one of them outside every database transaction and then commits its
+acknowledgement.
+The next attempt resumes the existing database cleanup fixed point. A lost
+adapter response repeats the same idempotent protection-token tombstone; it
+does not rebuild the catalog, release a current-publication token, or remove
+reader-visible bytes. Callers without external artifacts may omit the registry
+and retain the database-only behavior.
+
+Each cleanup transaction selects at most 256 logical cleanup keys/families
+under a renewable EXCLUSIVE lease; each selected key executes only a
+schema-fixed bounded set of physical deletes. One public attempt advances at
+most 16 cleanup batches. The typed result is `DONE`,
 `PROGRESSED`, `BLOCKED`, or `CONTENDED`; residents immediately retry
 `PROGRESSED`, while blocked/contended attempts use the ordinary poll cadence.
 Every result retains no caller capability, and durable shard checkpoints make
