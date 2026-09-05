@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-04T12:07:12+00:00",
+  "checked_at": "2026-09-05T07:20:27+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.31.0",
+  "project_version": "0.32.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, optional development, and Node dependency for h2hdb 0.31.0. The immutable storage-instance binding uses existing database connectors, generated-schema tooling, and standard-library types, so no dependency range change is required. Every registry latest was checked against the declared range; exact Ruff, mypy, pytest, SQLite, MariaDB 10.11.11 smoke, schema, Lean, and strict formal-coverage checks are executed on this release candidate.",
+    "note": "Reviewed all direct build, runtime, optional development and Node candidates against the 2026-09-04 receipt: registry latest versions are unchanged, all satisfy the declared bounds and all Python candidates support Python 3.14. The current validation environment already uses those latest Python versions and markdownlint-cli2 0.23.2. No dependency update is needed for schema version 3 or the typed discovery filters. Domain, SQLite, schema/refinement and representative MariaDB 10.11.11 checks have passed; the exact-tree release gate independently validates the final candidate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
