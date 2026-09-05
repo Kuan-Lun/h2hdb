@@ -86,7 +86,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 92
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 93
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -418,8 +418,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 216
-    assert len(physical_spec.implemented_relations) == 203
+    assert len(logical.relations) == 217
+    assert len(physical_spec.implemented_relations) == 204
     assert set(physical_spec.inline_projections) == {
         "canonical_value_page",
         "canonical_value_page_descriptor",
@@ -1219,7 +1219,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 203
+    assert len(report.checked_relations) == 204
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
