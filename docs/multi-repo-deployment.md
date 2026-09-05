@@ -2,13 +2,13 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-3/schema-v2 catalog facade; ingest uses the
+consume the epoch-3/schema-v3 catalog facade; ingest uses the
 transaction-owning ingest facade and downloader uses the queue facade. No
 sibling may query `catalog_*` or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-3/schema-v2 database. Catalog and operational relations are
+There is one epoch-3/schema-v3 database. Catalog and operational relations are
 generated for both SQLite and MariaDB from the same closed-world logical
 manifests. Those manifests and their executable schema reports are the
 authority for relation shapes, projections, bootstrap facts, decompositions,
@@ -41,7 +41,7 @@ full check at startup and may use the lightweight readiness probe separately.
 
 The greenfield schema has no upgrade/adoption path, compatibility view, legacy
 read API, or dual-write period. Schema v1 cannot be opened or migrated in place
-by schema v2. Before replacing any earlier database, stop all writers and take
+by schema v3. Before replacing any earlier database, stop all writers and take
 the backups required by that deployment. Create a truly empty database, rebuild
 it from source through the current ingest integration, and run:
 
@@ -49,7 +49,7 @@ it from source through the current ingest integration, and run:
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=2`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=3`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -78,7 +78,7 @@ epoch; it does not execute numbered historical migrations.
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
 no numbered-migration module, old list API, or legacy hand-written schema
 repository. All producers and consumers in one deployment must use the same
-schema-v2 public contract; mixed schema versions are unsupported.
+schema-v3 public contract; mixed schema versions are unsupported.
 
 ## Consumer boundaries
 

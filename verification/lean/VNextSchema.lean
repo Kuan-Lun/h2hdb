@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "23bd2bf84e219f6dfacc766aa65611ae158b0bec629e5d615be678d3bd311e7d"
+def catalogManifestSha256 : String := "8ed542fdef6d839706f244909e0c2af55c392757977664dd842e048f407a01ab"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -10283,6 +10283,51 @@ theorem search_posting_bcnf_check :
 theorem search_posting_bcnf : BCNF search_posting_contract :=
   bcnfCheck_sound search_posting_contract search_posting_bcnf_check
 
+def title_search_posting_contract : RelationContract where
+  name := "title_search_posting"
+  attributes := ["revision", "value_sha256", "publication_key"]
+  declaredKeys := [["revision", "value_sha256", "publication_key"]]
+  declaredFDs := [
+  ]
+
+theorem title_search_posting_schema_well_formed :
+    schemaWellFormedCheck title_search_posting_contract = true := by
+  native_decide
+
+theorem title_search_posting_candidate_keys_check :
+    keysDetermineAllCheck title_search_posting_contract = true := by
+  native_decide
+
+theorem title_search_posting_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes title_search_posting_contract :=
+  keysDetermineAllCheck_sound title_search_posting_contract
+    title_search_posting_candidate_keys_check
+
+theorem title_search_posting_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck title_search_posting_contract = true := by
+  native_decide
+
+theorem title_search_posting_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal title_search_posting_contract :=
+  declaredKeysMinimalCheck_sound title_search_posting_contract
+    title_search_posting_candidate_keys_minimal_check
+
+theorem title_search_posting_closure_fixed_check :
+    closureFixedPointCheck title_search_posting_contract = true := by
+  native_decide
+
+theorem title_search_posting_closure_reached_fixed_point :
+    ClosureReachedFixedPoint title_search_posting_contract :=
+  closureFixedPointCheck_sound title_search_posting_contract
+    title_search_posting_closure_fixed_check
+
+theorem title_search_posting_bcnf_check :
+    bcnfCheck title_search_posting_contract = true := by
+  native_decide
+
+theorem title_search_posting_bcnf : BCNF title_search_posting_contract :=
+  bcnfCheck_sound title_search_posting_contract title_search_posting_bcnf_check
+
 def discovery_seal_contract : RelationContract where
   name := "discovery_seal"
   attributes := ["revision", "policy_id"]
@@ -11079,6 +11124,7 @@ def manifestContracts : List RelationContract := [
   search_lexeme_contract,
   search_document_contract,
   search_posting_contract,
+  title_search_posting_contract,
   discovery_seal_contract,
   language_facet_order_contract,
   subject_facet_order_contract,
@@ -11095,7 +11141,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 216 := by
+    manifestContracts.length = 217 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -11150,6 +11196,7 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   search_lexeme_contract,
   search_document_contract,
   search_posting_contract,
+  title_search_posting_contract,
   discovery_seal_contract,
   language_facet_order_contract,
   subject_facet_order_contract,
@@ -11297,6 +11344,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   search_lexeme_contract,
   search_document_contract,
   search_posting_contract,
+  title_search_posting_contract,
   discovery_seal_contract,
   language_facet_order_contract,
   subject_facet_order_contract,
@@ -11402,11 +11450,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 146 := by
+    catalogPhysicalDomainContracts.length = 147 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 124 := by
+    catalogPhysicalDomainMutationContracts.length = 125 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -13677,6 +13725,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF search_lexeme_contract ∧
     BCNF search_document_contract ∧
     BCNF search_posting_contract ∧
+    BCNF title_search_posting_contract ∧
     BCNF discovery_seal_contract ∧
     BCNF language_facet_order_contract ∧
     BCNF subject_facet_order_contract ∧
@@ -13847,6 +13896,7 @@ theorem all_manifest_base_relations_bcnf :
     search_lexeme_bcnf,
     search_document_bcnf,
     search_posting_bcnf,
+    title_search_posting_bcnf,
     discovery_seal_bcnf,
     language_facet_order_bcnf,
     subject_facet_order_bcnf,
@@ -14061,6 +14111,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes search_lexeme_contract ∧
     KeysDetermineAllAttributes search_document_contract ∧
     KeysDetermineAllAttributes search_posting_contract ∧
+    KeysDetermineAllAttributes title_search_posting_contract ∧
     KeysDetermineAllAttributes discovery_seal_contract ∧
     KeysDetermineAllAttributes language_facet_order_contract ∧
     KeysDetermineAllAttributes subject_facet_order_contract ∧
@@ -14277,6 +14328,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     search_lexeme_candidate_keys_determine_all_attributes,
     search_document_candidate_keys_determine_all_attributes,
     search_posting_candidate_keys_determine_all_attributes,
+    title_search_posting_candidate_keys_determine_all_attributes,
     discovery_seal_candidate_keys_determine_all_attributes,
     language_facet_order_candidate_keys_determine_all_attributes,
     subject_facet_order_candidate_keys_determine_all_attributes,

@@ -89,7 +89,7 @@ def _definition(
 ) -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=2,
+        schema_version=3,
         ddl_manifest_sha256=ddl_manifest_sha256,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=obligation_manifest_sha256,
@@ -111,9 +111,12 @@ def _definition(
     )
 
 
-def test_schema_v1_definition_is_rejected_without_compatibility_path() -> None:
-    with pytest.raises(ValueError, match="supports schema version 2, not 1"):
-        replace(_definition(), schema_version=1)
+@pytest.mark.parametrize("version", [1, 2])
+def test_prior_schema_definition_is_rejected_without_compatibility_path(
+    version: int,
+) -> None:
+    with pytest.raises(ValueError, match=f"supports schema version 3, not {version}"):
+        replace(_definition(), schema_version=version)
 
 
 @dataclass
@@ -192,7 +195,7 @@ class FakeProvider:
         # and seed queries named by its checksum-pinned obligation manifest.
         assert connector.fetch_one(
             "SELECT singleton_id, epoch, schema_version FROM h2hdb_schema_epoch"
-        ) == (1, 3, 2)
+        ) == (1, 3, 3)
         expected = (
             self.definition.activation_semantic_obligation_ids
             if phase is SchemaSemanticValidationPhase.ACTIVATION
@@ -236,7 +239,7 @@ def _initialize_building(
             INSERT INTO h2hdb_schema_epoch (
                 singleton_id, epoch, schema_version, state,
                 manifest_sha256, started_at, ready_at
-            ) VALUES (1, 3, 2, 'BUILDING', %s, 1, NULL)
+            ) VALUES (1, 3, 3, 'BUILDING', %s, 1, NULL)
             """,
             (bytes.fromhex(definition.manifest_sha256),),
         )
@@ -434,7 +437,7 @@ def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None
         FakeProvider(
             SchemaEpochDefinition(
                 epoch=3,
-                schema_version=2,
+                schema_version=3,
                 ddl_manifest_sha256=DDL_MANIFEST,
                 seed_manifest_sha256="44" * 32,
                 obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -920,7 +923,7 @@ def test_provider_object_whitelist_must_exactly_match_statements() -> None:
     with pytest.raises(ValueError, match="exactly match"):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=2,
+            schema_version=3,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -942,7 +945,7 @@ def test_provider_cannot_own_control_table() -> None:
     with pytest.raises(ValueError, match="must not declare"):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=2,
+            schema_version=3,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -960,7 +963,7 @@ def test_epoch_requires_at_least_one_semantic_obligation() -> None:
     ):
         SchemaEpochDefinition(
             epoch=3,
-            schema_version=2,
+            schema_version=3,
             ddl_manifest_sha256=DDL_MANIFEST,
             seed_manifest_sha256=SEED_MANIFEST,
             obligation_manifest_sha256=OBLIGATION_MANIFEST,

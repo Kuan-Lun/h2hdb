@@ -1091,6 +1091,12 @@ def _insert_nonempty_discovery_projection(
                 "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
                 (value_sha256, publication_key),
             )
+    for lexeme in (b"source", b"display"):
+        connector.execute(
+            "INSERT INTO catalog_title_search_postings "
+            "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+            (lexeme_digests[lexeme], publication_key),
+        )
     connector.execute(
         "INSERT INTO catalog_language_facet_order "
         "(revision, position, language_sha256, occurrence_count) "
@@ -1561,6 +1567,12 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
             (b"l" * 32, b"d" * 32),
         ),
         (
+            "title_search_posting",
+            "INSERT INTO catalog_title_search_postings "
+            "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+            (b"l" * 32, b"d" * 32),
+        ),
+        (
             "language_facet",
             "INSERT INTO catalog_language_facet_order "
             "(revision, position, language_sha256, occurrence_count) "
@@ -1611,6 +1623,7 @@ def test_ready_rejects_active_discovery_projection_corruption(
     (
         "search_document",
         "search_posting",
+        "title_search_posting",
         "language_facet",
         "subject_facet",
         "contributor_facet",
@@ -1635,6 +1648,11 @@ def test_ready_rejects_active_discovery_projection_omission(
                 "DELETE FROM catalog_search_postings WHERE revision = 1 "
                 "AND value_sha256 = %s AND publication_key = %s",
                 (values["first_lexeme"], values["publication_key"]),
+            ),
+            "title_search_posting": (
+                "DELETE FROM catalog_title_search_postings WHERE revision = 1 "
+                "AND publication_key = %s",
+                (values["publication_key"],),
             ),
             "language_facet": (
                 "DELETE FROM catalog_language_facet_order WHERE revision = 1 "
@@ -3048,5 +3066,44 @@ def test_active_title_sort_unicode_version_must_be_strict_bytes(tmp_path: Path) 
             match="not strict bytes",
         ):
             catalog_refinement.check_artifact_semantics_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_rejects_same_cardinality_title_posting_substitution(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / "title-subset-corruption.sqlite3"
+    )
+    try:
+        values = _insert_nonempty_discovery_projection(connector)
+        catalog_refinement.check_discovery_exactness_v1(connector)
+        source_lexeme = vnext_identity.canonical_value_digest(
+            "search_lexeme_utf8_v1", b"source"
+        )
+        author_lexeme = vnext_identity.canonical_value_digest(
+            "search_lexeme_utf8_v1", b"writer"
+        )
+        # Both lexemes already have whole-document membership. Foreign keys and
+        # cardinality alone cannot detect a contributor lexeme posing as a title.
+        connector.execute(
+            "DELETE FROM catalog_title_search_postings "
+            "WHERE revision = 1 AND value_sha256 = %s AND publication_key = %s",
+            (source_lexeme, values["publication_key"]),
+        )
+        connector.execute(
+            "INSERT INTO catalog_title_search_postings "
+            "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+            (author_lexeme, values["publication_key"]),
+        )
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_title_search_postings WHERE revision = 1"
+        ) == (2,)
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="title search postings differ from exact tokenizer output",
+        ):
+            catalog_refinement.check_discovery_exactness_v1(connector)
     finally:
         connector.close()

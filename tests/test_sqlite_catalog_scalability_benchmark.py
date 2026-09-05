@@ -54,6 +54,11 @@ def test_sqlite_catalog_scalability_smoke_profile(tmp_path: Path) -> None:
         receipt["expected"]["acquisition_descriptor_count"] == _SMOKE_PUBLICATION_COUNT
     )
     assert receipt["expected"]["artifact_blob_count"] == 1
+    assert (
+        0
+        < receipt["expected"]["title_search_posting_count"]
+        <= receipt["expected"]["search_posting_count"]
+    )
     assert receipt["actual_database_counts"] == {
         label: receipt["expected"][label] for label in receipt["actual_database_counts"]
     }

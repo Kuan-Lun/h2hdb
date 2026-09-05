@@ -130,6 +130,7 @@ _CATALOG_ARTIFACT_TABLE = "catalog_artifacts"
 _SEARCH_LEXEME_TABLE = "catalog_search_lexemes"
 _SEARCH_DOCUMENT_TABLE = "catalog_search_documents"
 _SEARCH_POSTING_TABLE = "catalog_search_postings"
+_TITLE_SEARCH_POSTING_TABLE = "catalog_title_search_postings"
 _DISCOVERY_SEAL_TABLE = "catalog_discovery_seals"
 _LANGUAGE_FACET_ORDER_TABLE = "catalog_language_facet_order"
 _SUBJECT_FACET_ORDER_TABLE = "catalog_subject_facet_order"
@@ -147,7 +148,7 @@ _SUPPORTED_TITLE_SORT_ALGORITHM = 1
 _CURSOR_GALLERY = b"publication_gallery_v1"
 _CURSOR_PUBLICATION_KEY = b"publication_key_v1"
 _CURSOR_PUBLICATION_RESOURCE = b"publication_resource_v2"
-_CURSOR_CATALOG_CHILD = b"publication_catalog_child_v1"
+_CURSOR_CATALOG_CHILD = b"publication_catalog_child_v2"
 _CHECKPOINT_OPEN = "OPEN"
 _CHECKPOINT_COMPLETE = "COMPLETE"
 _PROJECTION_AUTHORITY_TOKEN = object()
@@ -169,11 +170,12 @@ _CATALOG_CHILD_ARTIFACT = 6
 _CATALOG_CHILD_DOWNLOAD_TIME = 7
 _CATALOG_CHILD_SEARCH_DOCUMENT = 8
 _CATALOG_CHILD_SEARCH_POSTING = 9
-_CATALOG_CHILD_LANGUAGE_FACET = 10
-_CATALOG_CHILD_SUBJECT_FACET = 11
-_CATALOG_CHILD_CONTRIBUTOR_FACET = 12
-_CATALOG_CHILD_DISCOVERY_SEAL = 13
-_CATALOG_CHILD_KIND_COUNT = 14
+_CATALOG_CHILD_TITLE_SEARCH_POSTING = 10
+_CATALOG_CHILD_LANGUAGE_FACET = 11
+_CATALOG_CHILD_SUBJECT_FACET = 12
+_CATALOG_CHILD_CONTRIBUTOR_FACET = 13
+_CATALOG_CHILD_DISCOVERY_SEAL = 14
+_CATALOG_CHILD_KIND_COUNT = 15
 _DISCOVERY_CHILD_KEY = bytes(32)
 
 
@@ -1876,6 +1878,13 @@ def _initialize_projection_plan_database(database: sqlite3.Connection) -> None:
             value_sha256 BLOB NOT NULL,
             PRIMARY KEY (publication_key, value_sha256)
         ) WITHOUT ROWID;
+        CREATE TABLE title_search_postings (
+            publication_key BLOB NOT NULL,
+            value_sha256 BLOB NOT NULL,
+            PRIMARY KEY (publication_key, value_sha256),
+            FOREIGN KEY (publication_key, value_sha256)
+                REFERENCES search_postings (publication_key, value_sha256)
+        ) WITHOUT ROWID;
         CREATE TABLE language_facets (
             position INTEGER PRIMARY KEY,
             language_sha256 BLOB NOT NULL UNIQUE,
@@ -2076,6 +2085,7 @@ def _prepare_projection_publication(
             database,
             payload,
             publication_key=publication_key,
+            title=True,
             parts=_iter_file_range(
                 metadata_file,
                 metadata.title_offset,
@@ -2120,6 +2130,7 @@ def _prepare_projection_publication(
             database,
             payload,
             publication_key=publication_key,
+            title=True,
             parts=(
                 _iter_file_range(
                     metadata_file,
@@ -2652,6 +2663,7 @@ def _register_projection_search_field(
     *,
     publication_key: bytes,
     parts: Iterable[bytes],
+    title: bool = False,
 ) -> None:
     for lexeme in iter_search_field_lexemes(parts):
         value_sha256 = _register_projection_canonical_value(
@@ -2665,6 +2677,12 @@ def _register_projection_search_field(
             "(publication_key, value_sha256) VALUES (?, ?)",
             (sqlite3.Binary(publication_key), sqlite3.Binary(value_sha256)),
         )
+        if title:
+            database.execute(
+                "INSERT OR IGNORE INTO title_search_postings "
+                "(publication_key, value_sha256) VALUES (?, ?)",
+                (sqlite3.Binary(publication_key), sqlite3.Binary(value_sha256)),
+            )
 
 
 def _equal_streams(left: Iterable[bytes], right: Iterable[bytes]) -> bool:
@@ -2862,6 +2880,11 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
             "SELECT publication_key, value_sha256 FROM search_postings "
             "ORDER BY publication_key, value_sha256",
         ),
+        (
+            _CATALOG_CHILD_TITLE_SEARCH_POSTING,
+            "SELECT publication_key, value_sha256 FROM title_search_postings "
+            "ORDER BY publication_key, value_sha256",
+        ),
     )
     for kind, query in sources:
         cursor = database.execute(query)
@@ -2872,7 +2895,10 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
             for publication_key, position in rows:
                 if position is None:
                     subkey = b""
-                elif kind == _CATALOG_CHILD_SEARCH_POSTING:
+                elif kind in {
+                    _CATALOG_CHILD_SEARCH_POSTING,
+                    _CATALOG_CHILD_TITLE_SEARCH_POSTING,
+                }:
                     subkey = require_digest32(
                         position,
                         field="catalog search posting lexeme",
@@ -3005,7 +3031,7 @@ def _encode_catalog_child_cursor(
         maximum=130,
     )
     cursor = (
-        b"\x01"
+        b"\x02"
         + bytes((kind,))
         + key
         + len(exact_subkey).to_bytes(2, "big")
@@ -3475,6 +3501,26 @@ def _insert_projection_child(
             (revision, value_sha256, child.publication_key),
         )
         return
+    if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
+        value_sha256 = require_digest32(
+            child.subkey,
+            field="title search posting value_sha256",
+        )
+        planned = plan._database.execute(
+            "SELECT 1 FROM title_search_postings "
+            "WHERE publication_key = ? AND value_sha256 = ?",
+            (sqlite3.Binary(child.publication_key), sqlite3.Binary(value_sha256)),
+        ).fetchone()
+        if planned != (1,):
+            raise PublicationCandidateConflictError(
+                "planned title search posting is missing"
+            )
+        work.connector.execute(
+            f"INSERT INTO {_TITLE_SEARCH_POSTING_TABLE} "
+            "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
+            (revision, value_sha256, child.publication_key),
+        )
+        return
     raise PublicationCandidateNotReadyError(
         "catalog artifact child awaits the typed artifact adapter"
     )
@@ -3822,7 +3868,15 @@ def _catalog_child_kind_rows(
             (require_digest32(row[0], field="catalog child publication_key"), b"")
             for row in raw
         )
-    if kind == _CATALOG_CHILD_SEARCH_POSTING:
+    if kind in {
+        _CATALOG_CHILD_SEARCH_POSTING,
+        _CATALOG_CHILD_TITLE_SEARCH_POSTING,
+    }:
+        table = (
+            _SEARCH_POSTING_TABLE
+            if kind == _CATALOG_CHILD_SEARCH_POSTING
+            else _TITLE_SEARCH_POSTING_TABLE
+        )
         if after_key is not None:
             after_value = require_digest32(
                 after_subkey,
@@ -3835,7 +3889,7 @@ def _catalog_child_kind_rows(
             parameters.extend((after_key, after_key, after_value))
         parameters.append(limit)
         raw = connector.fetch_all(
-            f"SELECT publication_key, value_sha256 FROM {_SEARCH_POSTING_TABLE} "
+            f"SELECT publication_key, value_sha256 FROM {table} "
             "WHERE revision = %s"
             + predicate
             + " ORDER BY publication_key, value_sha256 LIMIT %s",
@@ -4209,6 +4263,31 @@ def _compare_projection_child(
         ):
             raise PublicationCandidateConflictError(
                 "catalog search posting differs from independent evaluator"
+            )
+        return
+    if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
+        value_sha256 = require_digest32(
+            child.subkey,
+            field="planned title search posting value_sha256",
+        )
+        planned = plan._database.execute(
+            "SELECT 1 FROM title_search_postings "
+            "WHERE publication_key = ? AND value_sha256 = ?",
+            (sqlite3.Binary(child.publication_key), sqlite3.Binary(value_sha256)),
+        ).fetchone()
+        row = work.connector.fetch_one(
+            f"SELECT title.publication_key FROM {_TITLE_SEARCH_POSTING_TABLE} AS title "
+            f"JOIN {_SEARCH_POSTING_TABLE} AS posting "
+            "ON posting.revision = title.revision "
+            "AND posting.value_sha256 = title.value_sha256 "
+            "AND posting.publication_key = title.publication_key "
+            "WHERE title.revision = %s AND title.value_sha256 = %s "
+            "AND title.publication_key = %s",
+            (revision, value_sha256, child.publication_key),
+        )
+        if planned != (1,) or row != (child.publication_key,):
+            raise PublicationCandidateConflictError(
+                "catalog title search posting differs from independent evaluator"
             )
         return
     raise PublicationCandidateNotReadyError(
@@ -5814,7 +5893,7 @@ def _validate_stage_cursor(codec: bytes, cursor: bytes) -> None:
         raise PublicationCandidateConflictError(
             "publication cursor selected an unregistered codec"
         )
-    if len(exact) < 36 or exact[0] != 1 or exact[1] >= _CATALOG_CHILD_KIND_COUNT:
+    if len(exact) < 36 or exact[0] != 2 or exact[1] >= _CATALOG_CHILD_KIND_COUNT:
         raise PublicationCandidateConflictError(
             "catalog-child cursor has an invalid header"
         )
@@ -5844,7 +5923,10 @@ def _validate_stage_cursor(codec: bytes, cursor: bytes) -> None:
         _CATALOG_CHILD_CONTRIBUTOR_FACET,
     }:
         valid = len(subkey) == 8 and int.from_bytes(subkey, "big") <= INT63_MAX
-    elif kind == _CATALOG_CHILD_SEARCH_POSTING:
+    elif kind in {
+        _CATALOG_CHILD_SEARCH_POSTING,
+        _CATALOG_CHILD_TITLE_SEARCH_POSTING,
+    }:
         valid = len(subkey) == 32
     else:  # pragma: no cover - kind is closed above
         valid = False

@@ -1347,7 +1347,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         ) as validation,
     ):
         assert plan.publication_count == validation.publication_count == 1
-        assert plan.child_count == validation.child_count == 18
+        assert plan.child_count == validation.child_count == 20
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1366,7 +1366,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-1",
                 now=112,
             )
-        assert built.row_count == 18 and not built.terminal
+        assert built.row_count == 20 and not built.terminal
         with connector.transaction():
             replay = PublicationCandidateRepository.process_catalog_projection_batch(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1388,7 +1388,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-2",
                 now=114,
             )
-        assert terminal.terminal and terminal.next_processed_count == 18
+        assert terminal.terminal and terminal.next_processed_count == 20
 
         with connector.transaction():
             checked = PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1400,7 +1400,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-validate-1",
                 now=115,
             )
-        assert checked.row_count == 18 and not checked.terminal
+        assert checked.row_count == 20 and not checked.terminal
         with connector.transaction():
             checked_terminal = (
                 PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1414,7 +1414,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 )
             )
         assert checked_terminal.terminal
-        assert checked_terminal.next_processed_count == 18
+        assert checked_terminal.next_processed_count == 20
 
     publication_key = identity.publication_key(10_001)
     assert connector.fetch_one(
@@ -1464,6 +1464,17 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
             (publication_key,),
         )
     } == expected_search_digests
+    assert {
+        row[0]
+        for row in connector.fetch_all(
+            "SELECT value_sha256 FROM catalog_title_search_postings "
+            "WHERE revision = 1 AND publication_key = %s",
+            (publication_key,),
+        )
+    } == {
+        identity.canonical_value_digest("search_lexeme_utf8_v1", token)
+        for token in (b"title", b"1")
+    }
     language_sha256 = identity.canonical_value_digest(
         "catalog_language_utf8_v1",
         b"english",
@@ -1531,7 +1542,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
             authority=authority,
         ) as validation,
     ):
-        assert plan.child_count == validation.child_count == 502
+        assert plan.child_count == validation.child_count == 602
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1551,7 +1562,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
 
         built = []
         with patch.object(connector, "fetch_all", side_effect=recording_fetch_all):
-            for index in range(5):
+            for index in range(6):
                 with connector.transaction():
                     built.append(
                         PublicationCandidateRepository.process_catalog_projection_batch(
@@ -1564,15 +1575,15 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                             now=112 + index,
                         )
                     )
-        assert [batch.row_count for batch in built] == [128, 128, 128, 118, 0]
-        assert built[-1].terminal and built[-1].next_processed_count == 502
+        assert [batch.row_count for batch in built] == [128, 128, 128, 128, 90, 0]
+        assert built[-1].terminal and built[-1].next_processed_count == 602
         normalized = " ".join(mutation_queries).upper()
         assert "COUNT(" not in normalized and "SUM(" not in normalized
         assert "CATALOG_GALLERY_OBSERVATION_TAGS" not in normalized
         assert "CATALOG_GALLERY_OBSERVATION_PAGES" not in normalized
 
         checked = []
-        for index in range(5):
+        for index in range(6):
             with connector.transaction():
                 checked.append(
                     PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1585,8 +1596,8 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                         now=120 + index,
                     )
                 )
-        assert [batch.row_count for batch in checked] == [128, 128, 128, 118, 0]
-        assert checked[-1].terminal and checked[-1].next_processed_count == 502
+        assert [batch.row_count for batch in checked] == [128, 128, 128, 128, 90, 0]
+        assert checked[-1].terminal and checked[-1].next_processed_count == 602
     assert connector.fetch_one(
         "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
     ) == (50,)
@@ -1628,6 +1639,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         failures = (
             "INSERT INTO catalog_publication_occurrence_identities",
             "INSERT INTO catalog_publication_download_times",
+            "INSERT INTO catalog_title_search_postings",
             "INSERT INTO catalog_publication_batch_receipt_stored",
             "UPDATE catalog_publication_checkpoints",
         )
@@ -1673,6 +1685,9 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_order")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_titles")
             assert not connector.fetch_one("SELECT 1 FROM catalog_contributors")
+            assert not connector.fetch_one(
+                "SELECT 1 FROM catalog_title_search_postings"
+            )
             assert not connector.fetch_one(
                 "SELECT 1 FROM catalog_publication_batch_receipts WHERE stage = %s",
                 (b"BUILD_CATALOG_PROJECTION",),
@@ -2257,16 +2272,16 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         (b"publication_gallery_v1", (1).to_bytes(8, "big")),
         (b"publication_key_v1", b"k" * 32),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x00" + b"k" * 32 + b"\x00\x00",
+            b"publication_catalog_child_v2",
+            b"\x02\x00" + b"k" * 32 + b"\x00\x00",
         ),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x04" + b"k" * 32 + b"\x00\x08" + (0).to_bytes(8, "big"),
+            b"publication_catalog_child_v2",
+            b"\x02\x04" + b"k" * 32 + b"\x00\x08" + (0).to_bytes(8, "big"),
         ),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x06" + b"k" * 32 + b"\x00\x00",
+            b"publication_catalog_child_v2",
+            b"\x02\x06" + b"k" * 32 + b"\x00\x00",
         ),
     ],
 )
@@ -2287,20 +2302,20 @@ def test_closed_publication_cursor_codecs_accept_only_exact_frames(
         (b"publication_gallery_v1", b"\1" * 7),
         (b"publication_key_v1", b"k" * 31),
         (
-            b"publication_catalog_child_v1",
-            b"\x02\x00" + b"k" * 32 + b"\x00\x00",
+            b"publication_catalog_child_v2",
+            b"\x01\x00" + b"k" * 32 + b"\x00\x00",
         ),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x02" + b"k" * 32 + b"\x00\x01x",
+            b"publication_catalog_child_v2",
+            b"\x02\x02" + b"k" * 32 + b"\x00\x01x",
         ),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x07" + b"k" * 32 + b"\x00\x05\x00\x04cbz",
+            b"publication_catalog_child_v2",
+            b"\x02\x07" + b"k" * 32 + b"\x00\x05\x00\x04cbz",
         ),
         (
-            b"publication_catalog_child_v1",
-            b"\x01\x06" + b"k" * 32 + b"\x00\x05\x00\x03cbz",
+            b"publication_catalog_child_v2",
+            b"\x02\x06" + b"k" * 32 + b"\x00\x05\x00\x03cbz",
         ),
     ],
 )

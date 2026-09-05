@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Literal
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Literal, cast
 
 import pytest
 
-from h2hdb import CatalogSearchQueryTooComplexError
+from h2hdb import (
+    CatalogDiscoveryQuery,
+    CatalogPageCountRange,
+    CatalogSearchQueryTooComplexError,
+    CatalogSubjectFilter,
+    CatalogTimestampRange,
+)
 from h2hdb.catalog_search import (
     SEARCH_MAX_FIELD_NFD_BYTES,
     SEARCH_MAX_QUERY_NFD_BYTES,
@@ -172,3 +179,132 @@ def test_query_lexemes_are_unique_bounded_and_never_truncated() -> None:
     query = " ".join(f"token{index}" for index in range(17))
     with pytest.raises(CatalogSearchQueryTooComplexError, match="16 unique"):
         canonical_query_lexemes(query)
+
+
+def test_discovery_ranges_preserve_exact_inclusive_and_exclusive_bounds() -> None:
+    offset = timezone(timedelta(hours=8))
+    start = datetime(2026, 9, 5, 8, 0, 0, 1, tzinfo=offset)
+    end = start + timedelta(microseconds=1)
+    timestamps = CatalogTimestampRange(start=start, end=end)
+
+    assert timestamps.start == datetime(2026, 9, 5, 0, 0, 0, 1, tzinfo=UTC)
+    assert timestamps.end == datetime(2026, 9, 5, 0, 0, 0, 2, tzinfo=UTC)
+    assert timestamps.start.tzinfo is UTC
+    assert timestamps.end.tzinfo is UTC
+    assert CatalogTimestampRange(start=start).end is None
+    assert CatalogTimestampRange(end=end).start is None
+    assert CatalogPageCountRange(minimum=0, maximum=0).minimum == 0
+    assert CatalogPageCountRange(minimum=4096, maximum=4096).maximum == 4096
+    assert CatalogPageCountRange(minimum=1).maximum is None
+    assert CatalogPageCountRange(maximum=4096).minimum is None
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    (
+        (None, None),
+        (datetime(2026, 9, 5), None),
+        (None, datetime(2026, 9, 5)),
+        (datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC), None),
+        (None, datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)),
+        (datetime(2026, 9, 5, tzinfo=UTC), datetime(2026, 9, 5, tzinfo=UTC)),
+        (datetime(2026, 9, 6, tzinfo=UTC), datetime(2026, 9, 5, tzinfo=UTC)),
+        (1, None),
+        (None, "2026-09-05"),
+    ),
+)
+def test_discovery_timestamp_ranges_reject_invalid_authority_bounds(
+    start: object,
+    end: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        CatalogTimestampRange(
+            start=cast("datetime | None", start),
+            end=cast("datetime | None", end),
+        )
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum"),
+    (
+        (None, None),
+        (-1, None),
+        (None, -1),
+        (4097, None),
+        (None, 4097),
+        (2, 1),
+        (True, None),
+        (None, False),
+        (1.0, None),
+        (None, "1"),
+    ),
+)
+def test_discovery_page_ranges_reject_invalid_authority_bounds(
+    minimum: object,
+    maximum: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        CatalogPageCountRange(
+            minimum=cast("int | None", minimum),
+            maximum=cast("int | None", maximum),
+        )
+
+
+@pytest.mark.parametrize("gid", (0, -1, 1 << 63, True, 1.0, "1834943"))
+def test_discovery_gid_requires_a_canonical_positive_int63(gid: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        CatalogDiscoveryQuery(gid=cast("int", gid))
+
+
+def test_discovery_query_keeps_exact_subjects_and_both_lexeme_scopes() -> None:
+    genre = CatalogSubjectFilter(namespace="genre", value=" Café ")
+    topic = CatalogSubjectFilter(namespace="topic", value="café")
+    query = CatalogDiscoveryQuery(
+        search="  Alpha ALPHA  ",
+        title="Beta ALPHA",
+        gid=(1 << 63) - 1,
+        subjects=(topic, genre, topic),
+    )
+
+    assert query.search_lexemes == (b"alpha",)
+    assert query.title_lexemes == (b"beta", b"alpha")
+    assert query.subjects == (genre, topic)
+    assert query.subjects[0].value == " Café "
+    assert query.gid == (1 << 63) - 1
+
+
+def test_discovery_query_bounds_lexemes_across_search_and_title_scopes() -> None:
+    eight = " ".join(f"token{index}" for index in range(8))
+    valid = CatalogDiscoveryQuery(search=eight, title=eight)
+    assert len(valid.search_lexemes) + len(valid.title_lexemes) == 16
+
+    with pytest.raises(CatalogSearchQueryTooComplexError):
+        CatalogDiscoveryQuery(search=eight, title=eight + " overflow")
+
+
+@pytest.mark.parametrize("title", ("", " \t\n", "---", 1))
+def test_discovery_title_rejects_unsearchable_or_nontext_values(title: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        CatalogDiscoveryQuery(title=cast("str", title))
+
+
+def test_discovery_subject_input_is_bounded_before_canonical_deduplication() -> None:
+    subjects = tuple(
+        CatalogSubjectFilter(namespace="genre", value=f"value-{index}")
+        for index in range(16)
+    )
+    assert len(CatalogDiscoveryQuery(subjects=subjects).subjects) == 16
+    assert CatalogDiscoveryQuery(subjects=(subjects[0],) * 16).subjects == (
+        subjects[0],
+    )
+
+    with pytest.raises((TypeError, ValueError)):
+        CatalogDiscoveryQuery(subjects=(*subjects, subjects[0]))
+    with pytest.raises((TypeError, ValueError)):
+        CatalogDiscoveryQuery(subjects=(subjects[0],) * 17)
+    with pytest.raises(TypeError):
+        CatalogDiscoveryQuery(subjects=cast("tuple[CatalogSubjectFilter, ...]", []))
+    with pytest.raises(TypeError):
+        CatalogDiscoveryQuery(
+            subjects=cast("tuple[CatalogSubjectFilter, ...]", ("genre:science",))
+        )

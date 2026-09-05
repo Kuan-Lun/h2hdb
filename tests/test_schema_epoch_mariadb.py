@@ -107,7 +107,7 @@ CONTROL_CHECK_ROWS = [
 def _definition() -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=2,
+        schema_version=3,
         ddl_manifest_sha256=DDL_MANIFEST,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -416,17 +416,18 @@ def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
     assert {PARENT.name, CHILD.name} <= set(connector.objects)
 
 
-def test_fake_mariadb_schema_version_one_control_is_rejected() -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_fake_mariadb_prior_schema_control_is_rejected(version: int) -> None:
     connector = FakeMariaDBConnector()
     definition = _definition()
     _initialize_fake_building(connector, definition)
     assert connector.control_row is not None
     epoch, _version, state, manifest, started_at, ready_at = connector.control_row
-    connector.control_row = (epoch, 1, state, manifest, started_at, ready_at)
+    connector.control_row = (epoch, version, state, manifest, started_at, ready_at)
 
     with pytest.raises(
         SchemaEpochDriftError,
-        match="Database schema version is 1, expected 2",
+        match=f"Database schema version is {version}, expected 3",
     ):
         run_mariadb_schema_epoch(
             connector,

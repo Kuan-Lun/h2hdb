@@ -10,19 +10,19 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 152 data-plane base relations checked as BCNF, plus 46 executable logical
+- 171 data-plane base relations checked as BCNF, plus 46 executable logical
   projections (33 SQL views and 13 inline projections) and 8 reusable sealed
   vertical families;
 - 29 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 128-relation catalog physical-domain closure, split into 106
+- an exact 147-relation catalog physical-domain closure, split into 125
   mutation relations and 22 read-only relations;
 - 67 operational BCNF base relations, including epoch control, plus one inline
   activation projection and no operational SQL view for fencing,
   downloader-to-ingest handoff, staging, allocation, receipts, maintenance,
   queues, caches, and bounded cleanup;
-- 218 tables and 33 SQL views, for exactly 251 SQL objects across the complete
+- 238 tables and 33 SQL views, for exactly 271 SQL objects across the complete
   epoch;
-- 30 versioned semantic obligations: 13 data-plane and 17 operational; and
+- 32 versioned semantic obligations: 14 data-plane and 18 operational; and
 - every generated typed bootstrap row per backend, including the real
   deletion-request generation-zero history/head and all cleanup target kinds
   expanded into 256 fixed shards each.
@@ -30,9 +30,9 @@ The generated contract currently contains:
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
 ordinary physical `catalog_*` base table to be its semantic primary key plus at
-most one atomic non-key column. It reports 113 narrow bases and 39 exact
+most one atomic non-key column. It reports 123 narrow bases and 48 exact
 reviewed-wide BCNF relations. Thirty selected families replace 190 former
-physical relations with 36 bases under the explicit capacity contract. Three
+physical relations with 54 bases under the explicit capacity contract. Three
 authorities (`file_name_identity`, `tag_term`, and `catalog_contributor`) retain
 the exact complete shape of a former widest member and are therefore
 capacity-neutral while their redundant companion tables disappear. Every
@@ -611,3 +611,25 @@ uv run --no-sync python scripts/verify-formal.py tla \
 
 Report Deep simulation as a smoke test unless its exact invocation performed
 exhaustive model checking.
+
+## Title search authority
+
+Title search is a separately sealed subset of the whole-document postings.
+`catalog_title_search_postings` contains exactly the lexemes derived from display
+and source titles under the existing pinned tokenizer; its composite foreign key
+retains whole-document posting authority. Candidate planning and independent
+validation stream both title sources, and the READY audit reconstructs the exact
+subset after candidate cleanup. Both publication and abandoned-candidate cleanup
+remove title postings before their parent postings in bounded child-first phases.
+Epoch 3/schema version 3 and the `publication_catalog_child_v2` codec introduce
+this authority together; earlier database manifests require a new empty database
+and catalog rebuild, with no migration or compatibility path.
+
+## Capacity change accounting
+
+The capacity plan retains the historical 190-to-54 selected-family recomposition
+counts. The title posting subset is declared separately as one physical relation
+added afterward, so the current catalog/combined counts are 171/238. The existing
+capacity measurement still describes its original measured shapes; regenerating
+the receipt binds those unchanged measurements and this explicit count adjustment
+to the current manifest without claiming a new database benchmark run.

@@ -244,6 +244,7 @@ def runtime_obligation_records(
                 "search_lexeme",
                 "search_document",
                 "search_posting",
+                "title_search_posting",
                 "discovery_seal",
                 "language_facet_order",
                 "subject_facet_order",
@@ -752,6 +753,7 @@ TABLE_NAMES = {
     "search_lexeme": "catalog_search_lexemes",
     "search_document": "catalog_search_documents",
     "search_posting": "catalog_search_postings",
+    "title_search_posting": "catalog_title_search_postings",
     "discovery_seal": "catalog_discovery_seals",
     "language_facet_order": "catalog_language_facet_order",
     "subject_facet_order": "catalog_subject_facet_order",
@@ -800,6 +802,13 @@ OVERLAY_RUNTIME_OBLIGATIONS = (
 
 
 INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
+    "title_search_posting": [
+        (
+            "ix_title_search_posting_document",
+            ["revision", "publication_key", "value_sha256"],
+            False,
+        ),
+    ],
     "search_posting": [
         (
             "ix_search_posting_document",

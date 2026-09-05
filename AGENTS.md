@@ -284,9 +284,14 @@ Schema變更依序進行：
   這個 total authority，不得從 mutable downloader queue推導。
 - `CatalogReader.discover_publications`只可使用 revision-scoped normalized SQL
   discovery authority。Nonblank search使用 pinned Unicode policy產生的 lexeme
-  AND matching；language、subject與contributor是exact filters。結果使用
-  hard-capped keyset pages；caller cursor必須重新驗證 revision、query digest、
-  position與filtered-set membership，不得以 hydrate後的Python scan取代index。
+  AND matching；title以 `catalog_title_search_postings`中的 display/source title
+  lexeme subset限定欄位。GID精確匹配、language、subjects與contributor為exact
+  filters；多subject條件全部AND，uploaded/downloaded為UTC半開時間區間，pages
+  為sealed artifact實際頁數的包含兩端區間。不得以source page count或mutable
+  downloader queue代替published authority；沒有artifact的項目不符合pages條件。
+  所有條件共同參與canonical query digest與filtered-set membership驗證。
+  結果使用hard-capped keyset pages；caller cursor必須重新驗證revision、query
+  digest、position與filtered-set membership，不得以hydrate後的Python scan取代index。
 - `CatalogReader.list_publication_facets`對language、subject與contributor提供
   keyset-paged exact publication counts。計算某facet family時忽略同family既選
   filter，但保留search及其他family filters；cursor同樣不得作為authority。
@@ -306,7 +311,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 2只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 3只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為

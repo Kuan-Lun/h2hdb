@@ -28,8 +28,8 @@ closed if the catalog advances or the value was forged.
 
 ## Compatibility model
 
-The active database identity is `epoch=3`, `schema_version=2`. This is a
-greenfield contract: schema v2 does not upgrade or adopt schema v1 or any older
+The active database identity is `epoch=3`, `schema_version=3`. This is a
+greenfield contract: schema v3 does not upgrade or adopt schema v2 or any older
 database, provide compatibility views, retain old list APIs, or dual-write old
 and new shapes. Replace an earlier database with a truly empty database and
 rebuild it from source through the current ingest integration.
@@ -209,11 +209,31 @@ presentation = catalog.get_publication_presentation(
 )
 ```
 
-`discover_publications()` uses seek cursors and accepts normalized AND search
-plus exact language, subject, and contributor filters. Search is backed only by
-the revision-scoped SQL index; it does not hydrate every publication to match in
-Python. `list_publication_facets()` exposes exact language, subject, and
-contributor counts under the other active filters. `list_recent_publications()`
+`discover_publications()` uses seek cursors and combines every supplied predicate
+with AND. `search` matches display/source titles, contributors and tag values;
+`title` restricts the same token rules to display/source titles. The two scopes
+share a total budget of sixteen lexemes. `gid` is an exact positive gallery ID;
+a numeric `search` remains a text query. `subjects` is a tuple of up to sixteen
+exact namespace/value filters, canonically sorted and deduplicated. It replaces
+the former single `subject` argument. Language and contributor remain exact
+filters.
+
+`uploaded` and `downloaded` accept `CatalogTimestampRange(start=..., end=...)`:
+timezone-aware bounds are normalized to UTC, the start is inclusive and the end
+exclusive. They use the immutable gallery upload time and published occurrence
+download time. `pages` accepts `CatalogPageCountRange(minimum=40, maximum=200)`,
+with inclusive bounds on the sealed artifact's actual page count. Page bounds
+are in 0..4096; a publication without an artifact never matches a page filter,
+while a sealed zero-page artifact can match zero. Either range can omit one
+bound, but empty or reversed ranges are rejected.
+
+Search is backed by revision-scoped SQL postings, with title postings sealed as
+an exact subset of the complete search document. Filtering happens before
+bounded hydration; all predicates participate in cursor validation and the
+query digest. Core accepts typed values; consumer applications own search-box
+syntax. `list_publication_facets()` exposes exact language, subject, and
+contributor counts while ignoring all selected filters of the requested family
+and preserving every other predicate. `list_recent_publications()`
 has no caller limit or cursor: it returns the complete fixed window of at most
 128 acquisition-bearing publications in uploaded or downloaded order.
 

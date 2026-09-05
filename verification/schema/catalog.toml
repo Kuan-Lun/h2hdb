@@ -24,12 +24,13 @@ stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
 selected_catalog_physical_relations_after = 54
+catalog_relations_added_after_recomposition = ["title_search_posting"]
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 170
+catalog_physical_table_count_after = 171
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 67
 total_physical_table_count_before = 381
-total_physical_table_count_after = 237
+total_physical_table_count_after = 238
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -641,6 +642,7 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = []
 child_phases = [
+  ["title_search_posting"],
   ["search_posting"],
   ["search_document"],
   ["catalog_page", "catalog_thumbnail"],
@@ -747,6 +749,7 @@ machine_gates = [
 ]
 derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
+  ["title_search_posting"],
   ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "search_posting", "catalog_publication_storage", "catalog_publication_download_time", "prepared_page", "prepared_thumbnail", "catalog_page", "catalog_thumbnail"],
   ["prepared_storage_object", "catalog_storage_object"],
   ["prepared_resource_blob"],
@@ -1492,7 +1495,7 @@ revision_relation = "catalog_revision"
 head_relation = "publication_head"
 finalization_stage = "FINALIZE_ARTIFACTS"
 selection_rule = "BUILD_SELECTION streams every immutable source_build_gallery member of candidate.analysis_id in unsigned positive gallery_id keyset order and inserts a row if and only if the gallery is its analysis_content_owner_resolved owner for its nonexcluded effective CONTENT digest, treating a gallery with no nonexcluded CONTENT digest as its own owner, and the same gallery is the analysis_gid_winner_resolved winner for its exact metadata GID; derive publication_key only with publication-key.v1 from that positive GID; publication_selection stores no audit digest; VALIDATE_SELECTION independently streams the same predicate, exact merge-compares candidate_id, gallery_id, and publication_key against the materialization, and only its empty terminal receipt owns publication_count"
-cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_resource_v2 is empty at genesis or exact raw32(publication_key) || u8(registered resource-kind tag, acquisition=0 and thumbnail=1), ordered by publication_key then resource_kind and round-tripped through the public typed cursor; publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6,DOWNLOAD_TIME=7) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact/download-time and u64be(position) for order/contributor/subject; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
+cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_resource_v2 is empty at genesis or exact raw32(publication_key) || u8(registered resource-kind tag, acquisition=0 and thumbnail=1), ordered by publication_key then resource_kind and round-tripped through the public typed cursor; publication_catalog_child_v2 is empty at genesis or u8(version=2) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,SUBJECT=5,ARTIFACT=6,DOWNLOAD_TIME=7,SEARCH_DOCUMENT=8,SEARCH_POSTING=9,TITLE_SEARCH_POSTING=10,LANGUAGE_FACET=11,SUBJECT_FACET=12,CONTRIBUTOR_FACET=13,DISCOVERY_SEAL=14) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content/artifact/download-time/search-document/discovery-seal, raw32(value_sha256) for search/title-search postings, and u64be(position) for order/contributor/subject/facets; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
 batch_rule = "the registry remains exactly seventeen ordered stages, with candidate-owned wide checkpoints only for the first sixteen; FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint. Every maximum-128 candidate batch locks one wide checkpoint, derives the next exact server-side keyset page, inserts one immutable wide current receipt under both generation and batch candidate keys, generation-CASes the complete wide checkpoint, and deletes the safely acknowledged predecessor receipt in the same bounded transaction. The read-only current receipt projection derives committed_generation, next_processed_count, terminal and next_state; exact retained batch-key or generation replay compares every field with zero DML. Once an exact successor or terminal projection handoff is durable, the superseded receipt is pruned and an older retry returns stale/not-found with zero DML; no time-based replay window or lifetime history is retained. Terminal is exactly an empty page with unchanged cursor/count and COMPLETE next state; every nonterminal page has positive row_count and OPEN next state; caller values never authorize mutation"
 projection_seal_rule = "after VALIDATE_DUPLICATE_LOSER becomes COMPLETE, one short certification transaction locks the candidate definition seal and terminal checkpoints for VALIDATE_SELECTION, VALIDATE_CATALOG_PROJECTION, VALIDATE_ARTIFACT_INPUT_DELTA, VALIDATE_PREPARED_ARTIFACT, VALIDATE_CREATE, VALIDATE_REBUILD, VALIDATE_DELETE, VALIDATE_UNCHANGED, VALIDATE_NEW_GALLERY, VALIDATE_CHANGED_GALLERY, VALIDATE_REMOVED_GALLERY, and VALIDATE_DUPLICATE_LOSER; require VALIDATE_CATALOG_PROJECTION terminal COMPLETE after its independent exact child merge but never compare its child processed_count with publication count; take publication_count only from terminal VALIDATE_SELECTION, require prepared_artifact_count equals create_count plus rebuild_count, and require artifact_input_count equals create_count plus rebuild_count plus unchanged_count; insert only the PK-only publication_candidate_projection_seal certification marker after all equations hold, so graph-derived candidate lifecycle becomes SEALED; the logical projection derives only create_count, rebuild_count, delete_count, new_galleries, and changed_galleries by fixed O(1) terminal-receipt joins, while every other receipt-owned count remains derived at its authority; never copy terminal validation scalars; never SUM receipts or child relations, trust an audit digest, or seal from a BUILD stage"
 finalization_rule = "after the initial pointer transaction inserts a reader-invisible DB_COMMITTED successor without changing the common head, the external library adapter activates adapter-issued opaque storage-object pages in batches of at most 128 and reconciles at most 128 installs or removals per call until its durable checkpoint reports READY. Only then FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint and typed publication_resource_v2 cursor: issue exact-loads the sealed immutable prepared-resource set in (publication_key, resource_kind) order with LIMIT 129, returns at most 128 resources without mutation, and proves every returned token, key, digest, size and generation from durable authority; external token release is idempotent; commit exact-revalidates acknowledgements, compare-and-swaps each acknowledged resource, advances the typed cursor, inserts one immutable current finalization receipt, generation-CASes the checkpoint, and deletes its safely acknowledged predecessor in one bounded transaction. No publication-count scalar is reinterpreted as a resource count. Terminal is authorized only when the locked cursor suffix contains zero resources after all prior pages completed their per-resource atomic CAS; that empty transaction writes the COMPLETE checkpoint and PUBLISHED marker, CASes the common head, and exact-deletes both working roots atomically. Retained batch-key or start-generation replay returns the exact derived response with zero DML; pruned retries return stale/not-found; the retained terminal receipt owns finalized_at and response loss resumes cleanup without republishing."
@@ -1515,14 +1518,14 @@ sealed_scalar = "publication_count"
 [[publication_atomic_contract.batch_stage]]
 name = "BUILD_CATALOG_PROJECTION"
 stage_order = 3
-cursor_codec = "publication_catalog_child_v1"
+cursor_codec = "publication_catalog_child_v2"
 prerequisite = "VALIDATE_SELECTION"
 sealed_scalar = "NONE"
 
 [[publication_atomic_contract.batch_stage]]
 name = "VALIDATE_CATALOG_PROJECTION"
 stage_order = 4
-cursor_codec = "publication_catalog_child_v1"
+cursor_codec = "publication_catalog_child_v2"
 prerequisite = "BUILD_CATALOG_PROJECTION"
 sealed_scalar = "NONE"
 
@@ -1971,19 +1974,20 @@ ready_check = "catalog_refinement.check_discovery_exactness_v1"
 writer_hook = "catalog_writer.validate_discovery_projection"
 writer_hook_version = 1
 scope = "catalog.discovery-exactness"
-relations = ["channel_registry", "publication_commit_head", "catalog_revision_descriptor", "catalog_revision", "catalog_publication", "catalog_publication_title", "catalog_contributor", "catalog_subject", "tag_term", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "search_policy", "search_lexeme", "search_document", "search_posting", "discovery_seal", "language_facet_order", "subject_facet_order", "contributor_facet_order"]
+relations = ["channel_registry", "publication_commit_head", "catalog_revision_descriptor", "catalog_revision", "catalog_publication", "catalog_publication_title", "catalog_contributor", "catalog_subject", "tag_term", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "search_policy", "search_lexeme", "search_document", "search_posting", "title_search_posting", "discovery_seal", "language_facet_order", "subject_facet_order", "contributor_facet_order"]
 covers = [
   "machine_contract.discovery-exactness",
   "search_policy.rationale",
   "search_lexeme.materialization",
   "search_document.materialization",
   "search_posting.materialization",
+  "title_search_posting.materialization",
   "discovery_seal.materialization",
   "language_facet_order.materialization",
   "subject_facet_order.materialization",
   "contributor_facet_order.materialization",
 ]
-description = "Before accepting READY, independently stream-validate the active revision's exact canonical title, contributor, subject, language and lexeme bytes; rerun the pinned Unicode tokenizer into a disk-backed bounded plan; compare every document and posting by keyset page; and prove all three facet identities, counts, dense positions and canonical byte orders have no omission or excess even after transient candidate state is reclaimed."
+description = "Before accepting READY, independently stream-validate the active revision's exact canonical title, contributor, subject, language and lexeme bytes; rerun the pinned Unicode tokenizer into a disk-backed bounded plan; compare every document, whole-document posting, and title-only posting subset by keyset page; and prove all three facet identities, counts, dense positions and canonical byte orders have no omission or excess even after transient candidate state is reclaimed."
 
 [[semantic_obligation]]
 id = "catalog.state-machines.v1"
@@ -2081,6 +2085,7 @@ relations = [
   "search_lexeme",
   "search_document",
   "search_posting",
+  "title_search_posting",
   "discovery_seal",
   "language_facet_order",
   "subject_facet_order",
@@ -2477,13 +2482,13 @@ values = ["VALIDATE_SELECTION", "02", "publication_gallery_v1"]
 id = "catalog.publication-stage.build-catalog-projection.v1"
 relation = "publication_stage"
 columns = ["stage", "stage_order", "cursor_codec"]
-values = ["BUILD_CATALOG_PROJECTION", "03", "publication_catalog_child_v1"]
+values = ["BUILD_CATALOG_PROJECTION", "03", "publication_catalog_child_v2"]
 
 [[bootstrap_seed]]
 id = "catalog.publication-stage.validate-catalog-projection.v1"
 relation = "publication_stage"
 columns = ["stage", "stage_order", "cursor_codec"]
-values = ["VALIDATE_CATALOG_PROJECTION", "04", "publication_catalog_child_v1"]
+values = ["VALIDATE_CATALOG_PROJECTION", "04", "publication_catalog_child_v2"]
 
 [[bootstrap_seed]]
 id = "catalog.publication-stage.build-artifact-input.v1"
@@ -5765,6 +5770,15 @@ foreign_keys = [
 materialization = { authoritative = false, rationale = "Persist exact revision-scoped inverted membership under reciprocal lexeme-first and document-first keys; no backend FTS, FULLTEXT, LIKE scan, relevance score, stemming, or fuzzy match is semantic authority.", derived_from = ["search_document", "search_lexeme"], refresh_strategy = "externally sorted candidate postings are copied in bounded batches and exact-covered before discovery seal" }
 
 [[relation]]
+name = "title_search_posting"
+kind = "controlled_materialization"
+attributes = ["revision", "value_sha256", "publication_key"]
+declared_keys = [["revision", "value_sha256", "publication_key"]]
+fds = []
+foreign_keys = [{ attributes = ["revision", "value_sha256", "publication_key"], relation = "search_posting", referenced_attributes = ["revision", "value_sha256", "publication_key"] }]
+materialization = { authoritative = false, rationale = "Record exactly the subset of whole-document search postings derived from the display title and source title under the same pinned tokenizer. The lexeme-first primary key and document-first secondary index support bounded title-only AND discovery and independent streaming verification without copying title text or scanning hydrated publications.", derived_from = ["catalog_publication_title", "search_posting", "search_policy"], refresh_strategy = "candidate planning independently tokenizes both title fields, publishes the subset after its parent postings in bounded replayable batches, and independently exact-compares all title members before discovery validation seals; READY reconstructs the exact title subset after transient candidate cleanup" }
+
+[[relation]]
 name = "discovery_seal"
 kind = "controlled_materialization"
 attributes = ["revision", "policy_id"]
@@ -5774,7 +5788,7 @@ foreign_keys = [
   { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
   { attributes = ["policy_id"], relation = "search_policy", referenced_attributes = ["policy_id"] },
 ]
-materialization = { authoritative = false, rationale = "Expose discovery only after every publication has exactly one document, its document count equals exact reverse posting coverage, every posting points to a validated lexeme, and all three facet orders are exact contiguous enumerations of current membership values.", derived_from = ["search_document", "search_posting", "language_facet_order", "subject_facet_order", "contributor_facet_order"], refresh_strategy = "insert last in the fenced publication transaction after independent plan/database comparison; readers require it and READY repeats the checks" }
+materialization = { authoritative = false, rationale = "Expose discovery only after every publication has exactly one document, its document count equals exact reverse posting coverage, every posting points to a validated lexeme, title_search_posting exactly equals the title-derived subset, and all three facet orders are exact contiguous enumerations of current membership values.", derived_from = ["search_document", "search_posting", "title_search_posting", "language_facet_order", "subject_facet_order", "contributor_facet_order"], refresh_strategy = "insert last in the fenced publication transaction after independent plan/database comparison; readers require it and READY repeats the checks" }
 
 [[relation]]
 name = "language_facet_order"

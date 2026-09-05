@@ -721,6 +721,10 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("revision", "publication_key"),
         semantic_value=("row_count",),
     ),
+    "catalog_title_search_postings": NarrowLayoutDeclaration(
+        semantic_key=("revision", "value_sha256", "publication_key"),
+        semantic_value=(),
+    ),
     "catalog_search_postings": NarrowLayoutDeclaration(
         semantic_key=("revision", "value_sha256", "publication_key"),
         semantic_value=(),

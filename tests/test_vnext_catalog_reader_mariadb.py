@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from unicodedata import unidata_version
@@ -14,9 +14,11 @@ from h2hdb import (
     CatalogContributorFilter,
     CatalogDiscoveryQuery,
     CatalogFacetKind,
+    CatalogPageCountRange,
     CatalogPublication,
     CatalogRecentOrder,
     CatalogSubjectFilter,
+    CatalogTimestampRange,
     CoreConfig,
     StorageObjectDescriptor,
     StorageObjectKey,
@@ -452,13 +454,15 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
             )
             connector.execute(
                 "INSERT INTO catalog_tag_terms "
-                "(tag_id, namespace, tag_value_sha256) VALUES (1, %s, %s)",
-                (b"genre", subject),
+                "(tag_id, namespace, tag_value_sha256) "
+                "VALUES (1, %s, %s), (2, %s, %s)",
+                (b"genre", subject, b"topic", subject),
             )
             connector.execute(
                 "INSERT INTO catalog_subjects "
-                "(revision, publication_key, position, tag_id) VALUES (1, %s, 0, 1)",
-                (publication_key,),
+                "(revision, publication_key, position, tag_id) "
+                "VALUES (1, %s, 0, 1), (1, %s, 1, 2)",
+                (publication_key, publication_key),
             )
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs (artifact_sha256, size_bytes) "
@@ -549,6 +553,11 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 (lexeme, publication_key),
             )
             connector.execute(
+                "INSERT INTO catalog_title_search_postings "
+                "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+                (lexeme, publication_key),
+            )
+            connector.execute(
                 "INSERT INTO catalog_language_facet_order "
                 "(revision, position, language_sha256, occurrence_count) "
                 "VALUES (1, 0, %s, 1)",
@@ -556,7 +565,8 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
             )
             connector.execute(
                 "INSERT INTO catalog_subject_facet_order "
-                "(revision, position, tag_id, occurrence_count) VALUES (1, 0, 1, 1)"
+                "(revision, position, tag_id, occurrence_count) "
+                "VALUES (1, 0, 1, 1), (1, 1, 2, 1)"
             )
             connector.execute(
                 "INSERT INTO catalog_contributor_facet_order "
@@ -571,11 +581,25 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         connector.execute("SET FOREIGN_KEY_CHECKS = 1")
 
         reader = VNextCatalogReaderRepository(backend="mariadb")
+        uploaded_at = datetime(1970, 1, 1, 0, 0, 2, tzinfo=UTC)
+        downloaded_at = uploaded_at + timedelta(microseconds=500_000)
         query = CatalogDiscoveryQuery(
             search="MariaDB",
+            title="MariaDB",
+            gid=gid,
             language="en",
-            subject=CatalogSubjectFilter(namespace="genre", value="manga"),
+            subjects=(
+                CatalogSubjectFilter(namespace="genre", value="manga"),
+                CatalogSubjectFilter(namespace="topic", value="manga"),
+            ),
             contributor=CatalogContributorFilter(name="Reader", role="author"),
+            uploaded=CatalogTimestampRange(
+                start=uploaded_at, end=uploaded_at + timedelta(microseconds=1)
+            ),
+            downloaded=CatalogTimestampRange(
+                start=downloaded_at, end=downloaded_at + timedelta(microseconds=1)
+            ),
+            pages=CatalogPageCountRange(minimum=1, maximum=1),
         )
         with connector.read_transaction():
             page = reader.discover_publications(connector, query=query, limit=1)
@@ -594,6 +618,17 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 identity.publication_id(gid).decode("ascii"),
                 0,
             )
+            for nonmatching in (
+                replace(query, uploaded=CatalogTimestampRange(end=uploaded_at)),
+                replace(query, downloaded=CatalogTimestampRange(end=downloaded_at)),
+                replace(query, pages=CatalogPageCountRange(maximum=0)),
+            ):
+                assert (
+                    reader.discover_publications(
+                        connector, query=nonmatching
+                    ).publications
+                    == ()
+                )
 
         assert len(page.publications) == 1
         publication = page.publications[0]

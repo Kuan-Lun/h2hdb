@@ -1108,12 +1108,12 @@ def _validate_static_catalog_contract() -> None:
         (
             "BUILD_CATALOG_PROJECTION",
             3,
-            "publication_catalog_child_v1",
+            "publication_catalog_child_v2",
         ),
         (
             "VALIDATE_CATALOG_PROJECTION",
             4,
-            "publication_catalog_child_v1",
+            "publication_catalog_child_v2",
         ),
         ("BUILD_ARTIFACT_INPUT", 5, "publication_key_v1"),
         ("BUILD_ARTIFACT_DELTA_OPERATION", 6, "publication_key_v1"),
@@ -1712,12 +1712,12 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
             (
                 "BUILD_CATALOG_PROJECTION",
                 3,
-                "publication_catalog_child_v1",
+                "publication_catalog_child_v2",
             ),
             (
                 "VALIDATE_CATALOG_PROJECTION",
                 4,
-                "publication_catalog_child_v1",
+                "publication_catalog_child_v2",
             ),
             ("BUILD_ARTIFACT_INPUT", 5, "publication_key_v1"),
             ("BUILD_ARTIFACT_DELTA_OPERATION", 6, "publication_key_v1"),
@@ -4140,6 +4140,7 @@ def _register_expected_search_field(
     publication_key: bytes,
     parts: Iterable[bytes],
     cache: _CanonicalValidationCache,
+    title: bool = False,
 ) -> None:
     try:
         for lexeme in iter_search_field_lexemes(parts):
@@ -4187,6 +4188,12 @@ def _register_expected_search_field(
                 "(publication_key, value_sha256) VALUES (?, ?)",
                 (sqlite3.Binary(publication_key), sqlite3.Binary(value_sha256)),
             )
+            if title:
+                expected.execute(
+                    "INSERT OR IGNORE INTO expected_title_postings "
+                    "(publication_key, value_sha256) VALUES (?, ?)",
+                    (sqlite3.Binary(publication_key), sqlite3.Binary(value_sha256)),
+                )
             if inserted.rowcount == 1:
                 updated = expected.execute(
                     "UPDATE expected_documents SET row_count = row_count + 1 "
@@ -4244,6 +4251,7 @@ def _validate_one_publication_search_projection(
             publication_key=publication_key,
             parts=_iter_spool_chunks(title_spool, byte_count=title_byte_count),
             cache=cache,
+            title=True,
         )
     finally:
         title_spool.close()
@@ -4268,6 +4276,7 @@ def _validate_one_publication_search_projection(
                 byte_count=display_title_byte_count,
             ),
             cache=cache,
+            title=True,
         )
     finally:
         display_title_spool.close()
@@ -4434,41 +4443,45 @@ def _validate_one_publication_search_projection(
             "active search document count differs from exact tokenizer output"
         )
 
-    after_lexeme = b""
-    while True:
-        actual_rows = connector.fetch_all(
-            "SELECT value_sha256 FROM catalog_search_postings "
-            "WHERE revision = %s AND publication_key = %s "
-            "AND value_sha256 > %s ORDER BY value_sha256 LIMIT %s",
-            (
-                revision,
-                publication_key,
-                after_lexeme,
-                _CATALOG_RESOURCE_PAGE_LIMIT,
-            ),
-        )
-        expected_rows = expected.execute(
-            "SELECT value_sha256 FROM expected_postings "
-            "WHERE publication_key = ? AND value_sha256 > ? "
-            "ORDER BY value_sha256 LIMIT ?",
-            (
-                sqlite3.Binary(publication_key),
-                sqlite3.Binary(after_lexeme),
-                _CATALOG_RESOURCE_PAGE_LIMIT,
-            ),
-        ).fetchall()
-        actual = tuple(
-            _as_bytes(row[0], field="active search posting value_sha256")
-            for row in actual_rows
-        )
-        derived = tuple(bytes(row[0]) for row in expected_rows)
-        if actual != derived:
-            raise CatalogSemanticValidationError(
-                "active search postings differ from exact tokenizer output"
+    for actual_table, expected_table, label in (
+        ("catalog_search_postings", "expected_postings", "search"),
+        ("catalog_title_search_postings", "expected_title_postings", "title search"),
+    ):
+        after_lexeme = b""
+        while True:
+            actual_rows = connector.fetch_all(
+                f"SELECT value_sha256 FROM {actual_table} "
+                "WHERE revision = %s AND publication_key = %s "
+                "AND value_sha256 > %s ORDER BY value_sha256 LIMIT %s",
+                (
+                    revision,
+                    publication_key,
+                    after_lexeme,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
             )
-        if not actual:
-            break
-        after_lexeme = actual[-1]
+            expected_rows = expected.execute(
+                f"SELECT value_sha256 FROM {expected_table} "
+                "WHERE publication_key = ? AND value_sha256 > ? "
+                "ORDER BY value_sha256 LIMIT ?",
+                (
+                    sqlite3.Binary(publication_key),
+                    sqlite3.Binary(after_lexeme),
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            ).fetchall()
+            actual = tuple(
+                _as_bytes(row[0], field="active search posting value_sha256")
+                for row in actual_rows
+            )
+            derived = tuple(bytes(row[0]) for row in expected_rows)
+            if actual != derived:
+                raise CatalogSemanticValidationError(
+                    f"active {label} postings differ from exact tokenizer output"
+                )
+            if not actual:
+                break
+            after_lexeme = actual[-1]
 
 
 def _compare_canonical_spools(left: BinaryIO, right: BinaryIO) -> int:
@@ -4847,6 +4860,11 @@ def _validate_active_discovery_projection(
                 value_sha256 BLOB NOT NULL,
                 PRIMARY KEY (publication_key, value_sha256)
             ) WITHOUT ROWID;
+            CREATE TABLE expected_title_postings (
+                publication_key BLOB NOT NULL,
+                value_sha256 BLOB NOT NULL,
+                PRIMARY KEY (publication_key, value_sha256)
+            ) WITHOUT ROWID;
             CREATE TABLE validated_lexemes (
                 value_sha256 BLOB PRIMARY KEY
             ) WITHOUT ROWID;
@@ -4998,6 +5016,21 @@ def _validate_active_discovery_projection(
     if orphan_posting:
         raise CatalogSemanticValidationError(
             "active search posting lacks document or lexeme authority"
+        )
+
+    orphan_title_posting = connector.fetch_all(
+        "SELECT title.publication_key "
+        "FROM catalog_title_search_postings AS title "
+        "LEFT JOIN catalog_search_postings AS posting "
+        "ON posting.revision = title.revision "
+        "AND posting.value_sha256 = title.value_sha256 "
+        "AND posting.publication_key = title.publication_key "
+        "WHERE title.revision = %s AND posting.publication_key IS NULL LIMIT 1",
+        (revision,),
+    )
+    if orphan_title_posting:
+        raise CatalogSemanticValidationError(
+            "active title search posting lacks whole-document authority"
         )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -38,8 +40,10 @@ from h2hdb import (
     CatalogDiscoveryQuery,
     CatalogFacetCursor,
     CatalogFacetKind,
+    CatalogPageCountRange,
     CatalogRecentOrder,
     CatalogSubjectFilter,
+    CatalogTimestampRange,
     CoreConfig,
     DatabaseConfig,
     StorageObjectKey,
@@ -974,6 +978,7 @@ def _seed_discovery_authority(
         "科幻".encode(),
     )
     lexemes = tuple(dict.fromkeys(iter_search_lexemes(fields)))
+    title_lexemes = frozenset(iter_search_lexemes(fields[:2]))
     connector.execute(
         "INSERT INTO catalog_search_documents "
         "(revision, publication_key, row_count) VALUES (1, %s, %s)",
@@ -994,6 +999,12 @@ def _seed_discovery_authority(
             "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
             (value_sha256, values["publication_key"]),
         )
+        if lexeme in title_lexemes:
+            connector.execute(
+                "INSERT INTO catalog_title_search_postings "
+                "(revision, value_sha256, publication_key) VALUES (1, %s, %s)",
+                (value_sha256, values["publication_key"]),
+            )
     connector.execute(
         "INSERT INTO catalog_language_facet_order "
         "(revision, position, language_sha256, occurrence_count) "
@@ -1214,7 +1225,7 @@ def test_discovery_uses_sealed_sql_postings_and_exact_cross_filters(
         query = CatalogDiscoveryQuery(
             search="顯示",
             language="zh",
-            subject=CatalogSubjectFilter(namespace="genre", value="科幻"),
+            subjects=(CatalogSubjectFilter(namespace="genre", value="科幻"),),
             contributor=CatalogContributorFilter(name="作者", role="author"),
         )
         with (
@@ -1297,6 +1308,473 @@ def test_discovery_and_facets_include_a_zero_acquisition_catalog(
             (value.value, value.publication_count) for value in languages.values
         ] == [("zh", 1)]
         assert recent.publications == ()
+    finally:
+        connector.close()
+
+
+def _discovery_time(microseconds: int) -> datetime:
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=microseconds)
+
+
+def _bounded_discovery_query() -> CatalogDiscoveryQuery:
+    return CatalogDiscoveryQuery(
+        search="顯示",
+        gid=123,
+        language="zh",
+        subjects=(
+            CatalogSubjectFilter(namespace="genre", value="科幻"),
+            CatalogSubjectFilter(namespace="artist", value="測試"),
+        ),
+        contributor=CatalogContributorFilter(name="作者", role="author"),
+        uploaded=CatalogTimestampRange(
+            start=_discovery_time(2_000_000), end=_discovery_time(3_000_000)
+        ),
+        downloaded=CatalogTimestampRange(
+            start=_discovery_time(2_500_000), end=_discovery_time(3_000_000)
+        ),
+        pages=CatalogPageCountRange(minimum=0, maximum=0),
+    )
+
+
+def test_discovery_combines_gid_times_pages_and_all_subjects_with_and(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "discovery-combined-filters.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(connector, publication_key_value=values["publication_key"])
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        query = _bounded_discovery_query()
+        misses = (
+            replace(query, gid=124),
+            replace(query, search="不存在"),
+            replace(query, language="en"),
+            replace(
+                query,
+                subjects=(
+                    CatalogSubjectFilter(namespace="genre", value="科幻"),
+                    CatalogSubjectFilter(namespace="artist", value="不存在"),
+                ),
+            ),
+            replace(
+                query,
+                contributor=CatalogContributorFilter(name="不存在", role="author"),
+            ),
+            replace(
+                query,
+                uploaded=CatalogTimestampRange(start=_discovery_time(2_000_001)),
+            ),
+            replace(
+                query,
+                downloaded=CatalogTimestampRange(end=_discovery_time(2_500_000)),
+            ),
+            replace(query, pages=CatalogPageCountRange(minimum=1)),
+        )
+        with connector.read_transaction():
+            page = reader.discover_publications(connector, query=query)
+            assert [publication.gid for publication in page.publications] == [123]
+            for miss in misses:
+                assert (
+                    reader.discover_publications(connector, query=miss).publications
+                    == ()
+                )
+    finally:
+        connector.close()
+
+
+def test_discovery_title_scope_uses_only_display_and_source_title_postings(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "discovery-title-scope.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(connector, publication_key_value=values["publication_key"])
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        cases: tuple[tuple[CatalogDiscoveryQuery, list[int]], ...] = (
+            (CatalogDiscoveryQuery(title="顯示"), [123]),
+            (CatalogDiscoveryQuery(title="原始"), [123]),
+            (CatalogDiscoveryQuery(title="顯示 原始"), [123]),
+            (CatalogDiscoveryQuery(title="顯示", search="作者"), [123]),
+            (replace(_bounded_discovery_query(), title="原始"), [123]),
+            (CatalogDiscoveryQuery(search="作者"), [123]),
+            (CatalogDiscoveryQuery(title="作者"), []),
+            (CatalogDiscoveryQuery(title="科幻"), []),
+            (CatalogDiscoveryQuery(title="顯示 科幻"), []),
+        )
+        with connector.read_transaction():
+            for query, expected in cases:
+                page = reader.discover_publications(connector, query=query)
+                assert [
+                    publication.gid for publication in page.publications
+                ] == expected
+            for title, expected_count in (("原始", 1), ("作者", 0)):
+                facets = reader.list_publication_facets(
+                    connector,
+                    facet=CatalogFacetKind.SUBJECT,
+                    query=replace(
+                        _bounded_discovery_query(),
+                        title=title,
+                        subjects=(
+                            CatalogSubjectFilter(namespace="genre", value="missing"),
+                        ),
+                    ),
+                )
+                assert (
+                    sum(value.publication_count for value in facets.values)
+                    == expected_count
+                )
+        with (
+            connector.read_transaction(),
+            patch.object(
+                reader, "_hydrate_publications", wraps=reader._hydrate_publications
+            ) as hydrate,
+        ):
+            assert (
+                reader.discover_publications(
+                    connector, query=CatalogDiscoveryQuery(title="作者")
+                ).publications
+                == ()
+            )
+            hydrate.assert_not_called()
+    finally:
+        connector.close()
+
+
+def test_discovery_time_bounds_use_microsecond_authority_and_exclude_end(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "discovery-time-boundaries.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        for field, instant in (("uploaded", 2_000_000), ("downloaded", 2_500_000)):
+            for bounds, expected in (
+                (CatalogTimestampRange(start=_discovery_time(instant)), [123]),
+                (CatalogTimestampRange(end=_discovery_time(instant + 1)), [123]),
+                (
+                    CatalogTimestampRange(
+                        start=_discovery_time(instant), end=_discovery_time(instant + 1)
+                    ),
+                    [123],
+                ),
+                (CatalogTimestampRange(start=_discovery_time(instant + 1)), []),
+                (CatalogTimestampRange(end=_discovery_time(instant)), []),
+            ):
+                query = (
+                    CatalogDiscoveryQuery(uploaded=bounds)
+                    if field == "uploaded"
+                    else CatalogDiscoveryQuery(downloaded=bounds)
+                )
+                with connector.read_transaction():
+                    page = reader.discover_publications(connector, query=query)
+                assert [
+                    publication.gid for publication in page.publications
+                ] == expected
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("has_artifact", (False, True))
+def test_discovery_zero_pages_requires_an_explicit_artifact_count(
+    tmp_path: Path,
+    has_artifact: bool,
+) -> None:
+    connector = _database(tmp_path / "discovery-zero-pages.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=int(has_artifact))
+        if has_artifact:
+            _artifact_fixture(
+                connector, publication_key_value=values["publication_key"]
+            )
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with connector.read_transaction():
+            unfiltered = reader.discover_publications(connector)
+            filtered = reader.discover_publications(
+                connector,
+                query=CatalogDiscoveryQuery(
+                    pages=CatalogPageCountRange(minimum=0, maximum=0)
+                ),
+            )
+        assert [publication.gid for publication in unfiltered.publications] == [123]
+        assert [publication.gid for publication in filtered.publications] == (
+            [123] if has_artifact else []
+        )
+    finally:
+        connector.close()
+
+
+def test_discovery_cursor_binds_every_filter_and_rechecks_membership(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "discovery-filter-cursor.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(connector, publication_key_value=values["publication_key"])
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        query = _bounded_discovery_query()
+        cursor = CatalogDiscoveryCursor(
+            revision=1,
+            query_sha256=_discovery_query_sha256(query),
+            position=0,
+            publication_id="urn:h2h:gallery:123",
+        )
+        changed_queries = (
+            replace(query, title="顯示"),
+            replace(query, gid=124),
+            replace(query, subjects=query.subjects[:1]),
+            replace(
+                query,
+                uploaded=CatalogTimestampRange(
+                    start=_discovery_time(1_999_999), end=_discovery_time(3_000_000)
+                ),
+            ),
+            replace(
+                query,
+                uploaded=CatalogTimestampRange(
+                    start=_discovery_time(2_000_000), end=_discovery_time(3_000_001)
+                ),
+            ),
+            replace(
+                query,
+                downloaded=CatalogTimestampRange(
+                    start=_discovery_time(2_499_999), end=_discovery_time(3_000_000)
+                ),
+            ),
+            replace(
+                query,
+                downloaded=CatalogTimestampRange(
+                    start=_discovery_time(2_500_000), end=_discovery_time(3_000_001)
+                ),
+            ),
+            replace(query, pages=CatalogPageCountRange(maximum=0)),
+            replace(query, pages=CatalogPageCountRange(minimum=0, maximum=1)),
+        )
+        with connector.read_transaction():
+            equivalent = replace(query, subjects=tuple(reversed(query.subjects)))
+            assert (
+                reader.discover_publications(
+                    connector, query=equivalent, after=cursor
+                ).publications
+                == ()
+            )
+            for changed in changed_queries:
+                with pytest.raises(CatalogCursorError, match="another query"):
+                    reader.discover_publications(connector, query=changed, after=cursor)
+            for miss in (
+                replace(query, gid=124),
+                replace(query, pages=CatalogPageCountRange(minimum=1)),
+                replace(
+                    query,
+                    downloaded=CatalogTimestampRange(end=_discovery_time(2_500_000)),
+                ),
+            ):
+                forged = replace(cursor, query_sha256=_discovery_query_sha256(miss))
+                with pytest.raises(CatalogCursorError, match="not a member"):
+                    reader.discover_publications(connector, query=miss, after=forged)
+    finally:
+        connector.close()
+
+
+def test_subject_facets_ignore_all_subjects_and_preserve_other_filters(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "discovery-multiple-subject-facets.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(connector, publication_key_value=values["publication_key"])
+        _seed_discovery_authority(connector, values=values)
+        seed_tag_term(
+            connector,
+            tag_id=3,
+            namespace=b"topic",
+            tag_value_sha256=values["tag_value"],
+        )
+        connector.execute(
+            "INSERT INTO catalog_subjects "
+            "(revision, publication_key, position, tag_id) VALUES (1, %s, 2, 3)",
+            (values["publication_key"],),
+        )
+        connector.execute(
+            "INSERT INTO catalog_subject_facet_order "
+            "(revision, position, tag_id, occurrence_count) VALUES (1, 1, 3, 1)"
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        query = replace(
+            _bounded_discovery_query(),
+            subjects=(
+                CatalogSubjectFilter(namespace="genre", value="missing"),
+                CatalogSubjectFilter(namespace="topic", value="missing"),
+            ),
+        )
+        with connector.read_transaction():
+            first = reader.list_publication_facets(
+                connector, facet=CatalogFacetKind.SUBJECT, query=query, limit=1
+            )
+            assert first.next_cursor is not None
+            second = reader.list_publication_facets(
+                connector,
+                facet=CatalogFacetKind.SUBJECT,
+                query=replace(query, subjects=()),
+                after=first.next_cursor,
+                limit=1,
+            )
+            assert [
+                (value.namespace, value.value, value.publication_count)
+                for value in (*first.values, *second.values)
+            ] == [
+                ("genre", "科幻", 1),
+                ("topic", "測試", 1),
+            ]
+            for miss in (
+                replace(query, gid=124),
+                replace(query, pages=CatalogPageCountRange(minimum=1)),
+                replace(
+                    query,
+                    uploaded=CatalogTimestampRange(end=_discovery_time(2_000_000)),
+                ),
+                replace(
+                    query,
+                    downloaded=CatalogTimestampRange(end=_discovery_time(2_500_000)),
+                ),
+            ):
+                assert (
+                    reader.list_publication_facets(
+                        connector, facet=CatalogFacetKind.SUBJECT, query=miss
+                    ).values
+                    == ()
+                )
+                with pytest.raises(CatalogCursorError, match="another query"):
+                    reader.list_publication_facets(
+                        connector,
+                        facet=CatalogFacetKind.SUBJECT,
+                        query=miss,
+                        after=first.next_cursor,
+                    )
+            for facet in (CatalogFacetKind.LANGUAGE, CatalogFacetKind.CONTRIBUTOR):
+                assert (
+                    reader.list_publication_facets(
+                        connector, facet=facet, query=query
+                    ).values
+                    == ()
+                )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("facet_read", (False, True))
+def test_discovery_rejects_forged_nested_filters_before_any_sql(
+    tmp_path: Path,
+    facet_read: bool,
+) -> None:
+    connector = SQLiteConnector(str(tmp_path / "must-remain-unopened.sqlite3"))
+    reader = VNextCatalogReaderRepository(backend="sqlite")
+    mutations: tuple[tuple[str, str, object], ...] = (
+        ("query", "gid", True),
+        ("query", "title_lexemes", (b"forged",)),
+        ("query", "subjects", []),
+        (
+            "query",
+            "subjects",
+            (CatalogSubjectFilter(namespace="genre", value="x"),) * 17,
+        ),
+        ("subject", "value", ""),
+        ("uploaded", "start", datetime(1970, 1, 1)),
+        ("uploaded", "end", _discovery_time(2_000_000)),
+        ("downloaded", "start", _discovery_time(-1)),
+        ("pages", "minimum", True),
+        ("pages", "maximum", -1),
+        ("contributor", "role", "foreign"),
+    )
+    for owner, field, value in mutations:
+        query = _bounded_discovery_query()
+        target: object = query
+        if owner == "subject":
+            target = query.subjects[0]
+        elif owner != "query":
+            target = getattr(query, owner)
+        object.__setattr__(target, field, value)
+        with (
+            patch.object(
+                connector,
+                "fetch_one",
+                side_effect=AssertionError("SQL read before validation"),
+            ),
+            patch.object(
+                connector,
+                "fetch_all",
+                side_effect=AssertionError("SQL read before validation"),
+            ),
+            pytest.raises((TypeError, ValueError)),
+        ):
+            if facet_read:
+                reader.list_publication_facets(
+                    connector, facet=CatalogFacetKind.SUBJECT, query=query
+                )
+            else:
+                reader.discover_publications(connector, query=query)
+    assert not (tmp_path / "must-remain-unopened.sqlite3").exists()
+
+
+@pytest.mark.parametrize("resume_cursor", (False, True))
+def test_discovery_snapshots_subjects_before_pinning_the_catalog(
+    tmp_path: Path,
+    resume_cursor: bool,
+) -> None:
+    connector = _database(tmp_path / "discovery-subject-snapshot.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        _seed_discovery_authority(connector, values=values)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        query = CatalogDiscoveryQuery(
+            search="顯示",
+            subjects=(CatalogSubjectFilter(namespace="genre", value="科幻"),),
+        )
+        original_digest = _discovery_query_sha256(query)
+        cursor = (
+            CatalogDiscoveryCursor(
+                revision=1,
+                query_sha256=original_digest,
+                position=0,
+                publication_id="urn:h2h:gallery:123",
+            )
+            if resume_cursor
+            else None
+        )
+        original_fetch_one = connector.fetch_one
+        mutated = False
+
+        def mutate_caller_subject_on_first_read(
+            sql: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            nonlocal mutated
+            if not mutated:
+                # Pinning starts after query validation and digest calculation.
+                # The caller must no longer own any filter used by this read.
+                object.__setattr__(query.subjects[0], "value", "不匹配")
+                mutated = True
+            return original_fetch_one(sql, data)
+
+        with (
+            connector.read_transaction(),
+            patch.object(
+                connector,
+                "fetch_one",
+                side_effect=mutate_caller_subject_on_first_read,
+            ),
+        ):
+            page = reader.discover_publications(connector, query=query, after=cursor)
+
+        assert mutated
+        assert _discovery_query_sha256(query) != original_digest
+        assert [publication.gid for publication in page.publications] == (
+            [] if resume_cursor else [123]
+        )
     finally:
         connector.close()
 
@@ -1577,7 +2055,7 @@ def test_reader_revalidates_forged_query_cursor_and_revision_domains(
             reader.discover_publications(connector, query=forged_query)
 
         subject = CatalogSubjectFilter(namespace="genre", value="科幻")
-        forged_subject_query = CatalogDiscoveryQuery(subject=subject)
+        forged_subject_query = CatalogDiscoveryQuery(subjects=(subject,))
         object.__setattr__(subject, "namespace", 1)
         with pytest.raises(ValueError):
             reader.discover_publications(connector, query=forged_subject_query)
@@ -1622,10 +2100,9 @@ def test_facets_exclude_the_active_family_and_specialized_subject_namespaces(
                 connector,
                 facet=CatalogFacetKind.SUBJECT,
                 query=CatalogDiscoveryQuery(
-                    subject=CatalogSubjectFilter(
-                        namespace="missing",
-                        value="missing",
-                    )
+                    subjects=(
+                        CatalogSubjectFilter(namespace="missing", value="missing"),
+                    ),
                 ),
             )
             contributors = reader.list_publication_facets(
@@ -1651,7 +2128,7 @@ def test_facets_exclude_the_active_family_and_specialized_subject_namespaces(
         ] == [("author", "作者", 1)]
 
         filtered_query = CatalogDiscoveryQuery(
-            subject=CatalogSubjectFilter(namespace="genre", value="不存在")
+            subjects=(CatalogSubjectFilter(namespace="genre", value="不存在"),)
         )
         forged = CatalogFacetCursor(
             revision=1,

@@ -883,6 +883,7 @@ class CapacityPlan:
     selected_catalog_family_count: int
     selected_catalog_physical_relations_before: int
     selected_catalog_physical_relations_after: int
+    catalog_relations_added_after_recomposition: tuple[str, ...]
     catalog_physical_table_count_before: int
     catalog_physical_table_count_after: int
     operational_physical_table_count_before: int
@@ -1806,11 +1807,12 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 170,
+        "catalog_physical_table_count_after": 171,
+        "catalog_relations_added_after_recomposition": ("title_search_posting",),
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 67,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 237,
+        "total_physical_table_count_after": 238,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -1932,11 +1934,22 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         plan.catalog_physical_table_count_before
         - plan.catalog_physical_table_count_after
     )
-    if selected_reduction != catalog_reduction:
+    additions = plan.catalog_relations_added_after_recomposition
+    if len(additions) != len(set(additions)):
+        errors.append("capacity plan post-recomposition additions must be unique")
+    if selected_reduction - len(additions) != catalog_reduction:
         errors.append(
-            "capacity plan selected-family reduction must equal the catalog "
-            "base-table reduction"
+            "capacity plan selected-family reduction minus subsequent additions "
+            "must equal the catalog base-table reduction"
         )
+    relation_by_name = {relation.name: relation for relation in contract.relations}
+    for added in additions:
+        relation = relation_by_name.get(added)
+        if relation is None or _is_derived_projection(relation):
+            errors.append(
+                "capacity plan post-recomposition addition must name a physical "
+                f"base relation: {added!r}"
+            )
     if plan.total_physical_table_count_before != (
         plan.catalog_physical_table_count_before
         + plan.operational_physical_table_count_before
@@ -3898,6 +3911,7 @@ def _validate_retention_target(
 
     if target.target == "PUBLICATION_CANDIDATE":
         expected_candidate_phases = (
+            ("title_search_posting",),
             (
                 "publication_candidate_projection_seal",
                 "publication_batch_receipt_stored",
@@ -3933,7 +3947,7 @@ def _validate_retention_target(
         if target.child_phases != expected_candidate_phases:
             errors.append(
                 f"{prefix} must fold the exact uncommitted reserved projection "
-                "child-first into the ten registered candidate phases"
+                "child-first into the registered candidate phases"
             )
 
     visited_edges: set[RetentionForeignKeyBoundary] = set()
@@ -4094,6 +4108,7 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "search_lexeme.materialization",
         "search_document.materialization",
         "search_posting.materialization",
+        "title_search_posting.materialization",
         "discovery_seal.materialization",
         "language_facet_order.materialization",
         "subject_facet_order.materialization",
@@ -4437,12 +4452,12 @@ def _validate_canonical_reference_roles_and_bootstrap(
                 (
                     "BUILD_CATALOG_PROJECTION",
                     3,
-                    "publication_catalog_child_v1",
+                    "publication_catalog_child_v2",
                 ),
                 (
                     "VALIDATE_CATALOG_PROJECTION",
                     4,
-                    "publication_catalog_child_v1",
+                    "publication_catalog_child_v2",
                 ),
                 ("BUILD_ARTIFACT_INPUT", 5, "publication_key_v1"),
                 ("BUILD_ARTIFACT_DELTA_OPERATION", 6, "publication_key_v1"),
@@ -5119,14 +5134,14 @@ def _validate_publication_atomic_contract(
         (
             "BUILD_CATALOG_PROJECTION",
             3,
-            "publication_catalog_child_v1",
+            "publication_catalog_child_v2",
             "VALIDATE_SELECTION",
             "NONE",
         ),
         (
             "VALIDATE_CATALOG_PROJECTION",
             4,
-            "publication_catalog_child_v1",
+            "publication_catalog_child_v2",
             "BUILD_CATALOG_PROJECTION",
             "NONE",
         ),
@@ -5256,7 +5271,7 @@ def _validate_publication_atomic_contract(
         "publication_key_v1 is empty at genesis or raw32(publication_key)",
         "publication_resource_v2 is empty at genesis",
         "raw32(publication_key) || u8(registered resource-kind tag",
-        "publication_catalog_child_v1 is empty at genesis",
+        "publication_catalog_child_v2 is empty at genesis",
         "u8(child_kind",
         "u16be(subkey_length)",
         "exact EOF",
@@ -11636,6 +11651,9 @@ def _parse_capacity_plan(value: Mapping[str, Any]) -> CapacityPlan:
         ),
         selected_catalog_physical_relations_after=_integer(
             value, "selected_catalog_physical_relations_after", context
+        ),
+        catalog_relations_added_after_recomposition=_string_tuple(
+            value, "catalog_relations_added_after_recomposition", context
         ),
         catalog_physical_table_count_before=_integer(
             value, "catalog_physical_table_count_before", context

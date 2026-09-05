@@ -58,7 +58,7 @@ from typing import Any, NoReturn, Protocol
 from .sql_connector import SQLConnector
 
 V_NEXT_SCHEMA_EPOCH = 3
-V_NEXT_SCHEMA_VERSION = 2
+V_NEXT_SCHEMA_VERSION = 3
 SCHEMA_EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
 MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:3"
 

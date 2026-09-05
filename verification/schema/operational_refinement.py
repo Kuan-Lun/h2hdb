@@ -2533,6 +2533,7 @@ def check_cleanup_reachability_v1(
             "prepared_thumbnail",
             "prepared_storage_object",
             "prepared_resource_blob",
+            "title_search_posting",
             "search_posting",
             "catalog_page",
             "catalog_thumbnail",

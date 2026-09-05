@@ -274,7 +274,7 @@ writer_hook = "h2hdb.cleanup.catalog_publication.v1"
 retention_roots = ["the publication occurrence for the current publication_commit_head receipt", "every prior occurrence while the current publication head receipt is DB_COMMITTED or otherwise not PUBLISHED", "every occurrence whose own revision lacks a PUBLISHED receipt", "every predecessor revision pinned through publication_candidate_base_publication_commit by the live catalog_working_candidate", "every predecessor revision pinned through source_build_base_publication_commit by the live source_working_build", "the exact catalog revision descriptor and sealed commit audit families, which outlive payload cleanup at O(revision) cardinality"]
 retained_fk_edges = []
 phases = [
-  { phase = "CP_STORAGE", order = 1, relations = ["search_posting", "search_document", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "catalog_publication_storage"] },
+  { phase = "CP_STORAGE", order = 1, relations = ["title_search_posting", "search_posting", "search_document", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "catalog_publication_storage"] },
   { phase = "CP_DOWNLOAD_TIME", order = 2, relations = ["catalog_publication_download_time"] },
   { phase = "CP_CONTRIBUTOR", order = 3, relations = ["catalog_contributor"] },
   { phase = "CP_ORDER", order = 4, relations = ["catalog_publication_order"] },
@@ -402,7 +402,7 @@ conditional_blockers = [
 ]
 machine_gates = [{ id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" }]
 phases = [
-  { phase = "PC_SEALS", order = 1, relations = ["prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
+  { phase = "PC_SEALS", order = 1, relations = ["prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "title_search_posting", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
   { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "prepared_artifact_descriptor", "search_document", "catalog_contributor"] },
   { phase = "PC_INPUT", order = 3, relations = ["artifact_input"] },
   { phase = "PC_CHECKPOINT", order = 4, relations = ["publication_checkpoint"] },

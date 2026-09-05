@@ -99,6 +99,7 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "search_lexeme",
         "search_document",
         "search_posting",
+        "title_search_posting",
         "discovery_seal",
         "language_facet_order",
         "subject_facet_order",

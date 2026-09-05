@@ -44,6 +44,8 @@ __all__ = [
     "CatalogDiscoveryBundle",
     "CatalogDiscoveryPage",
     "CatalogDiscoveryQuery",
+    "CatalogTimestampRange",
+    "CatalogPageCountRange",
     "DEFAULT_CATALOG_DISCOVERY_QUERY",
     "CatalogFacetCursor",
     "CatalogFacetKind",
@@ -143,7 +145,8 @@ from typing import BinaryIO
 from unicodedata import category, unidata_version
 from uuid import UUID
 
-from .catalog_search import canonical_query_lexemes
+from .catalog_errors import CatalogSearchQueryTooComplexError
+from .catalog_search import SEARCH_MAX_QUERY_LEXEMES, canonical_query_lexemes
 from .vnext_domains import (
     microseconds_from_datetime,
     require_ascii_bytes,
@@ -2171,18 +2174,74 @@ class CatalogSubjectFilter:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogTimestampRange:
+    """A nonempty half-open interval of sealed catalog timestamps, in UTC."""
+
+    start: datetime | None = None
+    end: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.start is None and self.end is None:
+            raise ValueError("timestamp range requires at least one bound")
+        for name in ("start", "end"):
+            value = getattr(self, name)
+            if value is not None:
+                if type(value) is not datetime:
+                    raise TypeError(f"timestamp range {name} must be datetime")
+                try:
+                    microseconds_from_datetime(value, field=f"timestamp range {name}")
+                    object.__setattr__(self, name, value.astimezone(UTC))
+                except OverflowError as error:
+                    raise ValueError(
+                        "timestamp range exceeds UTC datetime bounds"
+                    ) from error
+        if self.start is not None and self.end is not None and self.start >= self.end:
+            raise ValueError("timestamp range start must precede end")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPageCountRange:
+    """Inclusive bounds on a sealed artifact's actual page count (0..4096)."""
+
+    minimum: int | None = None
+    maximum: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.minimum is None and self.maximum is None:
+            raise ValueError("page count range requires at least one bound")
+        for name in ("minimum", "maximum"):
+            value = getattr(self, name)
+            if value is not None:
+                count = require_int63(value, field=f"page count {name}")
+                if count > 4096:
+                    raise ValueError("page count range exceeds 4096")
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError("page count minimum exceeds maximum")
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogDiscoveryQuery:
-    """Exact bounded search plus at most one value per facet family."""
+    """Bounded AND predicates over immutable revision-scoped catalog authority."""
 
     search: str | None = None
     language: str | None = None
-    subject: CatalogSubjectFilter | None = None
     contributor: CatalogContributorFilter | None = None
+    title: str | None = None
+    gid: int | None = None
+    subjects: tuple[CatalogSubjectFilter, ...] = ()
+    uploaded: CatalogTimestampRange | None = None
+    downloaded: CatalogTimestampRange | None = None
+    pages: CatalogPageCountRange | None = None
     search_lexemes: tuple[bytes, ...] = field(
         init=False,
         repr=False,
         compare=False,
     )
+    title_lexemes: tuple[bytes, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.search is not None and not isinstance(self.search, str):
@@ -2192,6 +2251,62 @@ class CatalogDiscoveryQuery:
             "search_lexemes",
             () if self.search is None else canonical_query_lexemes(self.search),
         )
+        if self.title is not None and not isinstance(self.title, str):
+            raise TypeError("discovery title must be str or None")
+        object.__setattr__(
+            self,
+            "title_lexemes",
+            () if self.title is None else canonical_query_lexemes(self.title),
+        )
+        if (
+            len(self.search_lexemes) + len(self.title_lexemes)
+            > SEARCH_MAX_QUERY_LEXEMES
+        ):
+            raise CatalogSearchQueryTooComplexError(
+                "discovery exceeds 16 search/title lexemes"
+            )
+        if self.gid is not None:
+            require_positive_int63(self.gid, field="discovery gid")
+        if type(self.subjects) is not tuple:
+            raise TypeError("discovery subjects must be a tuple")
+        if len(self.subjects) > 16:
+            raise ValueError("discovery subjects must not exceed 16 filters")
+        subjects: list[CatalogSubjectFilter] = []
+        for subject in self.subjects:
+            if type(subject) is not CatalogSubjectFilter:
+                raise TypeError("discovery subjects must contain CatalogSubjectFilter")
+            subjects.append(
+                CatalogSubjectFilter(namespace=subject.namespace, value=subject.value)
+            )
+        object.__setattr__(
+            self,
+            "subjects",
+            tuple(
+                sorted(
+                    set(subjects),
+                    key=lambda value: (
+                        value.namespace.encode("utf-8"),
+                        value.value.encode("utf-8"),
+                    ),
+                )
+            ),
+        )
+        for name in ("uploaded", "downloaded"):
+            interval = getattr(self, name)
+            if interval is not None:
+                if type(interval) is not CatalogTimestampRange:
+                    raise TypeError(f"discovery {name} must be CatalogTimestampRange")
+                object.__setattr__(
+                    self, name, CatalogTimestampRange(interval.start, interval.end)
+                )
+        if self.pages is not None:
+            if type(self.pages) is not CatalogPageCountRange:
+                raise TypeError("discovery pages must be CatalogPageCountRange")
+            object.__setattr__(
+                self,
+                "pages",
+                CatalogPageCountRange(self.pages.minimum, self.pages.maximum),
+            )
         if self.language is not None:
             if not isinstance(self.language, str):
                 raise TypeError("discovery language must be str or None")
@@ -2199,10 +2314,6 @@ class CatalogDiscoveryQuery:
                 raise ValueError("discovery language must not be blank")
             if len(self.language.encode("utf-8", errors="strict")) > 1024:
                 raise ValueError("discovery language exceeds 1024 UTF-8 bytes")
-        if self.subject is not None and not isinstance(
-            self.subject, CatalogSubjectFilter
-        ):
-            raise TypeError("discovery subject must be CatalogSubjectFilter")
         if self.contributor is not None and not isinstance(
             self.contributor, CatalogContributorFilter
         ):

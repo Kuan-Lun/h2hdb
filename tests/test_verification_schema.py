@@ -516,7 +516,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 170, 75, 67, 381, 237)
+    ) == (306, 171, 75, 67, 381, 238)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -701,8 +701,8 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         ),
         (
             "catalog_physical_table_count_after",
-            171,
-            "catalog_physical_table_count_after must be 170",
+            172,
+            "catalog_physical_table_count_after must be 171",
         ),
         (
             "affected_operational_relations",
@@ -1145,7 +1145,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     )
     assert publication_graph & inline_publication_graph == inline_publication_graph
     assert inline_publication_graph.isdisjoint(physical_domains.relations)
-    assert len(physical_domains.relations) == 146
+    assert len(physical_domains.relations) == 147
 
     invalid_domains = replace(
         physical_domains,
@@ -1173,8 +1173,8 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 146" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 124" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 147" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 125" in catalog_lean
     assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
@@ -3072,6 +3072,7 @@ def test_candidate_retention_requires_exact_uncommitted_projection_fold() -> Non
         "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)",
     )
     assert target.child_phases == (
+        ("title_search_posting",),
         (
             "publication_candidate_projection_seal",
             "publication_batch_receipt_stored",
@@ -4025,7 +4026,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "170 BCNF base relations" in valid.stdout
+    assert "171 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (

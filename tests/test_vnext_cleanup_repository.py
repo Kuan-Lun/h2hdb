@@ -684,6 +684,7 @@ _ALL_ANALYSIS_OVERLAY_TABLES = tuple(
 )
 
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
+    "catalog_title_search_postings",
     "catalog_search_postings",
     "catalog_search_documents",
     "catalog_pages",
@@ -703,7 +704,6 @@ _CATALOG_PUBLICATION_PAYLOAD_COUNTS = {
 }
 _CATALOG_PUBLICATION_PAYLOAD_COUNTS.update(
     {
-        "catalog_search_postings": 0,
         "catalog_storage_objects": 2,
     }
 )
@@ -899,8 +899,18 @@ def _seed_catalog_publication_cleanup_fixture(
                 ),
                 (
                     "INSERT INTO catalog_search_documents "
-                    "(revision, publication_key, row_count) VALUES (%s, %s, 0)",
+                    "(revision, publication_key, row_count) VALUES (%s, %s, 1)",
                     (revision, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_search_postings "
+                    "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
+                    (revision, b"z" * 32, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_title_search_postings "
+                    "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
+                    (revision, b"z" * 32, publication_key),
                 ),
             )
         )
@@ -5486,6 +5496,21 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                         b"artifact.bin",
                         b"application/octet-stream",
                     ),
+                ),
+                (
+                    "INSERT INTO catalog_search_documents "
+                    "(revision, publication_key, row_count) VALUES (%s, %s, 1)",
+                    (revision, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_search_postings "
+                    "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
+                    (revision, b"z" * 32, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_title_search_postings "
+                    "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
+                    (revision, b"z" * 32, publication_key),
                 ),
             ],
         )

@@ -950,7 +950,7 @@ def _seed_one_publication(
     shared: dict[str, Any],
     allocated_at: int,
     modified_at: int,
-) -> tuple[bytes, tuple[bytes, ...]]:
+) -> tuple[bytes, tuple[bytes, ...], tuple[bytes, ...]]:
     gallery_name_text = f"synthetic-{assignment.gid}"
     gallery_name = gallery_name_text.encode("utf-8")
     locator_payload = identity.encode_source_relative_locator((gallery_name_text,))
@@ -1208,7 +1208,20 @@ def _seed_one_publication(
             ("revision", "value_sha256", "publication_key"),
             (REVISION, lexeme_sha256, publication_key),
         )
-    return publication_key, posting_digests
+    title_posting_digests = tuple(
+        shared["lexemes"][lexeme]
+        for lexeme in sorted(
+            set(iter_search_lexemes((assignment.title.encode("utf-8"),)))
+        )
+    )
+    for lexeme_sha256 in title_posting_digests:
+        writer.insert(
+            connector,
+            "catalog_title_search_postings",
+            ("revision", "value_sha256", "publication_key"),
+            (REVISION, lexeme_sha256, publication_key),
+        )
+    return publication_key, posting_digests, title_posting_digests
 
 
 def _seed_facets(
@@ -1299,6 +1312,7 @@ def _seed_fixture(
     search_contributor_counts = dict.fromkeys(_CONTRIBUTORS, 0)
     matching_gids: list[int] = []
     posting_count = 0
+    title_posting_count = 0
 
     with SQLiteConnector(str(database_path)) as connector, connector.transaction():
         _allocate_fixture_revisions(
@@ -1341,7 +1355,7 @@ def _seed_fixture(
                 search_language_counts[assignment.language] += 1
                 search_subject_counts[assignment.subject] += 1
                 search_contributor_counts[assignment.contributor] += 1
-            _publication_key, postings = _seed_one_publication(
+            _publication_key, postings, title_postings = _seed_one_publication(
                 connector,
                 writer,
                 assignment=assignment,
@@ -1350,6 +1364,7 @@ def _seed_fixture(
                 modified_at=committed_at + position + 10,
             )
             posting_count += len(postings)
+            title_posting_count += len(title_postings)
         _seed_facets(
             connector,
             writer,
@@ -1367,6 +1382,7 @@ def _seed_fixture(
         "acquisition_descriptor_count": publication_count,
         "search_document_count": publication_count,
         "search_posting_count": posting_count,
+        "title_search_posting_count": title_posting_count,
         "search": {
             "query": SEARCH_QUERY,
             "publication_count": len(matching_gids),
@@ -1693,6 +1709,7 @@ def _actual_database_counts(path: Path) -> dict[str, int]:
         ),
         "search_document_count": "SELECT COUNT(*) FROM catalog_search_documents",
         "search_posting_count": "SELECT COUNT(*) FROM catalog_search_postings",
+        "title_search_posting_count": "SELECT COUNT(*) FROM catalog_title_search_postings",
     }
     result: dict[str, int] = {}
     with SQLiteConnector(str(path), read_only=True) as connector:

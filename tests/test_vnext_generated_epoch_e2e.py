@@ -143,7 +143,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
 
     initialized = admin.initialize()
     assert initialized.epoch == ARTIFACT["epoch"] == 3
-    assert initialized.schema_version == ARTIFACT["schema_version"] == 2
+    assert initialized.schema_version == ARTIFACT["schema_version"] == 3
     assert initialized.state == "READY"
     assert initialized.transitioned_to_ready
 

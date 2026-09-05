@@ -790,7 +790,7 @@ id = "runtime.production.discovery-exactness"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production READY audit loads the one current revision, enforces all-or-none acquisition coverage, replays every publication's bounded canonical search sources through the pinned Unicode policy, exact-compares document and posting membership, and independently reconstructs dense canonically ordered language, subject, and contributor facets from current publication facts."
+claim = "The production READY audit loads the one current revision, enforces all-or-none acquisition coverage, replays every publication's bounded canonical search sources through the pinned Unicode policy, exact-compares document, whole-document posting, and title-only posting subset membership, and independently reconstructs dense canonically ordered language, subject, and contributor facets from current publication facts."
 assumptions = ["Canonical value payloads remain immutable under their digest identity; each bounded keyset and payload page is read through the same read-only READY transaction."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
@@ -807,7 +807,7 @@ id = "fault.production.discovery-exactness"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "READY audit regressions independently add and remove search documents, postings, and each facet family, reject same-cardinality title/token changes, reject a descriptor count that differs from the exact search source set, and reject partial artifact coverage rather than accepting a partially discoverable revision."
+claim = "READY audit regressions independently add and remove search documents, whole-document postings, title-only posting subsets, and each facet family, reject same-cardinality title/token changes, reject a descriptor count that differs from the exact search source set, and reject partial artifact coverage rather than accepting a partially discoverable revision."
 assumptions = ["SQLite foreign-key and check-constraint bypasses are test-only corruption injection mechanisms; validation executes the production READY checker after each mutation."]
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
@@ -818,6 +818,9 @@ symbol = "test_ready_rejects_active_discovery_projection_omission"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_ready_rejects_same_cardinality_display_title_replacement"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_ready_rejects_same_cardinality_title_posting_substitution"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_active_publication_compares_descriptor_count_with_discovery_projection"

@@ -4598,6 +4598,10 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     return {
         "CP_STORAGE": (
             direct(
+                "catalog_title_search_postings",
+                ("revision", "value_sha256", "publication_key"),
+            ),
+            direct(
                 "catalog_search_postings",
                 ("revision", "value_sha256", "publication_key"),
             ),
@@ -4888,6 +4892,10 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(
                 "catalog_prepared_resource_blob",
                 ("candidate_id", "publication_key", "resource_kind"),
+            ),
+            projection(
+                "catalog_title_search_postings",
+                ("revision", "value_sha256", "publication_key"),
             ),
             projection(
                 "catalog_search_postings",

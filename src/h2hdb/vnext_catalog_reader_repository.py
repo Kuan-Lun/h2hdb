@@ -18,7 +18,7 @@ __all__ = [
 ]
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from unicodedata import category
@@ -54,7 +54,7 @@ from .domain import (
     CatalogResourceKind,
     CatalogRevision,
     CatalogSubject,
-    CatalogSubjectFilter,
+    CatalogTimestampRange,
     StorageObjectDescriptor,
     StorageObjectKey,
 )
@@ -66,6 +66,7 @@ from .vnext_canonical_value_repository import (
     load_and_validate_single_page_canonical_values,
 )
 from .vnext_domains import (
+    microseconds_from_datetime,
     require_ascii_bytes,
     require_digest32,
     require_int63,
@@ -507,10 +508,10 @@ class VNextCatalogReaderRepository:
         page_limit = require_positive_int63(limit, field="facet page limit")
         if page_limit > 128:
             raise ValueError("facet page limit must not exceed 128")
-        effective = CatalogDiscoveryQuery(
-            search=query.search,
+        effective = replace(
+            query,
             language=None if facet is CatalogFacetKind.LANGUAGE else query.language,
-            subject=None if facet is CatalogFacetKind.SUBJECT else query.subject,
+            subjects=() if facet is CatalogFacetKind.SUBJECT else query.subjects,
             contributor=(
                 None if facet is CatalogFacetKind.CONTRIBUTOR else query.contributor
             ),
@@ -2120,14 +2121,6 @@ def _validated_discovery_query(
 
     if type(query) is not CatalogDiscoveryQuery:
         raise TypeError("query must be CatalogDiscoveryQuery")
-    subject = None
-    if query.subject is not None:
-        if type(query.subject) is not CatalogSubjectFilter:
-            raise TypeError("discovery subject must be CatalogSubjectFilter")
-        subject = CatalogSubjectFilter(
-            namespace=query.subject.namespace,
-            value=query.subject.value,
-        )
     contributor = None
     if query.contributor is not None:
         if type(query.contributor) is not CatalogContributorFilter:
@@ -2136,14 +2129,14 @@ def _validated_discovery_query(
             name=query.contributor.name,
             role=query.contributor.role,
         )
-    canonical = CatalogDiscoveryQuery(
-        search=query.search,
-        language=query.language,
-        subject=subject,
+    canonical = replace(
+        query,
         contributor=contributor,
     )
     if query.search_lexemes != canonical.search_lexemes:
         raise ValueError("discovery query search_lexemes are not canonical")
+    if query.title_lexemes != canonical.title_lexemes:
+        raise ValueError("discovery query title_lexemes are not canonical")
     return canonical
 
 
@@ -2196,7 +2189,7 @@ def _catalog_revisions_match(left: CatalogRevision, right: CatalogRevision) -> b
 
 
 def _discovery_query_sha256(query: CatalogDiscoveryQuery) -> str:
-    frame = bytearray(b"h2hdb-catalog-discovery-query\0\x02")
+    frame = bytearray(b"h2hdb-catalog-discovery-query\0\x03")
 
     def append(value: bytes | None) -> None:
         if value is None:
@@ -2204,22 +2197,40 @@ def _discovery_query_sha256(query: CatalogDiscoveryQuery) -> str:
         else:
             frame.extend(b"\x01" + len(value).to_bytes(4, "big") + value)
 
-    if query.search is None:
-        append(None)
-    else:
+    for lexemes in (query.search_lexemes, query.title_lexemes):
         token_frame = bytearray()
-        for token in sorted(query.search_lexemes):
+        for token in sorted(lexemes):
             token_frame.extend(len(token).to_bytes(2, "big") + token)
         append(bytes(token_frame))
     append(None if query.language is None else query.language.encode("utf-8"))
-    append(None if query.subject is None else query.subject.namespace.encode("utf-8"))
-    append(None if query.subject is None else query.subject.value.encode("utf-8"))
+    append(None if query.gid is None else query.gid.to_bytes(8, "big"))
+    append(len(query.subjects).to_bytes(2, "big"))
+    for subject in query.subjects:
+        append(subject.namespace.encode("utf-8"))
+        append(subject.value.encode("utf-8"))
     append(
         None if query.contributor is None else query.contributor.role.encode("ascii")
     )
     append(
         None if query.contributor is None else query.contributor.name.encode("utf-8")
     )
+    for interval in (query.uploaded, query.downloaded):
+        for timestamp in (
+            (None, None) if interval is None else (interval.start, interval.end)
+        ):
+            append(
+                None
+                if timestamp is None
+                else microseconds_from_datetime(
+                    timestamp, field="discovery timestamp"
+                ).to_bytes(8, "big")
+            )
+    for bound in (
+        (None, None)
+        if query.pages is None
+        else (query.pages.minimum, query.pages.maximum)
+    ):
+        append(None if bound is None else bound.to_bytes(8, "big"))
     return sha256(frame).hexdigest()
 
 
@@ -2230,38 +2241,46 @@ def _discovery_filter_sql(
     backend: str,
 ) -> _DiscoverySQLFilter:
     exact_revision = require_positive_int63(revision, field="catalog revision")
-    if backend == "sqlite":
-        posting_index = "INDEXED BY sqlite_autoindex_catalog_search_postings_1 "
-    elif backend == "mariadb":
-        posting_index = "FORCE INDEX (PRIMARY) "
-    else:
+    if backend not in {"sqlite", "mariadb"}:
         raise ValueError("discovery SQL backend is not registered")
-    cte = ""
-    join = ""
-    cte_parameters: tuple[object, ...] = ()
+    ctes: list[str] = []
+    joins: list[str] = []
+    cte_parameters: list[object] = []
     clauses: list[str] = []
     parameters: list[object] = []
-    if query.search is not None:
+    for name, table, lexemes in (
+        ("matched_search", "catalog_search_postings", query.search_lexemes),
+        ("matched_title", "catalog_title_search_postings", query.title_lexemes),
+    ):
+        if not lexemes:
+            continue
+        posting_index = (
+            f"INDEXED BY sqlite_autoindex_{table}_1 "
+            if backend == "sqlite"
+            else "FORCE INDEX (PRIMARY) "
+        )
         value_sha256s = tuple(
             identity.canonical_value_digest(
                 SEARCH_LEXEME_DOMAIN.decode("ascii"),
                 lexeme,
             )
-            for lexeme in sorted(query.search_lexemes)
+            for lexeme in sorted(lexemes)
         )
-        cte = (
-            "WITH matched_search(publication_key) AS ("
+        ctes.append(
+            f"{name}(publication_key) AS ("
             "SELECT posting.publication_key "
-            f"FROM catalog_search_postings AS posting {posting_index}"
+            f"FROM {table} AS posting {posting_index}"
             "WHERE posting.revision = %s "
             f"AND posting.value_sha256 IN ({_sql_placeholders(len(value_sha256s))}) "
-            "GROUP BY posting.publication_key HAVING COUNT(*) = %s) "
+            "GROUP BY posting.publication_key HAVING COUNT(*) = %s)"
         )
-        join = (
-            "JOIN matched_search AS search_match "
-            "ON search_match.publication_key = publication.publication_key "
+        joins.append(
+            f"JOIN {name} ON {name}.publication_key = publication.publication_key "
         )
-        cte_parameters = (exact_revision, *value_sha256s, len(value_sha256s))
+        cte_parameters.extend((exact_revision, *value_sha256s, len(value_sha256s)))
+    if query.gid is not None:
+        clauses.append("AND publication.publication_key = %s ")
+        parameters.append(identity.publication_key(query.gid))
     if query.language is not None:
         clauses.append("AND publication.language_sha256 = %s ")
         parameters.append(
@@ -2270,7 +2289,7 @@ def _discovery_filter_sql(
                 query.language.encode("utf-8"),
             )
         )
-    if query.subject is not None:
+    for subject in query.subjects:
         clauses.append(
             "AND EXISTS (SELECT 1 FROM catalog_subjects AS filtered_subject "
             "JOIN catalog_tag_terms AS filtered_term "
@@ -2282,10 +2301,10 @@ def _discovery_filter_sql(
         )
         parameters.extend(
             (
-                query.subject.namespace.encode("utf-8"),
+                subject.namespace.encode("utf-8"),
                 identity.canonical_value_digest(
                     "tag_value_utf8_v1",
-                    query.subject.value.encode("utf-8"),
+                    subject.value.encode("utf-8"),
                 ),
             )
         )
@@ -2306,13 +2325,67 @@ def _discovery_filter_sql(
                 query.contributor.role.encode("ascii"),
             )
         )
+    if query.uploaded is not None:
+        bounds, values = _timestamp_range_sql("upload.upload_time", query.uploaded)
+        clauses.append(
+            "AND EXISTS (SELECT 1 FROM catalog_publication_identities AS uploaded_identity "
+            "JOIN catalog_gallery_upload_times AS upload ON upload.gid = uploaded_identity.gid "
+            "WHERE uploaded_identity.publication_key = publication.publication_key "
+            + bounds
+            + ") "
+        )
+        parameters.extend(values)
+    if query.downloaded is not None:
+        bounds, values = _timestamp_range_sql(
+            "downloaded.download_time", query.downloaded
+        )
+        clauses.append(
+            "AND EXISTS (SELECT 1 FROM catalog_publication_occurrence_identities AS occurrence "
+            "JOIN catalog_publication_download_times AS downloaded "
+            "ON downloaded.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
+            "WHERE occurrence.revision = publication.revision "
+            "AND occurrence.publication_key = publication.publication_key "
+            + bounds
+            + ") "
+        )
+        parameters.extend(values)
+    if query.pages is not None:
+        bounds = ""
+        if query.pages.minimum is not None:
+            bounds += "AND page_artifact.page_count >= %s "
+            parameters.append(query.pages.minimum)
+        if query.pages.maximum is not None:
+            bounds += "AND page_artifact.page_count <= %s "
+            parameters.append(query.pages.maximum)
+        clauses.append(
+            "AND EXISTS (SELECT 1 FROM catalog_artifacts AS page_artifact "
+            "WHERE page_artifact.revision = publication.revision "
+            "AND page_artifact.publication_key = publication.publication_key "
+            + bounds
+            + ") "
+        )
     return _DiscoverySQLFilter(
-        cte=cte,
-        join=join,
-        cte_parameters=cte_parameters,
+        cte="WITH " + ", ".join(ctes) + " " if ctes else "",
+        join="".join(joins),
+        cte_parameters=tuple(cte_parameters),
         clauses=tuple(clauses),
         parameters=tuple(parameters),
     )
+
+
+def _timestamp_range_sql(
+    expression: str,
+    interval: CatalogTimestampRange,
+) -> tuple[str, tuple[int, ...]]:
+    clauses: list[str] = []
+    values: list[int] = []
+    for timestamp, operator in ((interval.start, ">="), (interval.end, "<")):
+        if timestamp is not None:
+            clauses.append(f"AND {expression} {operator} %s ")
+            values.append(
+                microseconds_from_datetime(timestamp, field="discovery timestamp")
+            )
+    return "".join(clauses), tuple(values)
 
 
 def _discovery_page_sql(sql_filter: _DiscoverySQLFilter) -> str:

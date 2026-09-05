@@ -1130,7 +1130,7 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
 def test_generated_manifests_are_backend_specific_and_well_formed() -> None:
     assert ARTIFACT_DATA["artifact_version"] == 1
     assert ARTIFACT_DATA["epoch"] == 3
-    assert ARTIFACT_DATA["schema_version"] == 2
+    assert ARTIFACT_DATA["schema_version"] == 3
     assert len(ARTIFACT_DATA["source_manifest_sha256"]) == 64
     sqlite_manifest = ARTIFACT_DATA["backends"]["sqlite"]["ddl_manifest_sha256"]
     mariadb_manifest = ARTIFACT_DATA["backends"]["mariadb"]["ddl_manifest_sha256"]
