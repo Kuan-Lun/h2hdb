@@ -928,7 +928,6 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
     pipeline.ready()
 
 
-@pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
 def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     db_config: CoreConfig,
@@ -1032,6 +1031,69 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
                 facade.issue_source_step(stale.session, stale.policy, prepared)
     assert snapshot_difference(before_stale, snapshot_database(db_config)) == {}
     assert pipeline.view() == before_replay
+    pipeline.ready()
+
+
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
+def test_live_mariadb_compacted_snapshot_recurrence(
+    mariadb_config: CoreConfig,
+) -> None:
+    """An empty historical snapshot recurs after real publication compaction."""
+
+    initialize_database(mariadb_config)
+    source = MemorySource()
+    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    policy = ingest_policy(artifacts_required=False)
+    first, _ = pipeline.turn(policy=policy)
+
+    replacement = gallery(1001, pages=[], artists=[], language=None)
+    source.put(replacement)
+    second, progressed = pipeline.turn(policy=policy)
+    assert progressed > 0
+    assert second.source.build_id != first.source.build_id
+    connector = open_connector(mariadb_config)
+    try:
+        with connector.read_transaction():
+            assert connector.fetch_all(
+                "SELECT revision FROM catalog_publication_commits ORDER BY revision"
+            ) == [(2,)]
+            assert connector.fetch_all(
+                "SELECT provenance.source_revision, build.state, state.state "
+                "FROM catalog_source_revision_provenance AS provenance "
+                "JOIN catalog_analysis_run_descriptor AS analysis "
+                "ON analysis.analysis_id = provenance.analysis_id "
+                "JOIN catalog_analysis_run_states AS state "
+                "ON state.analysis_id = analysis.analysis_id "
+                "JOIN catalog_source_build_states AS build "
+                "ON build.build_id = analysis.build_id "
+                "WHERE analysis.build_id = %s",
+                (first.source.build_id,),
+            ) == [(1, "SEALED", "COMPLETE")]
+            assert connector.fetch_one(
+                "SELECT 1 FROM catalog_analysis_baselines AS baseline "
+                "JOIN catalog_analysis_run_descriptor AS analysis "
+                "ON analysis.analysis_id = baseline.base_analysis_id "
+                "WHERE analysis.build_id = %s",
+                (first.source.build_id,),
+            ) == (1,)
+    finally:
+        connector.close()
+
+    source.remove(replacement.locator)
+    recurring, _ = pipeline.turn(policy=policy, drain=False)
+    assert recurring.source.sealed and not recurring.source.replayed
+    assert recurring.source.build_id not in {
+        first.source.build_id,
+        second.source.build_id,
+    }
+    assert recurring.publication.terminal
+    current = VNextCatalogFacade(mariadb_config).get_catalog_revision()
+    assert (current.revision, current.publication_count, current.artifact_count) == (
+        3,
+        0,
+        0,
+    )
     pipeline.ready()
 
 

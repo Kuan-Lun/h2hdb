@@ -99,7 +99,7 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
         ),
         (
             "test_vnext_pipeline_workflows.py",
-            "test_compacted_snapshot_recurrence_rebases_and_preserves_fencing",
+            "test_live_mariadb_compacted_snapshot_recurrence",
         ),
         (
             "test_vnext_pipeline_workflows.py",
