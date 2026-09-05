@@ -273,12 +273,6 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
     }
     assert set(data["inline_projections"]) == expected_data_inline
     assert operational["inline_projections"] == ["operational_activation"]
-    assert len(data["relation"]) == 203
-    assert (
-        sum(value.get("kind", "table") == "table" for value in data["relation"]) == 170
-    )
-    assert sum(value.get("kind", "table") == "view" for value in data["relation"]) == 33
-    assert len(operational["relation"]) == 67
     assert all(
         value.get("kind", "table") == "table" for value in operational["relation"]
     )
@@ -302,22 +296,17 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
     stub_tables = {value["table"] for value in operational["external_stub"]}
     data_tables = {value["table"] for value in data["relation"]}
     assert stub_tables <= data_tables
+    expected_relations = [
+        (value["table"], value.get("kind", "table"))
+        for value in (*data["relation"], *operational["relation"])
+        if value["name"] != "schema_epoch_control"
+    ]
     for backend_payload in ARTIFACT_DATA["backends"].values():
         generated_tables = {value["table"] for value in backend_payload["relations"]}
-        assert generated_tables == data_tables | {
-            value["table"]
-            for value in operational["relation"]
-            if value["name"] != "schema_epoch_control"
-        }
+        assert sorted(
+            (value["table"], value["kind"]) for value in backend_payload["relations"]
+        ) == sorted(expected_relations)
         assert len(generated_tables) == len(backend_payload["relations"])
-        assert len(backend_payload["relations"]) == 268
-        assert (
-            sum(value["kind"] == "table" for value in backend_payload["relations"])
-            == 235
-        )
-        assert (
-            sum(value["kind"] == "view" for value in backend_payload["relations"]) == 33
-        )
         assert backend_payload["epoch_control"]["table"] == "h2hdb_schema_epoch"
         assert "h2hdb_schema_epoch" not in generated_tables
 
@@ -1021,8 +1010,9 @@ def test_generated_provider_rejects_a_noncanonical_writer_binding(
     monkeypatch.setattr(catalog_writer, "resolve_writer_hook", resolve)
     provider = GeneratedVNextSchemaProvider("sqlite")
 
-    assert target_id not in provider.writer_hook_bindings
-    assert len(provider.writer_hook_bindings) == 28
+    assert set(provider.writer_hook_bindings) == (
+        set(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) - {target_id}
+    )
     assert any(
         repr(target_id) in blocker and "non-canonical binding" in blocker
         for blocker in provider.blockers

@@ -52,23 +52,19 @@ jobs:
             toolchain install "${lean_toolchain}"
           ELAN_HOME="${elan_home}" "${elan_home}/bin/lean" --version
 
-      - name: Install exact formal-test runtime
+      - name: Install formal-test runtime from pyproject.toml
         run: |
-          python -m pip install \
-            pytest==9.1.1 \
-            hypothesis==6.165.10 \
-            pydantic==2.13.4 \
-            mysql-connector-python==26.7.0
-          python -m pip install --no-deps -e .
+          python scripts/install-ci-dependencies.py --pytest-plugins pytest hypothesis
+          python -m pip install -e .
 
       - name: Validate coverage contract (not production readiness)
         run: |
           python scripts/verify-formal.py coverage --validate-only
-          python -m pytest -q tests/test_verification_coverage.py
+          python -m pytest -m 'not mariadb' -q tests/test_verification_coverage.py
 
       - name: Exercise schema and refinement negative controls
         run: >-
-          python -m pytest -q
+          python -m pytest -m 'not mariadb' -q
           tests/test_verification_schema.py
           tests/test_verification_schema_properties.py
           tests/test_verification_schema_refinement.py
@@ -83,9 +79,9 @@ jobs:
       - name: Check Lean proofs without warnings
         run: python scripts/verify-formal.py lean
 
-      - name: Exercise schema epoch faults and generated provider
+      - name: Exercise offline schema epoch faults and generated provider
         run: >-
-          python -m pytest -q
+          python -m pytest -m 'not mariadb' -q
           tests/test_schema_epoch.py
           tests/test_schema_epoch_mariadb.py
           tests/test_schema_admin.py

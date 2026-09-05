@@ -4,7 +4,8 @@ invariant_sources = [
   "verification/schema/operational.toml",
 ]
 
-# Proof engines are pinned by repository-owned lock files. pytest evidence
+# Proof engines are pinned by repository-owned lock files. Python dependencies
+# come from pyproject.toml. pytest evidence
 # records identify executable checks, not the per-merge execution profile. The
 # exact-tree release receipt covers only the bounded "not deep" pytest merge
 # profile; manual deep execution must be reported separately.
@@ -12,7 +13,7 @@ invariant_sources = [
 python = "3.14.6"
 lean_toolchain = "lean-toolchain"
 tlc_lock = "verification/tools.lock.toml"
-pytest = "9.1.1"
+python_dependencies = "pyproject.toml"
 ci_workflow = ".github/workflows/verify.yml"
 
 [[evidence]]

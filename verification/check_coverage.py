@@ -243,12 +243,50 @@ def _validate_tool_pins(document: dict[str, Any], errors: list[str]) -> None:
     lean_path_text = _text(tools.get("lean_toolchain"), "tools.lean_toolchain", errors)
     tlc_path_text = _text(tools.get("tlc_lock"), "tools.tlc_lock", errors)
     python_version = _text(tools.get("python"), "tools.python", errors)
-    pytest_version = _text(tools.get("pytest"), "tools.pytest", errors)
+    dependencies_text = _text(
+        tools.get("python_dependencies"), "tools.python_dependencies", errors
+    )
     if python_version and re.fullmatch(r"\d+\.\d+\.\d+", python_version) is None:
         errors.append("tools.python must be an exact three-part version")
     workflow_text = _text(tools.get("ci_workflow"), "tools.ci_workflow", errors)
-    if pytest_version and re.fullmatch(r"\d+\.\d+\.\d+", pytest_version) is None:
-        errors.append("tools.pytest must be an exact three-part version")
+    if dependencies_text and dependencies_text != "pyproject.toml":
+        errors.append("tools.python_dependencies must use pyproject.toml")
+    dependencies_path = (
+        _resolve_repo_path(dependencies_text, "tools.python_dependencies", errors)
+        if dependencies_text
+        else None
+    )
+    if dependencies_path is not None:
+        dependencies = _load_toml(dependencies_path)
+        development = (
+            dependencies.get("project", {})
+            .get("optional-dependencies", {})
+            .get("dev", [])
+        )
+        for package in ("pytest", "hypothesis"):
+            if not any(
+                isinstance(value, str)
+                and re.match(rf"{package}(?=[<>=!~;@\[\s]|$)", value, re.I)
+                for value in development
+            ):
+                errors.append(
+                    f"pyproject.toml must declare the {package} dev dependency"
+                )
+        plugins = (
+            dependencies.get("tool", {})
+            .get("pytest", {})
+            .get("ini_options", {})
+            .get("required_plugins", [])
+        )
+        if (
+            not isinstance(plugins, list)
+            or not plugins
+            or any(not isinstance(value, str) or not value.strip() for value in plugins)
+        ):
+            errors.append("pyproject.toml must declare required pytest plugins")
+    _resolve_repo_path(
+        "scripts/install-ci-dependencies.py", "CI dependency installer", errors
+    )
     lean_path = (
         _resolve_repo_path(lean_path_text, "tools.lean_toolchain", errors)
         if lean_path_text
@@ -280,11 +318,12 @@ def _validate_tool_pins(document: dict[str, Any], errors: list[str]) -> None:
         if workflow_text
         else None
     )
-    if workflow_path is not None and pytest_version:
+    if workflow_path is not None:
         workflow = workflow_path.read_text(encoding="utf-8")
         required_commands = (
             f'python-version: "{python_version}"',
-            f"pytest=={pytest_version}",
+            "python scripts/install-ci-dependencies.py --pytest-plugins pytest hypothesis",
+            "python -m pip install -e .",
             "python scripts/verify-formal.py coverage",
             "python scripts/verify-formal.py schema",
             "python scripts/verify-formal.py lean",
@@ -296,7 +335,7 @@ def _validate_tool_pins(document: dict[str, Any], errors: list[str]) -> None:
         for command in required_commands:
             if command not in workflow:
                 errors.append(
-                    f"tools.ci_workflow does not contain required pinned gate {command!r}"
+                    f"tools.ci_workflow does not contain required gate {command!r}"
                 )
 
 

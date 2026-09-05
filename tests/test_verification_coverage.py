@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -46,6 +47,113 @@ def _write_mutation(tmp_path: Path, old: str, new: str) -> Path:
     path = tmp_path / "invariants.toml"
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
     return path
+
+
+def _tool_contract_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, object]:
+    for name in (
+        "pyproject.toml",
+        "lean-toolchain",
+        "verification/tools.lock.toml",
+        "scripts/install-ci-dependencies.py",
+        ".github/workflows/verify.yml",
+    ):
+        destination = tmp_path / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, destination)
+    monkeypatch.setattr(coverage, "REPOSITORY_ROOT", tmp_path)
+    return tomllib.loads(COVERAGE_MANIFEST.read_text(encoding="utf-8"))
+
+
+def test_formal_tools_follow_project_pytest_requirement_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _tool_contract_checkout(tmp_path, monkeypatch)
+    manifest = tmp_path / "pyproject.toml"
+    text = manifest.read_text(encoding="utf-8")
+    original = next(
+        value
+        for value in tomllib.loads(text)["project"]["optional-dependencies"]["dev"]
+        if value.startswith("pytest>=")
+    )
+    manifest.write_text(text.replace(original, "pytest>=99.0.0"), encoding="utf-8")
+    errors: list[str] = []
+
+    coverage._validate_tool_pins(document, errors)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("package", ("pytest", "hypothesis"))
+def test_formal_tools_reject_missing_project_test_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package: str
+) -> None:
+    document = _tool_contract_checkout(tmp_path, monkeypatch)
+    manifest = tmp_path / "pyproject.toml"
+    text = manifest.read_text(encoding="utf-8")
+    original = next(
+        value
+        for value in tomllib.loads(text)["project"]["optional-dependencies"]["dev"]
+        if value.startswith(f"{package}>=")
+    )
+    manifest.write_text(text.replace(f'    "{original}",\n', ""), encoding="utf-8")
+    errors: list[str] = []
+
+    coverage._validate_tool_pins(document, errors)
+
+    assert f"pyproject.toml must declare the {package} dev dependency" in errors
+
+
+def test_formal_tools_reject_missing_required_plugin_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _tool_contract_checkout(tmp_path, monkeypatch)
+    workflow = tmp_path / ".github/workflows/verify.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(" --pytest-plugins", ""),
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+
+    coverage._validate_tool_pins(document, errors)
+
+    assert any(
+        "required gate" in error and "--pytest-plugins" in error for error in errors
+    )
+
+
+def test_formal_tools_reject_empty_required_plugin_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _tool_contract_checkout(tmp_path, monkeypatch)
+    manifest = tmp_path / "pyproject.toml"
+    lines = manifest.read_text(encoding="utf-8").splitlines()
+    manifest.write_text(
+        "\n".join(
+            "required_plugins = []" if line.startswith("required_plugins =") else line
+            for line in lines
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+
+    coverage._validate_tool_pins(document, errors)
+
+    assert "pyproject.toml must declare required pytest plugins" in errors
+
+
+def test_formal_workflow_explicitly_includes_offline_deep_provider_checks() -> None:
+    workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
+    pytest_commands = [
+        line.strip() for line in workflow.splitlines() if "python -m pytest" in line
+    ]
+
+    assert len(pytest_commands) == 3
+    assert all("-m 'not mariadb'" in command for command in pytest_commands)
+    assert "tests/test_vnext_schema_provider_generation.py" in workflow
+    assert "H2HDB_TEST_MARIADB" not in workflow
 
 
 def test_required_invariant_coverage_is_closed_and_nonempty() -> None:

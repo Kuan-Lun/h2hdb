@@ -324,6 +324,11 @@ High-cost SQLite and non-smoke live-MariaDB matrices are marked `deep`; they
 remain executable through `scripts/check-pytest-deep.sh`, but their existence
 does not mean that every merge ran them.
 
+The manual formal workflow installs Python test dependencies and required pytest
+plugins from `pyproject.toml`. Its explicit test files use `-m 'not mariadb'` so
+the generated-provider checks include their offline deep cases; live MariaDB
+remains outside this workflow. Lean and TLC retain their repository tool pins.
+
 The pytest-supervision model treats process creation, Job assignment,
 termination, kill-on-close, POSIX group termination, and an empty-tree query as
 abstract transitions. It does not prove Win32 or POSIX kernel behavior, Python
