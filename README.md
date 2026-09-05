@@ -13,7 +13,7 @@ sibling packages.
 
 ## What this package provides
 
-- One generated epoch-3/schema-v2 schema for SQLite and MariaDB.
+- One generated epoch-3/schema-v3 schema for SQLite and MariaDB.
 - Safe initialization, full schema auditing, and lightweight readiness probes.
 - Current-catalog discovery with Unicode-normalized search, exact facets,
   keyset pagination, and fixed recently uploaded/downloaded windows.
@@ -109,7 +109,7 @@ Choose the operation from database state:
 
 | Database state or caller | Operation |
 | --- | --- |
-| Truly empty database | Run `migrate` to construct epoch 3/schema v2 |
+| Truly empty database | Run `migrate` to construct epoch 3/schema v3 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
 | Matching `READY` epoch | Run read-only `check` for the full audit |
 | Consumer startup | Run `check`; never initialize schema |
