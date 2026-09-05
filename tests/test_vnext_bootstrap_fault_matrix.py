@@ -499,8 +499,12 @@ def _seed_building_prefix(
         connector.execute(
             "INSERT INTO h2hdb_schema_epoch (singleton_id, epoch, schema_version, "
             "state, manifest_sha256, started_at, ready_at) "
-            "VALUES (1, 3, 2, 'BUILDING', %s, 1, NULL)",
-            (bytes.fromhex(definition.manifest_sha256),),
+            "VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)",
+            (
+                definition.epoch,
+                definition.schema_version,
+                bytes.fromhex(definition.manifest_sha256),
+            ),
         )
         for schema_slice in definition.slices:
             for statement in schema_slice.statements:

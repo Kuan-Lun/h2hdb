@@ -239,9 +239,13 @@ def _initialize_building(
             INSERT INTO h2hdb_schema_epoch (
                 singleton_id, epoch, schema_version, state,
                 manifest_sha256, started_at, ready_at
-            ) VALUES (1, 3, 3, 'BUILDING', %s, 1, NULL)
+            ) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)
             """,
-            (bytes.fromhex(definition.manifest_sha256),),
+            (
+                definition.epoch,
+                definition.schema_version,
+                bytes.fromhex(definition.manifest_sha256),
+            ),
         )
         for statement in statements[:completed_statement_count]:
             connector.execute(statement.sql)

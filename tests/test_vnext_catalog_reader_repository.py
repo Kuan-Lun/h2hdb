@@ -2056,7 +2056,7 @@ def test_reader_revalidates_forged_query_cursor_and_revision_domains(
 
         subject = CatalogSubjectFilter(namespace="genre", value="科幻")
         forged_subject_query = CatalogDiscoveryQuery(subjects=(subject,))
-        object.__setattr__(subject, "namespace", 1)
+        object.__setattr__(forged_subject_query.subjects[0], "namespace", 1)
         with pytest.raises(ValueError):
             reader.discover_publications(connector, query=forged_subject_query)
 
