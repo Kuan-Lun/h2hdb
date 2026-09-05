@@ -4378,9 +4378,10 @@ def _is_exact_retired_sealed_source_build(
 
     A published historical revision is retired once a different
     receipt is the locked channel head.  A SEALED build whose sole analysis was
-    explicitly abandoned is also terminal.  Cleanup-compacted builds lacking
-    either proof remain fail-closed until SOURCE_BUILD cleanup removes their
-    durable family.
+    explicitly abandoned is also terminal.  After commit cleanup, a retained
+    source descriptor and exact completed-analysis output can prove that the
+    build belongs to an older source revision.  This permits a new incarnation,
+    never replay of the historical publication or deletion of its ancestry.
     """
 
     build = require_uuid16(build_id, field="retired source build_id")
@@ -4461,18 +4462,17 @@ def _is_exact_retired_sealed_source_build(
         )
     if family.state == "COMPLETE":
         # A policy-mismatch retirement leaves the analysis COMPLETE: it is an
-        # immutable terminal fact.  The build is retired only while no
-        # candidate of that analysis reached a durable publication commit.
+        # immutable terminal fact.  A published analysis can also outlive its
+        # commit while a successor still needs its incremental baseline.
+        # Neither case may retire a build with a retained durable commit.
         if _analysis_has_durable_commit(connector, analysis_id=analysis_id):
             return False
-        blockers: tuple[tuple[str, str, bytes, str], ...] = (
-            (
-                _SOURCE_REVISION_PROVENANCE_TABLE,
-                "analysis_id",
-                analysis_id,
-                "source revision provenance",
-            ),
+        _require_compacted_source_publication(
+            connector,
+            analysis_id=analysis_id,
+            current_receipt_id=current_receipt_id,
         )
+        blockers: tuple[tuple[str, str, bytes, str], ...] = ()
         label_prefix = "COMPLETE"
     elif family.state == "ABANDONED":
         if family.completed_at is not None:
@@ -4543,6 +4543,82 @@ def _is_exact_retired_sealed_source_build(
         require_lineage=True,
     )
     return True
+
+
+def _require_compacted_source_publication(
+    connector: Any,
+    *,
+    analysis_id: bytes,
+    current_receipt_id: bytes | None,
+) -> None:
+    """Validate any retained revision of an otherwise retired COMPLETE analysis.
+
+    Publication atomically writes the source descriptor, provenance and commit.
+    Commit cleanup can precede analysis cleanup, including while a descendant
+    pins the analysis.  The retained descriptor must still match the completed
+    output and precede the exact PUBLISHED head.  These scalar facts authorize
+    only a successor build; they do not reconstruct a historical receipt or
+    stand in for canonical snapshot bytes.
+    """
+
+    rows = connector.fetch_all(
+        "SELECT provenance.source_revision, descriptor.channel, "
+        "descriptor.snapshot_manifest_sha256, snapshot.snapshot_manifest_sha256 "
+        f"FROM {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_TABLE} AS descriptor "
+        "ON descriptor.source_revision = provenance.source_revision "
+        f"LEFT JOIN {_ANALYSIS_SNAPSHOT_MANIFEST_TABLE} AS snapshot "
+        "ON snapshot.analysis_id = provenance.analysis_id "
+        "WHERE provenance.analysis_id = %s LIMIT 2",
+        (analysis_id,),
+    )
+    if not rows:
+        return
+    if len(rows) != 1 or len(rows[0]) != 4 or any(value is None for value in rows[0]):
+        raise SourceBuildConflictError(
+            "compacted source publication lacks its exact provenance authority"
+        )
+    row = rows[0]
+    source_revision = require_positive_int63(
+        row[0], field="compacted source publication source_revision"
+    )
+    snapshot = require_digest32(row[2], field="compacted source publication snapshot")
+    analysis_snapshot = require_digest32(
+        row[3], field="compacted source publication analysis snapshot"
+    )
+    if row[1] != _DEFAULT_CHANNEL or snapshot != analysis_snapshot:
+        raise SourceBuildConflictError(
+            "compacted source publication channel or snapshot authority differs"
+        )
+    if current_receipt_id is None:
+        raise SourceBuildConflictError(
+            "compacted source publication has no current channel head"
+        )
+    current = _load_finalized_source_head(connector, expected_build_id=None)
+    if (
+        current.receipt_id != current_receipt_id
+        or current.source_revision <= source_revision
+    ):
+        raise SourceBuildConflictError(
+            "compacted source publication does not precede the locked current head"
+        )
+    if connector.fetch_one(
+        f"SELECT 1 FROM {_PUBLICATION_COMMIT_TABLE} WHERE source_revision = %s LIMIT 1",
+        (source_revision,),
+    ):
+        raise SourceBuildConflictError(
+            "compacted source publication retained a durable commit"
+        )
+    if connector.fetch_one(
+        f"SELECT 1 FROM {_CATALOG_WORKING_CANDIDATE_TABLE} AS working "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = working.candidate_id "
+        "WHERE candidate.analysis_id = %s LIMIT 1",
+        (analysis_id,),
+    ):
+        raise SourceBuildConflictError(
+            "compacted source publication retained a catalog working authority"
+        )
 
 
 def _require_abandoned_source_build_has_no_descendants(

@@ -1952,7 +1952,7 @@ id = "runtime.production.source-build"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production source-build repository reserves one build per live generation, exact-replays canonical-root handoff, persists provider-private bounded discovery receipts, independently exact-merges expected galleries with final links, and derives terminal counters without trusting caller digests or counts."
+claim = "The production source-build repository reserves one build per live generation, exact-replays canonical-root handoff, persists provider-private bounded discovery receipts, independently exact-merges expected galleries with final links, and derives terminal counters without trusting caller digests or counts. Historical snapshot recurrence after commit cleanup requires a coherent retained source descriptor and completed-analysis output, a newer exact PUBLISHED head, no live working or preparation authority, and an older source generation before selecting a new incarnation."
 assumptions = ["The typed discovery plan is immutable between its disk preparation and each transaction that revalidates its binding."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_source_build_repository.py"
@@ -1960,13 +1960,16 @@ symbol = "SourceBuildRepository"
 [[evidence.location]]
 path = "src/h2hdb/vnext_source_build_repository.py"
 symbol = "assemble_batch"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_build_repository.py"
+symbol = "_require_compacted_source_publication"
 
 [[evidence]]
 id = "fault.production.source-build"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Source-build tests inject every major root-handoff, discovery and assembly statement failure, reject missing dependency and scope corruption without progress, and prove generation mapping, children, receipts, checkpoints, working root and canonical claim roll back together."
+claim = "Source-build tests inject every major root-handoff, discovery and assembly statement failure, reject missing dependency and scope corruption without progress, and prove generation mapping, children, receipts, checkpoints, working root and canonical claim roll back together. Compacted-history regressions reject changed or missing snapshot, descriptor and completion authority, nonhistorical revisions, unpublished heads and live preparations or working roots with zero writes."
 assumptions = ["Injected connector exceptions use the same transaction rollback path as production exceptions."]
 [[evidence.location]]
 path = "tests/test_vnext_canonical_source_repository.py"
@@ -1977,13 +1980,22 @@ symbol = "test_discovery_and_assembly_major_statement_faults_roll_back"
 [[evidence.location]]
 path = "tests/test_vnext_source_build_runtime_repository.py"
 symbol = "test_assembly_missing_dependency_and_scope_corruption_are_zero_write"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_compacted_snapshot_recurrence_rejects_corruption_without_writes"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_compacted_source_retirement_rejects_retained_working_roots"
+[[evidence.location]]
+path = "tests/test_vnext_source_build_runtime_repository.py"
+symbol = "test_compacted_source_retirement_requires_strictly_newer_generation"
 
 [[evidence]]
 id = "integration.sqlite.source-build"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production canonical-root handoff, one generation reservation, typed discovery upload and replay, exact assembly with terminal counters, and bounded 257-row keyset pagination."
+claim = "Generated SQLite E2E executes production canonical-root handoff, one generation reservation, typed discovery upload and replay, exact assembly with terminal counters, and bounded 257-row keyset pagination. A public-facade regression publishes A then B, completes current-only cleanup, revisits A and B with new builds, checks exact artifact contents, replays the current build and rejects stale sessions before a complete READY audit."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_canonical_source_repository.py"
@@ -1994,6 +2006,9 @@ symbol = "test_discovery_new_generation_assembly_and_response_loss"
 [[evidence.location]]
 path = "tests/test_vnext_source_build_runtime_repository.py"
 symbol = "test_assembly_pages_257_rows_in_bounded_keyset_queries"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_compacted_snapshot_recurrence_rebases_and_preserves_fencing"
 
 [[evidence]]
 id = "runtime.production.storage-instance-binding"
@@ -2921,6 +2936,9 @@ symbol = "test_incremental_turn_rebuilds_adds_removes_and_reconciles_library"
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_giant_gallery_pages_through_every_bounded_source_window"
 [[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_compacted_snapshot_recurrence_rebases_and_preserves_fencing"
+[[evidence.location]]
 path = "tests/vnext_pipeline.py"
 symbol = "run_ingest_turn"
 
@@ -2929,11 +2947,14 @@ id = "integration.live-mariadb.pipeline"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; a bounded smoke regression also drives one exact OPEN PCOM base-release gap and one exact OPEN PG edge gap through that production audit; nothing is a SQL-shape recorder."
-assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes separate fresh-pipeline and representative OPEN-cleanup mariadb_smoke cases; the liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "The bounded cleanup smoke selects one representative durable state from each PCOM and PG family instead of duplicating the exhaustive SQLite phase matrices.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; bounded smoke regressions also drive one exact OPEN PCOM base-release gap and one exact OPEN PG edge gap through that production audit, and revisit historical source snapshots after current-only cleanup with exact artifact checks, current replay and stale-session rejection; nothing is a SQL-shape recorder."
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes separate fresh-pipeline, compacted-snapshot recurrence and representative OPEN-cleanup mariadb_smoke cases; the liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "The bounded cleanup smoke selects one representative durable state from each PCOM and PG family instead of duplicating the exhaustive SQLite phase matrices.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states"
+[[evidence.location]]
+path = "tests/test_vnext_pipeline_workflows.py"
+symbol = "test_compacted_snapshot_recurrence_rebases_and_preserves_fencing"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_restarted_process_takes_over_expired_leases_and_replays"

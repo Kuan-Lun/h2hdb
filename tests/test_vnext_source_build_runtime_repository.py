@@ -1473,6 +1473,324 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         connector.close()
 
 
+def _compacted_snapshot_recurrence(
+    connector: SQLiteConnector,
+) -> tuple[GateLease, IngestTurn, SourceRootBuildCommand, bytes]:
+    """Retain A's analysis/provenance after B replaces its pruned commit.
+
+    This focused fixture models the retained family between PUBLICATION_COMMIT
+    and ANALYSIS_RUN cleanup. Public pipeline tests exercise the real cleanup
+    lifecycle; corruption tests below mutate only this compacted authority.
+    """
+
+    gate, turn = _authorities(connector)
+    root = ("compacted-recurrence",)
+    summaries = (
+        SourceBuildManifestSummary.empty(),
+        SourceBuildManifestSummary(b"B" * 32, 1, 0, 0),
+    )
+    builds: list[bytes] = []
+    for index, summary in enumerate(summaries, start=1):
+        if index > 1:
+            with connector.transaction():
+                turn = IngestFenceRepository.claim(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    owner_token=b"j" * 16,
+                    now=31,
+                    lease_duration=1_000_000,
+                )
+        build = _handoff_snapshot_command(
+            connector,
+            gate,
+            turn,
+            _snapshot_command(root, summary),
+            now=20 if index == 1 else 32,
+        )
+        builds.append(build)
+        sealed_at = _force_sealed_snapshot_build(
+            connector, build_id=build, summary=summary
+        )
+        _seed_publication_state(
+            connector,
+            receipt_id=bytes((index,)) * 16,
+            candidate_id=bytes((index + 16,)) * 16,
+            build_id=build,
+            snapshot=summary.manifest_sha256,
+            committed_at=sealed_at + 10,
+            finalized=True,
+            revision=index,
+            source_revision=index,
+            generation=index,
+        )
+        with connector.transaction():
+            IngestFenceRepository.complete(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                turn,
+                now=30 if index == 1 else 40,
+            )
+
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connector.execute(
+            "DELETE FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (builds[1],),
+        )
+        for table in (
+            "catalog_publication_commit_finalizations",
+            "catalog_publication_finalization_batch_stored",
+            "catalog_publication_commits",
+            "catalog_publication_finalization_checkpoints",
+            "catalog_publication_commit_anchors",
+        ):
+            connector.execute(
+                f"DELETE FROM {table} WHERE receipt_id = %s", (b"\x01" * 16,)
+            )
+        connector.execute(
+            "DELETE FROM catalog_publication_candidates WHERE candidate_id = %s",
+            (b"\x11" * 16,),
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+    with connector.transaction():
+        retry = IngestFenceRepository.claim(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            owner_token=b"k" * 16,
+            now=41,
+            lease_duration=1_000_000,
+        )
+    return gate, retry, _snapshot_command(root, summaries[0]), builds[0]
+
+
+def test_compacted_snapshot_recurrence_accepts_retained_uncollected_analysis(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "compacted-recurrence.sqlite3")
+    try:
+        gate, retry, command, retired_build = _compacted_snapshot_recurrence(connector)
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_source_revision_provenance WHERE source_revision = 1"
+        ) == (1,)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_publication_commits WHERE source_revision = 1"
+            )
+            == ()
+        )
+        recovered = _handoff_snapshot_command(connector, gate, retry, command, now=42)
+        assert recovered != retired_build
+        assert connector.fetch_one(
+            "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (recovered,),
+        ) == (b"\x02" * 16,)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "descriptor-digest",
+        "descriptor-channel",
+        "missing-descriptor",
+        "missing-snapshot-binding",
+        "missing-completion",
+        "future-source-revision",
+        "unfinalized-current-head",
+        "open-preparation",
+        "complete-preparation",
+    ),
+)
+def test_compacted_snapshot_recurrence_rejects_corruption_without_writes(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    connector = _generated_database(tmp_path / f"compacted-{corruption}.sqlite3")
+    try:
+        gate, retry, command, retired_build = _compacted_snapshot_recurrence(connector)
+        analysis = connector.fetch_one(
+            "SELECT analysis_id FROM catalog_source_revision_provenance "
+            "WHERE source_revision = 1"
+        )[0]
+        with command.prepare_root_upload() as root_plan:
+            _upload(connector, gate, retry, root_plan, now=42)
+            connector.execute("PRAGMA foreign_keys = OFF")
+            try:
+                if corruption == "descriptor-digest":
+                    connector.execute(
+                        "UPDATE catalog_source_revision_descriptors "
+                        "SET snapshot_manifest_sha256 = %s WHERE source_revision = 1",
+                        (b"x" * 32,),
+                    )
+                elif corruption == "descriptor-channel":
+                    connector.execute(
+                        "UPDATE catalog_source_revision_descriptors "
+                        "SET channel = %s WHERE source_revision = 1",
+                        (b"foreign",),
+                    )
+                elif corruption == "missing-descriptor":
+                    connector.execute(
+                        "DELETE FROM catalog_source_revision_descriptors "
+                        "WHERE source_revision = 1"
+                    )
+                elif corruption == "missing-snapshot-binding":
+                    connector.execute(
+                        "DELETE FROM catalog_analysis_snapshot_manifest "
+                        "WHERE analysis_id = %s",
+                        (analysis,),
+                    )
+                elif corruption == "missing-completion":
+                    connector.execute(
+                        "DELETE FROM catalog_analysis_run_completed_ats "
+                        "WHERE analysis_id = %s",
+                        (analysis,),
+                    )
+                elif corruption == "future-source-revision":
+                    for table in (
+                        "catalog_source_revision_descriptors",
+                        "catalog_source_revision_provenance",
+                    ):
+                        connector.execute(
+                            f"UPDATE {table} SET source_revision = 3 "
+                            "WHERE source_revision = 1"
+                        )
+                elif corruption == "unfinalized-current-head":
+                    connector.execute(
+                        "DELETE FROM catalog_publication_commit_finalizations "
+                        "WHERE receipt_id = %s",
+                        (b"\x02" * 16,),
+                    )
+                else:
+                    state = "OPEN" if corruption == "open-preparation" else "COMPLETE"
+                    connector.execute(
+                        "INSERT INTO operational_operational_preparations "
+                        "(preparation_id, build_id, operational_policy_id, "
+                        "deletion_request_generation, state, prepared_at, completed_at) "
+                        "VALUES (%s, %s, 1, 0, %s, 40, %s)",
+                        (
+                            b"p" * 16,
+                            retired_build,
+                            state,
+                            None if state == "OPEN" else 41,
+                        ),
+                    )
+            finally:
+                connector.execute("PRAGMA foreign_keys = ON")
+            before = tuple(connector.connection.iterdump())
+            with (
+                connector.transaction(),
+                pytest.raises(SourceBuildConflictError),
+            ):
+                SourceBuildRepository.handoff_root(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=retry,
+                    command=command,
+                    root_plan=root_plan,
+                    policy=SOURCE_BUILD_POLICY_AUTHORITY,
+                    now=45,
+                )
+            assert tuple(connector.connection.iterdump()) == before
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("working_kind", ("source", "catalog"))
+def test_compacted_source_retirement_rejects_retained_working_roots(
+    tmp_path: Path,
+    working_kind: str,
+) -> None:
+    connector = _generated_database(tmp_path / f"compacted-{working_kind}.sqlite3")
+    try:
+        _gate, retry, _command, retired_build = _compacted_snapshot_recurrence(
+            connector
+        )
+        source_working: tuple[Any, ...] = ()
+        if working_kind == "source":
+            assigned_at = _restore_sealed_source_working(
+                connector, build_id=retired_build
+            )
+            source_working = (1, retired_build, assigned_at)
+        else:
+            analysis = connector.fetch_one(
+                "SELECT analysis_id FROM catalog_source_revision_provenance "
+                "WHERE source_revision = 1"
+            )[0]
+            connector.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connector.execute(
+                    "INSERT INTO catalog_publication_candidates "
+                    "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+                    "display_title_policy_id, artifacts_required, created_at) "
+                    "VALUES (%s, %s, 1, 1, 1, 0, 40)",
+                    (b"\x11" * 16, analysis),
+                )
+                connector.execute(
+                    "INSERT INTO operational_catalog_working_candidates "
+                    "(slot, candidate_id, assigned_at) VALUES (1, %s, 40)",
+                    (b"\x11" * 16,),
+                )
+            finally:
+                connector.execute("PRAGMA foreign_keys = ON")
+        before = tuple(connector.connection.iterdump())
+        with (
+            connector.transaction(),
+            pytest.raises(SourceBuildConflictError, match="working"),
+        ):
+            source_build_module._is_exact_retired_sealed_source_build(
+                connector,
+                build_id=retired_build,
+                generation=retry.generation,
+                source_working=source_working,
+                current_receipt_id=b"\x02" * 16,
+            )
+        assert tuple(connector.connection.iterdump()) == before
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("generation_offset", (0, 1), ids=("equal", "future"))
+def test_compacted_source_retirement_requires_strictly_newer_generation(
+    tmp_path: Path,
+    generation_offset: int,
+) -> None:
+    connector = _generated_database(
+        tmp_path / f"compacted-generation-{generation_offset}.sqlite3"
+    )
+    try:
+        _gate, retry, _command, retired_build = _compacted_snapshot_recurrence(
+            connector
+        )
+        mapped_generation = retry.generation + generation_offset
+        if generation_offset:
+            connector.execute(
+                "INSERT INTO operational_ingest_generations "
+                "(generation, started_at, completed_at) VALUES (%s, 42, NULL)",
+                (mapped_generation,),
+            )
+        connector.execute(
+            "INSERT INTO operational_source_build_generations "
+            "(build_id, generation) VALUES (%s, %s)",
+            (retired_build, mapped_generation),
+        )
+        before = tuple(connector.connection.iterdump())
+        with (
+            connector.transaction(),
+            pytest.raises(SourceBuildConflictError, match="not fenced"),
+        ):
+            source_build_module._is_exact_retired_sealed_source_build(
+                connector,
+                build_id=retired_build,
+                generation=retry.generation,
+                source_working=(),
+                current_receipt_id=b"\x02" * 16,
+            )
+        assert tuple(connector.connection.iterdump()) == before
+    finally:
+        connector.close()
+
+
 def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

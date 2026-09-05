@@ -928,6 +928,113 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
     pipeline.ready()
 
 
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
+def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
+    db_config: CoreConfig,
+) -> None:
+    """Historical snapshots recur after their commits are legitimately reclaimed."""
+
+    initialize_database(db_config)
+    original = gallery(1001, pages=[b"recurrence-a"], artists=["alice"])
+    replacement = gallery(1001, pages=[b"recurrence-b"], artists=["alice"])
+    source = MemorySource([original])
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
+    first, first_progressed = pipeline.turn()
+    assert first_progressed == 0
+    first_view = pipeline.view()
+    assert first_view["revision"] == 1
+    original_artifact = _artifact_sha(first_view, 1001)
+
+    source.put(replacement)
+    second, second_progressed = pipeline.turn()
+    assert second_progressed > 0
+    second_view = pipeline.view()
+    assert second_view["revision"] == 2
+    replacement_artifact = _artifact_sha(second_view, 1001)
+    assert replacement_artifact != original_artifact
+
+    # Current-only cleanup removes the historical publication authority while
+    # the current analysis still needs its predecessor's normalized state.
+    connector = open_connector(db_config)
+    try:
+        with connector.read_transaction():
+            assert connector.fetch_all(
+                "SELECT revision FROM catalog_publication_commits ORDER BY revision"
+            ) == [(2,)]
+            assert (
+                connector.fetch_one(
+                    "SELECT 1 FROM catalog_publication_candidates "
+                    "WHERE reserved_revision = %s",
+                    (1,),
+                )
+                == ()
+            )
+            assert connector.fetch_one(
+                "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
+                (first.source.build_id,),
+            ) == ("SEALED",)
+            assert connector.fetch_all(
+                "SELECT provenance.source_revision, state.state "
+                "FROM catalog_source_revision_provenance AS provenance "
+                "JOIN catalog_analysis_run_descriptor AS analysis "
+                "ON analysis.analysis_id = provenance.analysis_id "
+                "JOIN catalog_analysis_run_states AS state "
+                "ON state.analysis_id = analysis.analysis_id "
+                "WHERE analysis.build_id = %s",
+                (first.source.build_id,),
+            ) == [(1, "COMPLETE")]
+            assert connector.fetch_one(
+                "SELECT 1 FROM catalog_analysis_baselines AS baseline "
+                "JOIN catalog_analysis_run_descriptor AS analysis "
+                "ON analysis.analysis_id = baseline.base_analysis_id "
+                "WHERE analysis.build_id = %s",
+                (first.source.build_id,),
+            ) == (1,)
+    finally:
+        connector.close()
+    pipeline.ready()
+
+    builds = {first.source.build_id, second.source.build_id}
+    assert len(builds) == 2
+    for revision, snapshot, expected_artifact in (
+        (3, original, original_artifact),
+        (4, replacement, replacement_artifact),
+    ):
+        source.put(snapshot)
+        recurring, progressed = pipeline.turn()
+        assert recurring.source.sealed and not recurring.source.replayed
+        assert recurring.source.build_id not in builds
+        builds.add(recurring.source.build_id)
+        assert recurring.publication.terminal
+        assert progressed > 0
+        current = pipeline.view()
+        assert (current["revision"], current["publication_count"]) == (revision, 1)
+        assert _artifact_sha(current, 1001) == expected_artifact
+
+    before_replay = pipeline.view()
+    renders = pipeline.library.render_calls
+    replay, replay_progressed = pipeline.turn()
+    assert replay.source.replayed
+    assert replay.source.build_id == recurring.source.build_id
+    assert replay.publication.terminal
+    assert replay_progressed == 0
+    assert pipeline.library.render_calls == renders
+    assert pipeline.view() == before_replay
+
+    before_stale = snapshot_database(db_config)
+    with (
+        VNextIngestFacade(db_config, clock=Clock()) as facade,
+        facade.prepare_source(source) as prepared,
+    ):
+        for stale in (first, second):
+            with pytest.raises(FENCE_ERRORS):
+                facade.issue_source_step(stale.session, stale.policy, prepared)
+    assert snapshot_difference(before_stale, snapshot_database(db_config)) == {}
+    assert pipeline.view() == before_replay
+    pipeline.ready()
+
+
 @pytest.mark.merge_smoke
 def test_full_check_accepts_each_durable_publication_commit_release_phase(
     sqlite_config: CoreConfig,

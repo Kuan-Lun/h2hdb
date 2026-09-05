@@ -22,6 +22,14 @@ not OPDS history or a durable delivery queue. Bounded current-only cleanup
 retires unreachable finalized non-head state while retaining identities and
 objects protected by live work or published revisions.
 
+An older publication commit can be reclaimed while a newer incremental
+analysis still needs the older analysis and source provenance. If that source
+snapshot appears again, ingest verifies the retained descriptor against the
+completed analysis output and the newer published head, then creates a new
+build based on that head. It preserves the referenced ancestry and never
+replays the old publication. This also works after a process restart and needs
+no schema migration or manual removal of provenance.
+
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
 the same database file read-only in read-only containers. For MariaDB, use a
