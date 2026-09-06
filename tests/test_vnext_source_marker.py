@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import replace
 from typing import Literal
 
@@ -155,7 +156,7 @@ def _turn(config: CoreConfig, source: MarkerSource, library: MemoryLibrary) -> b
         )
         drain_maintenance(facade)
     assert full_check(config).state == "READY"
-    with open_connector(config) as connector:
+    with closing(open_connector(config)) as connector:
         assert connector.fetch_one(
             "SELECT COUNT(*) FROM catalog_source_build_galleries WHERE build_id = %s",
             (receipts.source.build_id,),
