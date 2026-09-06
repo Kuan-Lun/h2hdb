@@ -1313,6 +1313,9 @@ def _seed_fixture(
     matching_gids: list[int] = []
     posting_count = 0
     title_posting_count = 0
+    tag_members: dict[str, list[tuple[int, bytes]]] = {
+        subject: [] for subject in _SUBJECTS
+    }
 
     with SQLiteConnector(str(database_path)) as connector, connector.transaction():
         _allocate_fixture_revisions(
@@ -1363,6 +1366,9 @@ def _seed_fixture(
                 allocated_at=committed_at + position + 1,
                 modified_at=committed_at + position + 10,
             )
+            tag_members[assignment.subject].append(
+                (committed_at + position + 8, _publication_key)
+            )
             posting_count += len(postings)
             title_posting_count += len(title_postings)
         _seed_facets(
@@ -1373,6 +1379,33 @@ def _seed_fixture(
             subject_counts=full_subject_counts,
             contributor_counts=full_contributor_counts,
         )
+        # This fixture gives every gallery a distinct upload timestamp, so the
+        # title/identity tie breakers cannot change either precomputed order.
+        directory: list[tuple[int, bytes, str]] = []
+        for subject, members in tag_members.items():
+            if not members:
+                continue
+            ordered = sorted(members, reverse=True)
+            for position, (_uploaded, publication_key) in enumerate(ordered):
+                writer.insert(
+                    connector,
+                    "catalog_tag_publication_order",
+                    ("revision", "tag_id", "position", "publication_key"),
+                    (
+                        REVISION,
+                        shared["subject_ids"][subject],
+                        position,
+                        publication_key,
+                    ),
+                )
+            directory.append((-ordered[0][0], subject.encode("utf-8"), subject))
+        for position, (_uploaded, _name, subject) in enumerate(sorted(directory)):
+            writer.insert(
+                connector,
+                "catalog_tag_directory_order",
+                ("revision", "namespace", "position", "tag_value_sha256"),
+                (REVISION, _SUBJECT_NAMESPACE, position, shared["subjects"][subject]),
+            )
 
     expected = {
         "revision": REVISION,

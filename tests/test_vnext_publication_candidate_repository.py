@@ -1347,7 +1347,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         ) as validation,
     ):
         assert plan.publication_count == validation.publication_count == 1
-        assert plan.child_count == validation.child_count == 20
+        assert plan.child_count == validation.child_count == 24
         _upload_projection_canonical_values(
             connector,
             gate,
@@ -1366,7 +1366,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-1",
                 now=112,
             )
-        assert built.row_count == 20 and not built.terminal
+        assert built.row_count == 24 and not built.terminal
         with connector.transaction():
             replay = PublicationCandidateRepository.process_catalog_projection_batch(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1388,7 +1388,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-build-2",
                 now=114,
             )
-        assert terminal.terminal and terminal.next_processed_count == 20
+        assert terminal.terminal and terminal.next_processed_count == 24
 
         with connector.transaction():
             checked = PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1400,7 +1400,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 batch_key=b"catalog-validate-1",
                 now=115,
             )
-        assert checked.row_count == 20 and not checked.terminal
+        assert checked.row_count == 24 and not checked.terminal
         with connector.transaction():
             checked_terminal = (
                 PublicationCandidateRepository.validate_catalog_projection_batch(
@@ -1414,7 +1414,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
                 )
             )
         assert checked_terminal.terminal
-        assert checked_terminal.next_processed_count == 20
+        assert checked_terminal.next_processed_count == 24
 
     publication_key = identity.publication_key(10_001)
     assert connector.fetch_one(
@@ -2327,3 +2327,105 @@ def test_closed_publication_cursor_codecs_reject_noncanonical_frames(
 
     with pytest.raises(PublicationCandidateConflictError):
         module._validate_stage_cursor(codec, cursor)
+
+
+def test_tag_directory_projection_replays_same_value_across_namespaces(
+    tmp_path: Path,
+) -> None:
+    """Variable namespace lengths preserve the catalog child cursor SQL order."""
+
+    connector = _generated_database(tmp_path / "tag-directory-namespace-order.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _seed_selected_galleries(connector, count=1)
+    _seed_projection_metadata(connector, count=1)
+    namespaces = (b"", b"a", b"a\0", b"artist", b"group", b"z" * 128)
+    value = b"shared"
+    digest = identity.canonical_value_digest("tag_value_utf8_v1", value)
+    _canonical_identity(
+        connector,
+        digest,
+        domain=b"tag_value_utf8_v1",
+        serial=12_000,
+        payload=value,
+    )
+    for position, namespace in enumerate(namespaces):
+        tag_id = position + 1
+        seed_tag_term(
+            connector,
+            tag_id=tag_id,
+            namespace=namespace,
+            tag_value_sha256=digest,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_tags "
+            "(gallery_id, observation_id, position, tag_id) VALUES (1, 1, %s, %s)",
+            (position, tag_id),
+        )
+    _begin(connector, gate, turn)
+    _complete_selection(connector, gate, turn)
+    with connector.transaction():
+        authority = PublicationCandidateRepository.issue_projection_authority(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            now=110,
+        )
+    try:
+        with (
+            PublicationCandidateRepository.prepare_catalog_projection(
+                connector,
+                backend="sqlite",
+                authority=authority,
+            ) as plan,
+            PublicationCandidateRepository.prepare_catalog_projection_validation(
+                connector,
+                backend="sqlite",
+                authority=authority,
+            ) as validation,
+            patch(
+                "h2hdb.vnext_publication_candidate_repository._CATALOG_BATCH_ROWS", 3
+            ),
+        ):
+            _upload_projection_canonical_values(connector, gate, turn, plan, now=111)
+            timestamp = 112
+            for method, argument, selected_plan in (
+                (
+                    PublicationCandidateRepository.process_catalog_projection_batch,
+                    "plan",
+                    plan,
+                ),
+                (
+                    PublicationCandidateRepository.validate_catalog_projection_batch,
+                    "validation",
+                    validation,
+                ),
+            ):
+                while True:
+                    with connector.transaction():
+                        batch = method(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            candidate_id=_CANDIDATE,
+                            batch_key=timestamp.to_bytes(8, "big"),
+                            now=timestamp,
+                            **{argument: selected_plan},
+                        )
+                    assert batch.row_count <= 3
+                    timestamp += 1
+                    if batch.terminal:
+                        break
+        assert connector.fetch_all(
+            "SELECT namespace, position, tag_value_sha256 "
+            "FROM catalog_tag_directory_order WHERE revision = 1 ORDER BY namespace",
+        ) == [(namespace, 0, digest) for namespace in namespaces]
+        catalog_refinement._validate_active_discovery_projection(
+            connector,
+            revision=1,
+            display_title_policy_id=1,
+            expected_publication_count=1,
+        )
+    finally:
+        connector.close()

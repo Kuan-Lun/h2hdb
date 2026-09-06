@@ -661,6 +661,7 @@ _CANONICAL_REFERENCE_ROLES = (
         b"catalog_summary_utf8_v1",
     ),
     ("tag_term", "tag_value_sha256", b"tag_value_utf8_v1"),
+    ("tag_directory_order", "tag_value_sha256", b"tag_value_utf8_v1"),
     ("display_title_choice", "title_sha256", b"display_title_utf8_v1"),
     ("title_sort", "title_sha256", b"display_title_utf8_v1"),
 )
@@ -4797,6 +4798,215 @@ def _validate_contributor_facet_order(
             previous[1].close()
 
 
+def _validate_tag_browse_orders(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+    display_title_policy_id: int,
+    cache: _CanonicalValidationCache,
+) -> None:
+    """Independently check tag membership, dense positions and latest order."""
+
+    missing = connector.fetch_one(
+        "SELECT subject.tag_id FROM catalog_subjects AS subject "
+        "LEFT JOIN catalog_tag_publication_order AS ordered "
+        "ON ordered.revision = subject.revision "
+        "AND ordered.tag_id = subject.tag_id "
+        "AND ordered.publication_key = subject.publication_key "
+        "WHERE subject.revision = %s AND ordered.position IS NULL LIMIT 1",
+        (revision,),
+    )
+    if missing:
+        raise CatalogSemanticValidationError("active tag order omits membership")
+    expected.execute(
+        "CREATE TABLE expected_tag_directory ("
+        "namespace BLOB NOT NULL, tag_value_sha256 BLOB NOT NULL, "
+        "latest_upload INTEGER NOT NULL, tag_value BLOB NOT NULL, "
+        "UNIQUE (namespace, tag_value_sha256))"
+    )
+    previous: tuple[int, int, int, bytes, BinaryIO] | None = None
+    after_tag, after_position = 0, -1
+    try:
+        while True:
+            rows = connector.fetch_all(
+                "SELECT ordered.tag_id, ordered.position, ordered.publication_key, "
+                "uploaded.upload_time, sorting.sort_title_sha256, "
+                "term.namespace, term.tag_value_sha256, subject.tag_id "
+                "FROM catalog_tag_publication_order AS ordered "
+                "LEFT JOIN catalog_subjects AS subject "
+                "ON subject.revision = ordered.revision "
+                "AND subject.publication_key = ordered.publication_key "
+                "AND subject.tag_id = ordered.tag_id "
+                "LEFT JOIN catalog_publications AS publication "
+                "ON publication.revision = ordered.revision "
+                "AND publication.publication_key = ordered.publication_key "
+                "LEFT JOIN catalog_publication_identities AS identity "
+                "ON identity.publication_key = ordered.publication_key "
+                "LEFT JOIN catalog_gallery_upload_times AS uploaded "
+                "ON uploaded.gid = identity.gid "
+                "LEFT JOIN catalog_publication_titles AS title "
+                "ON title.revision = ordered.revision "
+                "AND title.publication_key = ordered.publication_key "
+                "LEFT JOIN catalog_display_title_choices AS display "
+                "ON display.display_title_policy_id = %s "
+                "AND display.source_title_sha256 = title.source_title_sha256 "
+                "AND display.source_gallery_name = title.source_gallery_name "
+                "LEFT JOIN catalog_display_title_policies AS policy "
+                "ON policy.display_title_policy_id = display.display_title_policy_id "
+                "LEFT JOIN catalog_title_sorts AS sorting "
+                "ON sorting.title_sort_policy_id = policy.title_sort_policy_id "
+                "AND sorting.title_sha256 = display.title_sha256 "
+                "LEFT JOIN catalog_tag_terms AS term ON term.tag_id = ordered.tag_id "
+                "WHERE ordered.revision = %s AND (ordered.tag_id > %s OR "
+                "(ordered.tag_id = %s AND ordered.position > %s)) "
+                "ORDER BY ordered.tag_id, ordered.position LIMIT %s",
+                (
+                    display_title_policy_id,
+                    revision,
+                    after_tag,
+                    after_tag,
+                    after_position,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if len(row) != 8 or any(value is None for value in row):
+                    raise CatalogSemanticValidationError(
+                        "active tag order lacks immutable membership authority"
+                    )
+                tag_id = _as_int(row[0], field="tag order tag id", positive=True)
+                position = _as_int(row[1], field="tag order position")
+                publication_key = _as_bytes(row[2], field="tag order publication")
+                uploaded = _as_int(row[3], field="tag order uploaded time")
+                sort_digest = _as_bytes(row[4], field="tag order title digest")
+                title_spool, _ = _validated_canonical_spool(
+                    connector,
+                    sort_digest,
+                    expected_domain=b"title_sort_utf8_v1",
+                    detail="tag order title",
+                    cache=cache,
+                )
+                new_tag = previous is None or previous[0] != tag_id
+                expected_position = (
+                    0 if previous is None or new_tag else previous[1] + 1
+                )
+                if position != expected_position:
+                    title_spool.close()
+                    raise CatalogSemanticValidationError(
+                        "active tag order positions are not exactly contiguous"
+                    )
+                if not new_tag and previous is not None:
+                    comparison = (
+                        _compare_canonical_spools(previous[4], title_spool)
+                        if previous[2] == uploaded
+                        else 0
+                    )
+                    if previous[2] < uploaded or (
+                        previous[2] == uploaded
+                        and (
+                            comparison > 0
+                            or (comparison == 0 and previous[3] >= publication_key)
+                        )
+                    ):
+                        title_spool.close()
+                        raise CatalogSemanticValidationError(
+                            "active tag publications violate uploaded/title order"
+                        )
+                if previous is not None:
+                    previous[4].close()
+                previous = (tag_id, position, uploaded, publication_key, title_spool)
+                if new_tag:
+                    _record_expected_tag_directory(
+                        connector,
+                        expected,
+                        namespace=_as_bytes(row[5], field="tag namespace"),
+                        digest=_as_bytes(row[6], field="tag value digest"),
+                        uploaded=uploaded,
+                        cache=cache,
+                    )
+                after_tag, after_position = tag_id, position
+        _compare_tag_directory_order(connector, expected, revision=revision)
+    finally:
+        if previous is not None:
+            previous[4].close()
+
+
+def _record_expected_tag_directory(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    namespace: bytes,
+    digest: bytes,
+    uploaded: int,
+    cache: _CanonicalValidationCache,
+) -> None:
+    spool, size = _validated_canonical_spool(
+        connector,
+        digest,
+        expected_domain=b"tag_value_utf8_v1",
+        detail="tag directory value",
+        cache=cache,
+    )
+    try:
+        inserted = expected.execute(
+            "INSERT INTO expected_tag_directory "
+            "(namespace, tag_value_sha256, latest_upload, tag_value) "
+            "VALUES (?, ?, ?, zeroblob(?))",
+            (namespace, digest, uploaded, size),
+        )
+        rowid = inserted.lastrowid
+        assert rowid is not None
+        spool.seek(0)
+        with expected.blobopen(
+            "expected_tag_directory", "tag_value", rowid, readonly=False
+        ) as value:
+            while part := spool.read(65536):
+                value.write(part)
+    finally:
+        spool.close()
+
+
+def _compare_tag_directory_order(
+    connector: SQLConnector,
+    expected: sqlite3.Connection,
+    *,
+    revision: int,
+) -> None:
+    desired = expected.execute(
+        "SELECT namespace, ROW_NUMBER() OVER (PARTITION BY namespace "
+        "ORDER BY latest_upload DESC, tag_value, tag_value_sha256) - 1, "
+        "tag_value_sha256 FROM expected_tag_directory "
+        "ORDER BY namespace, latest_upload DESC, tag_value, tag_value_sha256"
+    )
+    after_namespace, after_position = b"", -1
+    while True:
+        actual = connector.fetch_all(
+            "SELECT namespace, position, tag_value_sha256 "
+            "FROM catalog_tag_directory_order WHERE revision = %s "
+            "AND (namespace > %s OR (namespace = %s AND position > %s)) "
+            "ORDER BY namespace, position LIMIT %s",
+            (
+                revision,
+                after_namespace,
+                after_namespace,
+                after_position,
+                _CATALOG_RESOURCE_PAGE_LIMIT,
+            ),
+        )
+        wanted = desired.fetchmany(_CATALOG_RESOURCE_PAGE_LIMIT)
+        if tuple(tuple(row) for row in actual) != tuple(wanted):
+            raise CatalogSemanticValidationError(
+                "active tag directory differs from exact latest-upload/value order"
+            )
+        if not actual:
+            return
+        after_namespace = _as_bytes(actual[-1][0], field="tag directory namespace")
+        after_position = _as_int(actual[-1][1], field="tag directory position")
+
+
 def _validate_active_discovery_projection(
     connector: SQLConnector,
     *,
@@ -5002,6 +5212,13 @@ def _validate_active_discovery_projection(
             connector,
             expected,
             revision=revision,
+            cache=cache,
+        )
+        _validate_tag_browse_orders(
+            connector,
+            expected,
+            revision=revision,
+            display_title_policy_id=display_title_policy_id,
             cache=cache,
         )
     finally:

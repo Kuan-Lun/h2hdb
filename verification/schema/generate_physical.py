@@ -249,6 +249,8 @@ def runtime_obligation_records(
                 "language_facet_order",
                 "subject_facet_order",
                 "contributor_facet_order",
+                "tag_publication_order",
+                "tag_directory_order",
             )
         ),
         *(
@@ -758,6 +760,8 @@ TABLE_NAMES = {
     "language_facet_order": "catalog_language_facet_order",
     "subject_facet_order": "catalog_subject_facet_order",
     "contributor_facet_order": "catalog_contributor_facet_order",
+    "tag_publication_order": "catalog_tag_publication_order",
+    "tag_directory_order": "catalog_tag_directory_order",
     "publication_receipt": "catalog_publication_receipts",
     "publication_commit_anchor": "catalog_publication_commit_anchors",
     "publication_commit": "catalog_publication_commits",
@@ -802,6 +806,16 @@ OVERLAY_RUNTIME_OBLIGATIONS = (
 
 
 INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
+    "tag_publication_order": [
+        ("ix_tag_publication_child", ["revision", "publication_key", "tag_id"], False),
+    ],
+    "tag_directory_order": [
+        (
+            "ix_tag_directory_child",
+            ["revision", "tag_value_sha256", "namespace"],
+            False,
+        ),
+    ],
     "title_search_posting": [
         (
             "ix_title_search_posting_document",

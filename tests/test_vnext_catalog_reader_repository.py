@@ -43,6 +43,7 @@ from h2hdb import (
     CatalogPageCountRange,
     CatalogRecentOrder,
     CatalogSubjectFilter,
+    CatalogTagFilter,
     CatalogTimestampRange,
     CoreConfig,
     DatabaseConfig,
@@ -70,6 +71,7 @@ from h2hdb.vnext_catalog_reader_repository import (
     _discovery_query_sha256,
     _facet_identity_sha256,
     _selected_keys_cte,
+    _tag_publications_query_sha256,
 )
 from h2hdb.vnext_identity import (
     CanonicalValueChunk,
@@ -95,6 +97,7 @@ _EMPTY_EVENT_CHAIN = sha256(b"h2hdb-operational-event-chain-v1\0").digest()
 _READER_ADAPTER_ID = b"reader-test-adapter"
 _READER_POLICY_FINGERPRINT = sha256(b"reader-test-artifact-policy").digest()
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
+    "catalog_tag_publication_order",
     "catalog_contributors",
     "catalog_publication_order",
     "catalog_publication_titles",
@@ -619,6 +622,16 @@ def _published_fixture(
         "(revision, publication_key, position, tag_id) VALUES (1, %s, 0, 1)",
         (key,),
     )
+    connector.execute(
+        "INSERT INTO catalog_tag_publication_order "
+        "(revision, tag_id, position, publication_key) VALUES (1, 1, 0, %s)",
+        (key,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_tag_directory_order "
+        "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 0, %s)",
+        (b"artist", tag_value),
+    )
     return {
         "publication_key": key,
         "source_root": root,
@@ -970,6 +983,16 @@ def _seed_discovery_authority(
         "(revision, publication_key, position, tag_id) VALUES (1, %s, 1, 2)",
         (values["publication_key"],),
     )
+    connector.execute(
+        "INSERT INTO catalog_tag_publication_order "
+        "(revision, tag_id, position, publication_key) VALUES (1, 2, 0, %s)",
+        (values["publication_key"],),
+    )
+    connector.execute(
+        "INSERT INTO catalog_tag_directory_order "
+        "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 0, %s)",
+        (b"genre", general_subject),
+    )
     fields = (
         "顯示標題".encode(),
         "原始標題".encode(),
@@ -1024,6 +1047,401 @@ def _seed_discovery_authority(
     connector.execute(
         "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
     )
+
+
+def _seed_tag_browse_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
+    """Seed an independently sorted oracle with shared and exact-namespace tags."""
+
+    values = _published_fixture(connector, artifact_count=0)
+    canonical_values: dict[tuple[str, bytes], bytes] = {}
+
+    def canonical(domain: str, payload: bytes) -> bytes:
+        key = (domain, payload)
+        if key not in canonical_values:
+            canonical_values[key] = _canonical(connector, domain, payload)
+        return canonical_values[key]
+
+    tags = (
+        ("artist", "amber"),
+        ("artist", "beta"),
+        ("artist", "alpha"),
+        ("group", "team-b"),
+        ("group", "team-a"),
+        ("group", "team-c"),
+        ("other", "uncensored"),
+        ("other", "soushuuhen"),
+        ("other", "multi-work series"),
+        ("artist", "uncensored"),
+    )
+    tag_ids = {tag: index for index, tag in enumerate(tags, start=2)}
+    tag_digests: dict[tuple[str, str], bytes] = {}
+    for namespace, name in tags:
+        digest = canonical("tag_value_utf8_v1", name.encode())
+        tag_digests[namespace, name] = digest
+        seed_tag_term(
+            connector,
+            tag_id=tag_ids[namespace, name],
+            namespace=namespace.encode(),
+            tag_value_sha256=digest,
+        )
+    rows = (
+        (201, "Zebra", 9_000_000, (2, 5, 8)),
+        (202, "apple", 9_000_000, (2, 3, 6, 9)),
+        (203, "Banana", 9_000_000, (2, 10)),
+        (204, "alpha", 5_000_000, (4, 7, 8)),
+        (205, "aardvark", 1_000_000, (3, 11)),
+        (206, "Apple", 9_000_000, (2,)),
+    )
+    members: dict[int, list[tuple[int, bytes, bytes]]] = {}
+    scope = source_scope_key("filesystem", values["source_root"], 1)
+    for position, (gid, title, uploaded, member_tags) in enumerate(rows, start=1):
+        key = publication_key(gid)
+        gallery_name = f"gallery-{gid}".encode()
+        locator = canonical(
+            "source_relative_locator_v1",
+            encode_source_relative_locator((gallery_name.decode(),)),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_locator_identity "
+            "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
+            (locator, gallery_name),
+        )
+        seed_gallery_identity(
+            connector,
+            gallery_id=gid,
+            gallery_key=gallery_key(scope, locator),
+            scope_key=scope,
+            locator_sha256=locator,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+            "VALUES (%s, %s)",
+            (gid, uploaded),
+        )
+        seed_publication_identity(connector, gid=gid)
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, %s)",
+            (gallery_name, gid),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+            (gid, gallery_name),
+        )
+        source_title = canonical("source_title_utf8_v1", title.encode())
+        display_title = canonical("display_title_utf8_v1", title.encode())
+        sort_title = canonical("title_sort_utf8_v1", title.casefold().encode())
+        connector.execute(
+            "INSERT INTO catalog_display_title_choices "
+            "(display_title_policy_id, source_title_sha256, source_gallery_name, "
+            "title_sha256) VALUES (1, %s, %s, %s)",
+            (source_title, gallery_name, display_title),
+        )
+        connector.execute(
+            "INSERT INTO catalog_title_sorts "
+            "(title_sort_policy_id, title_sha256, sort_title_sha256) "
+            "VALUES (1, %s, %s)",
+            (display_title, sort_title),
+        )
+        seed_catalog_publication(
+            connector,
+            revision=1,
+            publication_key=key,
+            gallery_id=gid,
+            summary_sha256=values["summary"],
+            language_sha256=values["language"],
+            modified_at=uploaded,
+            source_title_sha256=source_title,
+            download_time=uploaded,
+        )
+        seed_catalog_publication_title(
+            connector,
+            revision=1,
+            publication_key=key,
+            source_title_sha256=source_title,
+            source_gallery_name=gallery_name,
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_order "
+            "(revision, position, publication_key) VALUES (1, %s, %s)",
+            (position, key),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_contents "
+            "(revision, publication_key, content_sha256) VALUES (1, %s, %s)",
+            (key, values["content"]),
+        )
+        for subject_position, tag_id in enumerate(member_tags):
+            connector.execute(
+                "INSERT INTO catalog_subjects "
+                "(revision, publication_key, position, tag_id) VALUES (1, %s, %s, %s)",
+                (key, subject_position, tag_id),
+            )
+            members.setdefault(tag_id, []).append(
+                (-uploaded, title.casefold().encode(), key)
+            )
+    latest: dict[str, list[tuple[int, bytes, bytes]]] = {}
+    for tag, tag_id in tag_ids.items():
+        namespace, name = tag
+        ordered = sorted(members[tag_id])
+        for position, (_uploaded, _title, key) in enumerate(ordered):
+            connector.execute(
+                "INSERT INTO catalog_tag_publication_order "
+                "(revision, tag_id, position, publication_key) VALUES (1, %s, %s, %s)",
+                (tag_id, position, key),
+            )
+        latest.setdefault(namespace, []).append(
+            (ordered[0][0], name.encode(), tag_digests[tag])
+        )
+    latest["artist"].append((-2_000_000, "測試".encode(), values["tag_value"]))
+    connector.execute("DELETE FROM catalog_tag_directory_order WHERE revision = 1")
+    for namespace, directory in latest.items():
+        for position, (_uploaded, _name, digest) in enumerate(sorted(directory)):
+            connector.execute(
+                "INSERT INTO catalog_tag_directory_order "
+                "(revision, namespace, position, tag_value_sha256) "
+                "VALUES (1, %s, %s, %s)",
+                (namespace.encode(), position, digest),
+            )
+    connector.execute(
+        "UPDATE catalog_revision_descriptors SET publication_count = %s "
+        "WHERE revision = 1",
+        (len(rows) + 1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+    )
+    return values
+
+
+def test_tag_directories_and_publications_page_by_latest_upload_and_name(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "tag-browse.sqlite3"
+    connector = _database(database_path)
+    try:
+        _seed_tag_browse_fixture(connector)
+        facade = VNextCatalogFacade(
+            CoreConfig(
+                database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
+            )
+        )
+        for namespace, expected in (
+            (
+                "artist",
+                [
+                    ("amber", 9),
+                    ("beta", 9),
+                    ("alpha", 5),
+                    ("測試", 2),
+                    ("uncensored", 1),
+                ],
+            ),
+            ("group", [("team-a", 9), ("team-b", 9), ("team-c", 5)]),
+        ):
+            after = None
+            actual: list[tuple[str, int]] = []
+            while True:
+                page = facade.list_tag_values(namespace=namespace, after=after, limit=2)
+                assert len(page.values) <= 2
+                actual.extend(
+                    (value.value, value.latest_uploaded_time // 1_000_000)
+                    for value in page.values
+                )
+                after = page.next_cursor
+                if after is None:
+                    break
+            assert actual == expected
+        tied_apple_gids = sorted((202, 206), key=publication_key)
+        cases: tuple[tuple[str, str, list[int]], ...] = (
+            ("artist", "amber", [*tied_apple_gids, 203, 201]),
+            ("artist", "beta", [202, 205]),
+            ("group", "team-a", [202]),
+            ("other", "uncensored", [201, 204]),
+            ("other", "soushuuhen", [202]),
+            ("other", "multi-work series", [203]),
+            ("artist", "uncensored", [205]),
+            ("other", "missing", []),
+        )
+        for namespace, name, expected_gids in cases:
+            publication_after = None
+            actual_gids: list[int] = []
+            while True:
+                publications = facade.list_tag_publications(
+                    subject=CatalogTagFilter(namespace=namespace, value=name),
+                    after=publication_after,
+                    limit=2,
+                )
+                assert len(publications.publications) <= 2
+                actual_gids.extend(
+                    publication.gid for publication in publications.publications
+                )
+                publication_after = publications.next_cursor
+                if publication_after is None:
+                    break
+            assert actual_gids == expected_gids
+        assert facade.list_tag_values(namespace="missing").values == ()
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+    finally:
+        connector.close()
+
+
+def test_tag_cursors_reject_forged_positions_values_and_membership(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "tag-cursors.sqlite3")
+    try:
+        _seed_tag_browse_fixture(connector)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        directory = reader.list_tag_values(connector, namespace="artist", limit=1)
+        after = directory.next_cursor
+        assert after is not None
+        for forged in (
+            replace(after, namespace="group"),
+            replace(after, position=1),
+            replace(after, value_sha256="0" * 64),
+        ):
+            with pytest.raises(CatalogCursorError):
+                reader.list_tag_values(connector, namespace="artist", after=forged)
+        subject = CatalogTagFilter(namespace="artist", value="amber")
+        first = reader.list_tag_publications(connector, subject=subject, limit=1)
+        publication_after = first.next_cursor
+        assert publication_after is not None
+        different_subject = CatalogTagFilter(namespace="other", value="uncensored")
+        for forged_publication in (
+            replace(publication_after, position=99),
+            replace(
+                publication_after, publication_id=identity.publication_id(123).decode()
+            ),
+            replace(
+                publication_after,
+                query_sha256=_tag_publications_query_sha256(different_subject),
+            ),
+        ):
+            with pytest.raises(CatalogCursorError):
+                reader.list_tag_publications(
+                    connector, subject=subject, after=forged_publication
+                )
+        with pytest.raises(CatalogCursorError):
+            reader.list_tag_publications(
+                connector, subject=different_subject, after=publication_after
+            )
+        with pytest.raises(CatalogRevisionNotFoundError):
+            reader.list_tag_values(
+                connector, namespace="artist", after=replace(after, revision=2)
+            )
+        with pytest.raises(CatalogRevisionNotFoundError):
+            reader.list_tag_publications(
+                connector, subject=subject, after=replace(publication_after, revision=2)
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("limit", (0, -1, 129, True))
+def test_tag_browse_rejects_invalid_limits_before_sql(
+    tmp_path: Path, limit: int
+) -> None:
+    connector = _database(tmp_path / "tag-limits.sqlite3")
+    try:
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with patch.object(connector, "fetch_one") as query:
+            with pytest.raises((ValueError, TypeError)):
+                reader.list_tag_values(connector, namespace="artist", limit=limit)
+            with pytest.raises((ValueError, TypeError)):
+                reader.list_tag_publications(
+                    connector,
+                    subject=CatalogTagFilter(namespace="artist", value="amber"),
+                    limit=limit,
+                )
+            query.assert_not_called()
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("tag_value", ("", "長" * 400))
+def test_tag_browse_round_trips_empty_and_long_source_values(
+    tmp_path: Path, tag_value: str
+) -> None:
+    connector = _database(tmp_path / "tag-source-domain.sqlite3")
+    try:
+        _published_fixture(connector, artifact_count=0)
+        digest = _canonical(connector, "tag_value_utf8_v1", tag_value.encode())
+        connector.execute("DELETE FROM catalog_tag_directory_order WHERE revision = 1")
+        connector.execute(
+            "UPDATE catalog_tag_terms SET tag_value_sha256 = %s WHERE tag_id = 1",
+            (digest,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_tag_directory_order "
+            "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 0, %s)",
+            (b"artist", digest),
+        )
+        connector.execute(
+            "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        directory = reader.list_tag_values(connector, namespace="artist")
+        assert [value.value for value in directory.values] == [tag_value]
+        publications = reader.list_tag_publications(
+            connector, subject=CatalogTagFilter(namespace="artist", value=tag_value)
+        )
+        assert [publication.gid for publication in publications.publications] == [123]
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("family", ("directory", "publications"))
+def test_tag_browse_rejects_position_gaps(tmp_path: Path, family: str) -> None:
+    connector = _database(tmp_path / f"tag-gap-{family}.sqlite3")
+    try:
+        _seed_tag_browse_fixture(connector)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        if family == "directory":
+            connector.execute(
+                "DELETE FROM catalog_tag_directory_order "
+                "WHERE revision = 1 AND namespace = %s AND position = 1",
+                (b"artist",),
+            )
+            with pytest.raises(VNextCatalogReadError, match="contiguous"):
+                reader.list_tag_values(connector, namespace="artist")
+        else:
+            connector.execute(
+                "DELETE FROM catalog_tag_publication_order "
+                "WHERE revision = 1 AND tag_id = 2 AND position = 1"
+            )
+            with pytest.raises(VNextCatalogReadError, match="contiguous"):
+                reader.list_tag_publications(
+                    connector,
+                    subject=CatalogTagFilter(namespace="artist", value="amber"),
+                )
+    finally:
+        connector.close()
+
+
+def test_tag_browse_rejects_missing_ranked_subject_membership(tmp_path: Path) -> None:
+    connector = _database(tmp_path / "tag-membership-missing.sqlite3")
+    try:
+        values = _published_fixture(connector, artifact_count=0)
+        connector.execute(
+            "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "DELETE FROM catalog_subjects WHERE revision = 1 AND publication_key = %s",
+            (values["publication_key"],),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with pytest.raises(VNextCatalogReadError, match="authority"):
+            reader.list_tag_values(connector, namespace="artist")
+        with pytest.raises(VNextCatalogReadError, match="membership"):
+            reader.list_tag_publications(
+                connector, subject=CatalogTagFilter(namespace="artist", value="測試")
+            )
+    finally:
+        connector.close()
 
 
 def _seed_publication_child_cardinality(

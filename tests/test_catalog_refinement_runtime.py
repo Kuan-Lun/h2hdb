@@ -969,6 +969,16 @@ def _insert_nonempty_discovery_projection(
         domain="display_title_utf8_v1",
         payload=b"display",
     )
+    sort_title = _insert_exact_canonical_payload(
+        connector,
+        domain="title_sort_utf8_v1",
+        payload=b"display",
+    )
+    connector.execute(
+        "INSERT INTO catalog_title_sorts "
+        "(title_sort_policy_id, title_sha256, sort_title_sha256) VALUES (1, %s, %s)",
+        (display_title, sort_title),
+    )
     replacement_title = _insert_exact_canonical_payload(
         connector,
         domain="display_title_utf8_v1",
@@ -1063,6 +1073,16 @@ def _insert_nonempty_discovery_projection(
         "INSERT INTO catalog_subjects "
         "(revision, publication_key, position, tag_id) VALUES (1, %s, 0, 1)",
         (publication_key,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_tag_publication_order "
+        "(revision, tag_id, position, publication_key) VALUES (1, 1, 0, %s)",
+        (publication_key,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_tag_directory_order "
+        "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 0, %s)",
+        (b"genre", subject),
     )
 
     lexemes = tuple(
@@ -1627,6 +1647,8 @@ def test_ready_rejects_active_discovery_projection_corruption(
         "language_facet",
         "subject_facet",
         "contributor_facet",
+        "tag_publication_order",
+        "tag_directory_order",
     ),
 )
 def test_ready_rejects_active_discovery_projection_omission(
@@ -1639,6 +1661,14 @@ def test_ready_rejects_active_discovery_projection_omission(
     try:
         values = _insert_nonempty_discovery_projection(connector)
         deletion = {
+            "tag_publication_order": (
+                "DELETE FROM catalog_tag_publication_order WHERE revision = 1",
+                (),
+            ),
+            "tag_directory_order": (
+                "DELETE FROM catalog_tag_directory_order WHERE revision = 1",
+                (),
+            ),
             "search_document": (
                 "DELETE FROM catalog_search_documents WHERE revision = 1 "
                 "AND publication_key = %s",
@@ -1674,6 +1704,26 @@ def test_ready_rejects_active_discovery_projection_omission(
         connector.execute(*deletion)
         connector.execute("PRAGMA foreign_keys = ON")
 
+        with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
+            catalog_refinement.check_discovery_exactness_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("family", ("publication", "directory"))
+def test_ready_rejects_tag_order_position_corruption(
+    tmp_path: Path, family: str
+) -> None:
+    connector = _generated_catalog_database(tmp_path / f"tag-position-{family}.sqlite3")
+    try:
+        _insert_nonempty_discovery_projection(connector)
+        catalog_refinement.check_discovery_exactness_v1(connector)
+        table = (
+            "catalog_tag_publication_order"
+            if family == "publication"
+            else "catalog_tag_directory_order"
+        )
+        connector.execute(f"UPDATE {table} SET position = 1 WHERE revision = 1")
         with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
             catalog_refinement.check_discovery_exactness_v1(connector)
     finally:
@@ -1820,10 +1870,12 @@ def test_ready_rejects_non_utf8_subject_namespace(tmp_path: Path) -> None:
     )
     try:
         _insert_nonempty_discovery_projection(connector)
+        connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
             "UPDATE catalog_tag_terms SET namespace = %s WHERE tag_id = 1",
             (b"\xff",),
         )
+        connector.execute("PRAGMA foreign_keys = ON")
 
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,

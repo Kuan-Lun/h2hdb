@@ -105,6 +105,8 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "language_facet_order",
         "subject_facet_order",
         "contributor_facet_order",
+        "tag_publication_order",
+        "tag_directory_order",
         "gallery_observation_page",
         "gallery_observation_allocation_page",
         "gallery_observation_page_descriptor_anchor",

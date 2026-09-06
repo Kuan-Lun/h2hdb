@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "59e236f29070e53d78295d03a1a1d43b3916ea2974bd0a5577d03db40c6c5a98"
+def catalogManifestSha256 : String := "35bf7f206ae2565bd6029b34a53aa178b3c80a046c8aa06697e2851729f707a0"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -10561,6 +10561,100 @@ theorem contributor_facet_order_bcnf_check :
 theorem contributor_facet_order_bcnf : BCNF contributor_facet_order_contract :=
   bcnfCheck_sound contributor_facet_order_contract contributor_facet_order_bcnf_check
 
+def tag_publication_order_contract : RelationContract where
+  name := "tag_publication_order"
+  attributes := ["revision", "tag_id", "position", "publication_key"]
+  declaredKeys := [["revision", "tag_id", "position"], ["revision", "tag_id", "publication_key"]]
+  declaredFDs := [
+    { determinant := ["revision", "tag_id", "position"], dependent := ["publication_key"] },
+    { determinant := ["revision", "tag_id", "publication_key"], dependent := ["position"] }
+  ]
+
+theorem tag_publication_order_schema_well_formed :
+    schemaWellFormedCheck tag_publication_order_contract = true := by
+  native_decide
+
+theorem tag_publication_order_candidate_keys_check :
+    keysDetermineAllCheck tag_publication_order_contract = true := by
+  native_decide
+
+theorem tag_publication_order_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes tag_publication_order_contract :=
+  keysDetermineAllCheck_sound tag_publication_order_contract
+    tag_publication_order_candidate_keys_check
+
+theorem tag_publication_order_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck tag_publication_order_contract = true := by
+  native_decide
+
+theorem tag_publication_order_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal tag_publication_order_contract :=
+  declaredKeysMinimalCheck_sound tag_publication_order_contract
+    tag_publication_order_candidate_keys_minimal_check
+
+theorem tag_publication_order_closure_fixed_check :
+    closureFixedPointCheck tag_publication_order_contract = true := by
+  native_decide
+
+theorem tag_publication_order_closure_reached_fixed_point :
+    ClosureReachedFixedPoint tag_publication_order_contract :=
+  closureFixedPointCheck_sound tag_publication_order_contract
+    tag_publication_order_closure_fixed_check
+
+theorem tag_publication_order_bcnf_check :
+    bcnfCheck tag_publication_order_contract = true := by
+  native_decide
+
+theorem tag_publication_order_bcnf : BCNF tag_publication_order_contract :=
+  bcnfCheck_sound tag_publication_order_contract tag_publication_order_bcnf_check
+
+def tag_directory_order_contract : RelationContract where
+  name := "tag_directory_order"
+  attributes := ["revision", "namespace", "position", "tag_value_sha256"]
+  declaredKeys := [["revision", "namespace", "position"], ["revision", "namespace", "tag_value_sha256"]]
+  declaredFDs := [
+    { determinant := ["revision", "namespace", "position"], dependent := ["tag_value_sha256"] },
+    { determinant := ["revision", "namespace", "tag_value_sha256"], dependent := ["position"] }
+  ]
+
+theorem tag_directory_order_schema_well_formed :
+    schemaWellFormedCheck tag_directory_order_contract = true := by
+  native_decide
+
+theorem tag_directory_order_candidate_keys_check :
+    keysDetermineAllCheck tag_directory_order_contract = true := by
+  native_decide
+
+theorem tag_directory_order_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes tag_directory_order_contract :=
+  keysDetermineAllCheck_sound tag_directory_order_contract
+    tag_directory_order_candidate_keys_check
+
+theorem tag_directory_order_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck tag_directory_order_contract = true := by
+  native_decide
+
+theorem tag_directory_order_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal tag_directory_order_contract :=
+  declaredKeysMinimalCheck_sound tag_directory_order_contract
+    tag_directory_order_candidate_keys_minimal_check
+
+theorem tag_directory_order_closure_fixed_check :
+    closureFixedPointCheck tag_directory_order_contract = true := by
+  native_decide
+
+theorem tag_directory_order_closure_reached_fixed_point :
+    ClosureReachedFixedPoint tag_directory_order_contract :=
+  closureFixedPointCheck_sound tag_directory_order_contract
+    tag_directory_order_closure_fixed_check
+
+theorem tag_directory_order_bcnf_check :
+    bcnfCheck tag_directory_order_contract = true := by
+  native_decide
+
+theorem tag_directory_order_bcnf : BCNF tag_directory_order_contract :=
+  bcnfCheck_sound tag_directory_order_contract tag_directory_order_bcnf_check
+
 def publication_commit_anchor_contract : RelationContract where
   name := "publication_commit_anchor"
   attributes := ["receipt_id"]
@@ -11176,6 +11270,8 @@ def manifestContracts : List RelationContract := [
   language_facet_order_contract,
   subject_facet_order_contract,
   contributor_facet_order_contract,
+  tag_publication_order_contract,
+  tag_directory_order_contract,
   publication_commit_anchor_contract,
   publication_commit_contract,
   publication_commit_finalization_contract,
@@ -11188,7 +11284,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 218 := by
+    manifestContracts.length = 220 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -11248,6 +11344,8 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   language_facet_order_contract,
   subject_facet_order_contract,
   contributor_facet_order_contract,
+  tag_publication_order_contract,
+  tag_directory_order_contract,
   gallery_observation_page_contract,
   gallery_observation_allocation_page_contract,
   gallery_observation_page_descriptor_anchor_contract,
@@ -11397,6 +11495,8 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   language_facet_order_contract,
   subject_facet_order_contract,
   contributor_facet_order_contract,
+  tag_publication_order_contract,
+  tag_directory_order_contract,
   gallery_observation_page_contract,
   gallery_observation_allocation_page_contract,
   gallery_observation_page_descriptor_anchor_contract,
@@ -11499,11 +11599,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 148 := by
+    catalogPhysicalDomainContracts.length = 150 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 126 := by
+    catalogPhysicalDomainMutationContracts.length = 128 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -13780,6 +13880,8 @@ theorem all_manifest_base_relations_bcnf :
     BCNF language_facet_order_contract ∧
     BCNF subject_facet_order_contract ∧
     BCNF contributor_facet_order_contract ∧
+    BCNF tag_publication_order_contract ∧
+    BCNF tag_directory_order_contract ∧
     BCNF publication_commit_anchor_contract ∧
     BCNF publication_commit_contract ∧
     BCNF publication_commit_finalization_contract ∧
@@ -13952,6 +14054,8 @@ theorem all_manifest_base_relations_bcnf :
     language_facet_order_bcnf,
     subject_facet_order_bcnf,
     contributor_facet_order_bcnf,
+    tag_publication_order_bcnf,
+    tag_directory_order_bcnf,
     publication_commit_anchor_bcnf,
     publication_commit_bcnf,
     publication_commit_finalization_bcnf,
@@ -14168,6 +14272,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes language_facet_order_contract ∧
     KeysDetermineAllAttributes subject_facet_order_contract ∧
     KeysDetermineAllAttributes contributor_facet_order_contract ∧
+    KeysDetermineAllAttributes tag_publication_order_contract ∧
+    KeysDetermineAllAttributes tag_directory_order_contract ∧
     KeysDetermineAllAttributes publication_commit_anchor_contract ∧
     KeysDetermineAllAttributes publication_commit_contract ∧
     KeysDetermineAllAttributes publication_commit_finalization_contract ∧
@@ -14386,6 +14492,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     language_facet_order_candidate_keys_determine_all_attributes,
     subject_facet_order_candidate_keys_determine_all_attributes,
     contributor_facet_order_candidate_keys_determine_all_attributes,
+    tag_publication_order_candidate_keys_determine_all_attributes,
+    tag_directory_order_candidate_keys_determine_all_attributes,
     publication_commit_anchor_candidate_keys_determine_all_attributes,
     publication_commit_candidate_keys_determine_all_attributes,
     publication_commit_finalization_candidate_keys_determine_all_attributes,

@@ -40,6 +40,10 @@ __all__ = [
     "ByteExtent",
     "CatalogContributorFilter",
     "CatalogSubjectFilter",
+    "CatalogTagCursor",
+    "CatalogTagFilter",
+    "CatalogTagPage",
+    "CatalogTagValue",
     "CatalogDiscoveryCursor",
     "CatalogDiscoveryBundle",
     "CatalogDiscoveryPage",
@@ -2363,6 +2367,80 @@ class CatalogDiscoveryPage:
             total = require_int63(self.total, field="discovery page total")
             if total < len(self.publications):
                 raise ValueError("discovery total is smaller than its page")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTagFilter:
+    """One exact source tag, including the complete source-value byte domain."""
+
+    namespace: str
+    value: str
+
+    def __post_init__(self) -> None:
+        validate_namespace(self.namespace)
+        _validate_catalog_tag_value(self.value)
+
+
+def _validate_catalog_tag_value(value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError("tag value must be str")
+    require_bounded_bytes(
+        value.encode("utf-8", errors="strict"),
+        field="tag value",
+        maximum=65_536,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTagCursor:
+    """A position in one revision's exact namespace directory."""
+
+    revision: int
+    namespace: str
+    position: int
+    value_sha256: str
+
+    def __post_init__(self) -> None:
+        require_positive_int63(self.revision, field="tag cursor revision")
+        validate_namespace(self.namespace)
+        require_int63(self.position, field="tag cursor position")
+        _validate_sha256(self.value_sha256, label="Tag value SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTagValue:
+    """An exact tag value with its latest upload in UTC epoch microseconds."""
+
+    value: str
+    latest_uploaded_time: int
+
+    def __post_init__(self) -> None:
+        _validate_catalog_tag_value(self.value)
+        require_int63(self.latest_uploaded_time, field="tag latest uploaded time")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTagPage:
+    revision: CatalogRevision
+    namespace: str
+    values: tuple[CatalogTagValue, ...]
+    next_cursor: CatalogTagCursor | None
+    limit: int
+
+    def __post_init__(self) -> None:
+        validate_namespace(self.namespace)
+        object.__setattr__(self, "values", tuple(self.values))
+        limit = require_positive_int63(self.limit, field="tag page limit")
+        if limit > 128 or len(self.values) > limit:
+            raise ValueError("tag page must honor its limit in 1..128")
+        if any(type(value) is not CatalogTagValue for value in self.values):
+            raise TypeError("tag page values must be CatalogTagValue")
+        if self.next_cursor is not None and (
+            type(self.next_cursor) is not CatalogTagCursor
+            or self.next_cursor.namespace != self.namespace
+            or self.next_cursor.revision != self.revision.revision
+        ):
+            raise ValueError("tag page cursor must match its namespace and revision")
 
 
 @dataclass(frozen=True, slots=True)

@@ -36,6 +36,9 @@ from .domain import (
     CatalogRecentWindow,
     CatalogResourceKind,
     CatalogRevision,
+    CatalogTagCursor,
+    CatalogTagFilter,
+    CatalogTagPage,
     DirectoryObservation,
     FileObservation,
     StorageObjectKey,
@@ -78,6 +81,24 @@ class CatalogReader(Protocol):
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogFacetPage: ...
+
+    def list_tag_values(
+        self,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagPage: ...
+
+    def list_tag_publications(
+        self,
+        *,
+        subject: CatalogTagFilter,
+        after: CatalogDiscoveryCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogDiscoveryPage: ...
 
     def list_recent_publications(
         self,

@@ -300,6 +300,16 @@ Schema變更依序進行：
   `limit`或 cursor。`UPLOADED`依 `upload_time DESC, gid DESC`，`DOWNLOADED`依
   published `download_time DESC, gid DESC`；沒有acquisition的revision回傳空
   window。
+- `CatalogReader.list_tag_values`依 exact namespace列出tag值，依各tag的current
+  publications最新uploaded time降序、exact UTF-8值bytes升序。`list_tag_publications`
+  接受 `CatalogTagFilter`，依uploaded time降序、既有casefolded UTF-8 display-title
+  sort bytes升序、publication identity升序。Namespace與值接受source的完整值域
+  （UTF-8 namespace 0..128 bytes、value 0..65536 bytes），不套用search facet的較窄
+  query限制。兩者只讀sealed revision-scoped `tag_directory_order`與
+  `tag_publication_order`，每頁最多128筆並以position keyset接續；caller cursor必須
+  精確重驗revision、namespace或exact tag、position與membership，禁止request-time
+  全量GROUP BY/MAX、sort或hydrate後Python scan。Preparation以disk plan一次排序，
+  bounded publication child batches獨立exact-compare後seal，READY獨立重建驗證。
 - Acquisition與presentation只保存 neutral immutable descriptors。Core不得
   指定hash path、CBZ/ZIP layout或共享mount；ingest adapters擁有archive與
   artwork bytes及其storage lifecycle，且byte I/O不得進入core DB transaction。
@@ -311,7 +321,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 4只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 5只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為

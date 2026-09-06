@@ -749,6 +749,14 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("title_sort_policy_id", "title_sha256"),
         semantic_value=("sort_title_sha256",),
     ),
+    "catalog_tag_publication_order": NarrowLayoutDeclaration(
+        semantic_key=("revision", "tag_id", "position"),
+        semantic_value=("publication_key",),
+    ),
+    "catalog_tag_directory_order": NarrowLayoutDeclaration(
+        semantic_key=("revision", "namespace", "position"),
+        semantic_value=("tag_value_sha256",),
+    ),
     "catalog_publication_order": NarrowLayoutDeclaration(
         semantic_key=("revision", "position"),
         semantic_value=("publication_key",),

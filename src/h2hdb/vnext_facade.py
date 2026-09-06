@@ -38,6 +38,9 @@ from .domain import (
     CatalogRecentOrder,
     CatalogRecentWindow,
     CatalogRevision,
+    CatalogTagCursor,
+    CatalogTagFilter,
+    CatalogTagPage,
     DownloadCandidateState,
     StorageInstanceBinding,
 )
@@ -189,6 +192,42 @@ class VNextCatalogFacade:
                 connector,
                 facet=facet,
                 query=query,
+                after=after,
+                limit=limit,
+                revision=revision,
+            )
+        )
+
+    def list_tag_values(
+        self,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagPage:
+        return self.__read(
+            lambda connector: self.__reader.list_tag_values(
+                connector,
+                namespace=namespace,
+                after=after,
+                limit=limit,
+                revision=revision,
+            )
+        )
+
+    def list_tag_publications(
+        self,
+        *,
+        subject: CatalogTagFilter,
+        after: CatalogDiscoveryCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogDiscoveryPage:
+        return self.__read(
+            lambda connector: self.__reader.list_tag_publications(
+                connector,
+                subject=subject,
                 after=after,
                 limit=limit,
                 revision=revision,

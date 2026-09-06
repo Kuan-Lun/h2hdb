@@ -1807,15 +1807,17 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 172,
+        "catalog_physical_table_count_after": 174,
         "catalog_relations_added_after_recomposition": (
             "title_search_posting",
             "gallery_observation_completion_marker",
+            "tag_publication_order",
+            "tag_directory_order",
         ),
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 67,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 239,
+        "total_physical_table_count_after": 241,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -3915,7 +3917,7 @@ def _validate_retention_target(
 
     if target.target == "PUBLICATION_CANDIDATE":
         expected_candidate_phases = (
-            ("title_search_posting",),
+            ("title_search_posting", "tag_directory_order"),
             (
                 "publication_candidate_projection_seal",
                 "publication_batch_receipt_stored",
@@ -3938,7 +3940,11 @@ def _validate_retention_target(
             ),
             ("artifact_input",),
             ("publication_checkpoint",),
-            ("publication_selection_storage", "catalog_publication_order"),
+            (
+                "publication_selection_storage",
+                "tag_publication_order",
+                "catalog_publication_order",
+            ),
             ("catalog_publication_content",),
             ("catalog_subject",),
             ("publication_candidate_base_publication_commit", "catalog_artifact"),
@@ -3967,6 +3973,16 @@ def _validate_retention_target(
         # an uncommitted candidate and rechecks that predicate for every batch.
         pending.append("catalog_publication_occurrence_identity")
         visited_phases.add("catalog_publication_occurrence_identity")
+        # Namespace directory rows share that same reserved-revision owner
+        # without depending on a single publication occurrence.
+        pending.append("tag_directory_order")
+        visited_phases.add("tag_directory_order")
+    if target.target == "CATALOG_PUBLICATION":
+        # The directory's semantic owner is its tag's position-zero ordered
+        # publication. Retire it before that rank row, even when the revision
+        # descriptor remains as compact audit authority.
+        pending.append("tag_directory_order")
+        visited_phases.add("tag_directory_order")
     expanded: set[str] = set()
     while pending:
         parent = pending.pop()
@@ -4117,6 +4133,8 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "language_facet_order.materialization",
         "subject_facet_order.materialization",
         "contributor_facet_order.materialization",
+        "tag_publication_order.materialization",
+        "tag_directory_order.materialization",
         "batch_receipt_projection.analysis.write_obligation",
         "batch_receipt_projection.publication.write_obligation",
         "batch_receipt_projection.publication_finalization.write_obligation",

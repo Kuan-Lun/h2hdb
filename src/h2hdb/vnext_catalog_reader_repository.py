@@ -54,6 +54,10 @@ from .domain import (
     CatalogResourceKind,
     CatalogRevision,
     CatalogSubject,
+    CatalogTagCursor,
+    CatalogTagFilter,
+    CatalogTagPage,
+    CatalogTagValue,
     CatalogTimestampRange,
     StorageObjectDescriptor,
     StorageObjectKey,
@@ -619,6 +623,282 @@ class VNextCatalogReaderRepository:
             next_cursor=next_cursor,
             limit=page_limit,
         )
+
+    def list_tag_values(
+        self,
+        connector: SQLConnector,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagPage:
+        """Seek a precomputed namespace directory ordered by latest upload."""
+
+        namespace_bytes = identity.validate_namespace(namespace)
+        page_limit = _tag_page_limit(limit)
+        if after is not None:
+            if type(after) is not CatalogTagCursor:
+                raise TypeError("after must be CatalogTagCursor or None")
+            try:
+                after = replace(after)
+            except (TypeError, ValueError, UnicodeError) as error:
+                raise CatalogCursorError(
+                    "tag cursor violates its public domain"
+                ) from error
+        pinned = self._pin(
+            connector,
+            after.revision if after is not None and revision is None else revision,
+        )
+        self._require_discovery_seal(connector, pinned)
+        after_position = -1
+        if after is not None:
+            if after.revision != pinned.revision or after.namespace != namespace:
+                raise CatalogCursorError(
+                    "tag cursor belongs to another namespace or revision"
+                )
+            cursor_row = connector.fetch_one(
+                "SELECT tag_value_sha256 FROM catalog_tag_directory_order "
+                "WHERE revision = %s AND namespace = %s AND position = %s",
+                (pinned.revision, namespace_bytes, after.position),
+            )
+            if cursor_row != (bytes.fromhex(after.value_sha256),):
+                raise CatalogCursorError(
+                    "tag cursor does not match its directory position"
+                )
+            after_position = after.position
+        rows = connector.fetch_all(
+            "SELECT directory.position, directory.tag_value_sha256, term.tag_id, "
+            "ordering.publication_key, publication.gid, upload.upload_time, membership.tag_id "
+            "FROM catalog_tag_directory_order AS directory "
+            "LEFT JOIN catalog_tag_terms AS term "
+            "ON term.namespace = directory.namespace "
+            "AND term.tag_value_sha256 = directory.tag_value_sha256 "
+            "LEFT JOIN catalog_tag_publication_order AS ordering "
+            "ON ordering.revision = directory.revision "
+            "AND ordering.tag_id = term.tag_id AND ordering.position = 0 "
+            "LEFT JOIN catalog_subjects AS membership ON membership.revision = ordering.revision "
+            "AND membership.publication_key = ordering.publication_key AND membership.tag_id = ordering.tag_id "
+            "LEFT JOIN catalog_publication_identities AS publication "
+            "ON publication.publication_key = ordering.publication_key "
+            "LEFT JOIN catalog_gallery_upload_times AS upload ON upload.gid = publication.gid "
+            "WHERE directory.revision = %s AND directory.namespace = %s "
+            "AND directory.position > %s ORDER BY directory.position LIMIT %s",
+            (pinned.revision, namespace_bytes, after_position, page_limit + 1),
+        )
+        if len(rows) > page_limit + 1:
+            raise VNextCatalogReadError("tag directory exceeded its hard page bound")
+        loader = _CanonicalLoader(connector, backend=self._backend)
+        loader.prefetch(
+            tuple((row[1], b"tag_value_utf8_v1") for row in rows if len(row) == 7)
+        )
+        parsed: list[tuple[int, bytes, CatalogTagValue]] = []
+        previous = after_position
+        for row in rows:
+            if len(row) != 7 or any(value is None for value in row):
+                raise VNextCatalogReadError(
+                    "tag directory lacks its exact publication authority"
+                )
+            position = require_int63(row[0], field="tag directory position")
+            digest = require_digest32(row[1], field="tag directory value digest")
+            tag_id = require_positive_int63(row[2], field="tag directory tag ID")
+            member_tag = require_positive_int63(
+                row[6], field="tag directory membership"
+            )
+            key = require_digest32(row[3], field="tag directory publication key")
+            gid = require_positive_int63(row[4], field="tag directory GID")
+            timestamp = require_int63(row[5], field="tag latest uploaded time")
+            if (
+                position != previous + 1
+                or identity.publication_key(gid) != key
+                or member_tag != tag_id
+            ):
+                raise VNextCatalogReadError(
+                    "tag directory is not contiguous and congruent"
+                )
+            parsed.append(
+                (
+                    position,
+                    digest,
+                    CatalogTagValue(
+                        value=loader.text(
+                            digest, domain=b"tag_value_utf8_v1", field="tag value"
+                        ),
+                        latest_uploaded_time=timestamp,
+                    ),
+                )
+            )
+            previous = position
+        visible = parsed[:page_limit]
+        next_cursor = None
+        if len(parsed) > page_limit:
+            position, digest, _value = visible[-1]
+            next_cursor = CatalogTagCursor(
+                revision=pinned.revision,
+                namespace=namespace,
+                position=position,
+                value_sha256=digest.hex(),
+            )
+        self._assert_still_current(connector, pinned)
+        return CatalogTagPage(
+            revision=pinned,
+            namespace=namespace,
+            values=tuple(value for _position, _digest, value in visible),
+            next_cursor=next_cursor,
+            limit=page_limit,
+        )
+
+    def list_tag_publications(
+        self,
+        connector: SQLConnector,
+        *,
+        subject: CatalogTagFilter,
+        after: CatalogDiscoveryCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogDiscoveryPage:
+        """Seek exact tag members in sealed uploaded/title/identity order."""
+
+        if type(subject) is not CatalogTagFilter:
+            raise TypeError("subject must be CatalogTagFilter")
+        subject = replace(subject)
+        page_limit = _tag_page_limit(limit)
+        query_sha256 = _tag_publications_query_sha256(subject)
+        if after is not None:
+            if type(after) is not CatalogDiscoveryCursor:
+                raise TypeError("after must be CatalogDiscoveryCursor or None")
+            after = _validated_discovery_cursor(after)
+        pinned = self._pin(
+            connector,
+            after.revision if after is not None and revision is None else revision,
+        )
+        self._require_discovery_seal(connector, pinned)
+        loader = _CanonicalLoader(connector, backend=self._backend)
+        value_digest = identity.canonical_value_digest(
+            "tag_value_utf8_v1", subject.value.encode("utf-8")
+        )
+        term = connector.fetch_one(
+            "SELECT tag_id FROM catalog_tag_terms WHERE namespace = %s AND tag_value_sha256 = %s",
+            (subject.namespace.encode("utf-8"), value_digest),
+        )
+        tag_id = None
+        if term:
+            tag_id = require_positive_int63(term[0], field="tag publication tag ID")
+            if (
+                loader.text(
+                    value_digest, domain=b"tag_value_utf8_v1", field="tag value"
+                )
+                != subject.value
+            ):
+                raise VNextCatalogReadError(
+                    "exact tag filter disagrees with its durable value"
+                )
+        after_position = -1
+        if after is not None:
+            if after.revision != pinned.revision or after.query_sha256 != query_sha256:
+                raise CatalogCursorError(
+                    "tag publication cursor belongs to another query or revision"
+                )
+            _gid, cursor_key = _decode_publication_identifier(after.publication_id)
+            cursor_row = (
+                connector.fetch_one(
+                    "SELECT ordering.publication_key FROM catalog_tag_publication_order AS ordering "
+                    "JOIN catalog_subjects AS membership ON membership.revision = ordering.revision "
+                    "AND membership.publication_key = ordering.publication_key AND membership.tag_id = ordering.tag_id "
+                    "WHERE ordering.revision = %s AND ordering.tag_id = %s AND ordering.position = %s",
+                    (pinned.revision, tag_id, after.position),
+                )
+                if tag_id is not None
+                else ()
+            )
+            if cursor_row != (cursor_key,):
+                raise CatalogCursorError(
+                    "tag publication cursor is not an exact member"
+                )
+            after_position = after.position
+        rows = (
+            connector.fetch_all(
+                "SELECT ordering.position, ordering.publication_key, publication.gid, membership.tag_id "
+                "FROM catalog_tag_publication_order AS ordering "
+                "LEFT JOIN catalog_publication_identities AS publication ON publication.publication_key = ordering.publication_key "
+                "LEFT JOIN catalog_subjects AS membership ON membership.revision = ordering.revision "
+                "AND membership.publication_key = ordering.publication_key AND membership.tag_id = ordering.tag_id "
+                "WHERE ordering.revision = %s AND ordering.tag_id = %s AND ordering.position > %s "
+                "ORDER BY ordering.position LIMIT %s",
+                (pinned.revision, tag_id, after_position, page_limit + 1),
+            )
+            if tag_id is not None
+            else []
+        )
+        if len(rows) > page_limit + 1:
+            raise VNextCatalogReadError(
+                "tag publications exceeded their hard page bound"
+            )
+        parsed: list[tuple[int, bytes, int]] = []
+        previous = after_position
+        for row in rows:
+            if len(row) != 4 or any(value is None for value in row):
+                raise VNextCatalogReadError(
+                    "tag publication order lacks its exact membership"
+                )
+            position = require_int63(row[0], field="tag publication position")
+            key = require_digest32(row[1], field="tag publication key")
+            gid = require_positive_int63(row[2], field="tag publication GID")
+            member_tag = require_positive_int63(
+                row[3], field="tag publication membership"
+            )
+            if (
+                position != previous + 1
+                or identity.publication_key(gid) != key
+                or member_tag != tag_id
+            ):
+                raise VNextCatalogReadError(
+                    "tag publication order is not contiguous and congruent"
+                )
+            parsed.append((position, key, gid))
+            previous = position
+        visible = parsed[:page_limit]
+        hydrated = (
+            self._hydrate_publications(
+                connector,
+                loader,
+                revision=pinned.revision,
+                publication_keys=tuple(key for _position, key, _gid in visible),
+                artifacts_required=pinned.artifact_count > 0,
+            )
+            if visible
+            else {}
+        )
+        next_cursor = None
+        if len(parsed) > page_limit:
+            position, _key, gid = visible[-1]
+            next_cursor = CatalogDiscoveryCursor(
+                revision=pinned.revision,
+                query_sha256=query_sha256,
+                position=position,
+                publication_id=identity.publication_id(gid).decode("ascii"),
+            )
+        self._assert_still_current(connector, pinned)
+        return CatalogDiscoveryPage(
+            revision=pinned,
+            publications=tuple(hydrated[key] for _position, key, _gid in visible),
+            next_cursor=next_cursor,
+            limit=page_limit,
+            total=None,
+        )
+
+    @staticmethod
+    def _require_discovery_seal(
+        connector: SQLConnector, pinned: CatalogRevision
+    ) -> None:
+        seal = connector.fetch_one(
+            "SELECT policy_id FROM catalog_discovery_seals WHERE revision = %s",
+            (pinned.revision,),
+        )
+        if seal != (SEARCH_POLICY_ID,):
+            raise VNextCatalogReadError(
+                "catalog revision lacks its exact discovery seal"
+            )
 
     def list_recent_publications(
         self,
@@ -2186,6 +2466,22 @@ def _catalog_revisions_match(left: CatalogRevision, right: CatalogRevision) -> b
         and type(right.artifact_count) is int
         and left.artifact_count == right.artifact_count
     )
+
+
+def _tag_page_limit(limit: int) -> int:
+    page_limit = require_positive_int63(limit, field="tag page limit")
+    if page_limit > 128:
+        raise ValueError("tag page limit must not exceed 128")
+    return page_limit
+
+
+def _tag_publications_query_sha256(subject: CatalogTagFilter) -> str:
+    frame = bytearray(b"h2hdb-catalog-tag-publications\0\x01")
+    for value in (subject.namespace, subject.value):
+        encoded = value.encode("utf-8", errors="strict")
+        frame.extend(len(encoded).to_bytes(4, "big"))
+        frame.extend(encoded)
+    return sha256(frame).hexdigest()
 
 
 def _discovery_query_sha256(query: CatalogDiscoveryQuery) -> str:

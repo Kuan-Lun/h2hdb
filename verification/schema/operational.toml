@@ -277,7 +277,7 @@ phases = [
   { phase = "CP_STORAGE", order = 1, relations = ["title_search_posting", "search_posting", "search_document", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "catalog_publication_storage"] },
   { phase = "CP_DOWNLOAD_TIME", order = 2, relations = ["catalog_publication_download_time"] },
   { phase = "CP_CONTRIBUTOR", order = 3, relations = ["catalog_contributor"] },
-  { phase = "CP_ORDER", order = 4, relations = ["catalog_publication_order"] },
+  { phase = "CP_ORDER", order = 4, relations = ["tag_directory_order", "tag_publication_order", "catalog_publication_order"] },
   { phase = "CP_CONTENT", order = 5, relations = ["catalog_publication_content"] },
   { phase = "CP_SUBJECT", order = 6, relations = ["catalog_subject"] },
   { phase = "CP_ARTIFACT", order = 7, relations = ["catalog_artifact"] },
@@ -337,7 +337,7 @@ retained_fk_edges = [
   { relation = "catalog_publication_occurrence_identity", attributes = ["revision"] },
   { relation = "publication_commit", attributes = ["revision"] },
 ]
-phases = [{ phase = "CRD_ROOT", order = 1, relations = ["discovery_seal", "language_facet_order", "subject_facet_order", "contributor_facet_order", "catalog_revision_descriptor"] }]
+phases = [{ phase = "CRD_ROOT", order = 1, relations = ["discovery_seal", "tag_directory_order", "language_facet_order", "subject_facet_order", "contributor_facet_order", "catalog_revision_descriptor"] }]
 
 [[cleanup_target]]
 target_kind = "SOURCE_REVISION_DESCRIPTOR"
@@ -402,11 +402,11 @@ conditional_blockers = [
 ]
 machine_gates = [{ id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" }]
 phases = [
-  { phase = "PC_SEALS", order = 1, relations = ["prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "title_search_posting", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
+  { phase = "PC_SEALS", order = 1, relations = ["tag_directory_order", "prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "title_search_posting", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
   { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "prepared_artifact_descriptor", "search_document", "catalog_contributor"] },
   { phase = "PC_INPUT", order = 3, relations = ["artifact_input"] },
   { phase = "PC_CHECKPOINT", order = 4, relations = ["publication_checkpoint"] },
-  { phase = "PC_SELECTION_STORAGE", order = 5, relations = ["publication_selection_storage", "catalog_publication_order"] },
+  { phase = "PC_SELECTION_STORAGE", order = 5, relations = ["publication_selection_storage", "tag_publication_order", "catalog_publication_order"] },
   { phase = "PC_CONTENT", order = 6, relations = ["catalog_publication_content"] },
   { phase = "PC_SUBJECT", order = 7, relations = ["catalog_subject"] },
   { phase = "PC_BASES", order = 8, relations = ["publication_candidate_base_publication_commit", "catalog_artifact"] },
@@ -585,6 +585,7 @@ retained_fk_edges = [
   { relation = "catalog_publication_storage", attributes = ["language_sha256"] },
   { relation = "language_facet_order", attributes = ["language_sha256"] },
   { relation = "subject_facet_order", attributes = ["tag_id"] },
+  { relation = "tag_directory_order", attributes = ["namespace", "tag_value_sha256"] },
   { relation = "contributor_facet_order", attributes = ["contributor_name_sha256"] },
   { relation = "search_posting", attributes = ["value_sha256"] },
 ]

@@ -174,8 +174,10 @@ _CATALOG_CHILD_TITLE_SEARCH_POSTING = 10
 _CATALOG_CHILD_LANGUAGE_FACET = 11
 _CATALOG_CHILD_SUBJECT_FACET = 12
 _CATALOG_CHILD_CONTRIBUTOR_FACET = 13
-_CATALOG_CHILD_DISCOVERY_SEAL = 14
-_CATALOG_CHILD_KIND_COUNT = 15
+_CATALOG_CHILD_TAG_PUBLICATION = 14
+_CATALOG_CHILD_TAG_DIRECTORY = 15
+_CATALOG_CHILD_DISCOVERY_SEAL = 16
+_CATALOG_CHILD_KIND_COUNT = 17
 _DISCOVERY_CHILD_KEY = bytes(32)
 
 
@@ -1806,6 +1808,7 @@ def _prepare_catalog_plan(
             )
         _assign_projection_order(database)
         _populate_projection_facets(database)
+        _populate_projection_tag_orders(database)
         child_count = _populate_projection_children(database)
         return PublicationCatalogProjectionPlan(
             authority=authority,
@@ -1902,6 +1905,20 @@ def _initialize_projection_plan_database(database: sqlite3.Connection) -> None:
             occurrence_count INTEGER NOT NULL,
             UNIQUE (contributor_name_sha256, role)
         );
+        CREATE TABLE tag_publication_order (
+            tag_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            publication_key BLOB NOT NULL,
+            PRIMARY KEY (tag_id, position),
+            UNIQUE (publication_key, tag_id)
+        ) WITHOUT ROWID;
+        CREATE TABLE tag_directory_order (
+            namespace BLOB NOT NULL,
+            position INTEGER NOT NULL,
+            tag_value_sha256 BLOB NOT NULL,
+            PRIMARY KEY (namespace, position),
+            UNIQUE (tag_value_sha256, namespace)
+        ) WITHOUT ROWID;
         CREATE TABLE children (
             `cursor` BLOB PRIMARY KEY,
             kind INTEGER NOT NULL,
@@ -2816,6 +2833,30 @@ def _populate_projection_facets(database: sqlite3.Connection) -> None:
                     )
 
 
+def _populate_projection_tag_orders(database: sqlite3.Connection) -> None:
+    """Externally sort exact tag membership once in the temporary disk plan."""
+
+    database.execute(
+        "INSERT INTO tag_publication_order (tag_id, position, publication_key) "
+        "SELECT subject.tag_id, ROW_NUMBER() OVER (PARTITION BY subject.tag_id "
+        "ORDER BY publication.published_at DESC, publication.sort_title, "
+        "publication.publication_key) - 1, publication.publication_key "
+        "FROM subjects AS subject JOIN publications AS publication "
+        "ON publication.publication_key = subject.publication_key"
+    )
+    database.execute(
+        "INSERT INTO tag_directory_order (namespace, position, tag_value_sha256) "
+        "SELECT namespace, ROW_NUMBER() OVER (PARTITION BY namespace "
+        "ORDER BY latest_upload DESC, tag_value, tag_value_sha256) - 1, "
+        "tag_value_sha256 FROM (SELECT subject.namespace, "
+        "subject.tag_value_sha256, subject.tag_value, "
+        "MAX(publication.published_at) AS latest_upload "
+        "FROM subjects AS subject JOIN publications AS publication "
+        "ON publication.publication_key = subject.publication_key "
+        "GROUP BY subject.namespace, subject.tag_value_sha256, subject.tag_value)"
+    )
+
+
 def _populate_projection_children(database: sqlite3.Connection) -> int:
     count = 0
 
@@ -2923,6 +2964,28 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
                     kind,
                     _DISCOVERY_CHILD_KEY,
                     require_int63(position, field="facet position").to_bytes(8, "big"),
+                )
+    for kind, query in (
+        (
+            _CATALOG_CHILD_TAG_PUBLICATION,
+            "SELECT publication_key, tag_id FROM tag_publication_order "
+            "ORDER BY publication_key, tag_id",
+        ),
+        (
+            _CATALOG_CHILD_TAG_DIRECTORY,
+            "SELECT tag_value_sha256, namespace FROM tag_directory_order "
+            "ORDER BY tag_value_sha256, namespace",
+        ),
+    ):
+        cursor = database.execute(query)
+        while rows := cursor.fetchmany(_CATALOG_BATCH_ROWS):
+            for key, subkey in rows:
+                insert(
+                    kind,
+                    bytes(key),
+                    require_positive_int63(subkey, field="tag id").to_bytes(8, "big")
+                    if kind == _CATALOG_CHILD_TAG_PUBLICATION
+                    else _encode_tag_namespace_subkey(bytes(subkey)),
                 )
     insert(_CATALOG_CHILD_DISCOVERY_SEAL, _DISCOVERY_CHILD_KEY, b"")
     publication_cursor = database.execute(
@@ -3526,6 +3589,46 @@ def _insert_projection_child(
     )
 
 
+def _encode_tag_namespace_subkey(namespace: bytes) -> bytes:
+    value = require_bounded_bytes(namespace, field="tag namespace", maximum=128)
+    return value.ljust(128, b"\0") + bytes((len(value),))
+
+
+def _decode_tag_namespace_subkey(subkey: bytes) -> bytes:
+    if len(subkey) != 129 or subkey[-1] > 128:
+        raise PublicationCandidateConflictError("tag namespace child frame is invalid")
+    namespace = subkey[: subkey[-1]]
+    if _encode_tag_namespace_subkey(namespace) != subkey:
+        raise PublicationCandidateConflictError(
+            "tag namespace child padding is invalid"
+        )
+    return namespace
+
+
+def _tag_order_child_shape(
+    child: _ProjectionChild,
+) -> tuple[str, tuple[str, str], tuple[bytes | int, bytes | int]] | None:
+    if child.kind == _CATALOG_CHILD_TAG_PUBLICATION:
+        return (
+            "tag_publication_order",
+            ("publication_key", "tag_id"),
+            (
+                child.publication_key,
+                require_positive_int63(
+                    _position_subkey(child.subkey, field="tag publication id"),
+                    field="tag publication id",
+                ),
+            ),
+        )
+    if child.kind == _CATALOG_CHILD_TAG_DIRECTORY:
+        return (
+            "tag_directory_order",
+            ("tag_value_sha256", "namespace"),
+            (child.publication_key, _decode_tag_namespace_subkey(child.subkey)),
+        )
+    return None
+
+
 def _insert_discovery_projection_child(
     work: VNextUnitOfWork,
     plan: PublicationCatalogProjectionPlan,
@@ -3533,6 +3636,23 @@ def _insert_discovery_projection_child(
     *,
     revision: int,
 ) -> None:
+    tag_shape = _tag_order_child_shape(child)
+    if tag_shape is not None:
+        table, tag_columns, values = tag_shape
+        planned = plan._database.execute(
+            f"SELECT position FROM {table} WHERE {tag_columns[0]} = ? AND {tag_columns[1]} = ?",
+            values,
+        ).fetchone()
+        if planned is None:
+            raise PublicationCandidateConflictError("planned tag order is missing")
+        position = require_int63(planned[0], field="tag order position")
+        work.connector.execute(
+            f"INSERT INTO catalog_{table} "
+            f"(revision, {tag_columns[0]}, {tag_columns[1]}, position) "
+            "VALUES (%s, %s, %s, %s)",
+            (revision, *values, position),
+        )
+        return
     if child.publication_key != _DISCOVERY_CHILD_KEY:
         raise PublicationCandidateConflictError(
             "discovery authority child has an invalid sentinel key"
@@ -3938,6 +4058,48 @@ def _catalog_child_kind_rows(
             )
             for row in raw
         )
+    tag_tables = {
+        _CATALOG_CHILD_TAG_PUBLICATION: (
+            "catalog_tag_publication_order",
+            "publication_key",
+            "tag_id",
+        ),
+        _CATALOG_CHILD_TAG_DIRECTORY: (
+            "catalog_tag_directory_order",
+            "tag_value_sha256",
+            "namespace",
+        ),
+    }
+    if kind in tag_tables:
+        table, key_column, subkey_column = tag_tables[kind]
+        if after_key is not None:
+            boundary_value: int | bytes = (
+                _position_subkey(after_subkey, field="tag id boundary")
+                if kind == _CATALOG_CHILD_TAG_PUBLICATION
+                else _decode_tag_namespace_subkey(after_subkey)
+            )
+            predicate = (
+                f" AND ({key_column} > %s OR "
+                f"({key_column} = %s AND {subkey_column} > %s))"
+            )
+            parameters.extend((after_key, after_key, boundary_value))
+        parameters.append(limit)
+        raw = connector.fetch_all(
+            f"SELECT {key_column}, {subkey_column} FROM {table} "
+            "WHERE revision = %s"
+            + predicate
+            + f" ORDER BY {key_column}, {subkey_column} LIMIT %s",
+            tuple(parameters),
+        )
+        return tuple(
+            (
+                require_digest32(row[0], field="tag order child key"),
+                require_positive_int63(row[1], field="tag id").to_bytes(8, "big")
+                if kind == _CATALOG_CHILD_TAG_PUBLICATION
+                else _encode_tag_namespace_subkey(row[1]),
+            )
+            for row in raw
+        )
     facet_tables = {
         _CATALOG_CHILD_LANGUAGE_FACET: _LANGUAGE_FACET_ORDER_TABLE,
         _CATALOG_CHILD_SUBJECT_FACET: _SUBJECT_FACET_ORDER_TABLE,
@@ -4302,6 +4464,23 @@ def _compare_discovery_projection_child(
     *,
     revision: int,
 ) -> None:
+    tag_shape = _tag_order_child_shape(child)
+    if tag_shape is not None:
+        table, tag_columns, values = tag_shape
+        planned = plan._database.execute(
+            f"SELECT position FROM {table} WHERE {tag_columns[0]} = ? AND {tag_columns[1]} = ?",
+            values,
+        ).fetchone()
+        actual = work.connector.fetch_one(
+            f"SELECT position FROM catalog_{table} WHERE revision = %s "
+            f"AND {tag_columns[0]} = %s AND {tag_columns[1]} = %s",
+            (revision, *values),
+        )
+        if planned is None or actual != tuple(planned):
+            raise PublicationCandidateConflictError(
+                "catalog tag order differs from independent evaluator"
+            )
+        return
     if child.publication_key != _DISCOVERY_CHILD_KEY:
         raise PublicationCandidateConflictError(
             "discovery validation child has an invalid sentinel key"
@@ -5923,6 +6102,11 @@ def _validate_stage_cursor(codec: bytes, cursor: bytes) -> None:
         _CATALOG_CHILD_CONTRIBUTOR_FACET,
     }:
         valid = len(subkey) == 8 and int.from_bytes(subkey, "big") <= INT63_MAX
+    elif kind == _CATALOG_CHILD_TAG_PUBLICATION:
+        valid = len(subkey) == 8 and 0 < int.from_bytes(subkey, "big") <= INT63_MAX
+    elif kind == _CATALOG_CHILD_TAG_DIRECTORY:
+        _decode_tag_namespace_subkey(subkey)
+        valid = True
     elif kind in {
         _CATALOG_CHILD_SEARCH_POSTING,
         _CATALOG_CHILD_TITLE_SEARCH_POSTING,

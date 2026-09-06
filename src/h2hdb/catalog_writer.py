@@ -948,6 +948,8 @@ _BOUND_BINDINGS = (
                 "language_facet_order",
                 "subject_facet_order",
                 "contributor_facet_order",
+                "tag_publication_order",
+                "tag_directory_order",
             }
         ),
     ),

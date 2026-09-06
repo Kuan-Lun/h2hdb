@@ -684,6 +684,7 @@ _ALL_ANALYSIS_OVERLAY_TABLES = tuple(
 )
 
 _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
+    "catalog_tag_publication_order",
     "catalog_title_search_postings",
     "catalog_search_postings",
     "catalog_search_documents",
@@ -847,6 +848,12 @@ def _seed_catalog_publication_cleanup_fixture(
                     "INSERT INTO catalog_subjects "
                     "(revision, publication_key, position, tag_id) "
                     "VALUES (%s, %s, 0, 1)",
+                    (revision, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_tag_publication_order "
+                    "(revision, tag_id, position, publication_key) "
+                    "VALUES (%s, 1, 0, %s)",
                     (revision, publication_key),
                 ),
                 (
@@ -5484,6 +5491,18 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                     (revision, publication_key),
                 ),
                 (
+                    "INSERT INTO catalog_tag_publication_order "
+                    "(revision, tag_id, position, publication_key) "
+                    "VALUES (%s, 1, 0, %s)",
+                    (revision, publication_key),
+                ),
+                (
+                    "INSERT INTO catalog_tag_directory_order "
+                    "(revision, namespace, position, tag_value_sha256) "
+                    "VALUES (%s, %s, 0, %s)",
+                    (revision, b"artist", b"v" * 32),
+                ),
+                (
                     "INSERT INTO catalog_artifacts "
                     "(revision, publication_key, artifact_sha256, "
                     "artifact_semantics_sha256, artifact_name, media_type, "
@@ -5527,6 +5546,9 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
         assert results[-1].cycle_complete
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
             assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_tag_directory_order"
+        ) == (0,)
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
     finally:
         connector.close()
@@ -5838,7 +5860,7 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
 
 @pytest.mark.parametrize(
     "facet_family",
-    ("language", "contributor", "subject"),
+    ("language", "contributor", "subject", "tag_directory"),
 )
 def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
     tmp_path: Path,
@@ -5851,6 +5873,7 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
             "language": b"catalog_language_utf8_v1",
             "contributor": b"contributor_name_utf8_v1",
             "subject": b"tag_value_utf8_v1",
+            "tag_directory": b"tag_value_utf8_v1",
         }[facet_family]
         _seed_minimal_canonical_value(
             connector,
@@ -5890,16 +5913,28 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
                 namespace=b"genre",
                 tag_value_sha256=value_sha256,
             )
-            facet_insert = (
-                "INSERT INTO catalog_subject_facet_order "
-                "(revision, position, tag_id, occurrence_count) "
-                "VALUES (99, 0, 99, 1)",
-                (),
-            )
-            facet_delete = (
-                "DELETE FROM catalog_subject_facet_order WHERE revision = 99",
-                (),
-            )
+            if facet_family == "tag_directory":
+                facet_insert = (
+                    "INSERT INTO catalog_tag_directory_order "
+                    "(revision, namespace, position, tag_value_sha256) "
+                    "VALUES (99, %s, 0, %s)",
+                    (b"genre", value_sha256),
+                )
+                facet_delete = (
+                    "DELETE FROM catalog_tag_directory_order WHERE revision = 99",
+                    (),
+                )
+            else:
+                facet_insert = (
+                    "INSERT INTO catalog_subject_facet_order "
+                    "(revision, position, tag_id, occurrence_count) "
+                    "VALUES (99, 0, 99, 1)",
+                    (),
+                )
+                facet_delete = (
+                    "DELETE FROM catalog_subject_facet_order WHERE revision = 99",
+                    (),
+                )
 
         connector.execute(
             "INSERT INTO catalog_revision_descriptors "
@@ -5942,7 +5977,7 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
             )
             == ()
         )
-        if facet_family == "subject":
+        if facet_family in {"subject", "tag_directory"}:
             assert (
                 connector.fetch_one("SELECT 1 FROM catalog_tag_terms WHERE tag_id = 99")
                 == ()

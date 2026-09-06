@@ -2529,6 +2529,7 @@ def check_cleanup_reachability_v1(
     candidate = by_kind["PUBLICATION_CANDIDATE"]
     expected_candidate_phase_relations = [
         [
+            "tag_directory_order",
             "prepared_page",
             "prepared_thumbnail",
             "prepared_storage_object",
@@ -2553,7 +2554,11 @@ def check_cleanup_reachability_v1(
         ],
         ["artifact_input"],
         ["publication_checkpoint"],
-        ["publication_selection_storage", "catalog_publication_order"],
+        [
+            "publication_selection_storage",
+            "tag_publication_order",
+            "catalog_publication_order",
+        ],
         ["catalog_publication_content"],
         ["catalog_subject"],
         ["publication_candidate_base_publication_commit", "catalog_artifact"],

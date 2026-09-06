@@ -15,7 +15,7 @@ authority for relation shapes, projections, bootstrap facts, decompositions,
 and semantic obligations; deployment documentation intentionally does not copy
 counts that would drift as the schema evolves.
 
-Schema v2 includes revision-scoped discovery order, normalized search postings,
+Schema v5 includes revision-scoped discovery order, normalized search postings,
 facet order/count authority, acquisition descriptors, and presentation
 descriptors. Operational events remain publication-owned current/retry state,
 not OPDS history or a durable delivery queue. Bounded current-only cleanup
@@ -57,7 +57,7 @@ it from source through the current ingest integration, and run:
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=3`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=5`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -97,7 +97,8 @@ Applications import these public entry points from `h2hdb`:
 - `VNextCatalogFacade` for current-head catalog reads; a descriptor is accepted
   only while it still exactly equals that head. Its public discovery surface is
   `discover_publications()`, `list_publication_facets()`,
-  `list_recent_publications()`, single-publication reads, and presentation/page
+  `list_recent_publications()`, `list_tag_values()`,
+  `list_tag_publications()`, single-publication reads, and presentation/page
   reads.
 - `VNextDownloadQueueFacade` for normalized request/list/complete operations.
 - `VNextIngestFacade.drain_current_only_maintenance()` after ingest completion
@@ -186,3 +187,18 @@ wheel, Git URL/ref, archive URL, or local project path is used only when passed
 explicitly with `--source PACKAGE=SOURCE`; no sibling checkout is discovered
 implicitly. The smoke supplements—but does not replace—schema/Lean checks,
 strict coverage evidence, or live MariaDB integration tests.
+
+Tag browsing is an immutable revision projection. `catalog_tag_publication_order`
+assigns dense positions within each exact tag by uploaded time descending,
+casefolded UTF-8 display-title sort bytes ascending, then publication identity.
+`catalog_tag_directory_order` assigns dense positions within each namespace by
+its tags' latest member uploaded time descending, then exact UTF-8 value bytes.
+Both tables contain semantic keys and one atomic value; namespace and tag ID
+authority remain normalized in `catalog_tag_terms`. Candidate disk preparation
+computes these orders once. Bounded publication batches copy and independently
+validate them before sealing; READY reconstructs membership and order after
+transient candidate cleanup. Readers seek indexed positions with capped pages
+and validate cursor membership against the current revision. Cleanup releases
+each directory row before its latest member publication order and subject rows;
+a retained historical descriptor does not pin obsolete directory values.
+Schema v5 requires rebuilding older schema databases from an empty database.

@@ -790,7 +790,7 @@ id = "runtime.production.discovery-exactness"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production READY audit loads the one current revision, enforces all-or-none acquisition coverage, replays every publication's bounded canonical search sources through the pinned Unicode policy, exact-compares document, whole-document posting, and title-only posting subset membership, and independently reconstructs dense canonically ordered language, subject, and contributor facets from current publication facts."
+claim = "The production READY audit loads the one current revision, enforces all-or-none acquisition coverage, replays every publication's bounded canonical search sources through the pinned Unicode policy, exact-compares document, whole-document posting, and title-only posting subset membership, and independently reconstructs dense canonically ordered language, subject, and contributor facets plus latest-upload tag publication and namespace directory orders from current publication facts."
 assumptions = ["Canonical value payloads remain immutable under their digest identity; each bounded keyset and payload page is read through the same read-only READY transaction."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
@@ -798,6 +798,9 @@ symbol = "check_discovery_exactness_v1"
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
 symbol = "_validate_active_discovery_projection"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validate_tag_browse_orders"
 [[evidence.location]]
 path = "src/h2hdb/vnext_canonical_value_repository.py"
 symbol = "stream_and_validate_canonical_value"
@@ -807,7 +810,7 @@ id = "fault.production.discovery-exactness"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "READY audit regressions independently add and remove search documents, whole-document postings, title-only posting subsets, and each facet family, reject same-cardinality title/token changes, reject a descriptor count that differs from the exact search source set, and reject partial artifact coverage rather than accepting a partially discoverable revision."
+claim = "READY audit regressions independently add and remove search documents, whole-document postings, title-only posting subsets, each facet family and both tag browse orders, reject same-cardinality title/token changes, reject a descriptor count that differs from the exact search source set, and reject partial artifact coverage rather than accepting a partially discoverable revision."
 assumptions = ["SQLite foreign-key and check-constraint bypasses are test-only corruption injection mechanisms; validation executes the production READY checker after each mutation."]
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
@@ -838,6 +841,9 @@ assumptions = ["This executes SQLite and does not establish MariaDB cursor, payl
 [[evidence.location]]
 path = "tests/test_vnext_publication_candidate_repository.py"
 symbol = "test_catalog_projection_uses_typed_disk_plan_and_independent_validation"
+[[evidence.location]]
+path = "tests/test_vnext_publication_candidate_repository.py"
+symbol = "test_tag_directory_projection_replays_same_value_across_namespaces"
 
 [[evidence]]
 id = "runtime.data.state-machines"
@@ -1514,6 +1520,9 @@ symbol = "test_begin_derives_revision_channel_and_exact_optional_bases"
 [[evidence.location]]
 path = "tests/test_vnext_publication_candidate_repository.py"
 symbol = "test_catalog_projection_uses_typed_disk_plan_and_independent_validation"
+[[evidence.location]]
+path = "tests/test_vnext_publication_candidate_repository.py"
+symbol = "test_tag_directory_projection_replays_same_value_across_namespaces"
 [[evidence.location]]
 path = "tests/test_vnext_publication_candidate_repository.py"
 symbol = "test_selection_response_loss_replays_under_a_new_live_ingest_turn"

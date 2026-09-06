@@ -4494,6 +4494,12 @@ def _catalog_revision_descriptor_phases() -> dict[str, tuple[_StaticDeleteSpec, 
         "CRD_ROOT": (
             _owned_spec("catalog_discovery_seals", key, root, key),
             _owned_spec(
+                "catalog_tag_directory_order",
+                ("revision", "namespace", "position"),
+                root,
+                key,
+            ),
+            _owned_spec(
                 "catalog_language_facet_order",
                 ("revision", "position"),
                 root,
@@ -4594,6 +4600,21 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "JOIN catalog_publication_occurrence_identities AS r "
         "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
     )
+    tag_directory = _indirect_spec(
+        "catalog_tag_directory_order",
+        ("revision", "namespace", "position"),
+        "catalog_tag_directory_order AS c "
+        "JOIN catalog_tag_terms AS term "
+        "ON term.namespace = c.namespace "
+        "AND term.tag_value_sha256 = c.tag_value_sha256 "
+        "JOIN catalog_tag_publication_order AS first_publication "
+        "ON first_publication.revision = c.revision "
+        "AND first_publication.tag_id = term.tag_id "
+        "AND first_publication.position = 0 "
+        "JOIN catalog_publication_occurrence_identities AS r "
+        "ON r.revision = first_publication.revision "
+        "AND r.publication_key = first_publication.publication_key",
+    )
 
     return {
         "CP_STORAGE": (
@@ -4630,6 +4651,11 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             ),
         ),
         "CP_ORDER": (
+            tag_directory,
+            direct(
+                "catalog_tag_publication_order",
+                ("revision", "tag_id", "position"),
+            ),
             direct(
                 "catalog_publication_order",
                 ("revision", "position"),
@@ -4877,6 +4903,10 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 
     return {
         "PC_SEALS": (
+            projection(
+                "catalog_tag_directory_order",
+                ("revision", "namespace", "position"),
+            ),
             direct(
                 "catalog_prepared_pages",
                 ("candidate_id", "publication_key", "page_index"),
@@ -4957,6 +4987,10 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
         "PC_SELECTION_STORAGE": (
             selection_storage,
+            projection(
+                "catalog_tag_publication_order",
+                ("revision", "tag_id", "position"),
+            ),
             projection("catalog_publication_order", ("revision", "position")),
         ),
         "PC_CONTENT": (
@@ -5906,6 +5940,12 @@ AND NOT EXISTS (SELECT 1 FROM catalog_language_facet_order x
                 WHERE x.language_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_contributor_facet_order x
                 WHERE x.contributor_name_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_tag_directory_order x
+                WHERE x.tag_value_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_tag_publication_order x
+    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
+    WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_subject_facet_order x
     JOIN catalog_tag_terms term ON term.tag_id = x.tag_id

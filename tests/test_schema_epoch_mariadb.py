@@ -107,7 +107,7 @@ CONTROL_CHECK_ROWS = [
 def _definition() -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=4,
+        schema_version=5,
         ddl_manifest_sha256=DDL_MANIFEST,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=OBLIGATION_MANIFEST,

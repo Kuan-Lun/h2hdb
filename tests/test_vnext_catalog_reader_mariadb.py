@@ -18,6 +18,7 @@ from h2hdb import (
     CatalogPublication,
     CatalogRecentOrder,
     CatalogSubjectFilter,
+    CatalogTagFilter,
     CatalogTimestampRange,
     CoreConfig,
     StorageObjectDescriptor,
@@ -465,6 +466,18 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 (publication_key, publication_key),
             )
             connector.execute(
+                "INSERT INTO catalog_tag_publication_order "
+                "(revision, tag_id, position, publication_key) "
+                "VALUES (1, 1, 0, %s), (1, 2, 0, %s)",
+                (publication_key, publication_key),
+            )
+            connector.execute(
+                "INSERT INTO catalog_tag_directory_order "
+                "(revision, namespace, position, tag_value_sha256) "
+                "VALUES (1, %s, 0, %s), (1, %s, 0, %s)",
+                (b"genre", subject, b"topic", subject),
+            )
+            connector.execute(
                 "INSERT INTO catalog_artifact_blobs (artifact_sha256, size_bytes) "
                 "VALUES (%s, 100), (%s, 20)",
                 (artifact_sha256, thumbnail_sha256),
@@ -603,6 +616,12 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         )
         with connector.read_transaction():
             page = reader.discover_publications(connector, query=query, limit=1)
+            tags = reader.list_tag_values(connector, namespace="genre", limit=1)
+            tagged_publications = reader.list_tag_publications(
+                connector,
+                subject=CatalogTagFilter(namespace="genre", value="manga"),
+                limit=1,
+            )
             language_facets = reader.list_publication_facets(
                 connector,
                 facet=CatalogFacetKind.LANGUAGE,
@@ -631,6 +650,12 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 )
 
         assert len(page.publications) == 1
+        assert [(value.value, value.latest_uploaded_time) for value in tags.values] == [
+            ("manga", 2_000_000)
+        ]
+        assert tags.next_cursor is None
+        assert tagged_publications.publications == page.publications
+        assert tagged_publications.next_cursor is None
         publication = page.publications[0]
         assert publication.gid == gid
         assert publication.artifacts[0].storage_object.key == acquisition_key
