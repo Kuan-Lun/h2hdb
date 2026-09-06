@@ -36,6 +36,7 @@ from .domain import (
     CatalogRecentWindow,
     CatalogResourceKind,
     CatalogRevision,
+    CatalogTagBundle,
     CatalogTagCursor,
     CatalogTagFilter,
     CatalogTagPage,
@@ -90,6 +91,15 @@ class CatalogReader(Protocol):
         limit: int = 50,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogTagPage: ...
+
+    def list_tag_values_with_publications(
+        self,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagBundle: ...
 
     def list_tag_publications(
         self,

@@ -310,6 +310,10 @@ Schema變更依序進行：
   精確重驗revision、namespace或exact tag、position與membership，禁止request-time
   全量GROUP BY/MAX、sort或hydrate後Python scan。Preparation以disk plan一次排序，
   bounded publication child batches獨立exact-compare後seal，READY獨立重建驗證。
+- `CatalogReader.list_tag_values_with_publications`在同一pinned snapshot回傳tag
+  page與逐項對應的第一筆publication；只選各tag既有order的position 0，不因缺少
+  acquisition或presentation而跳過。每頁最多128筆，去重publication keys後批次
+  hydrate，再依tag順序對齊；禁止每tag另做public read或全量掃描。
 - Acquisition與presentation只保存 neutral immutable descriptors。Core不得
   指定hash path、CBZ/ZIP layout或共享mount；ingest adapters擁有archive與
   artwork bytes及其storage lifecycle，且byte I/O不得進入core DB transaction。

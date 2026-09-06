@@ -40,6 +40,7 @@ __all__ = [
     "ByteExtent",
     "CatalogContributorFilter",
     "CatalogSubjectFilter",
+    "CatalogTagBundle",
     "CatalogTagCursor",
     "CatalogTagFilter",
     "CatalogTagPage",
@@ -2441,6 +2442,23 @@ class CatalogTagPage:
             or self.next_cursor.revision != self.revision.revision
         ):
             raise ValueError("tag page cursor must match its namespace and revision")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTagBundle:
+    """A tag page and each tag's first publication, aligned by page position."""
+
+    page: CatalogTagPage
+    publications: tuple[CatalogPublication, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.page) is not CatalogTagPage:
+            raise TypeError("tag bundle page must be CatalogTagPage")
+        object.__setattr__(self, "publications", tuple(self.publications))
+        if len(self.publications) != len(self.page.values):
+            raise ValueError("tag bundle must contain one publication per tag value")
+        if any(type(item) is not CatalogPublication for item in self.publications):
+            raise TypeError("tag bundle publications must be CatalogPublication")
 
 
 @dataclass(frozen=True, slots=True)

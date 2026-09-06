@@ -237,6 +237,17 @@ and preserving every other predicate. `list_recent_publications()`
 has no caller limit or cursor: it returns the complete fixed window of at most
 128 acquisition-bearing publications in uploaded or downloaded order.
 
+`list_tag_values()` pages an exact namespace in latest-upload order, breaking
+ties by the exact UTF-8 tag value. `list_tag_publications()` pages an exact
+`CatalogTagFilter` in uploaded-time descending, casefolded title ascending,
+publication-identity ascending order. Both use sealed ordering and seek cursors,
+with at most 128 results per page. `list_tag_values_with_publications()` returns
+a `CatalogTagBundle`: its `page` is the same tag directory, and `publications`
+contains each visible tag's first ranked publication in matching order. Shared
+publications are hydrated once per page; no later publication is substituted
+when the first has no acquisition or image. Consumers can use these descriptors
+to illustrate directory entries without reading each tag separately.
+
 Acquisitions and images are exposed as immutable, backend-neutral descriptors.
 The acquisition descriptor carries a download name, media type, and opaque
 storage-object identity. Presentation reads expose cover, thumbnail, page count,

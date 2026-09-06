@@ -617,6 +617,9 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         with connector.read_transaction():
             page = reader.discover_publications(connector, query=query, limit=1)
             tags = reader.list_tag_values(connector, namespace="genre", limit=1)
+            tag_bundle = reader.list_tag_values_with_publications(
+                connector, namespace="genre", limit=1
+            )
             tagged_publications = reader.list_tag_publications(
                 connector,
                 subject=CatalogTagFilter(namespace="genre", value="manga"),
@@ -654,6 +657,8 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
             ("manga", 2_000_000)
         ]
         assert tags.next_cursor is None
+        assert tag_bundle.page == tags
+        assert tag_bundle.publications == page.publications
         assert tagged_publications.publications == page.publications
         assert tagged_publications.next_cursor is None
         publication = page.publications[0]

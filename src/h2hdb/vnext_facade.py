@@ -38,6 +38,7 @@ from .domain import (
     CatalogRecentOrder,
     CatalogRecentWindow,
     CatalogRevision,
+    CatalogTagBundle,
     CatalogTagCursor,
     CatalogTagFilter,
     CatalogTagPage,
@@ -208,6 +209,26 @@ class VNextCatalogFacade:
     ) -> CatalogTagPage:
         return self.__read(
             lambda connector: self.__reader.list_tag_values(
+                connector,
+                namespace=namespace,
+                after=after,
+                limit=limit,
+                revision=revision,
+            )
+        )
+
+    def list_tag_values_with_publications(
+        self,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagBundle:
+        """Read a tag directory and its first publications in one bounded snapshot."""
+
+        return self.__read(
+            lambda connector: self.__reader.list_tag_values_with_publications(
                 connector,
                 namespace=namespace,
                 after=after,

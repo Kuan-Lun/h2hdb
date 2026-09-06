@@ -1304,6 +1304,10 @@ def test_tag_cursors_reject_forged_positions_values_and_membership(
         ):
             with pytest.raises(CatalogCursorError):
                 reader.list_tag_values(connector, namespace="artist", after=forged)
+            with pytest.raises(CatalogCursorError):
+                reader.list_tag_values_with_publications(
+                    connector, namespace="artist", after=forged
+                )
         subject = CatalogTagFilter(namespace="artist", value="amber")
         first = reader.list_tag_publications(connector, subject=subject, limit=1)
         publication_after = first.next_cursor
@@ -1332,6 +1336,10 @@ def test_tag_cursors_reject_forged_positions_values_and_membership(
                 connector, namespace="artist", after=replace(after, revision=2)
             )
         with pytest.raises(CatalogRevisionNotFoundError):
+            reader.list_tag_values_with_publications(
+                connector, namespace="artist", after=replace(after, revision=2)
+            )
+        with pytest.raises(CatalogRevisionNotFoundError):
             reader.list_tag_publications(
                 connector, subject=subject, after=replace(publication_after, revision=2)
             )
@@ -1349,6 +1357,10 @@ def test_tag_browse_rejects_invalid_limits_before_sql(
         with patch.object(connector, "fetch_one") as query:
             with pytest.raises((ValueError, TypeError)):
                 reader.list_tag_values(connector, namespace="artist", limit=limit)
+            with pytest.raises((ValueError, TypeError)):
+                reader.list_tag_values_with_publications(
+                    connector, namespace="artist", limit=limit
+                )
             with pytest.raises((ValueError, TypeError)):
                 reader.list_tag_publications(
                     connector,
@@ -1384,6 +1396,9 @@ def test_tag_browse_round_trips_empty_and_long_source_values(
         reader = VNextCatalogReaderRepository(backend="sqlite")
         directory = reader.list_tag_values(connector, namespace="artist")
         assert [value.value for value in directory.values] == [tag_value]
+        bundle = reader.list_tag_values_with_publications(connector, namespace="artist")
+        assert bundle.page == directory
+        assert [publication.gid for publication in bundle.publications] == [123]
         publications = reader.list_tag_publications(
             connector, subject=CatalogTagFilter(namespace="artist", value=tag_value)
         )
@@ -1436,6 +1451,8 @@ def test_tag_browse_rejects_missing_ranked_subject_membership(tmp_path: Path) ->
         reader = VNextCatalogReaderRepository(backend="sqlite")
         with pytest.raises(VNextCatalogReadError, match="authority"):
             reader.list_tag_values(connector, namespace="artist")
+        with pytest.raises(VNextCatalogReadError, match="authority"):
+            reader.list_tag_values_with_publications(connector, namespace="artist")
         with pytest.raises(VNextCatalogReadError, match="membership"):
             reader.list_tag_publications(
                 connector, subject=CatalogTagFilter(namespace="artist", value="測試")
@@ -3357,13 +3374,18 @@ def test_reader_rejects_explicit_and_pinned_revision_after_head_advances(
         read_only.close()
 
 
+@pytest.mark.parametrize("family", ("publication", "tag_bundle"))
 def test_reader_rechecks_head_after_hydration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    family: str,
 ) -> None:
     connector = _database(tmp_path / "reader-head-race.sqlite3")
     try:
         values = _published_fixture(connector, artifact_count=0)
+        connector.execute(
+            "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+        )
         _publication_commit(
             connector,
             snapshot_manifest_sha256=values["snapshot_manifest"],
@@ -3396,7 +3418,10 @@ def test_reader_rechecks_head_after_hydration(
 
         monkeypatch.setattr(reader, "_hydrate_publications", hydrate_then_advance)
         with pytest.raises(VNextCatalogReadError, match="head advanced"):
-            reader.get_publication(connector, "urn:h2h:gallery:123")
+            if family == "publication":
+                reader.get_publication(connector, "urn:h2h:gallery:123")
+            else:
+                reader.list_tag_values_with_publications(connector, namespace="artist")
     finally:
         connector.close()
 

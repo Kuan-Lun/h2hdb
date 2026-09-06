@@ -1061,6 +1061,7 @@ def test_catalog_facade_rejects_a_head_change_seen_by_the_fresh_fence(
         "list_publication_facets",
         "list_recent_publications",
         "list_tag_values",
+        "list_tag_values_with_publications",
         "list_tag_publications",
         "get_publication",
         "get_publication_presentation",

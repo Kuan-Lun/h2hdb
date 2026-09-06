@@ -55,6 +55,7 @@ from .domain import (
     CatalogResourceKind,
     CatalogRevision,
     CatalogSubject,
+    CatalogTagBundle,
     CatalogTagCursor,
     CatalogTagFilter,
     CatalogTagPage,
@@ -636,6 +637,48 @@ class VNextCatalogReaderRepository:
     ) -> CatalogTagPage:
         """Seek a precomputed namespace directory ordered by latest upload."""
 
+        page, _keys = self._list_tag_values(
+            connector, namespace=namespace, after=after, limit=limit, revision=revision
+        )
+        self._assert_still_current(connector, page.revision)
+        return page
+
+    def list_tag_values_with_publications(
+        self,
+        connector: SQLConnector,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None = None,
+        limit: int = 50,
+        revision: CatalogRevision | int | None = None,
+    ) -> CatalogTagBundle:
+        """Batch hydrate exactly the first ranked publication for each visible tag."""
+
+        page, keys = self._list_tag_values(
+            connector, namespace=namespace, after=after, limit=limit, revision=revision
+        )
+        hydrated = self._hydrate_publications(
+            connector,
+            _CanonicalLoader(connector, backend=self._backend),
+            revision=page.revision.revision,
+            publication_keys=tuple(dict.fromkeys(keys)),
+            artifacts_required=page.revision.artifact_count > 0,
+        )
+        self._assert_still_current(connector, page.revision)
+        return CatalogTagBundle(
+            page=page,
+            publications=tuple(hydrated[key] for key in keys),
+        )
+
+    def _list_tag_values(
+        self,
+        connector: SQLConnector,
+        *,
+        namespace: str,
+        after: CatalogTagCursor | None,
+        limit: int,
+        revision: CatalogRevision | int | None,
+    ) -> tuple[CatalogTagPage, tuple[bytes, ...]]:
         namespace_bytes = identity.validate_namespace(namespace)
         page_limit = _tag_page_limit(limit)
         if after is not None:
@@ -693,7 +736,7 @@ class VNextCatalogReaderRepository:
         loader.prefetch(
             tuple((row[1], b"tag_value_utf8_v1") for row in rows if len(row) == 7)
         )
-        parsed: list[tuple[int, bytes, CatalogTagValue]] = []
+        parsed: list[tuple[int, bytes, CatalogTagValue, bytes]] = []
         previous = after_position
         for row in rows:
             if len(row) != 7 or any(value is None for value in row):
@@ -727,26 +770,29 @@ class VNextCatalogReaderRepository:
                         ),
                         latest_uploaded_time=timestamp,
                     ),
+                    key,
                 )
             )
             previous = position
         visible = parsed[:page_limit]
         next_cursor = None
         if len(parsed) > page_limit:
-            position, digest, _value = visible[-1]
+            position, digest, _value, _key = visible[-1]
             next_cursor = CatalogTagCursor(
                 revision=pinned.revision,
                 namespace=namespace,
                 position=position,
                 value_sha256=digest.hex(),
             )
-        self._assert_still_current(connector, pinned)
-        return CatalogTagPage(
-            revision=pinned,
-            namespace=namespace,
-            values=tuple(value for _position, _digest, value in visible),
-            next_cursor=next_cursor,
-            limit=page_limit,
+        return (
+            CatalogTagPage(
+                revision=pinned,
+                namespace=namespace,
+                values=tuple(value for _position, _digest, value, _key in visible),
+                next_cursor=next_cursor,
+                limit=page_limit,
+            ),
+            tuple(key for _position, _digest, _value, key in visible),
         )
 
     def list_tag_publications(

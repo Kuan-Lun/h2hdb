@@ -17,17 +17,17 @@ from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_catalog_reader_repository import VNextCatalogReadError
 
 
-@pytest.mark.parametrize("publications", [False, True])
+@pytest.mark.parametrize("family", ["directory", "publications", "bundle"])
 @pytest.mark.parametrize("advance", [False, True])
 def test_tag_browse_rechecks_head_in_a_fresh_transaction(
     monkeypatch: pytest.MonkeyPatch,
-    publications: bool,
+    family: str,
     advance: bool,
 ) -> None:
     old_head = (7, 0, 0, 1_000_000, 1)
     new_head = (8, 0, 0, 2_000_000, 2) if advance else old_head
     rows: list[tuple[object, ...]] = [old_head, old_head, (), (SEARCH_POLICY_ID,)]
-    if publications:
+    if family == "publications":
         rows.append(())  # The exact tag is absent in this empty catalog.
     rows.extend((old_head, new_head))
     snapshot = _MariaRecorder(rows)
@@ -39,16 +39,21 @@ def test_tag_browse_rechecks_head_in_a_fresh_transaction(
     facade = VNextCatalogFacade(_config(Path("unused"), backend="mariadb"))
 
     def read() -> None:
-        if publications:
+        if family == "publications":
             page = facade.list_tag_publications(
                 subject=CatalogTagFilter(namespace="artist", value="Example"),
             )
             assert page.publications == ()
             assert page.revision.revision == 7
-        else:
+        elif family == "directory":
             tags = facade.list_tag_values(namespace="artist")
             assert tags.values == ()
             assert tags.revision.revision == 7
+        else:
+            bundle = facade.list_tag_values_with_publications(namespace="artist")
+            assert bundle.page.values == ()
+            assert bundle.publications == ()
+            assert bundle.page.revision.revision == 7
 
     if advance:
         with pytest.raises(CatalogReadError, match="head advanced") as failure:
