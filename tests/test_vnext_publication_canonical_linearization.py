@@ -571,6 +571,49 @@ class _OptimizedHarness:
     def _commit_action(self, *_args: object, **kwargs: Any) -> object:
         action = cast(publication._Action, kwargs["action"])
         payload = kwargs["payload"]
+        if action is publication._Action.CANONICAL_BATCH:
+            batch = cast(publication._CanonicalBatchWork, payload)
+            assert 2 <= len(batch.items) <= publication._MAX_CANONICAL_BATCH_VALUES
+            assert (
+                sum(
+                    len(cast(PreparedCanonicalPage, item.page).page_bytes)
+                    for item in batch.items
+                )
+                <= publication._MAX_CANONICAL_BATCH_BYTES
+            )
+            # Expand successful state transitions only for comparison with the
+            # retained scalar oracle. Real SQL atomicity/faults are exercised in
+            # test_vnext_publication_canonical_batch.py, not by this fake store.
+            for item in sorted(batch.items, key=lambda item: item.plan.value_sha256):
+                fixture = self.by_value[item.plan.value_sha256]
+                fence = item.stage_fence
+                assert fence is not None
+                if (
+                    self.state.stage_done
+                    or self.state.stage_cursor >= fence.first_consumer_cursor
+                ):
+                    raise RuntimeError(
+                        "canonical allocation first consumer already advanced"
+                    )
+                operations: list[tuple[str, PreparedCanonicalPage | None]] = []
+                if fixture.value_sha256 not in self.state.claims:
+                    operations.append(
+                        (publication._Action.CANONICAL_ALLOCATE.value, None)
+                    )
+                batch_page = cast(PreparedCanonicalPage, item.page)
+                if batch_page.page_sha256 not in self.state.pages:
+                    operations.append(
+                        (publication._Action.CANONICAL_PAGE.value, batch_page)
+                    )
+                operations.append((publication._Action.CANONICAL_SEAL.value, None))
+                for operation, prepared_page in operations:
+                    self.trace.append(
+                        _canonical_trace(operation, fixture, prepared_page)
+                    )
+                    _apply_reference_action(
+                        self.state, fixture, prepared_page, operation
+                    )
+            return SimpleNamespace(row_count=0, replayed=False)
         if action in {
             publication._Action.CANONICAL_ALLOCATE,
             publication._Action.CANONICAL_PAGE,

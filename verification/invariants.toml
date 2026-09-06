@@ -2311,6 +2311,23 @@ path = "src/h2hdb/vnext_maintenance_gate_repository.py"
 symbol = "lock_and_require_live"
 
 [[evidence]]
+id = "lean.operational.maintenance-gate-batch"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Materializing one exact holder snapshot preserves every per-slot owner lookup and every authorization predicate over the resulting fixed 64-slot vector."
+assumptions = ["The SQL result is one exact locked snapshot with validated owner fields; runtime tests cover duplicate, orphan, domain and missing-exclusive-slot rejection. The theorem does not prove SQL locking or Python allocation sizes."]
+[[evidence.location]]
+path = "verification/lean/MaintenanceGateBatch.lean"
+symbol = "all_slots_preserve_exact_authority"
+[[evidence.location]]
+path = "verification/lean/MaintenanceGateBatch.lean"
+symbol = "every_authorization_decision_is_preserved"
+[[evidence.location]]
+path = "verification/lean/MaintenanceGateBatch.lean"
+symbol = "result_size_is_fixed_by_slot_domain"
+
+[[evidence]]
 id = "fault.production.maintenance-gate"
 layer = "fault"
 strength = "negative_control"
@@ -2326,6 +2343,12 @@ symbol = "test_renewal_fences_old_snapshot_and_release_requires_new_snapshot"
 [[evidence.location]]
 path = "tests/test_vnext_maintenance_gate_repository.py"
 symbol = "test_partial_exclusive_insert_rolls_back_generation_owner_and_holders"
+[[evidence.location]]
+path = "tests/test_vnext_maintenance_gate_repository.py"
+symbol = "test_batched_slot_authority_rejects_orphans_and_nonexact_domains"
+[[evidence.location]]
+path = "tests/test_vnext_maintenance_gate_repository.py"
+symbol = "test_exclusive_authority_still_requires_every_slot_after_batching"
 
 [[evidence]]
 id = "runtime.production.operational-event"
@@ -3034,6 +3057,284 @@ symbol = "test_marker_cache_survives_restart_and_reuses_prior_membership"
 path = "tests/test_vnext_source_marker.py"
 symbol = "test_marker_cache_keeps_complete_source_membership_and_reclaims_removed_gallery"
 
+[[evidence]]
+id = "lean.data.analysis-bounded-preparation"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Exact per-page decision lookup preserves the per-file reference sequence, including duplicate records and missing-decision failure. Concatenating validated pages preserves order; a correctly refined disk spool supplies the same count and ordered records to each codec with fixed logical page bounds."
+assumptions = ["SQL snapshots, decision authority validation, disk I/O, checksums and Python codecs must refine the stated pure inputs; this is not a proof of database isolation, OS durability, SHA-256 collision freedom or Python/native memory allocation."]
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "exact_page_lookup_equals_per_file_reference"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "missing_decision_fails_closed"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "page_partition_preserves_order_duplicates_and_failure"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "disk_spool_contains_exact_ordered_records"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "spool_count_and_each_codec_equal_source"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "source_page_logical_bytes_bounded"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "decision_page_with_rejection_sentinel_logical_bytes_bounded"
+
+[[evidence]]
+id = "runtime.production.analysis-bounded-preparation"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Gallery preparation reads source records through hard-capped keyset pages, validates one bounded exact decision map per page, and writes selected digests to a temporary disk spool. Count and both codecs consume the same ordered records; each replay checks count and checksum, and subsequent preparations reload durable authority."
+assumptions = ["The connector enforces the surrounding read snapshot; temporary files are local preparation inputs and never replace durable database authority."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_prepare_gallery"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_EffectiveContentSpool"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_prepare_effective_content_plan"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_iter_effective_content_digests"
+
+[[evidence]]
+id = "fault.production.analysis-bounded-preparation"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Independent canonical framing and malformed authority cases exercise ordered duplicates, hard bounds, missing and foreign decisions, corrupt source keysets, short writes, truncation, modified and appended spool bytes, interruption and fresh preparation after local result loss."
+assumptions = ["These are representative finite faults rather than exhaustive filesystem or database failures."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_batched_preparation_matches_independent_codec_with_one_source_scan"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_decision_batch_rejects_inexact_authority"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_decision_batch_rejects_unbounded_request_without_sql"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_source_page_rejects_broken_bound_or_keyset"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_effective_spool_short_write_closes_local_payload"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_effective_spool_rejects_disk_corruption"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_effective_spool_interruption_discards_prefix_and_restarts_from_authority"
+
+[[evidence]]
+id = "integration.production.analysis-bounded-preparation"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "Generated SQLite and opt-in MariaDB 10.11.11 exercise 257 source records across three bounded pages, compare the independently framed canonical digest, reopen after local preparation loss, reject a subsequently missing decision seal and recover after its exact restoration."
+assumptions = ["The live MariaDB test is separately opt-in; metadata validation alone does not establish that either test was executed."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_sqlite_batched_preparation_survives_lost_local_result_and_reopen"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_live_mariadb_bounded_preparation_matches_reference"
+
+[[evidence]]
+id = "lean.operational.mariadb-lease-pool"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "All reachable modeled pool states obey the physical-session capacity, counting pending opens, closes and quarantined transports. Pool-only transitions preserve the modeled durable database observation."
+assumptions = ["Condition mutual exclusion, process ownership and driver open/reset/close outcomes must refine the model. The theorem does not prove SQL commit durability, driver implementation, fork-inherited C object destruction or whole-process connection capacity across independently created contexts."]
+[[evidence.location]]
+path = "verification/lean/MariaDBLeasePool.lean"
+symbol = "all_reachable_states_are_bounded"
+[[evidence.location]]
+path = "verification/lean/MariaDBLeasePool.lean"
+symbol = "all_reachable_states_preserve_durable_observation"
+
+[[evidence]]
+id = "runtime.production.mariadb-lease-pool"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Each RepositoryContext owns a bounded pool with bounded waiters and a deadline. Pending open/close sessions consume capacity; failed closes remain quarantined. One connector lease executes SQL immediately through its owned cursor, returns only a successfully reset session, and discards uncertain commit outcomes without retrying COMMIT."
+assumptions = ["The physical driver and database provide their documented transaction behavior; runtimes are created after process startup and inherited fork runtimes are unsupported."]
+[[evidence.location]]
+path = "src/h2hdb/mariadb_pool.py"
+symbol = "MariaDBConnectionPool"
+
+[[evidence]]
+id = "fault.production.mariadb-lease-pool"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Pool tests cover admission while opening or closing, open failure, close/open races, bounded waiters, release, fork rejection and quarantine. These cases detect capacity overshoot and reuse without explicit ownership release."
+assumptions = ["Thread schedules are synchronized representative races, not exhaustive scheduler exploration."]
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_pending_open_consumes_capacity_and_failed_open_releases_it"
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_closing_transport_still_counts_against_capacity"
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_close_racing_open_discards_new_connection"
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_waiter_admission_is_bounded_and_close_wakes_waiter"
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_fork_inherited_pool_rejects_use_and_finalizer_never_quits_parent"
+[[evidence.location]]
+path = "tests/test_mariadb_pool.py"
+symbol = "test_failed_transport_close_keeps_its_capacity_reserved"
+
+[[evidence]]
+id = "integration.production.connector-process-restart"
+layer = "integration"
+strength = "runtime_integration"
+directness = "supporting"
+claim = "Real spawned client processes pause immediately before or after COMMIT and receive SIGTERM or SIGKILL. Fresh SQLite or opt-in MariaDB runtimes observe either the complete two-row transaction or no rows, and durable-state replay converges to the complete result."
+assumptions = ["Only client processes are terminated; the database server, host and storage remain running. These finite commit checkpoints do not establish arbitrary pipeline interruption or host power-loss safety."]
+[[evidence.location]]
+path = "tests/test_sql_connector_process_lifecycle.py"
+symbol = "test_process_signal_restart_preserves_complete_transaction"
+
+[[evidence]]
+id = "integration.live-mariadb.lease-reset"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "supporting"
+claim = "MariaDB 10.11.11 reuses a physical session only after resetting session variables, read-only mode and uncommitted rows; a real successful COMMIT with a simulated lost client response discards that connection and reads the exact durable result through another session."
+assumptions = ["The lost-response case raises after the real driver commit returns and does not simulate every network failure timing. These live cases are opt-in and outside the bounded smoke receipt unless explicitly selected."]
+[[evidence.location]]
+path = "tests/test_mariadb_connector.py"
+symbol = "test_runtime_pool_real_mariadb_resets_read_only_session_and_uncommitted_rows"
+[[evidence.location]]
+path = "tests/test_mariadb_connector.py"
+symbol = "test_runtime_pool_real_mariadb_commit_response_loss_reads_durable_outcome"
+
+[[evidence]]
+id = "lean.data.canonical-atomic-batch"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "A bounded group of exact single-leaf values has at most sixteen pages, 256 KiB of encoded bytes and 192 inserted normalized facts. Given exact authority and atomic commit, grouped sealing equals individual sealing and is idempotent; stale or corrupt authority and precommit failure preserve the original store, while response loss preserves all committed seals. Preparation does not advance its validated cursor, and ordered claim keys follow the candidate checkpoint rank."
+assumptions = ["SQL atomicity, exact persisted-family validation, hash preimages, Python ownership, disk-plan I/O and the rank/key encoding must refine the pure inputs. The existing scalar TLA model does not independently model the new grouped commit."]
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "batch_page_and_value_counts_are_bounded"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "batch_encoded_bytes_are_bounded"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "single_leaf_normalized_inserts_are_bounded"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "grouped_sealing_equals_individual_sealing"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "exact_batch_replay_is_idempotent"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "stale_fence_performs_no_durable_write"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "corrupt_facts_perform_no_durable_write"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "precommit_failure_preserves_the_entire_store"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "response_loss_after_commit_keeps_every_sealed_value"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "fresh_process_exact_replay_after_response_loss"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "preparation_does_not_advance_uncommitted_cursor"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "candidate_checkpoint_precedes_canonical_claim"
+[[evidence.location]]
+path = "verification/lean/CanonicalAtomicBatch.lean"
+symbol = "sorted_claim_key_steps_never_descend"
+
+[[evidence]]
+id = "runtime.production.canonical-atomic-batch"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Publication preparation retains bounded disk-backed lookahead plans without advancing uncommitted authority. Multi-value single-leaf batches validate row/byte caps, common owner and candidate/generation/stage fences, authorize once, lock the candidate checkpoint, then allocate, validate each exact page and seal in sorted digest order within one managed transaction. Fresh preparation verifies retained seals before advancing its local cursor."
+assumptions = ["Large or singleton values retain the bounded individual page protocol. The connector provides atomic transaction semantics and unchanged canonical validators supply byte/family integrity."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "_PublicationPlanCache.lookahead_canonical_plan"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "_prepare_small_canonical_batch"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_publication.py"
+symbol = "_commit_canonical_batch"
+
+[[evidence]]
+id = "fault.production.canonical-atomic-batch"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Real SQL tests inject a mid-batch failure and a lost successful commit response, reject stale or mixed fences, compare corrupt existing pages, enforce value/byte bounds before authorization, verify rank and sorted digest locks, and check bounded lookahead plus uncommitted cursor and borrower lifetime."
+assumptions = ["These finite fault sites do not explore every database statement, operating-system failure or hostile disk mutation."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_atomic_batch_rolls_back_every_value_on_mid_batch_failure"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_committed_response_loss_replays_from_fresh_plans_without_changing_facts"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_batch_rejects_stale_or_mixed_fences_before_any_write"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_batch_checks_corrupt_existing_page_and_rolls_back_new_values"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_batch_rejects_value_and_encoded_byte_bounds_before_authorization"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_batch_claim_lock_order_follows_candidate_checkpoint_and_sorted_digests"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_prepare_bounds_lookahead_and_keeps_uncommitted_cursor_and_borrowers"
+
+[[evidence]]
+id = "integration.production.canonical-atomic-batch"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "Generated SQLite and opt-in MariaDB 10.11.11 execute grouped allocation/page/seal with exact durable snapshots, rollback, committed-response-loss replay, stale fences and corrupt pages. Separate spawned SQLite clients receive SIGTERM or SIGKILL immediately before or after the atomic commit, then fresh processes converge from retained database authority."
+assumptions = ["MariaDB cases are manual non-smoke integration tests. The subprocess termination cases use SQLite; whole-ingest MariaDB client-process recovery is separate consumer evidence. The database server, host and storage remain running."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_atomic_batch_rolls_back_every_value_on_mid_batch_failure"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_committed_response_loss_replays_from_fresh_plans_without_changing_facts"
+[[evidence.location]]
+path = "tests/test_vnext_publication_canonical_batch.py"
+symbol = "test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries"
+
 [[invariant]]
 id = "catalog.source-completion-marker.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
@@ -3055,11 +3356,11 @@ integration = { status = "covered", evidence = ["integration.data.sqlite-refinem
 [[invariant]]
 id = "catalog.canonical-reference-domains.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf", "lean.data.canonical-atomic-batch"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no canonical digest-domain registry, framed value bytes, collision comparison, or SQL foreign-reference state." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.canonical-reference-domains", "runtime.production.retained-canonical-integrity", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate"] }
-fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.retained-canonical-integrity", "fault.production.canonical-value", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.canonical-value", "integration.sqlite.analysis", "integration.sqlite.artifact-preparation", "integration.sqlite.publication-candidate", "integration.live-mariadb.canonical-foundations", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.canonical-reference-domains", "runtime.production.retained-canonical-integrity", "runtime.production.writer-bindings", "runtime.production.canonical-value", "runtime.production.analysis", "runtime.production.artifact-preparation", "runtime.production.publication-candidate", "runtime.production.canonical-atomic-batch"] }
+fault = { status = "covered", evidence = ["fault.data.binding-corruption", "fault.production.retained-canonical-integrity", "fault.production.canonical-value", "fault.production.analysis", "fault.production.artifact-preparation", "fault.production.publication-candidate", "fault.pipeline.identity-corruption", "fault.pipeline.digest-collision", "fault.production.canonical-atomic-batch"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.canonical-value", "integration.sqlite.analysis", "integration.sqlite.artifact-preparation", "integration.sqlite.publication-candidate", "integration.live-mariadb.canonical-foundations", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.canonical-atomic-batch"] }
 
 [[invariant]]
 id = "catalog.source-baseline-channel.v1"
@@ -3073,20 +3374,20 @@ integration = { status = "covered", evidence = ["integration.data.sqlite-refinem
 [[invariant]]
 id = "catalog.incremental-impact.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "covered", evidence = ["lean.data.all-bcnf", "lean.data.gid-resolution"] }
+lean = { status = "covered", evidence = ["lean.data.all-bcnf", "lean.data.gid-resolution", "lean.data.analysis-bounded-preparation"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no old-resolved/new-candidate union, content-owner or GID-winner ordering, or bounded impacted-workset receipts." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.incremental-impact", "runtime.production.writer-bindings", "runtime.production.analysis"] }
-fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.incremental-impact", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation"] }
+fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation"] }
 
 [[invariant]]
 id = "catalog.overlay-resolution-seal.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "covered", evidence = ["lean.data.overlay-exactness"] }
+lean = { status = "covered", evidence = ["lean.data.overlay-exactness", "lean.data.analysis-bounded-preparation"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no shadow/tombstone component maps, bounded ancestry coordinates, full-evaluator equality, or component-seal receipts." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.overlay-resolution-seal", "runtime.production.writer-bindings", "runtime.production.analysis"] }
-fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.overlay-resolution-seal", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation"] }
+fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation"] }
 
 [[invariant]]
 id = "catalog.published-baseline-prune.v1"
@@ -3109,11 +3410,11 @@ integration = { status = "covered", evidence = ["integration.data.sqlite-refinem
 [[invariant]]
 id = "catalog.publication-atomicity.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf", "lean.data.canonical-atomic-batch"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication"] }
-fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication", "runtime.production.canonical-atomic-batch"] }
+fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication", "fault.production.canonical-atomic-batch"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.connector-process-restart", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch"] }
 
 [[invariant]]
 id = "catalog.discovery-exactness.v1"
@@ -3217,7 +3518,7 @@ integration = { status = "covered", evidence = ["integration.download-ingest-han
 [[invariant]]
 id = "h2hdb.operational.maintenance-gate.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf", "lean.operational.maintenance-gate-batch"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models an ingest lease, not the distinct 64-slot shared and exclusive maintenance-gate ownership protocol." }
 runtime_refinement = { status = "covered", evidence = ["runtime.maintenance-gate", "runtime.production.writer-bindings", "runtime.production.maintenance-gate", "runtime.production.canonical-value", "runtime.production.gallery-identity", "runtime.production.source-build", "runtime.production.gallery-staging", "runtime.production.hash-cache", "runtime.production.analysis", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.artifact-release", "runtime.production.operational-event", "runtime.production.publication", "runtime.production.cleanup"] }
 fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.maintenance-gate", "fault.production.artifact-release", "fault.production.cleanup", "fault.pipeline.takeover-matrix", "fault.pipeline.statement-matrix"] }
@@ -3226,11 +3527,11 @@ integration = { status = "covered", evidence = ["integration.operational.sqlite-
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain"] }
+lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain", "lean.operational.mariadb-lease-pool", "lean.data.analysis-bounded-preparation", "lean.data.canonical-atomic-batch"] }
 tla = { status = "covered", evidence = ["tla.preparation-drain.small"] }
-runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.superseded-drainage"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.superseded-drainage", "runtime.production.mariadb-lease-pool", "runtime.production.analysis-bounded-preparation", "runtime.production.canonical-atomic-batch"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage", "fault.production.mariadb-lease-pool", "fault.production.canonical-atomic-batch"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch"] }
 
 [[invariant]]
 id = "h2hdb.operational.queue-history.v1"

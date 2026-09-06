@@ -45,6 +45,13 @@ covered by that assumption and must discard the process-local cursor; the
 companion TLA+ model checks that reset together with crash, response-loss
 replay, and stale-fence rejection.
 
+The production writer may now group several complete single-leaf entries in
+one bounded atomic commit. This file remains the individual-step selector
+model; `CanonicalAtomicBatch.lean` separately states grouping equivalence,
+transaction all-or-none and exact replay premises. Its bounded lookahead does
+not advance this validation cursor before a fresh sealed-state observation.
+The companion scalar TLA+ model does not independently model grouped commits.
+
 The equivalence and work theorems are unbounded over plan length, page count,
 and cursor trace length.  They do not prove that Python iteration, SQL reads,
 transactions, hash validation, or either database backend refines this model.

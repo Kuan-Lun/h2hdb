@@ -24,6 +24,7 @@ __all__ = [
 ]
 
 import secrets
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -70,6 +71,8 @@ from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
     _allocate_authorized,
+    _put_page_authorized,
+    _seal_authorized,
 )
 from .vnext_canonical_value_repository import (
     _authorize as _authorize_canonical_write,
@@ -86,6 +89,7 @@ from .vnext_download_ingest_repository import (
     DownloadIngestRepository,
     HandoffKind,
 )
+from .vnext_identity import CANONICAL_VALUE_CHUNK_BYTES
 from .vnext_ingest_fence_repository import IngestTurn
 from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from .vnext_library_activation_repository import (
@@ -129,6 +133,8 @@ from .vnext_transaction import VNextUnitOfWork
 _STEP_TOKEN = object()
 _PREPARED_TOKEN = object()
 _MAX_PAGE_ROWS = 128
+_MAX_CANONICAL_BATCH_VALUES = 16
+_MAX_CANONICAL_BATCH_BYTES = 256 * 1024
 _MAX_CACHED_ARTIFACT_RESOURCE_BYTES = 256 * 1024 * 1024
 
 _CANDIDATE_STAGES = (
@@ -260,6 +266,7 @@ class _Action(StrEnum):
     FINALIZE = "FINALIZE"
     RECOVERY_COMPLETE = "RECOVERY_COMPLETE"
     COMPLETE = "COMPLETE"
+    CANONICAL_BATCH = "CANONICAL_BATCH"
     CANONICAL_ALLOCATE = "CANONICAL_ALLOCATE"
     CANONICAL_PAGE = "CANONICAL_PAGE"
     CANONICAL_SEAL = "CANONICAL_SEAL"
@@ -439,6 +446,12 @@ class _CanonicalWork:
     stage_fence: _CanonicalStageFence | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonicalBatchWork:
+    items: tuple[_CanonicalWork, ...]
+    owner: object
+
+
 class _PublicationPlanLease:
     """Keep one retired plan alive until its prepared step is closed."""
 
@@ -487,6 +500,7 @@ class _PublicationPlanCache:
         "__observed_sealed",
         "__page_iterator",
         "__pending_page",
+        "__pending_plans",
         "__retired",
     )
 
@@ -512,6 +526,7 @@ class _PublicationPlanCache:
         self.__observed_sealed: CanonicalValueReadReceipt | None = None
         self.__page_iterator: Iterator[PreparedCanonicalPage] | None = None
         self.__pending_page: PreparedCanonicalPage | None = None
+        self.__pending_plans: deque[CanonicalValueUploadPlan] = deque()
         self.__retired = False
 
     @property
@@ -545,6 +560,16 @@ class _PublicationPlanCache:
         active = self.__active
         if active is not None:
             return active
+        if self.__pending_plans:
+            active = self.__pending_plans.popleft()
+        else:
+            active = self.__next_canonical_plan()
+        if active is None:
+            return None
+        self.__active = active
+        return active
+
+    def __next_canonical_plan(self) -> CanonicalValueUploadPlan | None:
         iterator = self.__iterator
         if iterator is None:
             return None
@@ -558,8 +583,21 @@ class _PublicationPlanCache:
             return None
         if not isinstance(active, CanonicalValueUploadPlan):
             raise TypeError("projection yielded a non-canonical upload plan")
-        self.__active = active
         return active
+
+    def lookahead_canonical_plan(self, offset: int) -> CanonicalValueUploadPlan | None:
+        """Retain at most one bounded batch without crossing its active cursor."""
+        if not 0 <= offset < _MAX_CANONICAL_BATCH_VALUES:
+            raise ValueError("canonical lookahead exceeds the batch value bound")
+        active = self.current_canonical_plan()
+        if offset == 0 or active is None:
+            return active
+        while len(self.__pending_plans) < offset:
+            following = self.__next_canonical_plan()
+            if following is None:
+                return None
+            self.__pending_plans.append(following)
+        return self.__pending_plans[offset - 1]
 
     def advance_canonical_plan(self, plan: CanonicalValueUploadPlan) -> None:
         if self.__active is not plan:
@@ -622,8 +660,12 @@ class _PublicationPlanCache:
         self,
         plan: CanonicalValueUploadPlan,
     ) -> bytes:
-        if self.__active is not plan:
-            raise RuntimeError("canonical consumer cursor lacks its active upload plan")
+        if self.__active is not plan and not any(
+            pending is plan for pending in self.__pending_plans
+        ):
+            raise RuntimeError(
+                "canonical consumer cursor lacks its retained upload plan"
+            )
         return self.plan._canonical_consumer_cursor(plan.value_sha256)
 
     def claim_required(
@@ -668,6 +710,8 @@ class _PublicationPlanCache:
                 try:
                     if active is not None:
                         active.close()
+                    while self.__pending_plans:
+                        self.__pending_plans.popleft().close()
                 finally:
                     self.plan.close()
 
@@ -1972,6 +2016,14 @@ def _commit_action(
             artifacts_required=beginning.policy.policy.artifacts_required,
             now=now,
         )
+    if action is _Action.CANONICAL_BATCH:
+        return _commit_canonical_batch(
+            work,
+            batch=cast(_CanonicalBatchWork, payload),
+            gate=gate,
+            turn=turn,
+            now=now,
+        )
     if action in {
         _Action.CANONICAL_ALLOCATE,
         _Action.CANONICAL_PAGE,
@@ -2134,6 +2186,69 @@ def _commit_action(
     if isinstance(payload, _LibraryActivationPrepared):
         return _resume_authority(work, session, now)
     raise RuntimeError(f"unsupported publication action {action.value}")
+
+
+def _commit_canonical_batch(
+    work: VNextUnitOfWork,
+    *,
+    batch: _CanonicalBatchWork,
+    gate: GateLease,
+    turn: IngestTurn,
+    now: int,
+) -> tuple[bytes, ...]:
+    """Commit one bounded collection atomically under a common fresh fence.
+
+    A single-leaf value adds at most twelve normalized rows: five allocation,
+    one upload claim, five page facts, and one identity. No branch edge is
+    possible, so sixteen values also bound new rows to 192 per transaction.
+    """
+    items = batch.items
+    if not 1 <= len(items) <= _MAX_CANONICAL_BATCH_VALUES:
+        raise ValueError("canonical batch exceeds its value/page bound")
+    fences = tuple(item.stage_fence for item in items)
+    first = fences[0]
+    if first is None or first.stage_action not in _PLAN_BUILD_ACTIONS:
+        raise RuntimeError("canonical batch lacks its publication fence")
+    if any(
+        fence is None
+        or (fence.candidate_id, fence.stage_action, fence.ingest_generation)
+        != (first.candidate_id, first.stage_action, first.ingest_generation)
+        or item.owner is not batch.owner
+        for item, fence in zip(items, fences, strict=True)
+    ):
+        raise RuntimeError("canonical batch mixes publication authorities")
+    if len({item.plan.value_sha256 for item in items}) != len(items):
+        raise ValueError("canonical batch contains duplicate values")
+    if any(
+        item.plan.byte_count > CANONICAL_VALUE_CHUNK_BYTES or item.page is None
+        for item in items
+    ):
+        raise ValueError("canonical batch only accepts complete single-leaf values")
+    pages = tuple(cast(PreparedCanonicalPage, item.page) for item in items)
+    if sum(len(page.page_bytes) for page in pages) > _MAX_CANONICAL_BATCH_BYTES:
+        raise ValueError("canonical batch exceeds its encoded byte bound")
+    generation = _authorize_canonical_write(work, gate, turn, now=now)
+    if generation != first.ingest_generation:
+        raise RuntimeError("canonical batch ingest generation changed")
+    PublicationCandidateRepository._lock_canonical_allocation_fence_authorized(
+        work,
+        candidate_id=first.candidate_id,
+        stage=_PLAN_STAGE_BY_ACTION[first.stage_action],
+        first_consumer_cursor=min(
+            cast(_CanonicalStageFence, fence).first_consumer_cursor for fence in fences
+        ),
+    )
+    result: list[bytes] = []
+    for item in sorted(items, key=lambda item: item.plan.value_sha256):
+        _allocate_authorized(work, generation=generation, plan=item.plan, now=now)
+        _put_page_authorized(
+            work,
+            generation=generation,
+            plan=item.plan,
+            prepared_page=cast(PreparedCanonicalPage, item.page),
+        )
+        result.append(_seal_authorized(work, generation=generation, plan=item.plan))
+    return tuple(result)
 
 
 def _commit_canonical_work(
@@ -2471,7 +2586,7 @@ def _next_cached_canonical_work(
     candidate_id: bytes,
     checkpoint_cursor: bytes,
     checkpoint_state: str,
-) -> tuple[_CanonicalWork, _Action] | None:
+) -> tuple[_CanonicalWork | _CanonicalBatchWork, _Action] | None:
     generation = require_positive_int63(
         session.ingest_generation,
         field="canonical upload generation",
@@ -2512,6 +2627,17 @@ def _next_cached_canonical_work(
             continue
         if not required:
             raise RuntimeError("consumed canonical value is no longer exactly sealed")
+        batch = _prepare_small_canonical_batch(
+            connector,
+            cached=cached,
+            owner=owner,
+            candidate_id=candidate_id,
+            generation=generation,
+            checkpoint_cursor=checkpoint_cursor,
+            checkpoint_state=checkpoint_state,
+        )
+        if batch is not None:
+            return batch, _Action.CANONICAL_BATCH
         if claim is None:
             return (
                 _CanonicalWork(plan, owner, stage_fence=fence),
@@ -2529,6 +2655,62 @@ def _next_cached_canonical_work(
             _Action.CANONICAL_SEAL,
         )
     return None
+
+
+def _prepare_small_canonical_batch(
+    connector: SQLConnector,
+    *,
+    cached: _PublicationPlanCache,
+    owner: object,
+    candidate_id: bytes,
+    generation: int,
+    checkpoint_cursor: bytes,
+    checkpoint_state: str,
+) -> _CanonicalBatchWork | None:
+    """Prepare bounded single-leaf pages without advancing a durable cursor."""
+    items: list[_CanonicalWork] = []
+    encoded_bytes = 0
+    for offset in range(_MAX_CANONICAL_BATCH_VALUES):
+        plan = cached.lookahead_canonical_plan(offset)
+        if plan is None or plan.byte_count > CANONICAL_VALUE_CHUNK_BYTES:
+            break
+        consumer = cached.canonical_consumer_cursor(plan)
+        if not cached.claim_required(
+            consumer_cursor=consumer,
+            checkpoint_cursor=checkpoint_cursor,
+            checkpoint_state=checkpoint_state,
+        ):
+            break
+        sealed, _claim = _load_canonical_plan_state(
+            connector,
+            generation=generation,
+            plan=plan,
+        )
+        if sealed is not None:
+            break
+        pages = tuple(plan.iter_pages())
+        if len(pages) != 1:
+            raise RuntimeError(
+                "small canonical value did not produce one complete page"
+            )
+        page = pages[0]
+        if encoded_bytes + len(page.page_bytes) > _MAX_CANONICAL_BATCH_BYTES:
+            break
+        # Detect existing corrupt families before issuing any write, just like
+        # the individual-page path. Commit revalidates the family independently.
+        _canonical_page_is_exact(connector, page)
+        encoded_bytes += len(page.page_bytes)
+        items.append(
+            _CanonicalWork(
+                plan,
+                owner,
+                page,
+                _CanonicalStageFence(candidate_id, cached.action, consumer, generation),
+            )
+        )
+    # A singleton retains the bounded page protocol. Grouping starts only when
+    # two or more values can share the common fence and transaction overhead.
+    return _CanonicalBatchWork(tuple(items), owner) if len(items) > 1 else None
 
 
 def _next_canonical_plan_work(
@@ -2974,7 +3156,7 @@ def _artifact_receipt_fits_cache(receipt: ArtifactPreparationReceipt) -> bool:
 
 
 def _owned_resource(payload: object) -> object:
-    if isinstance(payload, _CanonicalWork):
+    if isinstance(payload, (_CanonicalWork, _CanonicalBatchWork)):
         return payload.owner
     if isinstance(payload, _CandidateWork) and isinstance(
         payload.payload,

@@ -2,9 +2,11 @@
 
 The database stores an owner-prefixed Merkle-style page tree.  This module is
 the production refinement of that contract: an arbitrary input is first
-spooled and hashed twice outside a transaction, while every database mutation
-touches at most one 64 KiB page and 256 child descriptors.  The upload claim is
-retained by sealing and is released only by the first durable consumer.
+spooled and hashed twice outside a transaction. Individual page operations
+touch at most one 64 KiB page and 256 child descriptors. Publication may group
+at most 16 single-leaf values and 256 KiB of encoded pages under one common
+transaction fence. The upload claim is retained by sealing and is released
+only by the first durable consumer.
 
 Callers own the already-open transaction and must pass the exact live shared
 maintenance-gate lease and ingest turn to every write method.
@@ -486,40 +488,12 @@ class CanonicalValueRepository:
         exact_page = _require_prepared_page(prepared_page, plan=exact_plan)
         timestamp = require_int63(now, field="now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
-        page = decode_canonical_value_page(exact_page.page_bytes)
-        if page.owner_value_sha256 != exact_plan.value_sha256:
-            raise CanonicalValueCollisionError("canonical page has the wrong owner")
-        _validate_page_shape(page, exact_plan.byte_count)
-        connector = work.connector
-        _lock_claim(work, generation, exact_plan.value_sha256)
-        allocation = load_allocation_family(
-            connector,
-            value_sha256=exact_plan.value_sha256,
+        return _put_page_authorized(
+            work,
+            generation=generation,
+            plan=exact_plan,
+            prepared_page=exact_page,
         )
-        if allocation is None:
-            raise CanonicalValueNotReadyError("canonical allocation is not sealed")
-        _require_exact(
-            "canonical allocation",
-            (allocation.digest_domain, allocation.byte_count),
-            (exact_plan.digest_domain, exact_plan.byte_count),
-        )
-
-        if page.node_kind is GalleryObservationNodeKind.LEAF:
-            _require_exact_leaf_source(exact_plan, page)
-        else:
-            _validate_branch_children(
-                connector,
-                page,
-                byte_count=exact_plan.byte_count,
-            )
-
-        family = CanonicalValuePageFamily.from_payload(
-            page_sha256=exact_page.page_sha256,
-            page_bytes=exact_page.page_bytes,
-        )
-        receipt = ensure_page_family(connector, page=family)
-        ensure_exact_page_parent_edges(connector, receipt=receipt)
-        return exact_page.page_sha256
 
     @staticmethod
     def seal(
@@ -533,79 +507,11 @@ class CanonicalValueRepository:
         exact_plan = _require_upload_plan(plan)
         timestamp = require_int63(now, field="now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
-        tree_receipt = _require_tree_receipt(exact_plan.tree_receipt)
-        root_sha256 = tree_receipt.root_page_sha256
-        connector = work.connector
-        _lock_claim(work, generation, exact_plan.value_sha256)
-        allocation = load_allocation_family(
-            connector,
-            value_sha256=exact_plan.value_sha256,
+        return _seal_authorized(
+            work,
+            generation=generation,
+            plan=exact_plan,
         )
-        if allocation is None:
-            raise CanonicalValueNotReadyError("canonical allocation is not sealed")
-        _require_exact(
-            "canonical allocation",
-            (allocation.digest_domain, allocation.byte_count),
-            (exact_plan.digest_domain, exact_plan.byte_count),
-        )
-        _require_exact(
-            "canonical tree receipt",
-            (
-                tree_receipt.value_sha256,
-                tree_receipt.byte_count,
-                tree_receipt.root_level,
-            ),
-            (
-                exact_plan.value_sha256,
-                exact_plan.byte_count,
-                exact_plan.expected_root_level,
-            ),
-        )
-
-        root_family = load_page_family(connector, page_sha256=root_sha256)
-        if root_family is None:
-            raise CanonicalValueNotReadyError("canonical root page is not complete")
-        page = decode_canonical_value_page(root_family.page_bytes)
-        _validate_page_shape(page, exact_plan.byte_count)
-        _require_exact(
-            "canonical root descriptor",
-            (
-                root_family.coordinate.value_sha256,
-                root_family.coordinate.level,
-                root_family.coordinate.page_position,
-                root_family.subtree_item_count,
-                page.level,
-                page.page_position,
-                page.subtree_byte_count,
-            ),
-            (
-                exact_plan.value_sha256,
-                exact_plan.expected_root_level,
-                0,
-                exact_plan.byte_count,
-                exact_plan.expected_root_level,
-                0,
-                exact_plan.byte_count,
-            ),
-        )
-        if page.owner_value_sha256 != exact_plan.value_sha256:
-            raise CanonicalValueCollisionError("canonical root owner disagrees")
-        validate_exact_page_parent_edges(connector, page=root_family)
-        if connector.fetch_one(
-            "SELECT parent_sha256 FROM catalog_canonical_value_page_parents "
-            "WHERE child_sha256 = %s",
-            (root_sha256,),
-        ):
-            raise CanonicalValueCollisionError("canonical root has a parent")
-
-        ensure_canonical_value_identity(
-            connector,
-            value_sha256=exact_plan.value_sha256,
-            root_page_sha256=root_sha256,
-        )
-        # Deliberately retain operational_canonical_value_uploads.  Only the
-        # first durable external consumer may remove this generation claim.
-        return exact_plan.value_sha256
 
     @staticmethod
     def stream_and_validate(
@@ -627,6 +533,133 @@ class CanonicalValueRepository:
             value_sha256=value_sha256,
             consume_provisional=consume_provisional,
         )
+
+
+def _put_page_authorized(
+    work: VNextUnitOfWork,
+    *,
+    generation: int,
+    plan: CanonicalValueUploadPlan,
+    prepared_page: PreparedCanonicalPage,
+) -> bytes:
+    exact_plan = _require_upload_plan(plan)
+    exact_page = _require_prepared_page(prepared_page, plan=exact_plan)
+    page = decode_canonical_value_page(exact_page.page_bytes)
+    if page.owner_value_sha256 != exact_plan.value_sha256:
+        raise CanonicalValueCollisionError("canonical page has the wrong owner")
+    _validate_page_shape(page, exact_plan.byte_count)
+    connector = work.connector
+    _lock_claim(work, generation, exact_plan.value_sha256)
+    allocation = load_allocation_family(
+        connector,
+        value_sha256=exact_plan.value_sha256,
+    )
+    if allocation is None:
+        raise CanonicalValueNotReadyError("canonical allocation is not sealed")
+    _require_exact(
+        "canonical allocation",
+        (allocation.digest_domain, allocation.byte_count),
+        (exact_plan.digest_domain, exact_plan.byte_count),
+    )
+
+    if page.node_kind is GalleryObservationNodeKind.LEAF:
+        _require_exact_leaf_source(exact_plan, page)
+    else:
+        _validate_branch_children(
+            connector,
+            page,
+            byte_count=exact_plan.byte_count,
+        )
+
+    family = CanonicalValuePageFamily.from_payload(
+        page_sha256=exact_page.page_sha256,
+        page_bytes=exact_page.page_bytes,
+    )
+    receipt = ensure_page_family(connector, page=family)
+    ensure_exact_page_parent_edges(connector, receipt=receipt)
+    return exact_page.page_sha256
+
+
+def _seal_authorized(
+    work: VNextUnitOfWork,
+    *,
+    generation: int,
+    plan: CanonicalValueUploadPlan,
+) -> bytes:
+    exact_plan = _require_upload_plan(plan)
+    tree_receipt = _require_tree_receipt(exact_plan.tree_receipt)
+    root_sha256 = tree_receipt.root_page_sha256
+    connector = work.connector
+    _lock_claim(work, generation, exact_plan.value_sha256)
+    allocation = load_allocation_family(
+        connector,
+        value_sha256=exact_plan.value_sha256,
+    )
+    if allocation is None:
+        raise CanonicalValueNotReadyError("canonical allocation is not sealed")
+    _require_exact(
+        "canonical allocation",
+        (allocation.digest_domain, allocation.byte_count),
+        (exact_plan.digest_domain, exact_plan.byte_count),
+    )
+    _require_exact(
+        "canonical tree receipt",
+        (
+            tree_receipt.value_sha256,
+            tree_receipt.byte_count,
+            tree_receipt.root_level,
+        ),
+        (
+            exact_plan.value_sha256,
+            exact_plan.byte_count,
+            exact_plan.expected_root_level,
+        ),
+    )
+
+    root_family = load_page_family(connector, page_sha256=root_sha256)
+    if root_family is None:
+        raise CanonicalValueNotReadyError("canonical root page is not complete")
+    page = decode_canonical_value_page(root_family.page_bytes)
+    _validate_page_shape(page, exact_plan.byte_count)
+    _require_exact(
+        "canonical root descriptor",
+        (
+            root_family.coordinate.value_sha256,
+            root_family.coordinate.level,
+            root_family.coordinate.page_position,
+            root_family.subtree_item_count,
+            page.level,
+            page.page_position,
+            page.subtree_byte_count,
+        ),
+        (
+            exact_plan.value_sha256,
+            exact_plan.expected_root_level,
+            0,
+            exact_plan.byte_count,
+            exact_plan.expected_root_level,
+            0,
+            exact_plan.byte_count,
+        ),
+    )
+    if page.owner_value_sha256 != exact_plan.value_sha256:
+        raise CanonicalValueCollisionError("canonical root owner disagrees")
+    validate_exact_page_parent_edges(connector, page=root_family)
+    if connector.fetch_one(
+        "SELECT parent_sha256 FROM catalog_canonical_value_page_parents "
+        "WHERE child_sha256 = %s",
+        (root_sha256,),
+    ):
+        raise CanonicalValueCollisionError("canonical root has a parent")
+
+    ensure_canonical_value_identity(
+        connector,
+        value_sha256=exact_plan.value_sha256,
+        root_page_sha256=root_sha256,
+    )
+    # Deliberately retain operational_canonical_value_uploads.  Only the
+    # first durable external consumer may remove this generation claim.
+    return exact_plan.value_sha256
 
 
 def stream_and_validate_canonical_value(
@@ -978,8 +1011,11 @@ def _allocate_authorized(
 
 
 def _lock_claim(work: VNextUnitOfWork, generation: int, value_sha256: bytes) -> None:
+    # Publication batches first lock their candidate checkpoint (rank 40).
+    # Every canonical caller uses rank 50 here, so scalar and grouped uploads
+    # share one order; a batch then visits the fixed-width digest keys sorted.
     claim = work.lock_row(
-        LockRank.CHECKPOINT,
+        LockRank.ALLOCATOR,
         encode_lock_key("canonical-upload", generation, value_sha256),
         "SELECT generation, value_sha256 "
         "FROM operational_canonical_value_uploads "
