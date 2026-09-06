@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from itertools import batched, groupby
 from typing import Any
 from unicodedata import unidata_version
 
@@ -60,8 +61,9 @@ def _generated_mariadb(config: CoreConfig) -> MariaDBConnector:
     for _slice_id, statements in payload["slices"]:
         for _statement_id, _kind, _name, sql in statements:
             connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
+    for sql, seeds in groupby(payload["bootstrap_seeds"], key=lambda seed: seed["sql"]):
+        for batch in batched(seeds, 128, strict=False):
+            connector.execute_many(sql, [seed["parameters"] for seed in batch])
     return connector
 
 

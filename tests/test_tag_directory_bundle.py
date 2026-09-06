@@ -87,42 +87,45 @@ def test_tag_bundle_deduplicates_shared_publications_at_the_hard_page_bound(
 ) -> None:
     connector = _database(tmp_path / "tag-bundle-bound.sqlite3")
     try:
-        values = _published_fixture(connector, artifact_count=0)
-        connector.execute("DELETE FROM catalog_tag_directory_order WHERE revision = 1")
-        for position in range(130):
-            digest = _canonical(
-                connector, "tag_value_utf8_v1", f"tag-{position:03}".encode()
-            )
-            tag_id = position + 2
-            seed_tag_term(
-                connector,
-                tag_id=tag_id,
-                namespace=b"artist",
-                tag_value_sha256=digest,
-            )
+        with connector.transaction():
+            values = _published_fixture(connector, artifact_count=0)
             connector.execute(
-                "INSERT INTO catalog_subjects "
-                "(revision, publication_key, position, tag_id) VALUES (1, %s, %s, %s)",
-                (values["publication_key"], position + 1, tag_id),
+                "DELETE FROM catalog_tag_directory_order WHERE revision = 1"
             )
-            connector.execute(
-                "INSERT INTO catalog_tag_publication_order "
-                "(revision, tag_id, position, publication_key) VALUES (1, %s, 0, %s)",
-                (tag_id, values["publication_key"]),
-            )
+            for position in range(130):
+                digest = _canonical(
+                    connector, "tag_value_utf8_v1", f"tag-{position:03}".encode()
+                )
+                tag_id = position + 2
+                seed_tag_term(
+                    connector,
+                    tag_id=tag_id,
+                    namespace=b"artist",
+                    tag_value_sha256=digest,
+                )
+                connector.execute(
+                    "INSERT INTO catalog_subjects "
+                    "(revision, publication_key, position, tag_id) VALUES (1, %s, %s, %s)",
+                    (values["publication_key"], position + 1, tag_id),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_tag_publication_order "
+                    "(revision, tag_id, position, publication_key) VALUES (1, %s, 0, %s)",
+                    (tag_id, values["publication_key"]),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_tag_directory_order "
+                    "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, %s, %s)",
+                    (b"artist", position, digest),
+                )
             connector.execute(
                 "INSERT INTO catalog_tag_directory_order "
-                "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, %s, %s)",
-                (b"artist", position, digest),
+                "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 130, %s)",
+                (b"artist", values["tag_value"]),
             )
-        connector.execute(
-            "INSERT INTO catalog_tag_directory_order "
-            "(revision, namespace, position, tag_value_sha256) VALUES (1, %s, 130, %s)",
-            (b"artist", values["tag_value"]),
-        )
-        connector.execute(
-            "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
-        )
+            connector.execute(
+                "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
+            )
         reader = VNextCatalogReaderRepository(backend="sqlite")
         with patch.object(
             reader, "_hydrate_publications", wraps=reader._hydrate_publications

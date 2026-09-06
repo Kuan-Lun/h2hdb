@@ -3,12 +3,42 @@ from __future__ import annotations
 from itertools import groupby
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from unittest.mock import Mock
 
 import pytest
+import test_vnext_catalog_reader_mariadb as mariadb_reader_tests
 from vnext_generated_database import open_generated_sqlite_database
 
+from h2hdb import CoreConfig
+from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
+
+
+def test_generated_mariadb_reader_fixture_batches_every_fact_in_exact_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = Mock(spec=MariaDBConnector)
+    monkeypatch.setattr(
+        mariadb_reader_tests, "MariaDBConnector", Mock(return_value=connector)
+    )
+    assert mariadb_reader_tests._generated_mariadb(CoreConfig()) is connector
+    connector.connect.assert_called_once_with()
+    payload: Any = ARTIFACT["backends"]["mariadb"]
+    assert [call.args for call in connector.execute.call_args_list] == [
+        (sql,)
+        for _slice_id, statements in payload["slices"]
+        for _statement_id, _kind, _name, sql in statements
+    ]
+    batches = [
+        (call.args[0], call.args[1]) for call in connector.execute_many.call_args_list
+    ]
+    assert batches
+    assert all(1 <= len(parameters) <= 128 for _sql, parameters in batches)
+    assert [(sql, parameters) for sql, batch in batches for parameters in batch] == [
+        (seed["sql"], seed["parameters"]) for seed in payload["bootstrap_seeds"]
+    ]
 
 
 class _RecordingSQLiteConnector(SQLiteConnector):
