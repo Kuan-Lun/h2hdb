@@ -222,7 +222,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 45
+    assert len(contract.external_relations) == 46
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
