@@ -35,6 +35,7 @@ __all__ = [
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from tempfile import TemporaryFile
 from typing import Any
 
 from .sql_connector import SQLConnector
@@ -3518,44 +3519,14 @@ def _prepare_gallery(
     content_prefer_not_already_uploaded: int | None = None
     content_title_scalar_count: int | None = None
     content_download_time: int | None = None
-    content_plan: CanonicalValueUploadPlan | None = None
-    content_sha256: bytes | None = None
-    content_count = sum(
-        1
-        for _digest in _iter_effective_content_digests(
-            work,
-            run,
-            gallery_id,
-            observation_id,
-        )
+    content_plan = _prepare_effective_content_plan(
+        work,
+        run,
+        gallery_id,
+        observation_id,
     )
-    if content_count:
-        content_plan = CanonicalValueUploadPlan.from_parts(
-            _EFFECTIVE_CONTENT_DOMAIN.decode("ascii"),
-            iter_effective_content_payload_ordered(
-                content_count,
-                _iter_effective_content_digests(
-                    work,
-                    run,
-                    gallery_id,
-                    observation_id,
-                ),
-            ),
-        )
-        reference_digest = effective_content_digest_ordered(
-            content_count,
-            _iter_effective_content_digests(
-                work,
-                run,
-                gallery_id,
-                observation_id,
-            ),
-        )
-        if content_plan.value_sha256 != reference_digest:
-            content_plan.close()
-            raise AnalysisCorruptionError(
-                "effective-content upload plan differs from the registered codec"
-            )
+    content_sha256: bytes | None = None
+    if content_plan is not None:
         content_sha256 = content_plan.value_sha256
         content_prefer_not_already_uploaded = int(not marker)
         content_title_scalar_count = title_scalar_receipt.scalar_count
@@ -3574,6 +3545,81 @@ def _prepare_gallery(
         preparation_authority,
         _PREPARATION_TOKEN,
     )
+
+
+class _EffectiveContentSpool:
+    """One snapshot's fixed-width digests, never shared across analysis stages.
+
+    The source is consumed once. Each independent codec replay verifies its
+    exact count and the checksum recorded from that source, including disk
+    short writes, truncation, appended data and same-length corruption.
+    """
+
+    def __init__(self, digests: Iterable[bytes]) -> None:
+        self._payload = TemporaryFile(mode="w+b")
+        self.count = 0
+        checksum = sha256()
+        try:
+            for digest in digests:
+                exact = require_digest32(digest, field="effective content spool digest")
+                if self.count >= INT63_MAX // 32:
+                    raise AnalysisCorruptionError(
+                        "effective content spool is too large"
+                    )
+                if self._payload.write(exact) != 32:
+                    raise OSError("effective content spool accepted a partial write")
+                checksum.update(exact)
+                self.count += 1
+            self._payload.flush()
+            self._checksum = checksum.digest()
+        except BaseException:
+            self._payload.close()
+            raise
+
+    def __enter__(self) -> _EffectiveContentSpool:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._payload.close()
+
+    def __iter__(self) -> Iterator[bytes]:
+        self._payload.seek(0)
+        checksum = sha256()
+        for _index in range(self.count):
+            digest = self._payload.read(32)
+            if len(digest) != 32:
+                raise AnalysisCorruptionError("effective content spool was truncated")
+            checksum.update(digest)
+            yield digest
+        if self._payload.read(1) or checksum.digest() != self._checksum:
+            raise AnalysisCorruptionError("effective content spool differs from source")
+
+
+def _prepare_effective_content_plan(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_id: int,
+    observation_id: int,
+) -> CanonicalValueUploadPlan | None:
+    with _EffectiveContentSpool(
+        _iter_effective_content_digests(work, authority, gallery_id, observation_id)
+    ) as spool:
+        if not spool.count:
+            return None
+        plan = CanonicalValueUploadPlan.from_parts(
+            _EFFECTIVE_CONTENT_DOMAIN.decode("ascii"),
+            iter_effective_content_payload_ordered(spool.count, spool),
+        )
+        try:
+            reference_digest = effective_content_digest_ordered(spool.count, spool)
+            if plan.value_sha256 != reference_digest:
+                raise AnalysisCorruptionError(
+                    "effective-content upload plan differs from the registered codec"
+                )
+            return plan
+        except BaseException:
+            plan.close()
+            raise
 
 
 def _iter_effective_content_digests(
@@ -3628,20 +3674,88 @@ def _iter_effective_content_digests(
         )
         if not rows:
             return
+        if len(rows) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError(
+                "effective content source page exceeds its cap"
+            )
+        if any(len(row) != 2 for row in rows):
+            raise AnalysisCorruptionError(
+                "effective content source page has invalid shape"
+            )
+        # Every source row is a digest and int63 ordinal (40 logical bytes).
+        # Only this page's distinct digests enter the fixed-width lookup; no
+        # dictionary survives a page or an independent preparation stage.
+        decisions = _resolved_decisions_for_page(
+            work,
+            authority.analysis_id,
+            tuple(
+                require_digest32(row[0], field="effective file_sha256") for row in rows
+            ),
+        )
         for raw_digest, raw_file_no in rows:
             digest = require_digest32(raw_digest, field="effective file_sha256")
             file_no = require_int63(raw_file_no, field="effective file_no")
-            decision = _resolved_decision(work, authority.analysis_id, digest)
-            if decision is None:
+            if previous_digest is not None and (digest, file_no) <= (
+                previous_digest,
+                previous_file_no,
+            ):
                 raise AnalysisCorruptionError(
-                    "sealed file-decision component omitted a CONTENT hash"
+                    "effective content source page repeated or reversed a key"
                 )
-            if not _excluded(decision, authority.policy):
+            if not _excluded(decisions[digest], authority.policy):
                 yield digest
             previous_digest = digest
             previous_file_no = file_no
         if len(rows) < _MAX_BATCH_ROWS:
             return
+
+
+def _resolved_decisions_for_page(
+    work: VNextUnitOfWork,
+    analysis_id: bytes,
+    digests: tuple[bytes, ...],
+) -> dict[bytes, _Decision]:
+    """Validate an exact bounded decision set without dropping source rows.
+
+    Each result is 16 + 32 + 3 * 8 = 72 logical bytes. The 128 accepted rows
+    plus one rejection sentinel bound fetched logical payload to 9,288 bytes,
+    independent of gallery/corpus size. Python/driver allocations and protocol
+    encoding overhead are measured separately from this logical payload bound.
+    """
+
+    if not 1 <= len(digests) <= _MAX_BATCH_ROWS:
+        raise AnalysisCorruptionError("effective decision lookup exceeds its row cap")
+    expected = {
+        require_digest32(digest, field="decision page digest") for digest in digests
+    }
+    placeholders = ", ".join("%s" for _digest in expected)
+    rows = work.connector.fetch_all(
+        "SELECT analysis_id, file_sha256, occurrence_count, artist_count, "
+        "maximum_gallery_artist_count "
+        "FROM catalog_analysis_file_hash_decision_resolved "
+        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders}) LIMIT %s",
+        (analysis_id, *sorted(expected), _MAX_BATCH_ROWS + 1),
+    )
+    if len(rows) != len(expected):
+        raise AnalysisCorruptionError(
+            "sealed file-decision component omitted or duplicated a CONTENT hash"
+        )
+    decisions: dict[bytes, _Decision] = {}
+    for row in rows:
+        if len(row) != 5 or row[0] != analysis_id:
+            raise AnalysisCorruptionError(
+                "effective decision page contains a foreign row"
+            )
+        digest = require_digest32(row[1], field="effective decision page digest")
+        if digest not in expected or digest in decisions:
+            raise AnalysisCorruptionError(
+                "effective decision page contains a foreign or duplicate digest"
+            )
+        decision = _decision_from_row(row[2:], field="effective decision page")
+        if decision is None:
+            raise AnalysisCorruptionError("effective decision page omitted a decision")
+        decisions[digest] = decision
+    return decisions
 
 
 class _PartReader:
