@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-06T10:16:53+00:00",
+  "checked_at": "2026-09-06T12:15:22+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.34.0",
+  "project_version": "0.35.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all build, runtime, optional development and Node registry candidates against the preceding receipt. Every external candidate version is unchanged, satisfies its documented compatibility bound, supports Python 3.14 where applicable, and is already installed in the validation environment. No external dependency update is required. Schema 5 tag directory/publication ordering, bounded replay, READY audits and retention passed targeted SQLite checks; the MariaDB 10.11.11 discovery/facet/presentation smoke now also exercises both tag APIs and passed. The final exact-tree bounded release gate is separate from this dependency review.",
+    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates against the previous receipt. External versions and compatibility bounds are unchanged and remain supported. The new CatalogReader bundle method requires implementers to update, so this task advances to compatibility lane 0.35 without changing schema 5 or storage descriptors. SQLite bounded tag-page, deduplicated hydration, cursor integrity and fresh-head regression tests passed; the real MariaDB 10.11.11 reader smoke test including presentation descriptors passed. The exact-tree merge gate separately validates the final candidate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
