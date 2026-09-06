@@ -80,13 +80,18 @@ def _now_microseconds() -> int:
 class VNextDatabaseAdminFacade:
     """Expose greenfield schema and immutable storage administration."""
 
-    __slots__ = ("__admin",)
+    __slots__ = ("__admin", "__context")
 
     def __init__(self, config: CoreConfig) -> None:
         if not isinstance(config, CoreConfig):
             raise TypeError("config must be CoreConfig")
         context = RepositoryContext.from_config(config)
+        self.__context = context
         self.__admin = VNextSchemaAdmin(context)
+
+    def close(self) -> None:
+        """Release idle sessions and reject later administration calls."""
+        self.__context.close()
 
     def initialize(self) -> SchemaEpochReport:
         return self.__admin.initialize()
@@ -118,6 +123,10 @@ class VNextCatalogFacade:
         self.__context = context
         self.__backend = context.sql_type
         self.__reader = VNextCatalogReaderRepository(backend=self.__backend)
+
+    def close(self) -> None:
+        """Release idle sessions and reject later catalog calls."""
+        self.__context.close()
 
     def get_catalog_revision(self, revision: int | None = None) -> CatalogRevision:
         return self.__read(
@@ -374,6 +383,10 @@ class VNextDownloadQueueFacade:
         self.__context = context
         self.__backend = context.sql_type
         self.__clock = clock
+
+    def close(self) -> None:
+        """Release idle sessions and reject later download-queue calls."""
+        self.__context.close()
 
     def request_download(self, gid: int, url: str = "") -> VNextDownloadRequest:
         requested_at = self.__clock()

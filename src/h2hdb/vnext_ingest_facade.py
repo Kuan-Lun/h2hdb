@@ -405,8 +405,11 @@ class VNextIngestFacade:
             self.__analysis = None
             publication = self.__publication
             self.__publication = None
-        if publication is not None:
-            publication.close()
+        try:
+            if publication is not None:
+                publication.close()
+        finally:
+            self.__context.close()
 
     def __enter__(self) -> VNextIngestFacade:
         self.__require_open()

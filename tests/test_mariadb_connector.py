@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
 import pytest
@@ -11,6 +12,8 @@ from h2hdb.mariadb_connector import (
     MariaDBConnector,
     MariaDBDuplicateKeyError,
 )
+from h2hdb.mariadb_pool import MariaDBConnectionPool
+from h2hdb.repository import RepositoryContext
 from h2hdb.sql_connector import DatabaseConfigurationError
 
 _MAX_ALLOWED_PACKET_QUERY = "SELECT @@SESSION.max_allowed_packet"
@@ -199,7 +202,7 @@ def test_begin_read_bypasses_mariadb_compatibility_version_prefix() -> None:
     assert connection.cursor_instance.queries == [
         "START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT"
     ]
-    assert connection.cursor_instance.closed
+    assert not connection.cursor_instance.closed
     assert connector._in_transaction
 
 
@@ -246,7 +249,10 @@ def test_execute_many_caches_session_packet_limit_for_physical_connection() -> N
 
     assert _packet_queries(connection) == [_MAX_ALLOWED_PACKET_QUERY]
     assert len(connection.execute_many_calls) > 2
-    assert all(cursor.closed for cursor in connection.cursors)
+    assert len(connection.cursors) == 1
+    assert not connection.cursors[0].closed
+    connector.close()
+    assert connection.cursors[0].closed
 
 
 @pytest.mark.parametrize("affected_rows", (0, 1))
@@ -459,3 +465,221 @@ def test_chunked_execute_many_rolls_back_real_mariadb_late_failure(
             (99,),
             (100,),
         ]
+
+
+class _PooledRecordingConnection(_PacketRecordingConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_calls = 0
+        self.fail_reset = False
+        self.fail_commit = False
+
+    def cmd_reset_connection(self) -> bool:
+        self.reset_calls += 1
+        if self.fail_reset:
+            raise ConnectionError("injected reset failure")
+        return True
+
+    def commit(self) -> None:
+        super().commit()
+        if self.fail_commit:
+            raise ConnectionError("injected committed response loss")
+
+
+def _pooled_connector(
+    pool: MariaDBConnectionPool, *, read_only: bool = False
+) -> MariaDBConnector:
+    return MariaDBConnector(
+        host="database.example",
+        port=3306,
+        user="h2hdb",
+        password="secret",
+        database="h2hdb",
+        read_only=read_only,
+        _pool=pool,
+    )
+
+
+def test_pooled_connector_reuses_one_cursor_executes_immediately_and_resets() -> None:
+    connection = _PooledRecordingConnection()
+    pool = MariaDBConnectionPool(lambda: cast(MySQLConnectionAbstract, connection))
+    with _pooled_connector(pool) as connector:
+        with connector.transaction():
+            connector.execute(_INSERT_QUERY, (1, "first"))
+            assert connection.execute_calls[-1] == (_INSERT_QUERY, (1, "first"))
+            connector.execute(_INSERT_QUERY, (2, "second"))
+            assert connection.commit_calls == 0
+        assert connection.commit_calls == 1
+        assert len(connection.cursors) == 1
+    assert connection.cursors[0].closed
+    assert connection.rollback_calls == 1
+    assert connection.reset_calls == 1
+    assert not connection.closed
+    with _pooled_connector(pool) as reopened:
+        assert cast(MariaDBConnector, reopened).connection is cast(
+            MySQLConnectionAbstract, connection
+        )
+        assert len(connection.cursors) == 2
+    pool.close()
+    assert connection.closed
+
+
+def test_connector_rejects_cross_thread_lease_use_and_close() -> None:
+    connection = _PooledRecordingConnection()
+    pool = MariaDBConnectionPool(lambda: cast(MySQLConnectionAbstract, connection))
+    connector = _pooled_connector(pool)
+    with connector:
+        calls_before = len(connection.execute_calls)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for operation in (lambda: connector.fetch_one("SELECT 1"), connector.close):
+                with pytest.raises(RuntimeError, match="another thread/process"):
+                    executor.submit(operation).result(timeout=5)
+        assert len(connection.execute_calls) == calls_before
+        assert not connection.closed
+    pool.close()
+
+
+def test_commit_response_loss_is_not_retried_and_discards_lease() -> None:
+    connection = _PooledRecordingConnection()
+    connection.fail_commit = True
+    pool = MariaDBConnectionPool(lambda: cast(MySQLConnectionAbstract, connection))
+    connector = _pooled_connector(pool)
+    with connector:
+        with pytest.raises(ConnectionError, match="committed response loss"):
+            with connector.transaction():
+                connector.execute(_INSERT_QUERY, (1, "durable"))
+        with pytest.raises(RuntimeError, match="connection failed"):
+            connector.commit()
+        assert connection.commit_calls == 1
+    assert connection.closed
+    assert connection.reset_calls == 0
+    pool.close()
+
+
+def test_failed_reset_discards_session_and_returns_pool_capacity() -> None:
+    first, second = _PooledRecordingConnection(), _PooledRecordingConnection()
+    first.fail_reset = True
+    connections = iter((first, second))
+    pool = MariaDBConnectionPool(
+        lambda: cast(MySQLConnectionAbstract, next(connections)),
+        capacity=1,
+    )
+    with _pooled_connector(pool):
+        pass
+    assert first.closed
+    with _pooled_connector(pool) as connector:
+        assert cast(MariaDBConnector, connector).connection is cast(
+            MySQLConnectionAbstract, second
+        )
+    pool.close()
+    assert second.closed
+
+
+def test_failed_connector_initialization_releases_pool_capacity() -> None:
+    first, second = _PooledRecordingConnection(), _PooledRecordingConnection()
+    first.innodb_flush_log_at_trx_commit = 2
+    connections = iter((first, second))
+    pool = MariaDBConnectionPool(
+        lambda: cast(MySQLConnectionAbstract, next(connections)),
+        capacity=1,
+    )
+    with pytest.raises(DatabaseConfigurationError, match="flush_log_at_trx_commit=1"):
+        with _pooled_connector(pool):
+            pass
+    assert first.closed
+    with _pooled_connector(pool):
+        pass
+    pool.close()
+
+
+@pytest.mark.mariadb_smoke
+def test_runtime_pool_real_mariadb_resets_read_only_session_and_uncommitted_rows(
+    mariadb_config: CoreConfig,
+) -> None:
+    context = RepositoryContext.from_config(mariadb_config)
+    try:
+        with context.SQLConnector() as connector:
+            connector.execute("CREATE TABLE lease_rows (id INT PRIMARY KEY)")
+            identity = connector.fetch_one("SELECT CONNECTION_ID()")
+            connector.execute("SET @h2hdb_lease_marker = 42")
+            connector.begin()
+            connector.execute("INSERT INTO lease_rows VALUES (1)")
+            # Explicit close must roll back unfinished writes.
+        with context.SQLConnector() as connector:
+            assert connector.fetch_one("SELECT CONNECTION_ID()") == identity
+            assert connector.fetch_one("SELECT @h2hdb_lease_marker") == (None,)
+            assert connector.fetch_all("SELECT id FROM lease_rows") == []
+            connector.rollback()  # End the implicit SELECT snapshot.
+            connector.execute("SET SESSION TRANSACTION READ ONLY")
+            with connector.read_transaction():
+                assert connector.fetch_one("SELECT @@SESSION.tx_read_only") == (1,)
+        with context.SQLConnector() as connector:
+            assert connector.fetch_one("SELECT CONNECTION_ID()") == identity
+            assert connector.fetch_one("SELECT @@SESSION.tx_read_only") == (0,)
+            with connector.transaction():
+                connector.execute("INSERT INTO lease_rows VALUES (2)")
+        with context.SQLConnector() as connector:
+            assert connector.fetch_all("SELECT id FROM lease_rows") == [(2,)]
+    finally:
+        context.close()
+
+
+def test_runtime_pool_real_mariadb_commit_response_loss_reads_durable_outcome(
+    mariadb_config: CoreConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = RepositoryContext.from_config(mariadb_config)
+    try:
+        with context.SQLConnector() as connector:
+            connector.execute("CREATE TABLE lease_rows (id INT PRIMARY KEY)")
+            identity = connector.fetch_one("SELECT CONNECTION_ID()")
+            connection = cast(MariaDBConnector, connector)._require_connection()
+            original_commit = connection.commit
+            commits = 0
+
+            def commit_then_lose_response() -> None:
+                nonlocal commits
+                original_commit()
+                commits += 1
+                raise ConnectionError("injected real committed response loss")
+
+            monkeypatch.setattr(connection, "commit", commit_then_lose_response)
+            with pytest.raises(ConnectionError, match="committed response loss"):
+                with connector.transaction():
+                    connector.execute("INSERT INTO lease_rows VALUES (1)")
+                    connector.execute("INSERT INTO lease_rows VALUES (2)")
+            assert commits == 1
+        with context.SQLConnector() as connector:
+            assert connector.fetch_one("SELECT CONNECTION_ID()") != identity
+            assert connector.fetch_all("SELECT id FROM lease_rows ORDER BY id") == [
+                (1,),
+                (2,),
+            ]
+    finally:
+        context.close()
+
+
+def test_runtime_pool_real_mariadb_close_preserves_active_transaction(
+    mariadb_config: CoreConfig,
+) -> None:
+    context = RepositoryContext.from_config(mariadb_config)
+    try:
+        with context.SQLConnector() as connector:
+            connector.execute("CREATE TABLE lease_rows (id INT PRIMARY KEY)")
+            with connector.transaction():
+                connector.execute("INSERT INTO lease_rows VALUES (1)")
+                context.close()
+                with pytest.raises(RuntimeError, match="runtime is closed"):
+                    context.SQLConnector()
+                connector.execute("INSERT INTO lease_rows VALUES (2)")
+    finally:
+        context.close()
+    restarted = RepositoryContext.from_config(mariadb_config)
+    try:
+        with restarted.SQLConnector() as connector:
+            assert connector.fetch_all("SELECT id FROM lease_rows ORDER BY id") == [
+                (1,),
+                (2,),
+            ]
+    finally:
+        restarted.close()

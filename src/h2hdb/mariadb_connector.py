@@ -1,16 +1,19 @@
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
+from os import getpid
+from threading import get_ident
 from time import struct_time
-from types import TracebackType
 from typing import Any, cast
 
 from mysql.connector import connect as SQLConnect
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
 from mysql.connector.errors import IntegrityError, ProgrammingError
-from mysql.connector.pooling import PooledMySQLConnection
 from pydantic import Field
 
+from .mariadb_pool import MariaDBConnectionPool
 from .sql_connector import (
     DatabaseConfigurationError,
     DatabaseDuplicateKeyError,
@@ -57,25 +60,6 @@ class MariaDBConnectorParams(SQLConnectorParams):
     read_only: bool = False
 
 
-class MariaDBCursor:
-    def __init__(
-        self, connection: PooledMySQLConnection | MySQLConnectionAbstract
-    ) -> None:
-        self.connection = connection
-
-    def __enter__(self) -> MySQLCursorAbstract:
-        self.cursor = self.connection.cursor(buffered=True)
-        return self.cursor
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        self.cursor.close()
-
-
 class MariaDBConnector(SQLConnector):
     def __init__(
         self,
@@ -85,6 +69,8 @@ class MariaDBConnector(SQLConnector):
         password: str,
         database: str,
         read_only: bool = False,
+        *,
+        _pool: MariaDBConnectionPool | None = None,
     ) -> None:
         self.params = MariaDBConnectorParams(
             host=host,
@@ -94,14 +80,28 @@ class MariaDBConnector(SQLConnector):
             database=database,
             read_only=read_only,
         )
+        self.connection: MySQLConnectionAbstract | None = None
         self._max_allowed_packet: int | None = None
+        self._pool = _pool
+        self._cursor: MySQLCursorAbstract | None = None
+        self._owner = (getpid(), get_ident())
+        self._discard_connection = False
+        self._broken = False
+        self._in_transaction = False
 
     def connect(self) -> None:
-        # max_allowed_packet is a session value inherited by each physical
-        # connection, so a reconnect must never reuse the previous value.
+        if getattr(self, "connection", None) is not None:
+            raise RuntimeError("MariaDB connector is already connected")
+        self._owner = (getpid(), get_ident())
         self._max_allowed_packet = None
+        self._discard_connection = False
+        self._broken = False
         connection_params = self.params.model_dump(exclude={"read_only"})
-        self.connection = SQLConnect(**connection_params)
+        self.connection = (
+            self._pool.acquire()
+            if self._pool is not None
+            else cast(MySQLConnectionAbstract, SQLConnect(**connection_params))
+        )
         self._in_transaction = False
         try:
             durability = self.fetch_one(INNODB_DURABILITY_QUERY)
@@ -113,24 +113,76 @@ class MariaDBConnector(SQLConnector):
                 raise DatabaseConfigurationError(
                     "MariaDB must provide @@GLOBAL.innodb_flush_log_at_trx_commit=1"
                 )
+            if self.params.read_only:
+                with self._using_cursor() as cursor:
+                    cursor.execute("SET SESSION TRANSACTION READ ONLY")
         except (TypeError, ValueError) as error:
-            self.connection.close()
+            self._discard_connection = True
+            self.close()
             raise DatabaseConfigurationError(
                 "MariaDB returned an invalid "
                 "@@GLOBAL.innodb_flush_log_at_trx_commit value"
             ) from error
         except BaseException:
-            self.connection.close()
+            self._discard_connection = True
+            self.close()
             raise
-        if self.params.read_only:
-            with MariaDBCursor(self.connection) as cursor:
-                cursor.execute("SET SESSION TRANSACTION READ ONLY")
+
+    def _require_owner(self) -> None:
+        if self._owner != (getpid(), get_ident()):
+            raise RuntimeError(
+                "MariaDB connector lease belongs to another thread/process"
+            )
+
+    def _require_connection(self) -> MySQLConnectionAbstract:
+        self._require_owner()
+        if self._broken:
+            raise RuntimeError(
+                "MariaDB connection failed; close the lease before retry"
+            )
+        if self.connection is None:
+            raise RuntimeError("MariaDB connector is closed")
+        return self.connection
+
+    @contextmanager
+    def _using_cursor(self) -> Generator[MySQLCursorAbstract]:
+        connection = self._require_connection()
+        try:
+            if self._cursor is None:
+                self._cursor = connection.cursor(buffered=True)
+            yield self._cursor
+        except BaseException:
+            self._discard_connection = True
+            raise
 
     def close(self) -> None:
+        self._require_owner()
+        connection = getattr(self, "connection", None)
+        if connection is None:
+            return
+        reusable = not self._discard_connection and not self._broken
         try:
-            self.connection.close()
+            if self._cursor is not None:
+                self._cursor.close()
+            if self._pool is not None and reusable:
+                connection.rollback()
+                # reset_session() may reconnect internally. COM_RESET_CONNECTION
+                # never retries commands; reuse requires an explicit success.
+                reusable = connection.cmd_reset_connection() is True
+        except Exception:
+            reusable = False
+        except BaseException:
+            reusable = False
+            raise
         finally:
+            self._cursor = None
+            self.connection = None
             self._max_allowed_packet = None
+            self._in_transaction = False
+            if self._pool is not None:
+                self._pool.release(connection, reusable=reusable)
+            else:
+                connection.close()
 
     def check_table_exists(self, table_name: str) -> bool:
         query = (
@@ -141,7 +193,14 @@ class MariaDBConnector(SQLConnector):
         return bool(result)
 
     def commit(self) -> None:
-        self.connection.commit()
+        connection = self._require_connection()
+        try:
+            connection.commit()
+        except BaseException:
+            # COMMIT may already be durable. Never retry it or reuse this lease.
+            self._broken = True
+            self._discard_connection = True
+            raise
         self._in_transaction = False
 
     def begin(self) -> None:
@@ -149,11 +208,16 @@ class MariaDBConnector(SQLConnector):
             raise DatabaseReadOnlyError(
                 "Cannot start a write transaction in read-only mode"
             )
-        self.connection.start_transaction()
+        connection = self._require_connection()
+        try:
+            connection.start_transaction()
+        except BaseException:
+            self._discard_connection = True
+            raise
         self._in_transaction = True
 
     def begin_read(self) -> None:
-        if self.connection.in_transaction:
+        if self._require_connection().in_transaction:
             raise ProgrammingError("Transaction already in progress")
         # MariaDB 10.x can expose a MySQL-compatible ``5.5.5-`` handshake
         # prefix. Connector/Python consequently misclassifies the server as
@@ -161,17 +225,23 @@ class MariaDBConnector(SQLConnector):
         # SQL. MariaDB supports both characteristics directly in START
         # TRANSACTION, so bypass that client-side version gate while retaining
         # the database-enforced read-only consistent snapshot.
-        with MariaDBCursor(self.connection) as cursor:
+        with self._using_cursor() as cursor:
             cursor.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
         self._in_transaction = True
 
     def rollback(self) -> None:
-        self.connection.rollback()
+        connection = self._require_connection()
+        try:
+            connection.rollback()
+        except BaseException:
+            self._broken = True
+            self._discard_connection = True
+            raise
         self._in_transaction = False
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         self._ensure_writable(query)
-        with MariaDBCursor(self.connection) as cursor:
+        with self._using_cursor() as cursor:
             try:
                 cursor.execute(query, data)
             except IntegrityError as e:
@@ -189,7 +259,7 @@ class MariaDBConnector(SQLConnector):
             key in query.upper() for key in AUTO_COMMIT_KEYS
         )
         try:
-            with MariaDBCursor(self.connection) as cursor:
+            with self._using_cursor() as cursor:
                 cursor.execute(query, data)
                 affected = cursor.rowcount
         except IntegrityError as error:
@@ -220,7 +290,7 @@ class MariaDBConnector(SQLConnector):
             key in query.upper() for key in AUTO_COMMIT_KEYS
         )
         try:
-            with MariaDBCursor(self.connection) as cursor:
+            with self._using_cursor() as cursor:
                 for batch in batches:
                     cursor.executemany(query, batch)
         except IntegrityError as error:
@@ -235,7 +305,7 @@ class MariaDBConnector(SQLConnector):
             self.commit()
 
     def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
-        with MariaDBCursor(self.connection) as cursor:
+        with self._using_cursor() as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchone()
         if isinstance(vlist, tuple):
@@ -246,7 +316,7 @@ class MariaDBConnector(SQLConnector):
     def fetch_all(
         self, query: str, data: tuple[Any, ...] = ()
     ) -> list[tuple[Any, ...]]:
-        with MariaDBCursor(self.connection) as cursor:
+        with self._using_cursor() as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchall()
         return cast(list[tuple[Any, ...]], vlist)
@@ -276,7 +346,7 @@ class MariaDBConnector(SQLConnector):
     ) -> list[list[tuple[Any, ...]]]:
         packet_limit = self._get_session_max_allowed_packet()
         packet_budget = packet_limit * INSERT_PACKET_BUDGET_PERCENT // 100
-        encoding = self.connection.python_charset
+        encoding = self._require_connection().python_charset
         query_size = len(query.encode(encoding))
         batches: list[list[tuple[Any, ...]]] = []
         batch: list[tuple[Any, ...]] = []

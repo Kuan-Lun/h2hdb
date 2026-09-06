@@ -1118,3 +1118,52 @@ def test_facade_public_surface_does_not_expose_database_infrastructure(
 
     with pytest.raises(TypeError, match="CoreConfig"):
         facade_type(object())  # type: ignore[arg-type]
+
+
+def test_closed_facades_reject_new_calls_without_opening_a_database(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "closed-runtime.sqlite3"
+    config = _config(path)
+    admin = VNextDatabaseAdminFacade(config)
+    catalog = VNextCatalogFacade(config)
+    queue = VNextDownloadQueueFacade(config)
+    for facade in (admin, catalog, queue):
+        facade.close()
+        facade.close()
+    operations = (
+        admin.initialize,
+        admin.check,
+        admin.check_readiness,
+        catalog.get_catalog_revision,
+        queue.list_download_requests,
+        lambda: queue.request_download(1),
+    )
+    for operation in operations:
+        with pytest.raises(RuntimeError, match="runtime is closed"):
+            operation()
+    assert not path.exists()
+
+
+def test_repository_context_close_preserves_existing_connector_and_rejects_new(
+    tmp_path: Path,
+) -> None:
+    context = RepositoryContext.from_config(_config(tmp_path / "active-lease.sqlite3"))
+    with context.SQLConnector() as connector:
+        connector.execute("CREATE TABLE lifecycle_rows (id INT PRIMARY KEY)")
+        with connector.transaction():
+            connector.execute("INSERT INTO lifecycle_rows VALUES (1)")
+            context.close()
+            context.close()
+            with pytest.raises(RuntimeError, match="runtime is closed"):
+                context.SQLConnector()
+            connector.execute("INSERT INTO lifecycle_rows VALUES (2)")
+    restarted = RepositoryContext.from_config(context.config)
+    try:
+        with restarted.SQLConnector() as connector:
+            assert connector.fetch_all("SELECT id FROM lifecycle_rows ORDER BY id") == [
+                (1,),
+                (2,),
+            ]
+    finally:
+        restarted.close()
