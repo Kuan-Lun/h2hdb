@@ -12,6 +12,7 @@ from h2hdb.vnext_domains import INT63_MAX, DomainValidationError
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
+    MaintenanceGateCorruptionError,
     MaintenanceGateExhaustedError,
     MaintenanceGateRepository,
     MaintenanceGateTokenCollisionError,
@@ -129,6 +130,83 @@ def test_shared_claims_use_first_available_slot_and_resume_without_writes(
             "SELECT slot, owner_token FROM operational_maintenance_gate_holders "
             "ORDER BY slot"
         ) == [(0, b"a" * 16), (1, b"b" * 16)]
+    finally:
+        connector.close()
+
+
+def test_live_authorization_reads_the_sparse_slot_domain_in_one_bounded_query(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "batch-slots.sqlite3")
+    try:
+        first = _claim_shared(connector, b"a" * 16, now=10, duration=100)
+        second = _claim_shared(connector, b"b" * 16, now=10, duration=100)
+        with connector.transaction():
+            MaintenanceGateRepository.release(
+                VNextUnitOfWork(connector, backend="sqlite"), first, now=20
+            )
+        with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as reads:
+            assert _resume(connector, second, now=21) == second
+        holder_reads = [
+            call
+            for call in reads.call_args_list
+            if "FROM operational_maintenance_gate_holders AS h" in call.args[0]
+        ]
+        assert len(holder_reads) == 1
+        assert (
+            "LEFT JOIN operational_maintenance_gate_owners" in holder_reads[0].args[0]
+        )
+        assert "LIMIT %s" in holder_reads[0].args[0]
+        assert holder_reads[0].args[1] == (65,)
+        replacement = _claim_shared(connector, b"c" * 16, now=22, duration=100)
+        assert replacement.slots == (0,)
+        assert _resume(connector, second, now=23) == second
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [(0, b"a" * 16, None, None, None)],
+        [(0, b"a" * 16, b"b" * 16, 0, 100)],
+        [(64, b"a" * 16, b"a" * 16, 0, 100)],
+        [(0, b"a" * 16, b"a" * 16, 0, 100)] * 2,
+        [(1, b"a" * 16, b"a" * 16, 0, 100), (0, b"b" * 16, b"b" * 16, 0, 100)],
+        [(slot, b"a" * 16, b"a" * 16, 0, 100) for slot in range(65)],
+        [(0, b"a" * 16, 0, 100)],
+    ],
+)
+def test_batched_slot_authority_rejects_orphans_and_nonexact_domains(
+    tmp_path: Path, rows: list[tuple[Any, ...]]
+) -> None:
+    connector = _generated_database(tmp_path / "corrupt-batch.sqlite3")
+    try:
+        with connector.transaction():
+            with patch.object(connector, "fetch_all", return_value=rows):
+                with pytest.raises(MaintenanceGateCorruptionError):
+                    MaintenanceGateRepository._lock_slots(
+                        VNextUnitOfWork(connector, backend="sqlite")
+                    )
+    finally:
+        connector.close()
+
+
+def test_exclusive_authority_still_requires_every_slot_after_batching(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "missing-exclusive-slot.sqlite3")
+    try:
+        lease = _claim_exclusive(connector, b"a" * 16, now=10, duration=100)
+        with connector.transaction():
+            connector.execute(
+                "DELETE FROM operational_maintenance_gate_holders WHERE slot = %s",
+                (63,),
+            )
+        before = _gate_snapshot(connector)
+        with pytest.raises(MaintenanceGateCorruptionError):
+            _resume(connector, lease, now=20)
+        assert _gate_snapshot(connector) == before
     finally:
         connector.close()
 

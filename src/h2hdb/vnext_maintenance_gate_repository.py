@@ -1,9 +1,10 @@
 """Normalized 64-slot maintenance gate for vNext writers.
 
-The caller owns the write transaction.  Every operation locks the singleton
-head first and the fixed slot domain in ascending order.  This makes both the
-SQLite ``BEGIN IMMEDIATE`` path and MariaDB ``FOR UPDATE`` path use the same
-bounded, executable locking protocol.
+The caller owns the write transaction. Every operation locks the singleton
+head before reading the fixed slot domain in one bounded locking query.
+The head serializes gate mutations; SQL result order is not a claim about
+the database engine's physical lock acquisition order. SQLite continues to
+serialize writes with ``BEGIN IMMEDIATE``.
 """
 
 from __future__ import annotations
@@ -459,30 +460,40 @@ class MaintenanceGateRepository:
 
     @staticmethod
     def _lock_slots(work: VNextUnitOfWork) -> tuple[_Owner | None, ...]:
-        result: list[_Owner | None] = []
-        for slot in _SLOTS:
-            row = work.lock_row(
-                LockRank.MAINTENANCE_GATE,
-                encode_lock_key("gate", 3, slot),
-                f"SELECT h.owner_token, o.gate_generation, o.lease_expires_at "
-                f"FROM {_HOLDER_TABLE} AS h JOIN {_OWNER_TABLE} AS o "
-                "ON o.owner_token = h.owner_token WHERE h.slot = %s",
-                (slot,),
-            )
-            if not row:
-                result.append(None)
-                continue
-            if len(row) != 3:
+        # A sentinel row detects an oversized/corrupt domain without buffering
+        # an unbounded result. LEFT JOIN keeps orphaned holders observable.
+        rows = work.lock_rows(
+            LockRank.MAINTENANCE_GATE,
+            tuple(encode_lock_key("gate", 3, slot) for slot in _SLOTS),
+            f"SELECT h.slot, h.owner_token, o.owner_token, "
+            f"o.gate_generation, o.lease_expires_at FROM {_HOLDER_TABLE} AS h "
+            f"LEFT JOIN {_OWNER_TABLE} AS o ON o.owner_token = h.owner_token "
+            "ORDER BY h.slot LIMIT %s",
+            (len(_SLOTS) + 1,),
+        )
+        if len(rows) > len(_SLOTS):
+            raise MaintenanceGateCorruptionError("gate holder domain exceeds 64 slots")
+        result: list[_Owner | None] = [None] * len(_SLOTS)
+        previous_slot = -1
+        for row in rows:
+            if len(row) != 5:
+                raise MaintenanceGateCorruptionError("gate holder has an invalid shape")
+            slot = require_int63(row[0], field="gate holder slot")
+            if slot not in _SLOTS or slot <= previous_slot:
                 raise MaintenanceGateCorruptionError(
-                    f"gate slot {slot} has an invalid shape"
+                    "gate holders are not an exact ordered subset of 0..63"
                 )
-            result.append(
-                _Owner(
-                    require_uuid16(row[0], field=f"gate slot {slot} owner_token"),
-                    require_int63(row[1], field=f"gate slot {slot} generation"),
-                    require_int63(row[2], field=f"gate slot {slot} lease_expires_at"),
+            token = require_uuid16(row[1], field=f"gate slot {slot} owner_token")
+            if row[2] != token or row[3] is None or row[4] is None:
+                raise MaintenanceGateCorruptionError(
+                    f"gate slot {slot} has no exact owner authority"
                 )
+            result[slot] = _Owner(
+                token,
+                require_int63(row[3], field=f"gate slot {slot} generation"),
+                require_int63(row[4], field=f"gate slot {slot} lease_expires_at"),
             )
+            previous_slot = slot
         return tuple(result)
 
     @staticmethod
