@@ -416,7 +416,7 @@ def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
     assert {PARENT.name, CHILD.name} <= set(connector.objects)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_fake_mariadb_prior_schema_control_is_rejected(version: int) -> None:
     connector = FakeMariaDBConnector()
     definition = _definition()
@@ -427,7 +427,7 @@ def test_fake_mariadb_prior_schema_control_is_rejected(version: int) -> None:
 
     with pytest.raises(
         SchemaEpochDriftError,
-        match=f"Database schema version is {version}, expected 4",
+        match=f"Database schema version is {version}, expected 5",
     ):
         run_mariadb_schema_epoch(
             connector,
