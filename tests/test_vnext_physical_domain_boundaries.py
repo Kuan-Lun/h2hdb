@@ -382,8 +382,8 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         "publication_commit_candidate_id",
         "source_build_scope_key",
     }.isdisjoint(CATALOG_PHYSICAL_DOMAIN_RELATIONS)
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 148
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 126
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 150
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 128
     assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 22
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
