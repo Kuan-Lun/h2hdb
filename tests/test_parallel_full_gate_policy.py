@@ -85,6 +85,17 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
 
 def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     expected = {
+        # One reset/rollback case covers reused physical session isolation; one
+        # 257-record case covers the new three-page analysis lookup and spool.
+        # Their larger fault/process matrices remain opt-in deep cases.
+        (
+            "test_mariadb_connector.py",
+            "test_runtime_pool_real_mariadb_resets_read_only_session_and_uncommitted_rows",
+        ),
+        (
+            "test_vnext_analysis_bounded_preparation.py",
+            "test_live_mariadb_bounded_preparation_matches_reference",
+        ),
         (
             "test_vnext_source_marker.py",
             "test_marker_cache_survives_restart_and_reuses_prior_membership",
