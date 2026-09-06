@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-06T07:29:02+00:00",
+  "checked_at": "2026-09-06T10:16:53+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.33.0",
+  "project_version": "0.34.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node candidates against the preceding receipt: registry versions are unchanged and the current Python 3.14 environment already uses those latest candidates. All declared upper bounds continue to admit the latest stable release. No dependency update is required for schema 4 and durable completion-marker reuse. The 16 SQLite marker integration cases and 23 artifact verification regressions passed; the release gate separately validates the final tree and manual MariaDB evidence is reported separately.",
+    "note": "Reviewed all build, runtime, optional development and Node registry candidates against the preceding receipt. Every external candidate version is unchanged, satisfies its documented compatibility bound, supports Python 3.14 where applicable, and is already installed in the validation environment. No external dependency update is required. Schema 5 tag directory/publication ordering, bounded replay, READY audits and retention passed targeted SQLite checks; the MariaDB 10.11.11 discovery/facet/presentation smoke now also exercises both tag APIs and passed. The final exact-tree bounded release gate is separate from this dependency review.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
