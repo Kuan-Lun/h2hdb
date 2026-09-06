@@ -49,6 +49,37 @@ def _write_mutation(tmp_path: Path, old: str, new: str) -> Path:
     return path
 
 
+def _write_layer_mutation(
+    tmp_path: Path, invariant_id: str, layer: str, replacement: str
+) -> Path:
+    """Mutate a named obligation without pinning its growing evidence list."""
+    text = COVERAGE_MANIFEST.read_text(encoding="utf-8")
+    prefix, marker, remainder = text.partition(
+        f'[[invariant]]\nid = "{invariant_id}"\n'
+    )
+    assert marker
+    block, separator, suffix = remainder.partition("\n[[invariant]]")
+    lines = block.splitlines(keepends=True)
+    positions = [
+        index for index, line in enumerate(lines) if line.startswith(f"{layer} = ")
+    ]
+    assert len(positions) == 1
+    lines[positions[0]] = replacement + "\n"
+    path = tmp_path / "invariants.toml"
+    path.write_text(
+        prefix + marker + "".join(lines) + separator + suffix, encoding="utf-8"
+    )
+    return path
+
+
+def _expected_coverage_summary() -> str:
+    document = tomllib.loads(COVERAGE_MANIFEST.read_text(encoding="utf-8"))
+    return (
+        f"formal coverage valid: invariants={len(document['invariant'])} "
+        f"evidence={len(document['evidence'])}"
+    )
+
+
 def _tool_contract_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, object]:
@@ -256,9 +287,10 @@ def test_vertical_family_small_declares_bounded_safety_scope() -> None:
 
 
 def test_runtime_obligation_cannot_hide_missing_fault_coverage(tmp_path: Path) -> None:
-    path = _write_mutation(
+    path = _write_layer_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }',
+        "catalog.incremental-impact.v1",
+        "fault",
         'fault = { status = "not_applicable", rationale = "This runtime invariant deliberately has no injected fault evidence yet." }',
     )
 
@@ -280,9 +312,10 @@ def test_stale_evidence_symbol_is_rejected(tmp_path: Path) -> None:
 
 
 def test_blocked_layer_requires_an_explicit_machine_blocker(tmp_path: Path) -> None:
-    path = _write_mutation(
+    path = _write_layer_mutation(
         tmp_path,
-        'fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions"] }',
+        "catalog.incremental-impact.v1",
+        "fault",
         'fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "unknown" }',
     )
 
@@ -352,7 +385,7 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "formal coverage valid: invariants=33 evidence=166" in result.stdout
+    assert result.stdout.strip() == _expected_coverage_summary()
 
 
 def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
@@ -371,7 +404,7 @@ def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
         text=True,
     )
     assert validate_only.returncode == 0, validate_only.stderr
-    assert "formal coverage valid: invariants=33 evidence=166" in validate_only.stdout
+    assert validate_only.stdout.strip() == _expected_coverage_summary()
     strict = subprocess.run(
         [sys.executable, str(COVERAGE_CHECKER), str(COVERAGE_MANIFEST)],
         cwd=ROOT,
@@ -380,7 +413,7 @@ def test_coverage_validate_only_matches_the_closed_strict_manifest() -> None:
         text=True,
     )
     assert strict.returncode == 0, strict.stderr
-    assert "formal coverage valid: invariants=33 evidence=166" in strict.stdout
+    assert strict.stdout.strip() == _expected_coverage_summary()
 
 
 def test_coverage_validate_only_still_rejects_invalid_manifest(
