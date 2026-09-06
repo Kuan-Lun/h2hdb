@@ -2977,6 +2977,63 @@ symbol = "test_live_mariadb_every_manifest_column_rejects_every_invalid_class_an
 path = "tests/test_vnext_pipeline_fault_matrix.py"
 symbol = "test_live_mariadb_sampled_faults_roll_back_exactly_and_converge"
 
+[[evidence]]
+id = "runtime.production.source-completion-marker"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The production repository resolves bounded completion-marker probes against exact canonical source identities and sealed observation FILE, scan policy, descriptor roots and counts; staging binds only sealed observations, reuse reloads the immutable binding under the current ingest fence and expected membership, and READY checks every retained binding."
+assumptions = ["The source producer guarantees that an unchanged completion marker denotes unchanged completed gallery contents; filesystem bytes and producer behavior are outside the core SQL model.", "The public preparation flow verifies the marker before and after reading source bytes; the core receives an immutable FileObservation receipt rather than performing filesystem I/O."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_marker_repository.py"
+symbol = "SourceMarkerRepository"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_marker_family.py"
+symbol = "bind_completion_marker"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "check_source_completion_marker_v1"
+
+[[evidence]]
+id = "fault.production.source-completion-marker"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Changed markers during preparation cannot seed reusable authority; caller-corrupted cached counts or gallery identity are rejected without durable writes, connector faults roll back cached linking, response-loss replay adds no writes, and a replaced ingest owner cannot reuse delayed work."
+assumptions = ["These are concrete sampled fault paths, not an exhaustive model of filesystem or database failures."]
+[[evidence.location]]
+path = "tests/test_vnext_source_marker.py"
+symbol = "test_marker_change_during_preparation_does_not_seed_a_cache_entry"
+[[evidence.location]]
+path = "tests/test_vnext_source_marker.py"
+symbol = "test_completion_marker_rejects_corrupt_authority"
+[[evidence.location]]
+path = "tests/test_vnext_source_marker.py"
+symbol = "test_cached_source_step_recovers_commit_faults_and_rejects_stale_owner"
+
+[[evidence]]
+id = "integration.production.source-completion-marker"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Public preparation survives facade restart and reuses retained verified observations, preserves complete current source membership, and reclaims removed-gallery marker bindings through normal child-first cleanup."
+assumptions = ["The public workflow is exercised on SQLite; the restart case is also an explicit live MariaDB smoke case when H2HDB_TEST_MARIADB=1. The other MariaDB cases require the manual deep profile and are not implied by a bounded release receipt."]
+[[evidence.location]]
+path = "tests/test_vnext_source_marker.py"
+symbol = "test_marker_cache_survives_restart_and_reuses_prior_membership"
+[[evidence.location]]
+path = "tests/test_vnext_source_marker.py"
+symbol = "test_marker_cache_keeps_complete_source_membership_and_reclaims_removed_gallery"
+
+[[invariant]]
+id = "catalog.source-completion-marker.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore contains no producer completion markers, filesystem fingerprints, canonical source preimages, or retained FILE observations; it cannot establish this external producer promise." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-completion-marker", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-completion-marker"] }
+integration = { status = "covered", evidence = ["integration.production.source-completion-marker"] }
+
 [[invariant]]
 id = "catalog.identity-codecs.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }

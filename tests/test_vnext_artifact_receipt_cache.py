@@ -12,6 +12,7 @@ import pytest
 
 import h2hdb.vnext_artifact_preparation_repository as artifact_repository
 import h2hdb.vnext_ingest_publication as publication
+from h2hdb import VNextSourceChangedError
 from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
     CatalogResourceKind,
@@ -30,7 +31,6 @@ from h2hdb.vnext_artifact_preparation_repository import (
     ArtifactProtectionIntent,
 )
 from h2hdb.vnext_artifact_render import (
-    ArtifactRenderConflictError,
     ArtifactRenderNotReadyError,
 )
 from h2hdb.vnext_identity import (
@@ -373,7 +373,7 @@ def test_optional_receipt_cache_is_differentially_equivalent_and_renders_once(
             "artifact adapter could not open a sealed source member",
         ),
         (
-            ArtifactRenderConflictError,
+            VNextSourceChangedError,
             "artifact source digest differs from sealed authority",
         ),
     ],

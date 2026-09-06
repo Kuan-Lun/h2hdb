@@ -11,7 +11,7 @@ from __future__ import annotations
 __all__ = ["FrozenGalleryObservation", "FrozenSourceObservationSpool"]
 
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -25,9 +25,11 @@ from .domain import (
     TagObservation,
     VNextIngestGalleryObservation,
     VNextIngestPage,
+    VNextSourceCompletionMarker,
     _file_content_receipt_from_frozen_facts,
 )
 from .ports import VNextIngestSourceAdapter
+from .source_errors import VNextSourceChangedError
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -56,12 +58,17 @@ from .vnext_source_build_repository import (
     SourceDiscoveryPlan,
     source_manifest_chain_step,
 )
+from .vnext_source_marker_repository import CachedSourceObservation
 
 _CONSTRUCTOR_TOKEN = object()
 _PAGE_MAGIC = b"h2hdb-vnext-frozen-source-observation-page-v2\0"
 _PAGE_CODEC_VERSION = 2
 _METADATA_CHUNK_BYTES = 32_768
 _LOCATOR_DOMAIN = "source_relative_locator_v1"
+type SourceCacheLookup = Callable[
+    [tuple[tuple[tuple[str, ...], VNextSourceCompletionMarker], ...]],
+    tuple[CachedSourceObservation | None, ...],
+]
 _COMPONENT_CAPACITY = {
     GalleryObservationComponent.FILE: 256,
     GalleryObservationComponent.DIRECTORY: 192,
@@ -88,6 +95,8 @@ class FrozenGalleryObservation:
     locator_sha256: bytes
     observation_identity_sha256: bytes
     _capability: object = field(repr=False, compare=False)
+    completion_marker: VNextSourceCompletionMarker | None = None
+    cached: CachedSourceObservation | None = None
 
     def __post_init__(self) -> None:
         require_int63(self.position, field="frozen gallery position")
@@ -149,6 +158,7 @@ class FrozenSourceObservationSpool:
         *,
         plan: SourceDiscoveryPlan,
         source_root_components: tuple[str, ...],
+        cache_lookup: SourceCacheLookup | None = None,
     ) -> FrozenSourceObservationSpool:
         """Consume the live adapter once and seal every observation page."""
 
@@ -172,7 +182,7 @@ class FrozenSourceObservationSpool:
         )
         try:
             spool._create_schema()
-            spool.manifest_summary = spool._freeze_adapter(adapter, plan)
+            spool.manifest_summary = spool._freeze_adapter(adapter, plan, cache_lookup)
             index.commit()
             return spool
         except BaseException:
@@ -246,12 +256,20 @@ class FrozenSourceObservationSpool:
             raise FrozenSourceObservationError(
                 "frozen gallery descriptor receipt changed"
             )
+        marker, cached = self._load_completion_marker(
+            position=expected_position,
+            locator_sha256=expected_locator,
+            descriptor=descriptor,
+            observation_identity=observation_identity,
+        )
         return FrozenGalleryObservation(
             expected_position,
             locator_components,
             expected_locator,
             observation_identity,
             self._capability,
+            marker,
+            cached,
         )
 
     def list_file_observations(
@@ -373,11 +391,19 @@ class FrozenSourceObservationSpool:
             "PRIMARY KEY (gallery_position, component, after_cursor), "
             "UNIQUE (gallery_position, component, page_index))"
         )
+        self._index.execute(
+            "CREATE TABLE completion_markers ("
+            "position INTEGER PRIMARY KEY, observation_version INTEGER NOT NULL, "
+            "record_bytes BLOB NOT NULL, record_sha256 BLOB NOT NULL, "
+            "cached_gallery_id INTEGER, cached_observation_id INTEGER, "
+            "file_count INTEGER NOT NULL, byte_count INTEGER NOT NULL)"
+        )
 
     def _freeze_adapter(
         self,
         adapter: VNextIngestSourceAdapter,
         plan: SourceDiscoveryPlan,
+        cache_lookup: SourceCacheLookup | None,
     ) -> SourceBuildManifestSummary:
         scope = source_scope_key(
             "filesystem",
@@ -387,11 +413,40 @@ class FrozenSourceObservationSpool:
         summary = SourceBuildManifestSummary.empty()
         position = 0
         while position < plan.gallery_count:
-            locators = plan._page(position)
+            locators = plan._page(position)[:128]
             if not locators:
                 raise FrozenSourceObservationError(
                     "source discovery plan ended before gallery_count"
                 )
+            markers: dict[tuple[str, ...], VNextSourceCompletionMarker | None] = {}
+            for locator in locators:
+                components = plan._decode_locator(
+                    locator.position, locator.locator_sha256
+                )
+                marker = adapter.observe_completion_marker(components)
+                if marker is not None:
+                    if not isinstance(marker, VNextSourceCompletionMarker):
+                        raise TypeError("source completion marker has an invalid type")
+                    marker.__post_init__()
+                markers[components] = marker
+            probes = tuple(
+                (components, marker)
+                for components, marker in markers.items()
+                if marker is not None
+            )
+            cached_by_locator: dict[
+                tuple[str, ...], CachedSourceObservation | None
+            ] = {}
+            if probes and cache_lookup is not None:
+                matches = cache_lookup(probes)
+                if len(matches) != len(probes):
+                    raise FrozenSourceObservationError("cache lookup count differs")
+                cached_by_locator = {
+                    components: match
+                    for (components, _marker), match in zip(
+                        probes, matches, strict=True
+                    )
+                }
             for locator in locators:
                 if locator.position != position:
                     raise FrozenSourceObservationError(
@@ -401,31 +456,13 @@ class FrozenSourceObservationSpool:
                     locator.position,
                     locator.locator_sha256,
                 )
-                observation = adapter.observe_gallery(components)
-                if not isinstance(observation, VNextIngestGalleryObservation):
-                    raise TypeError(
-                        "observe_gallery must return VNextIngestGalleryObservation"
-                    )
-                observation.__post_init__()
-                if observation.locator_components != components:
-                    raise FrozenSourceObservationError(
-                        "gallery observation locator differs from its plan"
-                    )
-                roots = self._freeze_gallery_pages(
+                descriptor, file_count, byte_count = self._freeze_gallery(
                     adapter,
                     position=position,
                     locator_sha256=locator.locator_sha256,
-                    observation=observation,
-                )
-                descriptor = GalleryObservationDescriptor(
-                    roots[GalleryObservationComponent.METADATA].root_page_sha256,
-                    roots[GalleryObservationComponent.METADATA].item_count,
-                    roots[GalleryObservationComponent.FILE].root_page_sha256,
-                    roots[GalleryObservationComponent.FILE].item_count,
-                    roots[GalleryObservationComponent.TAG].root_page_sha256,
-                    roots[GalleryObservationComponent.TAG].item_count,
-                    roots[GalleryObservationComponent.DIRECTORY].root_page_sha256,
-                    roots[GalleryObservationComponent.DIRECTORY].item_count,
+                    locator_components=components,
+                    marker=markers[components],
+                    cached=cached_by_locator.get(components),
                 )
                 observation_identity = gallery_observation_descriptor_digest(descriptor)
                 locator_payload = encode_source_relative_locator(components)
@@ -462,7 +499,6 @@ class FrozenSourceObservationSpool:
                         observation_identity,
                     ),
                 )
-                file_root = roots[GalleryObservationComponent.FILE]
                 summary = SourceBuildManifestSummary(
                     source_manifest_chain_step(
                         summary.manifest_sha256,
@@ -477,18 +513,18 @@ class FrozenSourceObservationSpool:
                             1,
                             1,
                         ),
-                        file_count=file_root.item_count,
-                        byte_count=file_root.byte_count,
+                        file_count=file_count,
+                        byte_count=byte_count,
                     ),
                     _checked_add(summary.gallery_count, 1, field="gallery_count"),
                     _checked_add(
                         summary.file_count,
-                        file_root.item_count,
+                        file_count,
                         field="file_count",
                     ),
                     _checked_add(
                         summary.byte_count,
-                        file_root.byte_count,
+                        byte_count,
                         field="byte_count",
                     ),
                 )
@@ -498,6 +534,164 @@ class FrozenSourceObservationSpool:
                 "frozen observation count differs from discovery plan"
             )
         return summary
+
+    def _freeze_gallery(
+        self,
+        adapter: VNextIngestSourceAdapter,
+        *,
+        position: int,
+        locator_sha256: bytes,
+        locator_components: tuple[str, ...],
+        marker: VNextSourceCompletionMarker | None,
+        cached: CachedSourceObservation | None,
+    ) -> tuple[GalleryObservationDescriptor, int, int]:
+        if cached is not None:
+            if cached.marker != marker:
+                raise FrozenSourceObservationError("cached completion marker differs")
+            descriptor = cached.descriptor
+            file_count, byte_count = cached.file_count, cached.byte_count
+        else:
+            observation = adapter.observe_gallery(locator_components)
+            if not isinstance(observation, VNextIngestGalleryObservation):
+                raise TypeError(
+                    "observe_gallery must return VNextIngestGalleryObservation"
+                )
+            observation.__post_init__()
+            if observation.locator_components != locator_components:
+                raise FrozenSourceObservationError(
+                    "gallery observation locator differs from its plan"
+                )
+            if marker is not None and (
+                marker.observation_version
+                != observation.metadata.scan_observation_version
+            ):
+                raise FrozenSourceObservationError(
+                    "completion marker interpretation differs from gallery metadata"
+                )
+            roots = self._freeze_gallery_pages(
+                adapter,
+                position=position,
+                locator_sha256=locator_sha256,
+                observation=observation,
+            )
+            descriptor = GalleryObservationDescriptor(
+                roots[GalleryObservationComponent.METADATA].root_page_sha256,
+                roots[GalleryObservationComponent.METADATA].item_count,
+                roots[GalleryObservationComponent.FILE].root_page_sha256,
+                roots[GalleryObservationComponent.FILE].item_count,
+                roots[GalleryObservationComponent.TAG].root_page_sha256,
+                roots[GalleryObservationComponent.TAG].item_count,
+                roots[GalleryObservationComponent.DIRECTORY].root_page_sha256,
+                roots[GalleryObservationComponent.DIRECTORY].item_count,
+            )
+            file_root = roots[GalleryObservationComponent.FILE]
+            file_count, byte_count = file_root.item_count, file_root.byte_count
+        if marker is not None:
+            after = adapter.observe_completion_marker(locator_components)
+            if after != marker:
+                raise VNextSourceChangedError(
+                    "source completion marker changed during gallery preparation"
+                )
+            self._store_completion_marker(
+                position=position,
+                locator_sha256=locator_sha256,
+                marker=marker,
+                cached=cached,
+                file_count=file_count,
+                byte_count=byte_count,
+            )
+        return descriptor, file_count, byte_count
+
+    def _store_completion_marker(
+        self,
+        *,
+        position: int,
+        locator_sha256: bytes,
+        marker: VNextSourceCompletionMarker,
+        cached: CachedSourceObservation | None,
+        file_count: int,
+        byte_count: int,
+    ) -> None:
+        record = marker.observation_version.to_bytes(8, "big") + _encode_page_record(
+            position=position,
+            locator_sha256=locator_sha256,
+            component=GalleryObservationComponent.FILE,
+            page_index=0,
+            after_cursor=_encode_cursor(
+                None, component=GalleryObservationComponent.FILE
+            ),
+            next_cursor=_encode_cursor(
+                None, component=GalleryObservationComponent.FILE
+            ),
+            terminal=True,
+            semantic_item_count=1,
+            items=(marker.file,),
+        )
+        self._index.execute(
+            "INSERT INTO completion_markers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                position,
+                marker.observation_version,
+                record,
+                sha256(record).digest(),
+                None if cached is None else cached.gallery_id,
+                None if cached is None else cached.observation_id,
+                file_count,
+                byte_count,
+            ),
+        )
+
+    def _load_completion_marker(
+        self,
+        *,
+        position: int,
+        locator_sha256: bytes,
+        descriptor: GalleryObservationDescriptor,
+        observation_identity: bytes,
+    ) -> tuple[VNextSourceCompletionMarker | None, CachedSourceObservation | None]:
+        row = self._index.execute(
+            "SELECT observation_version, record_bytes, record_sha256, "
+            "cached_gallery_id, cached_observation_id, file_count, byte_count "
+            "FROM completion_markers WHERE position = ?",
+            (position,),
+        ).fetchone()
+        if row is None:
+            return None, None
+        record = bytes(row[1])
+        if len(record) < 8 or sha256(record).digest() != row[2]:
+            raise FrozenSourceObservationError("frozen completion marker changed")
+        version = int.from_bytes(record[:8], "big")
+        if version != row[0]:
+            raise FrozenSourceObservationError("frozen completion version changed")
+        page = _decode_page_record(
+            record[8:],
+            expected_position=position,
+            expected_locator_sha256=locator_sha256,
+            expected_component=GalleryObservationComponent.FILE,
+            expected_page_index=0,
+            expected_after_cursor=_encode_cursor(
+                None, component=GalleryObservationComponent.FILE
+            ),
+        )
+        if len(page.items) != 1 or not isinstance(page.items[0], FileObservation):
+            raise FrozenSourceObservationError("frozen marker is not one FILE")
+        marker = VNextSourceCompletionMarker(page.items[0], version)
+        if row[3] is None:
+            if row[4] is not None:
+                raise FrozenSourceObservationError(
+                    "partial cached observation identity"
+                )
+            return marker, None
+        cached = CachedSourceObservation(
+            gallery_id=row[3],
+            observation_id=row[4],
+            observation_identity_sha256=observation_identity,
+            descriptor=descriptor,
+            file_count=row[5],
+            byte_count=row[6],
+            marker=marker,
+        )
+        return marker, cached
 
     def _freeze_gallery_pages(
         self,

@@ -481,6 +481,10 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("gallery_id", "observation_id"),
         semantic_value=("observation_identity_sha256",),
     ),
+    "catalog_gallery_observation_completion_marker": NarrowLayoutDeclaration(
+        semantic_key=("gallery_id", "observation_id"),
+        semantic_value=("file_key",),
+    ),
     "catalog_gallery_upload_times": NarrowLayoutDeclaration(
         semantic_key=("gid",),
         semantic_value=("upload_time",),

@@ -42,6 +42,7 @@ from .domain import (
     TagObservation,
     VNextIngestGalleryObservation,
     VNextIngestPage,
+    VNextSourceCompletionMarker,
 )
 
 
@@ -145,6 +146,18 @@ class VNextIngestSourceAdapter(Protocol):
         self,
         locator_components: tuple[str, ...],
     ) -> VNextIngestGalleryObservation: ...
+
+    def observe_completion_marker(
+        self,
+        locator_components: tuple[str, ...],
+    ) -> VNextSourceCompletionMarker | None:
+        """Read fresh completion evidence, or opt into full observation.
+
+        A marker is a producer completion contract, not a generic content
+        digest. The facade compares evidence before and after observation
+        and can reuse only a matching, durably verified prior observation.
+        """
+        ...
 
     def list_file_observations(
         self,

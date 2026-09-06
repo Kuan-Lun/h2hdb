@@ -1807,12 +1807,15 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 171,
-        "catalog_relations_added_after_recomposition": ("title_search_posting",),
+        "catalog_physical_table_count_after": 172,
+        "catalog_relations_added_after_recomposition": (
+            "title_search_posting",
+            "gallery_observation_completion_marker",
+        ),
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 67,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 238,
+        "total_physical_table_count_after": 239,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -3432,6 +3435,7 @@ def validate_cross_manifest_contracts(
 _DATA_MACHINE_OBLIGATION_IDS = frozenset(
     {
         "catalog.identity-codecs.v1",
+        "catalog.source-completion-marker.v1",
         "catalog.canonical-reference-domains.v1",
         "catalog.source-baseline-channel.v1",
         "catalog.incremental-impact.v1",
@@ -5794,8 +5798,11 @@ def _validate_gallery_observation_identity_contract(
     ) or not all(
         term in contract.reuse_obligation
         for term in (
-            "complete current gallery",
-            "METADATA/FILE/TAG/DIRECTORY page trees",
+            "complete current scan",
+            "gallery_observation_completion_marker",
+            "exact before/after marker equality",
+            "sealed FILE digest/size/device/inode/modified-ns/changed-ns equality",
+            "live ingest fence",
             "never authorize reuse",
         )
     ):

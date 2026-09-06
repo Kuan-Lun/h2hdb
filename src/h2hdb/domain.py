@@ -111,6 +111,7 @@ __all__ = [
     "DownloadCandidateState",
     "FileContentReceipt",
     "FileObservation",
+    "VNextSourceCompletionMarker",
     "GallerySourceFile",
     "GallerySourceRecord",
     "GalleryTag",
@@ -2780,6 +2781,28 @@ class FileObservation:
         _require_uint64(self.inode, field_name="inode")
         _require_int64(self.modified_ns, field_name="modified_ns")
         _require_int64(self.changed_ns, field_name="changed_ns")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextSourceCompletionMarker:
+    """Fresh byte-backed completion evidence for one source observation.
+
+    The adapter owns the producer contract: every completed change rewrites
+    this member, and changing its interpretation requires a new observation
+    version. Equal content alone never makes two marker observations equal.
+    """
+
+    file: FileObservation
+    observation_version: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileObservation):
+            raise TypeError("completion marker file must be FileObservation")
+        self.file.__post_init__()
+        require_positive_int63(
+            self.observation_version,
+            field="completion marker observation_version",
+        )
 
 
 @dataclass(frozen=True, slots=True)

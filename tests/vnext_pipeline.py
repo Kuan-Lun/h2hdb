@@ -64,6 +64,7 @@ from h2hdb import (
     VNextLibraryActivationCursor,
     VNextLibraryActivationItem,
     VNextResolvedIngestPolicy,
+    VNextSourceCompletionMarker,
 )
 
 LEASE_MICROSECONDS = 10**9
@@ -252,6 +253,12 @@ class MemorySource:
         items = tuple(keys[:limit])
         terminal = len(keys) <= limit
         return VNextIngestPage(items, None if terminal else items[-1], terminal)
+
+    def observe_completion_marker(
+        self,
+        locator_components: tuple[str, ...],
+    ) -> VNextSourceCompletionMarker | None:
+        return None
 
     def observe_gallery(
         self,

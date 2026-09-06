@@ -24,6 +24,7 @@ __all__ = [
 
 import secrets
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock
@@ -40,6 +41,7 @@ from .domain import (
     VNextIngestSession,
     VNextIngestSourceReceipt,
     VNextResolvedIngestPolicy,
+    VNextSourceCompletionMarker,
 )
 from .ports import (
     ArtifactReleaseAdapter,
@@ -47,6 +49,7 @@ from .ports import (
     VNextIngestSourceAdapter,
 )
 from .repository import RepositoryContext
+from .source_errors import VNextSourceChangedError
 from .sql_connector import SQLConnector
 from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import (
@@ -131,6 +134,11 @@ from .vnext_source_build_repository import (
     _SourceBuildPolicyAuthority,
     _SourceDrainRetry,
 )
+from .vnext_source_marker_repository import (
+    CachedSourceObservation,
+    SourceMarkerConflictError,
+    SourceMarkerRepository,
+)
 from .vnext_source_observation_spool import (
     FrozenGalleryObservation,
     FrozenSourceObservationSpool,
@@ -186,6 +194,7 @@ class _SourceAction(StrEnum):
     STAGING_SELECT = "STAGING_SELECT"
     STAGING_COMPLETE = "STAGING_COMPLETE"
     STAGING_BEGIN = "STAGING_BEGIN"
+    STAGING_REUSE = "STAGING_REUSE"
     STAGING_RECOVER = "STAGING_RECOVER"
     FILE_PAGE = "FILE_PAGE"
     DIRECTORY_PAGE = "DIRECTORY_PAGE"
@@ -429,11 +438,35 @@ class VNextIngestFacade:
         plan = SourceDiscoveryPlan.from_locators(_iter_source_locators(adapter))
         snapshot: FrozenSourceObservationSpool | None = None
         try:
-            snapshot = FrozenSourceObservationSpool.freeze(
-                adapter,
-                plan=plan,
-                source_root_components=root,
-            )
+            # Reuse the connection, but keep each cache read transaction
+            # bounded. Source byte I/O occurs between these transactions and
+            # never under the caller's ingest-session heartbeat lock.
+            with ExitStack() as resources:
+                connector: SQLConnector | None = None
+
+                def lookup(
+                    probes: tuple[
+                        tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
+                    ],
+                ) -> tuple[CachedSourceObservation | None, ...]:
+                    nonlocal connector
+                    if connector is None:
+                        connector = resources.enter_context(
+                            self.__context.SQLConnector()
+                        )
+                    with connector.read_transaction():
+                        return SourceMarkerRepository.lookup_batch(
+                            connector,
+                            source_root_components=root,
+                            probes=probes,
+                        )
+
+                snapshot = FrozenSourceObservationSpool.freeze(
+                    adapter,
+                    plan=plan,
+                    source_root_components=root,
+                    cache_lookup=lookup,
+                )
             return VNextPreparedSource(
                 snapshot=snapshot,
                 plan=plan,
@@ -786,6 +819,23 @@ class VNextIngestFacade:
                     gallery_id=pending.gallery_id,
                     now=now,
                 )
+            if action is _SourceAction.STAGING_REUSE:
+                observation = machine.observation
+                if observation is None or observation.cached is None:
+                    raise RuntimeError("source reuse lacks its cached observation")
+                pending = _require_pending_gallery(machine)
+                if observation.cached.gallery_id != pending.gallery_id:
+                    raise SourceMarkerConflictError(
+                        "cached gallery differs from pending durable membership"
+                    )
+                return SourceMarkerRepository.reuse(
+                    work,
+                    gate_lease=gate,
+                    ingest_turn=turn.ingest_turn,
+                    build_id=pending.build_id,
+                    cached=observation.cached,
+                    now=now,
+                )
             if action is _SourceAction.FILE_PAGE:
                 component_step = _require_component_step(prepared_step._payload)
                 command = component_step.command
@@ -851,13 +901,18 @@ class VNextIngestFacade:
                     now=now,
                 )
             if action is _SourceAction.STAGING_SEAL:
-                return GalleryObservationStagingRepository.seal(
+                observation = machine.observation
+                if observation is None:
+                    raise RuntimeError("gallery seal lacks its frozen observation")
+                marker_seal = GalleryObservationStagingRepository.seal(
                     work,
                     gate_lease=gate,
                     ingest_turn=turn.ingest_turn,
                     handle=_require_staging_handle(machine),
                     now=now,
+                    completion_marker=observation.completion_marker,
                 )
+                return marker_seal
             if action is _SourceAction.STAGING_RETIRE:
                 seal = prepared_step._payload
                 if not isinstance(seal, GalleryStagingSeal):
@@ -896,6 +951,7 @@ class VNextIngestFacade:
         except (
             SourceBuildSnapshotMismatchError,
             VNextSourceManifestMismatchError,
+            VNextSourceChangedError,
         ) as mismatch:
             build_id = machine.build_id
             if build_id is None:
@@ -2041,6 +2097,21 @@ def _require_resumed_component_cursor(component_progress: object) -> None:
         raise RuntimeError("gallery component cursor type is invalid")
 
 
+def _clear_current_gallery(machine: _SourceMachine) -> None:
+    machine.pending_gallery = None
+    machine.locator_components = None
+    machine.observation = None
+    machine.staging_handle = None
+    machine.file_after = None
+    machine.directory_after = None
+    machine.tag_after = None
+    machine.metadata_chunks = None
+    machine.previous_operation_id = None
+    machine.match_previous_operation_id = None
+    machine.staging_seal = None
+    machine.action = _SourceAction.STAGING_FIND
+
+
 def _apply_source_outcome(
     source: VNextPreparedSource,
     step: VNextPreparedSourceStep,
@@ -2182,7 +2253,11 @@ def _apply_source_outcome(
         machine.locator_components = locator
         machine.observation = observation
         machine.staged_galleries = pending.position
-        machine.action = _SourceAction.STAGING_BEGIN
+        machine.action = (
+            _SourceAction.STAGING_REUSE
+            if observation.cached is not None
+            else _SourceAction.STAGING_BEGIN
+        )
     elif action is _SourceAction.STAGING_COMPLETE:
         machine.staged_galleries = source._plan.gallery_count
         machine.action = _SourceAction.ASSEMBLY
@@ -2190,6 +2265,16 @@ def _apply_source_outcome(
         if not isinstance(outcome, GalleryStagingProgress):
             raise RuntimeError("gallery staging begin returned invalid progress")
         _resume_staging_machine(source, outcome)
+    elif action is _SourceAction.STAGING_REUSE:
+        if not isinstance(outcome, GalleryStagingSeal):
+            raise RuntimeError("source reuse returned an invalid observation seal")
+        pending = _require_pending_gallery(machine)
+        if outcome.gallery_id != pending.gallery_id:
+            raise RuntimeError("source reuse returned another gallery")
+        machine.staged_galleries = pending.position + 1
+        processed_rows = 1
+        replayed = outcome.replayed
+        _clear_current_gallery(machine)
     elif action is _SourceAction.STAGING_RECOVER:
         seal = step._payload
         if not isinstance(seal, GalleryStagingSeal):
@@ -2298,17 +2383,7 @@ def _apply_source_outcome(
         if not outcome.complete:
             machine.action = _SourceAction.STAGING_RETIRE
             return processed_rows, replayed
-        machine.pending_gallery = None
-        machine.locator_components = None
-        machine.observation = None
-        machine.staging_handle = None
-        machine.file_after = None
-        machine.directory_after = None
-        machine.tag_after = None
-        machine.previous_operation_id = None
-        machine.match_previous_operation_id = None
-        machine.staging_seal = None
-        machine.action = _SourceAction.STAGING_FIND
+        _clear_current_gallery(machine)
     elif action is _SourceAction.ASSEMBLY:
         if not isinstance(outcome, AssemblyBatchReceipt):
             raise RuntimeError("source assembly returned an invalid receipt")

@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "8ed542fdef6d839706f244909e0c2af55c392757977664dd842e048f407a01ab"
+def catalogManifestSha256 : String := "59e236f29070e53d78295d03a1a1d43b3916ea2974bd0a5577d03db40c6c5a98"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -3339,6 +3339,52 @@ theorem gallery_observation_bcnf_check :
 
 theorem gallery_observation_bcnf : BCNF gallery_observation_contract :=
   bcnfCheck_sound gallery_observation_contract gallery_observation_bcnf_check
+
+def gallery_observation_completion_marker_contract : RelationContract where
+  name := "gallery_observation_completion_marker"
+  attributes := ["gallery_id", "observation_id", "file_key"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["file_key"] }
+  ]
+
+theorem gallery_observation_completion_marker_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_completion_marker_contract = true := by
+  native_decide
+
+theorem gallery_observation_completion_marker_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_completion_marker_contract = true := by
+  native_decide
+
+theorem gallery_observation_completion_marker_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_completion_marker_contract :=
+  keysDetermineAllCheck_sound gallery_observation_completion_marker_contract
+    gallery_observation_completion_marker_candidate_keys_check
+
+theorem gallery_observation_completion_marker_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_completion_marker_contract = true := by
+  native_decide
+
+theorem gallery_observation_completion_marker_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_completion_marker_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_completion_marker_contract
+    gallery_observation_completion_marker_candidate_keys_minimal_check
+
+theorem gallery_observation_completion_marker_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_completion_marker_contract = true := by
+  native_decide
+
+theorem gallery_observation_completion_marker_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_completion_marker_contract :=
+  closureFixedPointCheck_sound gallery_observation_completion_marker_contract
+    gallery_observation_completion_marker_closure_fixed_check
+
+theorem gallery_observation_completion_marker_bcnf_check :
+    bcnfCheck gallery_observation_completion_marker_contract = true := by
+  native_decide
+
+theorem gallery_observation_completion_marker_bcnf : BCNF gallery_observation_completion_marker_contract :=
+  bcnfCheck_sound gallery_observation_completion_marker_contract gallery_observation_completion_marker_bcnf_check
 
 def gallery_upload_time_contract : RelationContract where
   name := "gallery_upload_time"
@@ -10969,6 +11015,7 @@ def manifestContracts : List RelationContract := [
   gallery_observation_page_child_contract,
   gallery_observation_tree_root_contract,
   gallery_observation_contract,
+  gallery_observation_completion_marker_contract,
   gallery_upload_time_contract,
   source_gallery_name_gid_contract,
   gallery_source_name_access_contract,
@@ -11141,7 +11188,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 217 := by
+    manifestContracts.length = 218 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -11215,6 +11262,7 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   gallery_observation_page_key_bounds_contract,
   gallery_observation_page_child_contract,
   gallery_observation_discovery_fingerprint_contract,
+  gallery_observation_completion_marker_contract,
   analysis_run_descriptor_contract,
   analysis_run_state_contract,
   analysis_run_completed_at_contract,
@@ -11362,6 +11410,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   gallery_observation_page_key_bounds_seal_contract,
   gallery_observation_page_child_contract,
   gallery_observation_discovery_fingerprint_contract,
+  gallery_observation_completion_marker_contract,
   analysis_run_descriptor_contract,
   analysis_run_state_contract,
   analysis_run_completed_at_contract,
@@ -11450,11 +11499,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 147 := by
+    catalogPhysicalDomainContracts.length = 148 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 125 := by
+    catalogPhysicalDomainMutationContracts.length = 126 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -13604,6 +13653,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_observation_page_child_contract ∧
     BCNF gallery_observation_tree_root_contract ∧
     BCNF gallery_observation_contract ∧
+    BCNF gallery_observation_completion_marker_contract ∧
     BCNF gallery_upload_time_contract ∧
     BCNF source_gallery_name_gid_contract ∧
     BCNF gallery_source_name_access_contract ∧
@@ -13775,6 +13825,7 @@ theorem all_manifest_base_relations_bcnf :
     gallery_observation_page_child_bcnf,
     gallery_observation_tree_root_bcnf,
     gallery_observation_bcnf,
+    gallery_observation_completion_marker_bcnf,
     gallery_upload_time_bcnf,
     source_gallery_name_gid_bcnf,
     gallery_source_name_access_bcnf,
@@ -13956,6 +14007,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_page_child_contract ∧
     KeysDetermineAllAttributes gallery_observation_tree_root_contract ∧
     KeysDetermineAllAttributes gallery_observation_contract ∧
+    KeysDetermineAllAttributes gallery_observation_completion_marker_contract ∧
     KeysDetermineAllAttributes gallery_upload_time_contract ∧
     KeysDetermineAllAttributes source_gallery_name_gid_contract ∧
     KeysDetermineAllAttributes gallery_source_name_access_contract ∧
@@ -14173,6 +14225,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_page_child_candidate_keys_determine_all_attributes,
     gallery_observation_tree_root_candidate_keys_determine_all_attributes,
     gallery_observation_candidate_keys_determine_all_attributes,
+    gallery_observation_completion_marker_candidate_keys_determine_all_attributes,
     gallery_upload_time_candidate_keys_determine_all_attributes,
     source_gallery_name_gid_candidate_keys_determine_all_attributes,
     gallery_source_name_access_candidate_keys_determine_all_attributes,

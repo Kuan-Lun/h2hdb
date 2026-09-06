@@ -2342,6 +2342,27 @@ mariadb_type = "BINARY(32)"
 nullable = false
 
 [[external_stub]]
+relation = "gallery_observation_completion_marker"
+table = "catalog_gallery_observation_completion_marker"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
 relation = "content_blob"
 table = "catalog_content_blobs"
 primary_key = ["file_sha256"]

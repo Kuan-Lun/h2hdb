@@ -13,7 +13,7 @@ sibling packages.
 
 ## What this package provides
 
-- One generated epoch-3/schema-v3 schema for SQLite and MariaDB.
+- One generated epoch-3/schema-v4 schema for SQLite and MariaDB.
 - Safe initialization, full schema auditing, and lightweight readiness probes.
 - Current-catalog discovery with Unicode-normalized search, exact facets,
   keyset pagination, and fixed recently uploaded/downloaded windows.
@@ -28,8 +28,8 @@ closed if the catalog advances or the value was forged.
 
 ## Compatibility model
 
-The active database identity is `epoch=3`, `schema_version=3`. This is a
-greenfield contract: schema v3 does not upgrade or adopt schema v2 or any older
+The active database identity is `epoch=3`, `schema_version=4`. This is a
+greenfield contract: schema v4 does not upgrade or adopt schema v3 or any older
 database, provide compatibility views, retain old list APIs, or dual-write old
 and new shapes. Replace an earlier database with a truly empty database and
 rebuild it from source through the current ingest integration.
@@ -109,7 +109,7 @@ Choose the operation from database state:
 
 | Database state or caller | Operation |
 | --- | --- |
-| Truly empty database | Run `migrate` to construct epoch 3/schema v3 |
+| Truly empty database | Run `migrate` to construct epoch 3/schema v4 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
 | Matching `READY` epoch | Run read-only `check` for the full audit |
 | Consumer startup | Run `check`; never initialize schema |
@@ -261,11 +261,21 @@ Catalog reads use a pinned snapshot and then a fresh current-head fence before
 returning, so a concurrent head advance fails closed. Repository methods that
 accept connectors or units of work remain internal coordination surfaces.
 
-`VNextIngestFacade.prepare_source()` consumes the source adapter once, outside
-every database transaction, and freezes the exact observation pages in a
-private disk-backed spool. The manifest preflight and later bounded staging
-steps therefore read the same immutable bytes even if the live source changes
-mid-run; closing the prepared-source handle removes the temporary spool.
+`VNextIngestFacade.prepare_source()` freezes the exact source snapshot outside
+write transactions in a private disk-backed spool. Adapters may provide a
+completion marker whose unchanged bytes and complete stat tuple promise that
+the completed gallery is unchanged. A first complete scan binds that marker to
+the sealed observation; subsequent matching probes reuse its verified immutable
+descriptor and normalized facts without reopening gallery content or copying
+database page trees. Marker filename, content digest, size, device, inode,
+modification/change nanoseconds, and observation interpretation version must
+all match. The marker binding stores only its observation key and file key;
+existing FILE, filesystem and content relations remain the sole owners of the
+six fingerprint facts. Missing or changed markers use the full scan path.
+Reuse rechecks durable authority under the live ingest fence before linking
+the observation to a new build. Cleanup may evict an unreferenced binding and
+its observation; that cache miss requires preparation again. No marker grants
+authority to caller-supplied observation IDs or audit checksums.
 
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
 call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact

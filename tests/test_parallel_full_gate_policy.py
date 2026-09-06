@@ -86,6 +86,10 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
 def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     expected = {
         (
+            "test_vnext_source_marker.py",
+            "test_marker_cache_survives_restart_and_reuses_prior_membership",
+        ),
+        (
             "test_vnext_catalog_reader_mariadb.py",
             "test_mariadb_discovery_facets_and_presentation_hydrate_real_rows",
         ),

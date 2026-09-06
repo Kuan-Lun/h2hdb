@@ -24,13 +24,13 @@ stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
 selected_catalog_physical_relations_after = 54
-catalog_relations_added_after_recomposition = ["title_search_posting"]
+catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker"]
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 171
+catalog_physical_table_count_after = 172
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 67
 total_physical_table_count_before = 381
-total_physical_table_count_after = 238
+total_physical_table_count_after = 239
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -295,7 +295,7 @@ digest_domain = "gallery_observation_v1"
 encoding_version = 1
 framing = "u32be(encoding_version) || raw32(METADATA root_page_sha256) || u64be(METADATA exact_byte_count) || raw32(FILE root_page_sha256) || u64be(FILE item_count) || raw32(TAG root_page_sha256) || u64be(TAG item_count) || raw32(DIRECTORY root_page_sha256) || u64be(DIRECTORY item_count)"
 write_obligation = "after a complete scan, construct the exact bounded immutable descriptor from exact METADATA/FILE/TAG/DIRECTORY page-tree roots and descriptor-derived counts; METADATA count is the exact canonical metadata stream byte length while the other counts are exact record cardinalities; exclude metadata_fingerprint, scan_observation_sha256, metadata_sha256, raw_content_sha256, and directory_observation_sha256 because they are redundant audit or provisional digests and never semantic authority; require FILE and DIRECTORY exact merge-join coverage, every root/count to match a completely decoded canonical tree, and the streamed METADATA bytes to equal the normalized metadata/scan/page-count facts; persist the descriptor under the registered gallery_observation_v1 canonical digest policy, recompute observation_identity_sha256, byte-compare the full preimage on collision, and insert the final gallery_observation seal last"
-reuse_obligation = "source_build_gallery may reuse an observation_id only after joining the final gallery_observation seal and revalidating the complete current gallery against its exact canonical descriptor and collision-checked METADATA/FILE/TAG/DIRECTORY page trees; allocation, metadata_fingerprint, scan_observation_sha256, directory_observation_sha256, tree_observation_sha256, page roots, timestamps, or row counts alone never authorize reuse"
+reuse_obligation = "source_build_gallery may reuse an observation_id after a complete current scan matches the sealed canonical descriptor, or through an immutable gallery_observation_completion_marker binding issued only after one complete verified scan with exact before/after marker equality. The producer promises that its completion marker changes whenever any completed gallery semantic or byte content changes; core performs no filesystem I/O. Marker reuse requires exact scope and locator canonical preimages, marker filename and sealed FILE digest/size/device/inode/modified-ns/changed-ns equality, and observation_version equal to the sealed scan_observation_version. Select only the newest retained bound observation; a missing or changed marker or interpretation version is a cache miss. Reload the same final observation, bounded canonical descriptor, four typed roots and exact aggregate counts under the live ingest fence before linking it to the exact working build and expected gallery; never copy page trees or file facts. Cleanup may evict an unreferenced binding and observation, causing a reprepare instead of trusting cached caller IDs. Audit-only metadata_fingerprint, scan_observation_sha256, directory_observation_sha256, tree_observation_sha256, page roots, timestamps, or row counts alone never authorize reuse"
 
 [[external_relation]]
 name = "operational_preparation_effect_seal"
@@ -829,7 +829,7 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = ["gallery_observation_metadata", "gallery_observation_file", "gallery_observation_file_filesystem"]
 child_phases = [
-  ["gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag"],
+  ["gallery_observation_completion_marker", "gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag"],
   ["gallery_observation_file_filesystem_seal"],
   ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"],
   ["gallery_observation_file_filesystem_anchor"],
@@ -1804,7 +1804,6 @@ covers = [
   "source_root_contract.write_obligation",
   "source_scope_identity_contract.write_obligation",
   "gallery_observation_identity_contract.write_obligation",
-  "gallery_observation_identity_contract.reuse_obligation",
   "gallery_observation_page_contract.collision_obligation",
   "gallery_observation_page_contract.materialization_rule",
   "gallery_observation_page_contract.seal_obligation",
@@ -1815,6 +1814,19 @@ covers = [
   "byte_domain.source_provider.runtime_obligation",
 ]
 description = "Recompute every stable domain-separated identity from its exact versioned byte codec, including absolute source roots, canonical values, scopes, gallery keys, publication keys, file names, bounded observation descriptors and collision-checked FILE/TAG/DIRECTORY page trees, artifact semantics, and catalog-facing identifiers; collision paths compare the complete semantic tuple or exact payload."
+
+[[semantic_obligation]]
+id = "catalog.source-completion-marker.v1"
+version = 1
+class = "source_observation_reuse"
+lifecycle = "ready_and_runtime"
+ready_check = "catalog_refinement.check_source_completion_marker_v1"
+writer_hook = "catalog_writer.validate_source_completion_marker"
+writer_hook_version = 1
+scope = "catalog.source-completion-marker"
+relations = ["gallery_observation_completion_marker", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_file", "gallery_observation_file_filesystem", "gallery_observation_scan", "gallery_observation_stat", "content_blob", "file_name_identity", "gallery_identity", "source_scope", "source_build_gallery", "source_build_expected_gallery", "gallery_manifest"]
+covers = ["machine_contract.source-completion-marker", "gallery_observation_identity_contract.reuse_obligation"]
+description = "Bind a producer-verified stable completion marker only to one complete sealed observation and its exact FILE/filesystem facts; use the existing scan observation version as interpretation policy. A cache hit revalidates bounded durable identity, descriptor and marker facts before fenced expected-gallery membership insertion. Marker bindings are immutable cleanup children of their observations and do not retain obsolete observations independently. The producer must change its marker for every completed gallery change; neither SQL nor the formal schema proves external filesystem immutability."
 
 [[semantic_obligation]]
 id = "catalog.canonical-reference-domains.v1"
@@ -2104,6 +2116,7 @@ relations = [
   "gallery_observation_page_key_bounds",
   "gallery_observation_page_child",
   "gallery_observation_discovery_fingerprint",
+  "gallery_observation_completion_marker",
   "analysis_run_descriptor",
   "analysis_run_state",
   "analysis_run_completed_at",
@@ -3814,6 +3827,19 @@ foreign_keys = [
   { attributes = ["observation_identity_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 rationale = "Final immutable seal inserted only after every staged allocation child, all four exact page-tree roots, and the bounded descriptor validate. A gallery-local observation ID is exactly equivalent to one collision-checked canonical complete observation descriptor, allowing unchanged builds to reuse immutable children through source_build_gallery without O(corpus) copying."
+
+[[relation]]
+name = "gallery_observation_completion_marker"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "file_key"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["file_key"] }]
+foreign_keys = [
+  { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
+  { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_filesystem_seal", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
+  { attributes = ["gallery_id", "observation_id", "file_key"], relation = "gallery_observation_file_seal", referenced_attributes = ["gallery_id", "observation_id", "file_key"] },
+]
+rationale = "Select the one producer-verified completion marker from an already sealed observation. Its digest, size and complete stat tuple remain owned by existing normalized FILE, content_blob and filesystem facts; its interpretation version is the observation scan version. Insert only after matching the stable pre/post-scan marker, exact-replay without update, and delete child-first before observation/file cleanup without independently pinning obsolete source history."
 
 [[relation]]
 name = "gallery_upload_time"

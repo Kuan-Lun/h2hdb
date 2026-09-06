@@ -41,6 +41,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_source_marker_repository import SourceMarkerRepository
 from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
 type PhysicalDomainEntrypoint = Callable[..., object]
@@ -118,6 +119,7 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "gallery_observation_page_key_bounds",
         "gallery_observation_page_child",
         "gallery_observation_discovery_fingerprint",
+        "gallery_observation_completion_marker",
         "analysis_run_descriptor",
         "analysis_run_state",
         "analysis_run_completed_at",
@@ -279,6 +281,7 @@ CATALOG_PHYSICAL_DOMAIN_WRITERS: tuple[PhysicalDomainEntrypoint, ...] = (
     GalleryObservationStagingRepository.put_tags,
     GalleryObservationStagingRepository.put_metadata,
     GalleryObservationStagingRepository.seal,
+    SourceMarkerRepository.reuse,
     AnalysisRepository.handoff_snapshot_manifest,
     AnalysisRepository.abandon,
     *_ANALYSIS_CHECKPOINT_WRITERS,

@@ -29,6 +29,7 @@ __all__ = [
     "check_retention_contract_v2",
     "check_role_derivation_v1",
     "check_source_baseline_channel_v1",
+    "check_source_completion_marker_v1",
     "check_state_machines_v1",
     "validate_builtin_semantic_manifest",
 ]
@@ -68,6 +69,7 @@ from .vnext_canonical_value_repository import (
     stream_and_validate_canonical_value,
 )
 from .vnext_domains import require_ascii_bytes, require_digest32
+from .vnext_source_marker_family import SourceMarkerConflictError, _load_cached_batch
 from .vnext_state_machine_contract import validate_catalog_state_machine_contract
 
 type SemanticValidator = Callable[[SQLConnector], None]
@@ -93,6 +95,11 @@ _SPECS = (
         "catalog.identity-codecs.v1",
         "ready_and_runtime",
         "catalog_refinement.check_identity_codecs_v1",
+    ),
+    (
+        "catalog.source-completion-marker.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_source_completion_marker_v1",
     ),
     (
         "catalog.canonical-reference-domains.v1",
@@ -6650,6 +6657,26 @@ def check_canonical_reference_domains_v1(connector: SQLConnector) -> None:
     _active_publication_contexts(connector)
 
 
+def check_source_completion_marker_v1(connector: SQLConnector) -> None:
+    """Audit retained bindings in bounded keyset pages from sealed authority."""
+
+    after_gallery = after_observation = 0
+    while True:
+        rows = connector.fetch_all(
+            "SELECT gallery_id, observation_id, file_key FROM catalog_gallery_observation_completion_marker "
+            "WHERE gallery_id > %s OR (gallery_id = %s AND observation_id > %s) "
+            "ORDER BY gallery_id, observation_id LIMIT 128",
+            (after_gallery, after_gallery, after_observation),
+        )
+        if not rows:
+            return
+        try:
+            _load_cached_batch(connector, bindings=tuple(rows))
+        except (SourceMarkerConflictError, TypeError, ValueError) as error:
+            raise CatalogSemanticValidationError(str(error)) from error
+        after_gallery, after_observation = rows[-1][:2]
+
+
 def check_source_baseline_channel_v1(connector: SQLConnector) -> None:
     """Validate the bounded active source head/provenance/build chain."""
 
@@ -7320,6 +7347,7 @@ def builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
     validators: Mapping[str, SemanticValidator] = MappingProxyType(
         {
             "catalog.identity-codecs.v1": check_identity_codecs_v1,
+            "catalog.source-completion-marker.v1": check_source_completion_marker_v1,
             "catalog.canonical-reference-domains.v1": check_canonical_reference_domains_v1,
             "catalog.source-baseline-channel.v1": check_source_baseline_channel_v1,
             "catalog.incremental-impact.v1": check_incremental_impact_v1,

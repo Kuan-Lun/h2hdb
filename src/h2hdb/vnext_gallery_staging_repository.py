@@ -52,6 +52,7 @@ from .domain import (
     FileContentReceipt,
     FileObservation,
     TagObservation,
+    VNextSourceCompletionMarker,
 )
 from .vnext_allocator_repository import (
     AllocatorExhaustedError,
@@ -140,6 +141,7 @@ from .vnext_manifest_family import (
     load_gallery_manifest_family,
     load_source_build_family,
 )
+from .vnext_source_marker_family import bind_completion_marker
 from .vnext_transaction import (
     LockRank,
     VNextUnitOfWork,
@@ -1410,6 +1412,7 @@ class GalleryObservationStagingRepository:
         ingest_turn: IngestTurn,
         handle: GalleryStagingHandle,
         now: int,
+        completion_marker: VNextSourceCompletionMarker | None = None,
     ) -> GalleryStagingSeal:
         current = _require_handle(handle)
         timestamp = require_int63(now, field="now")
@@ -1426,7 +1429,17 @@ class GalleryObservationStagingRepository:
                 "the terminal staging was acknowledged for retirement"
             )
         if header.state in {"SEALED", "REUSED"}:
-            return _validate_seal_replay(work, current, header)
+            replay = _validate_seal_replay(work, current, header)
+            if completion_marker is not None:
+                bind_completion_marker(
+                    work.connector,
+                    build_id=replay.build_id,
+                    gallery_id=replay.gallery_id,
+                    observation_id=replay.observation_id,
+                    observation_identity_sha256=replay.observation_identity_sha256,
+                    marker=completion_marker,
+                )
+            return replay
         if header.state != "OPEN":
             raise GalleryStagingNotReadyError("staging is not OPEN")
 
@@ -1633,6 +1646,15 @@ class GalleryObservationStagingRepository:
             (state, timestamp, byte_count, current.staging_id, "OPEN"),
             authority="gallery staging seal",
         )
+        if completion_marker is not None:
+            bind_completion_marker(
+                work.connector,
+                build_id=current.build_id,
+                gallery_id=current.gallery_id,
+                observation_id=final_observation,
+                observation_identity_sha256=observation_digest,
+                marker=completion_marker,
+            )
         return GalleryStagingSeal(
             current.build_id,
             current.gallery_id,

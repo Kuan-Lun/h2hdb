@@ -30,6 +30,7 @@ from .domain import (
     ArtifactSourceRole,
 )
 from .ports import ArtifactStorageAdapter
+from .source_errors import VNextSourceChangedError
 from .vnext_domains import (
     INT63_MAX,
     require_digest32,
@@ -511,6 +512,8 @@ def _open_verified_source(
             gallery_locator_components=gallery_locator_components,
             source_name=row.source_name,
         )
+    except VNextSourceChangedError:
+        raise
     except (OSError, RuntimeError, ValueError) as error:
         raise ArtifactRenderNotReadyError(
             "artifact adapter could not open a sealed source member"
@@ -540,7 +543,7 @@ def _read_verified_source(
                 "artifact source returned a non-bytes chunk"
             )
         if not part:
-            raise ArtifactRenderConflictError(
+            raise VNextSourceChangedError(
                 "artifact source ended before its sealed size"
             )
         if len(part) > remaining:
@@ -561,14 +564,14 @@ def _read_verified_source(
             "artifact source returned a non-bytes EOF probe"
         )
     if trailing:
-        raise ArtifactRenderConflictError(
+        raise VNextSourceChangedError(
             "artifact source contains bytes beyond its sealed size"
         )
     if digest.digest() != require_digest32(
         row.expected_sha256,
         field="artifact source expected digest",
     ):
-        raise ArtifactRenderConflictError(
+        raise VNextSourceChangedError(
             "artifact source digest differs from sealed authority"
         )
 

@@ -463,7 +463,7 @@ phases = [
   { phase = "GO_STAGING_CHECKPOINT", order = 5, relations = ["gallery_observation_staging_checkpoint", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_metadata_parser"] },
   { phase = "GO_STAGING_CLAIM", order = 6, relations = ["gallery_observation_staging_claim"] },
   { phase = "GO_STAGING_ROOT", order = 7, relations = ["gallery_observation_staging"] },
-  { phase = "GO_FACTS", order = 8, relations = ["gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag"] },
+  { phase = "GO_FACTS", order = 8, relations = ["gallery_observation_completion_marker", "gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag"] },
   { phase = "GO_FILESYSTEM_SEAL", order = 9, relations = ["gallery_observation_file_filesystem_seal"] },
   { phase = "GO_FILESYSTEM_VALUES", order = 10, relations = ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"] },
   { phase = "GO_FILESYSTEM_ANCHOR", order = 11, relations = ["gallery_observation_file_filesystem_anchor"] },
@@ -3009,6 +3009,11 @@ declared_keys = [["parent_sha256", "position"], ["parent_sha256", "child_sha256"
 name = "gallery_observation_tree_root"
 attributes = ["gallery_id", "observation_id", "root_page_sha256"]
 declared_keys = [["gallery_id", "observation_id", "root_page_sha256"]]
+
+[[external_relation]]
+name = "gallery_observation_completion_marker"
+attributes = ["gallery_id", "observation_id", "file_key"]
+declared_keys = [["gallery_id", "observation_id"]]
 
 [[external_relation]]
 name = "content_blob"

@@ -11,6 +11,7 @@ from typing import BinaryIO
 
 import pytest
 
+from h2hdb import VNextSourceChangedError
 from h2hdb.domain import (
     ArtifactArchiveRenderEvidence,
     ArtifactPresentationRenderEvidence,
@@ -274,7 +275,7 @@ def test_source_revalidation_uses_reference_digest_error_boundary() -> None:
         b"sealed",
     )
 
-    with pytest.raises(ArtifactRenderConflictError, match="digest differs"):
+    with pytest.raises(VNextSourceChangedError, match="digest differs"):
         _verify(adapter, (reference,))
 
     assert adapter.rendered == []
@@ -340,7 +341,7 @@ def test_render_rejects_size_mismatch_and_trailing_byte(
         size=sealed_size,
     )
 
-    with pytest.raises(ArtifactRenderConflictError, match=message):
+    with pytest.raises(VNextSourceChangedError, match=message):
         _render(adapter, (reference,))
 
 
@@ -354,7 +355,7 @@ def test_render_rejects_digest_mismatch() -> None:
         digest=sha256(b"different").digest(),
     )
 
-    with pytest.raises(ArtifactRenderConflictError, match="digest differs"):
+    with pytest.raises(VNextSourceChangedError, match="digest differs"):
         _render(adapter, (reference,))
 
 
@@ -520,7 +521,7 @@ def test_render_fully_verifies_sources_before_nonconsuming_renderer_runs() -> No
         b"sealed",
     )
 
-    with pytest.raises(ArtifactRenderConflictError, match="digest differs"):
+    with pytest.raises(VNextSourceChangedError, match="digest differs"):
         _render(adapter, (reference,))
 
     assert adapter.opened == [b"metadata.txt"]

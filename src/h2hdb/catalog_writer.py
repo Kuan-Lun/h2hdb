@@ -64,6 +64,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_source_marker_repository import SourceMarkerRepository
 from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
 
@@ -80,6 +81,10 @@ class WriterHook:
 
 _SPECS: tuple[tuple[str, str], ...] = (
     ("catalog.identity-codecs.v1", "catalog_writer.validate_identity_codecs"),
+    (
+        "catalog.source-completion-marker.v1",
+        "catalog_writer.validate_source_completion_marker",
+    ),
     (
         "catalog.canonical-reference-domains.v1",
         "catalog_writer.validate_canonical_reference_domain",
@@ -265,6 +270,7 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_publication_repository": frozenset({"PublicationRepository"}),
         "h2hdb.vnext_queue_repository": frozenset({"VNextQueueRepository"}),
         "h2hdb.vnext_source_build_repository": frozenset({"SourceBuildRepository"}),
+        "h2hdb.vnext_source_marker_repository": frozenset({"SourceMarkerRepository"}),
         "h2hdb.vnext_storage_instance_repository": frozenset(
             {"VNextStorageInstanceRepository"}
         ),
@@ -798,6 +804,21 @@ _BOUND_BINDINGS = (
         "catalog.identity-codecs.v1",
         _IDENTITY_WRITERS,
         _contract_relations("catalog.identity-codecs.v1"),
+    ),
+    _binding(
+        "catalog.source-completion-marker.v1",
+        (
+            SourceMarkerRepository.reuse,
+            GalleryObservationStagingRepository.seal,
+            *_CLEANUP_WRITERS,
+        ),
+        frozenset(
+            {
+                "gallery_observation_completion_marker",
+                "source_build_gallery",
+                "gallery_manifest",
+            }
+        ),
     ),
     _binding(
         "catalog.canonical-reference-domains.v1",

@@ -5359,6 +5359,10 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(table, pk)
             for table, pk in (
                 (
+                    "catalog_gallery_observation_completion_marker",
+                    ("gallery_id", "observation_id"),
+                ),
+                (
                     "catalog_gallery_manifests",
                     ("gallery_id", "observation_id", "manifest_policy_id"),
                 ),

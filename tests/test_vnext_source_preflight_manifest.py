@@ -127,6 +127,12 @@ class _BoundarySource:
         locators = () if self._file_count == 0 else (("gallery",),)
         return VNextIngestPage(locators, None, True)
 
+    def observe_completion_marker(
+        self,
+        locator_components: tuple[str, ...],
+    ) -> None:
+        return None
+
     def observe_gallery(
         self,
         locator_components: tuple[str, ...],
