@@ -6,6 +6,7 @@ import pytest
 from test_vnext_facade import _config, _FacadeContext, _MariaRecorder
 
 from h2hdb import (
+    CatalogReadError,
     CatalogSubjectFilter,
     CatalogTagFilter,
     CatalogTagValue,
@@ -50,8 +51,9 @@ def test_tag_browse_rechecks_head_in_a_fresh_transaction(
             assert tags.revision.revision == 7
 
     if advance:
-        with pytest.raises(VNextCatalogReadError, match="head advanced"):
+        with pytest.raises(CatalogReadError, match="head advanced") as failure:
             read()
+        assert isinstance(failure.value, VNextCatalogReadError)
     else:
         read()
     assert snapshot.events == [

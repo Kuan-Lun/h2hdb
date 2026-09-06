@@ -27,6 +27,7 @@ from . import vnext_identity as identity
 from .catalog_errors import (
     CatalogCursorError,
     CatalogIdentifierError,
+    CatalogReadError,
     CatalogRevisionNotFoundError,
 )
 from .catalog_search import (
@@ -87,7 +88,7 @@ _CANONICAL_PREFETCH_BATCH_LIMIT = 128
 _CHILD_HYDRATION_PAGE_LIMIT = 128
 
 
-class VNextCatalogReadError(RuntimeError):
+class VNextCatalogReadError(CatalogReadError):
     """A supposedly immutable published revision is incomplete or corrupt."""
 
 

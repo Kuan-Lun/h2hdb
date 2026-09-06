@@ -38,6 +38,7 @@ __all__ = [
     "CatalogRecentWindow",
     "CatalogRecentOrder",
     "CatalogReader",
+    "CatalogReadError",
     "CatalogRevision",
     "CatalogRevisionNotFoundError",
     "CatalogSearchQueryTooComplexError",
@@ -127,6 +128,7 @@ __all__ = [
 from .catalog_errors import (
     CatalogCursorError,
     CatalogIdentifierError,
+    CatalogReadError,
     CatalogRevisionNotFoundError,
     CatalogSearchQueryTooComplexError,
 )

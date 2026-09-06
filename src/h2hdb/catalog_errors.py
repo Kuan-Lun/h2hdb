@@ -5,9 +5,14 @@ from __future__ import annotations
 __all__ = [
     "CatalogCursorError",
     "CatalogIdentifierError",
+    "CatalogReadError",
     "CatalogRevisionNotFoundError",
     "CatalogSearchQueryTooComplexError",
 ]
+
+
+class CatalogReadError(RuntimeError):
+    """A catalog read cannot establish a complete, consistent current snapshot."""
 
 
 class CatalogIdentifierError(RuntimeError):
