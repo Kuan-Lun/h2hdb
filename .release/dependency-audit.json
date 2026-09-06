@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-06T12:15:22+00:00",
+  "checked_at": "2026-09-06T20:15:43+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.35.0",
+  "project_version": "0.35.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates against the previous receipt. External versions and compatibility bounds are unchanged and remain supported. The new CatalogReader bundle method requires implementers to update, so this task advances to compatibility lane 0.35 without changing schema 5 or storage descriptors. SQLite bounded tag-page, deduplicated hydration, cursor integrity and fresh-head regression tests passed; the real MariaDB 10.11.11 reader smoke test including presentation descriptors passed. The exact-tree merge gate separately validates the final candidate.",
+    "note": "Reviewed every direct build, runtime, optional development and Node registry candidate against the preceding receipt and the installed Python 3.14 environment. External candidates and compatibility bounds are unchanged; all current registry candidates are installed. This compatible patch adds bounded per-context MariaDB session ownership, explicit facade close methods, bounded gate/analysis reads and atomic canonical preparation batches without schema or descriptor changes. Focused SQLite, live MariaDB 10.11.11 reset, response-loss and client-signal recovery tests passed; the exact-tree release gate separately validates the integrated candidate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
