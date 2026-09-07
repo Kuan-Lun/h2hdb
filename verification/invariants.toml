@@ -3502,7 +3502,7 @@ layer = "integration"
 strength = "runtime_integration"
 directness = "direct"
 claim = "SQLite and opt-in MariaDB compare a 128-key scalar batch against the original independent per-family writers, validate exact idempotent replay and indexed query plans, and run a foreign-key-enabled production decision stage through rollback, lost-response replay and independent validation. Incremental coverage verifies parent policy reuse and exact shadow/tombstone resolution."
-assumptions = ["Only the small production MariaDB page case is selected for bounded smoke; the 128-key query-plan case remains manual live evidence. The fixtures do not measure high-fanout aggregation or whole-corpus capacity."]
+assumptions = ["Only the small production MariaDB page case is selected for bounded smoke; the 128-key scalar-reference case and its two-key query-plan probe remain manual live evidence. The fixtures do not measure high-fanout aggregation or whole-corpus capacity."]
 [[evidence.location]]
 path = "tests/test_vnext_analysis_decision_batch.py"
 symbol = "test_batch_matches_independent_scalar_storage_and_exact_replay"
