@@ -3424,6 +3424,98 @@ symbol = "test_directory_grouped_traversal_skips_unrequested_subtrees"
 path = "tests/test_vnext_directory_batch_matching.py"
 symbol = "test_directory_grouped_traversal_caps_a_wide_depth_eight_active_path"
 
+[[evidence]]
+id = "lean.data.analysis-scalar-batch"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "For family-qualified identities, writing each fixed scalar family equals writing each column across the batch. Partial or conflicting proposed families fail exact preflight; exact replay preserves the store. Given an atomic transaction and expected checkpoint, success exposes all facts with the distinct-hash checkpoint increment, while abort or stale checkpoint preserves the prior state."
+assumptions = ["Keys injectively model family kind and analysis/hash identity; each processed hash has a delta family. SQL extraction, scalar-domain checks, cross-family shadow/tombstone exclusion, unexpected-family rejection, fencing and transaction atomicity are runtime obligations. The model does not bound source aggregation fanout, driver/Python allocation or physical crash durability."]
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "scalar_and_batch_store_are_equal"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "partial_or_collision_is_rejected"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "exact_page_replay_preserves_store"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "abort_preserves_facts_and_checkpoint"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "stale_checkpoint_cannot_commit"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "successful_checkpoint_has_every_scalar_fact"
+[[evidence.location]]
+path = "verification/lean/AnalysisScalarBatch.lean"
+symbol = "scalar_page_payload_is_bounded"
+
+[[evidence]]
+id = "runtime.production.analysis-scalar-batch"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "At most 128 file hashes share bounded exact scalar lookups and per-table multi-row inserts. Key-restricted union queries expose partial and orphan family members; all proposed facts are compared before seal-last writes. Independent validation and replay recompute source decisions and reload durable scalar authority; the existing fenced transaction owns the final receipt and checkpoint."
+assumptions = ["The source SUM and artist aggregates remain independently evaluated per hash and are not bounded by the number of batch keys. SQL planners and transaction isolation are backend obligations validated by actual query plans and integration tests."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_decision_batch.py"
+symbol = "load_file_decision_shadow_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_decision_batch.py"
+symbol = "ensure_file_decision_materialization_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_materialize_decision_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_require_file_decision_page"
+
+[[evidence]]
+id = "fault.production.analysis-scalar-batch"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Tests reject missing/orphan family members and changed or unexpected overlay facts before DML, inject failure after every table write and before the production checkpoint to require full rollback, then recover an already committed page through exact receipt replay and independent validation."
+assumptions = ["These are finite SQL-statement and response-loss simulations; no database server or host is forcibly terminated by these cases."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_partial_family_orphan_and_collision_fail_before_any_batch_dml"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_each_table_failure_rolls_back_the_complete_page"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_complete_collision_and_unexpected_overlay_are_zero_write"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_sqlite_production_page_rolls_back_and_replays_receipt"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_live_mariadb_production_page_rolls_back_and_replays_receipt"
+
+[[evidence]]
+id = "integration.production.analysis-scalar-batch"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "SQLite and opt-in MariaDB compare a 128-key scalar batch against the original independent per-family writers, validate exact idempotent replay and indexed query plans, and run a foreign-key-enabled production decision stage through rollback, lost-response replay and independent validation. Incremental coverage verifies parent policy reuse and exact shadow/tombstone resolution."
+assumptions = ["Only the small production MariaDB page case is selected for bounded smoke; the 128-key query-plan case remains manual live evidence. The fixtures do not measure high-fanout aggregation or whole-corpus capacity."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_batch_matches_independent_scalar_storage_and_exact_replay"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_live_mariadb_scalar_batch_matches_reference_and_query_plan"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_live_mariadb_production_page_rolls_back_and_replays_receipt"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_batch.py"
+symbol = "test_incremental_page_loads_parent_policy_once_and_preserves_overlay"
+
 [[invariant]]
 id = "catalog.source-completion-marker.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
@@ -3463,20 +3555,20 @@ integration = { status = "covered", evidence = ["integration.data.sqlite-refinem
 [[invariant]]
 id = "catalog.incremental-impact.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "covered", evidence = ["lean.data.all-bcnf", "lean.data.gid-resolution", "lean.data.analysis-bounded-preparation"] }
+lean = { status = "covered", evidence = ["lean.data.all-bcnf", "lean.data.gid-resolution", "lean.data.analysis-bounded-preparation", "lean.data.analysis-scalar-batch"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no old-resolved/new-candidate union, content-owner or GID-winner ordering, or bounded impacted-workset receipts." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.incremental-impact", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation"] }
-fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.incremental-impact", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation", "runtime.production.analysis-scalar-batch"] }
+fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation", "fault.production.analysis-scalar-batch"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation", "integration.production.analysis-scalar-batch"] }
 
 [[invariant]]
 id = "catalog.overlay-resolution-seal.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "covered", evidence = ["lean.data.overlay-exactness", "lean.data.analysis-bounded-preparation"] }
+lean = { status = "covered", evidence = ["lean.data.overlay-exactness", "lean.data.analysis-bounded-preparation", "lean.data.analysis-scalar-batch"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no shadow/tombstone component maps, bounded ancestry coordinates, full-evaluator equality, or component-seal receipts." }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.overlay-resolution-seal", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation"] }
-fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.data.overlay-resolution-seal", "runtime.production.writer-bindings", "runtime.production.analysis", "runtime.production.analysis-bounded-preparation", "runtime.production.analysis-scalar-batch"] }
+fault = { status = "covered", evidence = ["fault.production.analysis", "fault.pipeline.stage-authority", "fault.pipeline.liveness-regressions", "fault.production.analysis-bounded-preparation", "fault.production.analysis-scalar-batch"] }
+integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite", "integration.sqlite.analysis", "integration.mariadb-shape.analysis", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.analysis-bounded-preparation", "integration.production.analysis-scalar-batch"] }
 
 [[invariant]]
 id = "catalog.published-baseline-prune.v1"

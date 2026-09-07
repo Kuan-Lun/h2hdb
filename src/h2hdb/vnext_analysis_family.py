@@ -671,11 +671,11 @@ def load_analysis_exclusion_delta_families(
     """Load at most one analysis page of delta families with one set query."""
 
     analysis = require_uuid16(analysis_id, field="exclusion analysis_id")
+    if len(file_sha256s) > 128:
+        raise ValueError("exclusion delta family load exceeds one analysis page")
     digests = tuple(
         require_digest32(value, field="exclusion file_sha256") for value in file_sha256s
     )
-    if len(digests) > 128:
-        raise ValueError("exclusion delta family load exceeds one analysis page")
     if len(set(digests)) != len(digests):
         raise ValueError("exclusion delta family load contains duplicate keys")
     if not digests:
@@ -715,17 +715,24 @@ def load_analysis_exclusion_delta_families(
         "AND exclusion_change.file_sha256 = k.file_sha256 "
         f"LEFT JOIN {_EXCLUSION_SEAL} AS seal "
         "ON seal.analysis_id = k.analysis_id AND seal.file_sha256 = k.file_sha256 "
-        "ORDER BY k.file_sha256",
-        tuple(parameters),
+        "ORDER BY k.file_sha256 LIMIT %s",
+        (*parameters, 129),
     )
     requested = set(digests)
+    seen: set[bytes] = set()
     families: list[AnalysisExclusionDeltaFamily] = []
     for raw_row in rows:
         row = tuple(raw_row)
-        if len(row) != 14 or row[0] != analysis or row[1] not in requested:
+        if (
+            len(row) != 14
+            or row[0] != analysis
+            or row[1] not in requested
+            or row[1] in seen
+        ):
             raise AnalysisFamilyCollisionError(
                 "analysis exclusion delta set load returned an unexpected key"
             )
+        seen.add(row[1])
         families.append(
             _analysis_exclusion_delta_from_wide_row(
                 analysis=analysis,

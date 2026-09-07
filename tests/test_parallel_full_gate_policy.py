@@ -85,6 +85,12 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
 
 def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     expected = {
+        # A two-hash production page checks FK-backed batch rollback, committed
+        # receipt replay and independent validation without the large matrix.
+        (
+            "test_vnext_analysis_decision_batch.py",
+            "test_live_mariadb_production_page_rolls_back_and_replays_receipt",
+        ),
         # One bounded directory traversal exercises both the real MariaDB path
         # and representative malformed-page/rollback/replay behavior.
         (

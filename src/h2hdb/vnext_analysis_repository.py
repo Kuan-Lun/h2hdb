@@ -39,13 +39,18 @@ from tempfile import TemporaryFile
 from typing import Any
 
 from .sql_connector import SQLConnector
+from .vnext_analysis_decision_batch import (
+    ensure_file_decision_materialization_page,
+    load_file_decision_shadow_page,
+    load_file_decision_tombstone_page,
+    require_file_decision_page_keys,
+)
 from .vnext_analysis_family import (
     AnalysisExclusionDeltaFamily,
     AnalysisFamilyCollisionError,
     cas_analysis_run_state,
     ensure_analysis_run_family,
     ensure_analysis_state_component_family,
-    insert_analysis_exclusion_delta_family,
     insert_analysis_run_completed_at,
     load_analysis_exclusion_delta_families,
     load_analysis_run_family,
@@ -61,10 +66,8 @@ from .vnext_analysis_overlay_family import (
     apply_analysis_impacted_gid_provenance_page,
     ensure_analysis_content_owner_candidate_shadow_family,
     ensure_analysis_content_owner_shadow_family,
-    ensure_analysis_file_hash_decision_shadow_family,
     load_analysis_content_owner_candidate_shadow_family,
     load_analysis_content_owner_shadow_family,
-    load_analysis_file_hash_decision_shadow_family,
     prepare_analysis_impacted_content_provenance_page,
     prepare_analysis_impacted_gid_provenance_page,
     require_complete_analysis_impacted_content_keyspace,
@@ -1500,9 +1503,14 @@ class AnalysisRepository:
             limit=checkpoint.page_limit + 1,
         )
         selected = rows[: checkpoint.page_limit]
-        for row in selected:
-            digest = require_digest32(row[0], field="decision file_sha256")
-            _materialize_decision(work, authority, digest)
+        _materialize_decision_page(
+            work,
+            authority,
+            tuple(
+                require_digest32(row[0], field="decision file_sha256")
+                for row in selected
+            ),
+        )
         next_key = (
             last
             if not selected
@@ -1572,53 +1580,18 @@ class AnalysisRepository:
             limit=checkpoint.page_limit + 1,
         )
         selected = rows[: checkpoint.page_limit]
-        for row in selected:
-            digest = require_digest32(row[0], field="validation file_sha256")
-            target = _evaluate_file_decision(work, authority, digest)
-            parent = _resolved_decision(
-                work,
-                authority.baseline_analysis_id,
-                digest,
-            )
-            shadow = _shadow_decision(work, authority.analysis_id, digest)
-            tombstone = bool(
-                work.connector.fetch_one(
-                    "SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone "
-                    "WHERE analysis_id = %s AND file_sha256 = %s",
-                    (authority.analysis_id, digest),
-                )
-            )
-            if shadow is not None and tombstone:
-                raise AnalysisCorruptionError(
-                    "file-hash key exists in both shadow and tombstone"
-                )
-            if authority.overlay_depth == 0:
-                expected_shadow = target
-                expected_tombstone = False
-            elif target is None and parent is not None:
-                expected_shadow = None
-                expected_tombstone = True
-            elif target is not None and target != parent:
-                expected_shadow = target
-                expected_tombstone = False
-            else:
-                expected_shadow = None
-                expected_tombstone = False
-            if shadow != expected_shadow or tombstone != expected_tombstone:
-                raise AnalysisCorruptionError(
-                    "file-hash shadow/tombstone differs from the full evaluator"
-                )
-            resolved = _resolved_decision(work, authority.analysis_id, digest)
-            if resolved != target:
-                raise AnalysisCorruptionError(
-                    "resolved file-hash view differs from the full evaluator"
-                )
-            if target is not None:
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="validated file-hash live row count",
-                )
+        validated = _require_file_decision_page(
+            work,
+            authority,
+            tuple(
+                require_digest32(row[0], field="validation file_sha256")
+                for row in selected
+            ),
+            require_delta=False,
+        )
+        live_count = _sum_int63(
+            live_count, validated, field="validated file-hash live row count"
+        )
 
         next_key = (
             last
@@ -5940,40 +5913,19 @@ def _require_replay_page_materialized(
         )
         return live_count
     if stage in {_STAGE_FILE_HASH_DECISION, _STAGE_VALIDATE_FILE_HASH}:
-        deltas = None
-        if stage == _STAGE_FILE_HASH_DECISION:
-            digests = tuple(
+        validated = _require_file_decision_page(
+            work,
+            authority,
+            tuple(
                 require_digest32(row[0], field="replayed decision file_sha256")
                 for row in selected
+            ),
+            require_delta=stage == _STAGE_FILE_HASH_DECISION,
+        )
+        if stage == _STAGE_VALIDATE_FILE_HASH:
+            live_count = _sum_int63(
+                live_count, validated, field="replayed file-decision live row count"
             )
-            try:
-                families = load_analysis_exclusion_delta_families(
-                    work.connector,
-                    analysis_id=authority.analysis_id,
-                    file_sha256s=digests,
-                )
-            except AnalysisFamilyCollisionError as error:
-                raise AnalysisCorruptionError(str(error)) from error
-            deltas = {family.file_sha256: family for family in families}
-            if set(deltas) != set(digests):
-                raise AnalysisCorruptionError(
-                    "file-decision page lacks its exact exclusion-delta set"
-                )
-        for row in selected:
-            digest = require_digest32(row[0], field="replayed decision file_sha256")
-            decision = _require_replay_file_decision(
-                work,
-                authority,
-                digest,
-                require_delta=stage == _STAGE_FILE_HASH_DECISION,
-                delta=None if deltas is None else deltas[digest],
-            )
-            if stage == _STAGE_VALIDATE_FILE_HASH and decision is not None:
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="replayed file-decision live row count",
-                )
         return live_count
     if stage == _STAGE_IMPACTED_GALLERY:
         _require_replay_key_rows(
@@ -6117,51 +6069,83 @@ def _require_replay_key_rows(
             )
 
 
-def _require_replay_file_decision(
+def _require_file_decision_page(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    digest: bytes,
+    digests: Sequence[bytes],
     *,
     require_delta: bool,
-    delta: AnalysisExclusionDeltaFamily | None,
-) -> _Decision | None:
-    target = _evaluate_file_decision(work, authority, digest)
-    parent = _resolved_decision(work, authority.baseline_analysis_id, digest)
-    if require_delta:
-        parent_policy = (
-            authority.policy
-            if authority.baseline_analysis_id is None
-            else _analysis_policy(work, authority.baseline_analysis_id)
+) -> int:
+    """Freshly evaluate source for validation/replay; batch only stored scalars."""
+
+    keys = require_file_decision_page_keys(digests)
+    if not keys:
+        return 0
+    parents = _load_resolved_decision_page(work, authority.baseline_analysis_id, keys)
+    resolved = _load_resolved_decision_page(work, authority.analysis_id, keys)
+    try:
+        shadows = load_file_decision_shadow_page(
+            work.connector, analysis_id=authority.analysis_id, digests=keys
         )
-        expected_delta = (
-            _excluded(parent, parent_policy),
-            _excluded(target, authority.policy),
+        tombstones = load_file_decision_tombstone_page(
+            work.connector, analysis_id=authority.analysis_id, digests=keys
         )
-        if delta is None or (delta.old_excluded, delta.new_excluded) != expected_delta:
-            raise AnalysisCorruptionError(
-                "file-decision exclusion delta differs from its evaluator"
+        deltas = (
+            load_analysis_exclusion_delta_families(
+                work.connector, analysis_id=authority.analysis_id, file_sha256s=keys
             )
-    shadow = _shadow_decision(work, authority.analysis_id, digest)
-    tombstone = bool(
-        work.connector.fetch_one(
-            "SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone "
-            "WHERE analysis_id = %s AND file_sha256 = %s",
-            (authority.analysis_id, digest),
+            if require_delta
+            else ()
         )
-    )
-    _require_overlay_exact(
-        label="file decision",
-        overlay_depth=authority.overlay_depth,
-        target=target,
-        parent=parent,
-        shadow=shadow,
-        tombstone=tombstone,
-    )
-    if _resolved_decision(work, authority.analysis_id, digest) != target:
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    delta_by_key = {delta.file_sha256: delta for delta in deltas}
+    if require_delta and (len(deltas) != len(keys) or set(delta_by_key) != set(keys)):
         raise AnalysisCorruptionError(
-            "resolved file decision differs from its evaluator"
+            "file-decision page lacks its exact exclusion-delta set"
         )
-    return target
+    parent_policy = (
+        _analysis_policy(work, authority.baseline_analysis_id)
+        if require_delta and authority.baseline_analysis_id is not None
+        else authority.policy
+    )
+    live_count = 0
+    for digest in keys:
+        target = _evaluate_file_decision(work, authority, digest)
+        parent = parents.get(digest)
+        if require_delta:
+            delta = delta_by_key[digest]
+            if (delta.old_excluded, delta.new_excluded) != (
+                _excluded(parent, parent_policy),
+                _excluded(target, authority.policy),
+            ):
+                raise AnalysisCorruptionError(
+                    "file-decision exclusion delta differs from its evaluator"
+                )
+        family = shadows.get(digest)
+        shadow = (
+            None
+            if family is None
+            else _Decision(
+                family.occurrence_count,
+                family.artist_count,
+                family.maximum_gallery_artist_count,
+            )
+        )
+        _require_overlay_exact(
+            label="file decision",
+            overlay_depth=authority.overlay_depth,
+            target=target,
+            parent=parent,
+            shadow=shadow,
+            tombstone=digest in tombstones,
+        )
+        if resolved.get(digest) != target:
+            raise AnalysisCorruptionError(
+                "resolved file decision differs from its evaluator"
+            )
+        live_count += int(target is not None)
+    return live_count
 
 
 def _require_replay_impacted_content(
@@ -8165,56 +8149,53 @@ def _decision_work_rows(
     )
 
 
-def _materialize_decision(
+def _materialize_decision_page(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    file_sha256: bytes,
+    digests: Sequence[bytes],
 ) -> None:
-    target = _evaluate_file_decision(work, authority, file_sha256)
-    parent = _resolved_decision(work, authority.baseline_analysis_id, file_sha256)
+    keys = require_file_decision_page_keys(digests)
+    if not keys:
+        return
+    parents = _load_resolved_decision_page(work, authority.baseline_analysis_id, keys)
     parent_policy = (
         authority.policy
         if authority.baseline_analysis_id is None
         else _analysis_policy(work, authority.baseline_analysis_id)
     )
-    old_excluded = _excluded(parent, parent_policy)
-    new_excluded = _excluded(target, authority.policy)
-    insert_analysis_exclusion_delta_family(
-        work.connector,
-        analysis_id=authority.analysis_id,
-        file_sha256=file_sha256,
-        old_excluded=old_excluded,
-        new_excluded=new_excluded,
-    )
-    if authority.overlay_depth == 0:
-        if target is not None:
-            _insert_shadow(work, authority.analysis_id, file_sha256, target)
-    elif target is None and parent is not None:
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
-            "(analysis_id, file_sha256) VALUES (%s, %s)",
-            (authority.analysis_id, file_sha256),
+    deltas: list[AnalysisExclusionDeltaFamily] = []
+    shadows: list[AnalysisFileHashDecisionShadowFamily] = []
+    tombstones: list[bytes] = []
+    for digest in keys:
+        target = _evaluate_file_decision(work, authority, digest)
+        parent = parents.get(digest)
+        deltas.append(
+            AnalysisExclusionDeltaFamily(
+                authority.analysis_id,
+                digest,
+                _excluded(parent, parent_policy),
+                _excluded(target, authority.policy),
+            )
         )
-    elif target is not None and target != parent:
-        _insert_shadow(work, authority.analysis_id, file_sha256, target)
-
-
-def _insert_shadow(
-    work: VNextUnitOfWork,
-    analysis_id: bytes,
-    file_sha256: bytes,
-    decision: _Decision,
-) -> None:
+        if target is not None and (authority.overlay_depth == 0 or target != parent):
+            shadows.append(
+                AnalysisFileHashDecisionShadowFamily(
+                    authority.analysis_id,
+                    digest,
+                    target.occurrence_count,
+                    target.artist_count,
+                    target.maximum_gallery_artist_count,
+                )
+            )
+        elif authority.overlay_depth != 0 and target is None and parent is not None:
+            tombstones.append(digest)
     try:
-        ensure_analysis_file_hash_decision_shadow_family(
+        ensure_file_decision_materialization_page(
             work.connector,
-            AnalysisFileHashDecisionShadowFamily(
-                analysis_id,
-                file_sha256,
-                decision.occurrence_count,
-                decision.artist_count,
-                decision.maximum_gallery_artist_count,
-            ),
+            analysis_id=authority.analysis_id,
+            deltas=deltas,
+            shadows=shadows,
+            tombstones=tombstones,
         )
     except AnalysisFamilyCollisionError as error:
         raise AnalysisCorruptionError(str(error)) from error
@@ -8299,42 +8280,42 @@ def _analysis_policy(work: VNextUnitOfWork, analysis_id: bytes) -> _Policy:
     return _load_policy(work, family.policy_id)
 
 
-def _resolved_decision(
+def _load_resolved_decision_page(
     work: VNextUnitOfWork,
     analysis_id: bytes | None,
-    file_sha256: bytes,
-) -> _Decision | None:
-    if analysis_id is None:
-        return None
-    row = work.connector.fetch_one(
-        "SELECT occurrence_count, artist_count, maximum_gallery_artist_count "
+    digests: Sequence[bytes],
+) -> dict[bytes, _Decision]:
+    keys = require_file_decision_page_keys(digests)
+    if analysis_id is None or not keys:
+        return {}
+    analysis = require_uuid16(analysis_id, field="resolved decision analysis")
+    placeholders = ", ".join("%s" for _digest in keys)
+    rows = work.connector.fetch_all(
+        "SELECT analysis_id, file_sha256, occurrence_count, artist_count, "
+        "maximum_gallery_artist_count "
         "FROM catalog_analysis_file_hash_decision_resolved "
-        "WHERE analysis_id = %s AND file_sha256 = %s",
-        (analysis_id, file_sha256),
+        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders}) "
+        "ORDER BY file_sha256 LIMIT %s",
+        (analysis, *keys, _MAX_BATCH_ROWS + 1),
     )
-    return _decision_from_row(row, field="resolved file decision")
-
-
-def _shadow_decision(
-    work: VNextUnitOfWork,
-    analysis_id: bytes,
-    file_sha256: bytes,
-) -> _Decision | None:
-    try:
-        family = load_analysis_file_hash_decision_shadow_family(
-            work.connector,
-            analysis_id=analysis_id,
-            file_sha256=file_sha256,
-        )
-    except AnalysisFamilyCollisionError as error:
-        raise AnalysisCorruptionError(str(error)) from error
-    if family is None:
-        return None
-    return _Decision(
-        family.occurrence_count,
-        family.artist_count,
-        family.maximum_gallery_artist_count,
-    )
+    decisions: dict[bytes, _Decision] = {}
+    if len(rows) > len(keys):
+        raise AnalysisCorruptionError("resolved decision page exceeds its key set")
+    for row in rows:
+        if len(row) != 5 or row[0] != analysis:
+            raise AnalysisCorruptionError(
+                "resolved decision page has a foreign or malformed row"
+            )
+        digest = require_digest32(row[1], field="resolved decision page digest")
+        if digest not in keys or digest in decisions:
+            raise AnalysisCorruptionError(
+                "resolved decision page has a foreign or duplicate key"
+            )
+        decision = _decision_from_row(row[2:], field="resolved decision page")
+        if decision is None:
+            raise AnalysisCorruptionError("resolved decision page omitted a value")
+        decisions[digest] = decision
+    return decisions
 
 
 def _decision_from_row(row: tuple[Any, ...], *, field: str) -> _Decision | None:
