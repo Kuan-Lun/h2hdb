@@ -307,9 +307,7 @@ def _assert_backend_preparation(
     expected = (first,) * 129 + (second,) * 128
     with (
         connector.read_transaction(),
-        patch.object(
-            analysis, "_resolved_decision", side_effect=AssertionError("N+1 lookup")
-        ),
+        patch.object(connector, "fetch_one", wraps=connector.fetch_one) as fetched_one,
         patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
     ):
         plan = analysis._prepare_effective_content_plan(
@@ -318,6 +316,10 @@ def _assert_backend_preparation(
         assert plan is not None
         with plan:
             assert plan.value_sha256 == _independent_digest(expected)
+            assert not any(
+                "catalog_analysis_file_hash_decision_resolved" in call.args[0]
+                for call in fetched_one.call_args_list
+            ), "decision preparation performed a per-file scalar lookup"
             assert (
                 sum(
                     "catalog_analysis_file_hash_decision_resolved" in call.args[0]
