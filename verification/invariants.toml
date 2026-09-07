@@ -3335,6 +3335,95 @@ symbol = "test_committed_response_loss_replays_from_fresh_plans_without_changing
 path = "tests/test_vnext_publication_canonical_batch.py"
 symbol = "test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries"
 
+[[evidence]]
+id = "lean.operational.directory-batch-matching"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Given a permutation of FILE targets and a complete partition into exact checks, grouped DIRECTORY validation equals the original per-target result. Disjoint sibling ranges route at most once; missing targets fail closed and receipt rows retain original FILE order. The stated active-path serialized-field budget is bounded independently of gallery count."
+assumptions = ["Production must establish the permutation, complete partition, canonical page SHA and descriptors, unique routing, pinned snapshot and transaction atomicity. The pure theorem does not prove Python traversal, SQL effects, untouched-tree integrity, native allocation or process RSS."]
+[[evidence.location]]
+path = "verification/lean/DirectoryBatchMatching.lean"
+symbol = "grouped_permutation_equals_file_reference"
+[[evidence.location]]
+path = "verification/lean/DirectoryBatchMatching.lean"
+symbol = "disjoint_sibling_ranges_route_at_most_once"
+[[evidence.location]]
+path = "verification/lean/DirectoryBatchMatching.lean"
+symbol = "missing_target_fails_closed"
+[[evidence.location]]
+path = "verification/lean/DirectoryBatchMatching.lean"
+symbol = "receipt_keeps_original_file_order"
+[[evidence.location]]
+path = "verification/lean/DirectoryBatchMatching.lean"
+symbol = "active_path_logical_bytes_bounded"
+
+[[evidence]]
+id = "runtime.production.directory-batch-matching"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Each bounded traversal within a fenced match transaction routes at most 256 FILE rows by a separate name-sorted view through the touched DIRECTORY pages. Each visited page is hashed and decoded once; exact descriptors, child membership, bounds and filesystem facts are checked before original-order receipt/checkpoint persistence. No cross-transaction cache replaces durable replay."
+assumptions = ["The connector owns transaction isolation and commit atomicity. Only touched paths are validated here; the independent full READY audit remains responsible for whole-database checks."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_match_batch_rows"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_match_directory_rows"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_match_directory_subtree"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_load_directory_children"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_try_replay_match"
+
+[[evidence]]
+id = "fault.production.directory-batch-matching"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Generated SQLite and opt-in MariaDB cases reject corrupt page SHA, descriptor facts, partial or overlapping child bounds, noncanonical child positions and illegal leaf children without advancing match state; rollback and fresh-transaction replay revalidate durable data."
+assumptions = ["Finite corruption and transaction fault cases do not establish every possible server or host failure."]
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_batch_sqlite_exact_corruption_rollback_and_replay"
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_batch_live_mariadb_exact_corruption_rollback_and_replay"
+
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_traversal_rejects_target_overflow_and_duplicates"
+
+[[evidence]]
+id = "integration.production.directory-batch-matching"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "Generated SQLite and opt-in MariaDB exercise reverse FILE/name order, maximum-length names, a leaf boundary and exact receipt replay while recording that each grouped traversal reads the root once and decodes each touched page once; an operation may additionally revalidate the preceding batch through the existing replay protocol."
+assumptions = ["These bounded fixtures are not a 500000-gallery or 10000000-image capacity benchmark; metadata registration alone does not assert test execution."]
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_batch_sqlite_exact_corruption_rollback_and_replay"
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_batch_live_mariadb_exact_corruption_rollback_and_replay"
+
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_traversal_reads_each_touched_page_once"
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_traversal_skips_unrequested_subtrees"
+
+[[evidence.location]]
+path = "tests/test_vnext_directory_batch_matching.py"
+symbol = "test_directory_grouped_traversal_caps_a_wide_depth_eight_active_path"
+
 [[invariant]]
 id = "catalog.source-completion-marker.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
@@ -3617,11 +3706,11 @@ integration = { status = "covered", evidence = ["integration.operational.sqlite-
 [[invariant]]
 id = "h2hdb.operational.gallery-staging.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf", "lean.operational.directory-batch-matching"] }
 tla = { status = "covered", evidence = ["tla.gallery-staging.small"] }
-runtime_refinement = { status = "covered", evidence = ["runtime.gallery-staging-model", "runtime.production.writer-bindings", "runtime.production.gallery-staging"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.gallery-staging", "fault.pipeline.statement-matrix", "fault.pipeline.takeover-matrix"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.gallery-staging", "integration.mariadb-shape.gallery-staging", "integration.live-mariadb.pipeline"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.gallery-staging-model", "runtime.production.writer-bindings", "runtime.production.gallery-staging", "runtime.production.directory-batch-matching"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.gallery-staging", "fault.pipeline.statement-matrix", "fault.pipeline.takeover-matrix", "fault.production.directory-batch-matching"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.gallery-staging", "integration.mariadb-shape.gallery-staging", "integration.live-mariadb.pipeline", "integration.production.directory-batch-matching"] }
 
 [[invariant]]
 id = "h2hdb.operational.gallery-staging-request-budget.v1"

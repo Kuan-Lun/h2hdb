@@ -85,6 +85,12 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
 
 def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     expected = {
+        # One bounded directory traversal exercises both the real MariaDB path
+        # and representative malformed-page/rollback/replay behavior.
+        (
+            "test_vnext_directory_batch_matching.py",
+            "test_directory_grouped_batch_live_mariadb_exact_corruption_rollback_and_replay",
+        ),
         # One reset/rollback case covers reused physical session isolation; one
         # 257-record case covers the new three-page analysis lookup and spool.
         # Their larger fault/process matrices remain opt-in deep cases.

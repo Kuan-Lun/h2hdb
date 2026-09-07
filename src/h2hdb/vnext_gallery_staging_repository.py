@@ -3250,7 +3250,7 @@ def _load_page_descriptor_family(
     page_bytes = require_bounded_bytes(
         row[1], field="gallery page bytes", minimum=1, maximum=65_536
     )
-    if gallery_observation_page_digest(page_bytes) != page_sha256:
+    if sha256(page_bytes).digest() != page_sha256:
         raise GalleryStagingConflictError("gallery page digest differs from bytes")
     try:
         page = decode_gallery_observation_page(page_bytes)
@@ -4521,114 +4521,226 @@ def _match_batch_rows(
     for offset, row in enumerate(selected):
         if row[0] != start_file + offset:
             raise GalleryStagingConflictError("FILE rows are not contiguous")
-        directory = _lookup_directory_entry(
-            work.connector,
-            handle,
-            require_bounded_bytes(
-                row[2], field="persisted file name", minimum=1, maximum=255
-            ),
+        require_bounded_bytes(
+            row[2], field="persisted file name", minimum=1, maximum=255
         )
-        if directory.file_type is not GalleryObservationDirectoryFileType.REGULAR:
-            raise GalleryStagingConflictError("FILE maps to a nonregular DIRECTORY row")
-        expected = (
-            row[2],
-            row[4],
-            int.from_bytes(row[5], "big"),
-            int.from_bytes(row[6], "big"),
-            int.from_bytes(row[7], "big", signed=True),
-            int.from_bytes(row[8], "big", signed=True),
-        )
-        actual = (
-            directory.name_bytes,
-            directory.size_bytes,
-            directory.device,
-            directory.inode,
-            directory.modified_ns,
-            directory.changed_ns,
-        )
-        if actual != expected or file_key(directory.name_bytes) != row[1]:
-            raise GalleryStagingConflictError("FILE and DIRECTORY facts differ")
+    _match_directory_rows(work.connector, handle, selected)
     return selected, terminal
 
 
-def _lookup_directory_entry(
+@dataclass(frozen=True, slots=True)
+class _DirectoryChild:
+    page_sha256: bytes
+    subtree_item_count: int
+    first_key: bytes
+    last_key: bytes
+
+
+def _match_directory_rows(
     connector: Any,
     handle: GalleryStagingHandle,
-    name_bytes: bytes,
-) -> GalleryObservationDirectoryEntry:
-    root, _count = _component_root(
-        connector,
-        handle,
-        GalleryObservationComponent.DIRECTORY,
+    rows: Sequence[tuple[Any, ...]],
+) -> None:
+    """Match one bounded FILE batch without retaining a gallery-wide cache.
+
+    FILE ordinals need not follow DIRECTORY byte-name order. Only a view of the
+    current batch is sorted; request encoding still consumes the original rows.
+    A depth-first walk retains at most eight branch frames and one leaf, visits
+    shared paths once, and never reads a subtree without a requested name.
+    """
+    if len(rows) > 256:
+        raise GalleryStagingConflictError("DIRECTORY match exceeds 256 FILE rows")
+    if not rows:
+        return
+    targets = sorted(rows, key=lambda row: row[2])
+    if any(left[2] >= right[2] for left, right in zip(targets, targets[1:])):
+        raise GalleryStagingConflictError("FILE names are not unique")
+    root, count = _component_root(
+        connector, handle, GalleryObservationComponent.DIRECTORY
     )
-    page_sha = root
-    for expected_level in range(8, -1, -1):
-        row = connector.fetch_one(
-            f"SELECT p.page_bytes, d.level FROM {_PAGE_DESCRIPTOR_SEAL} s "
-            f"JOIN {_PAGE} p ON p.page_sha256 = s.page_sha256 "
-            f"JOIN {_PAGE_DESCRIPTOR_LEVEL} d ON d.page_sha256 = s.page_sha256 "
-            "WHERE s.page_sha256 = %s",
-            (page_sha,),
-        )
-        if len(row) != 2:
-            raise GalleryStagingConflictError("DIRECTORY lookup page is missing")
-        page = decode_gallery_observation_page(row[0])
-        if page.component is not GalleryObservationComponent.DIRECTORY:
-            raise GalleryStagingConflictError("DIRECTORY root crosses component")
-        if page.level != row[1] or page.level > expected_level:
-            raise GalleryStagingConflictError("DIRECTORY page level differs")
-        if page.node_kind is GalleryObservationNodeKind.LEAF:
-            matches = [
-                entry
-                for entry in page.entries
-                if isinstance(entry, GalleryObservationDirectoryEntry)
-                and entry.name_bytes == name_bytes
-            ]
-            if len(matches) != 1:
+    root_bounds = _load_page_bounds_family(
+        connector, root, component=GalleryObservationComponent.DIRECTORY
+    )
+    _match_directory_subtree(
+        connector,
+        _DirectoryChild(root, count, b"", b""),
+        expected_level=None,
+        expected_bounds=root_bounds,
+        targets=targets,
+        start=0,
+        stop=len(targets),
+    )
+
+
+def _match_directory_subtree(
+    connector: Any,
+    child: _DirectoryChild,
+    *,
+    expected_level: int | None,
+    expected_bounds: tuple[bytes, bytes] | None,
+    targets: Sequence[tuple[Any, ...]],
+    start: int,
+    stop: int,
+) -> None:
+    stored = _load_page_descriptor_family(connector, child.page_sha256)
+    if stored is None:
+        raise GalleryStagingConflictError("DIRECTORY lookup page is missing")
+    page = stored[1]
+    del stored  # The encoded frame is not retained along the recursive path.
+    if page.component is not GalleryObservationComponent.DIRECTORY:
+        raise GalleryStagingConflictError("DIRECTORY root crosses component")
+    if expected_level is not None and page.level != expected_level:
+        raise GalleryStagingConflictError("DIRECTORY page level differs")
+    if page.subtree_item_count != child.subtree_item_count:
+        raise GalleryStagingConflictError("DIRECTORY page subtree count differs")
+    children = _load_directory_children(connector, child.page_sha256, page)
+    if page.node_kind is GalleryObservationNodeKind.LEAF:
+        bounds = gallery_observation_page_key_bounds(page)
+        if bounds != expected_bounds:
+            raise GalleryStagingConflictError("DIRECTORY leaf bounds differ from bytes")
+        target_position = start
+        for entry in page.entries:
+            assert isinstance(entry, GalleryObservationDirectoryEntry)
+            if target_position == stop:
+                break
+            name = targets[target_position][2]
+            if entry.name_bytes < name:
+                continue
+            if entry.name_bytes != name:
                 raise GalleryStagingConflictError(
                     "FILE has no unique DIRECTORY name match"
                 )
-            return matches[0]
-        children = connector.fetch_all(
-            f"SELECT c.position, c.child_sha256, b.first_key, e.last_key, "
-            f"d.subtree_item_count FROM {_PAGE_CHILD} c "
-            f"JOIN {_PAGE_BOUNDS_SEAL} s ON s.page_sha256 = c.child_sha256 "
-            f"JOIN {_PAGE_BOUNDS_FIRST} b ON b.page_sha256 = s.page_sha256 "
-            f"JOIN {_PAGE_BOUNDS_LAST} e ON e.page_sha256 = s.page_sha256 "
-            f"JOIN {_PAGE_DESCRIPTOR_COUNT} d ON d.page_sha256 = s.page_sha256 "
-            "WHERE c.parent_sha256 = %s ORDER BY c.position",
-            (page_sha,),
+            _require_directory_file_match(targets[target_position], entry)
+            target_position += 1
+        if target_position != stop:
+            raise GalleryStagingConflictError("FILE has no unique DIRECTORY name match")
+        return
+    if (children[0].first_key, children[-1].last_key) != expected_bounds:
+        raise GalleryStagingConflictError(
+            "DIRECTORY branch bounds differ from children"
         )
-        if not 1 <= len(children) <= 256:
-            raise GalleryStagingConflictError("DIRECTORY branch fanout differs")
-        encoded_children: list[tuple[int, bytes, int]] = []
-        for position, entry in enumerate(page.entries):
-            if not isinstance(entry, GalleryObservationBranchEntry):
-                raise GalleryStagingConflictError(
-                    "DIRECTORY branch contains a leaf entry"
-                )
-            encoded_children.append(
-                (position, entry.child_sha256, entry.child_subtree_item_count)
-            )
-        normalized_children = [
-            (
-                require_int63(row[0], field="directory child position"),
-                require_digest32(row[1], field="directory child digest"),
-                require_int63(row[4], field="directory child subtree count"),
-            )
-            for row in children
-        ]
-        if normalized_children != encoded_children:
-            raise GalleryStagingConflictError(
-                "DIRECTORY normalized children differ from exact page bytes"
-            )
-        candidates = [row for row in children if row[2] <= name_bytes <= row[3]]
-        if len(candidates) != 1:
+    next_level = page.level - 1
+    del page  # Keep routing metadata, not both encoded and decoded branch frames.
+    target_position = start
+    for nested in children:
+        if target_position == stop:
+            break
+        name = targets[target_position][2]
+        if name > nested.last_key:
+            continue
+        if name < nested.first_key:
             raise GalleryStagingConflictError(
                 "DIRECTORY bounds do not select one exact child"
             )
-        page_sha = require_digest32(candidates[0][1], field="directory child")
-    raise GalleryStagingConflictError("DIRECTORY lookup exceeds depth eight")
+        group_start = target_position
+        while target_position < stop and targets[target_position][2] <= nested.last_key:
+            target_position += 1
+        _match_directory_subtree(
+            connector,
+            nested,
+            expected_level=next_level,
+            expected_bounds=(nested.first_key, nested.last_key),
+            targets=targets,
+            start=group_start,
+            stop=target_position,
+        )
+    if target_position != stop:
+        raise GalleryStagingConflictError(
+            "DIRECTORY bounds do not select one exact child"
+        )
+
+
+def _load_directory_children(
+    connector: Any,
+    page_sha256: bytes,
+    page: GalleryObservationPage,
+) -> list[_DirectoryChild]:
+    # Drive from child associations and LEFT JOIN every required authority so a
+    # missing descriptor/bound cannot disappear from the compared child list.
+    rows = connector.fetch_all(
+        f"SELECT c.position, c.child_sha256, a.page_sha256, s.page_sha256, "
+        "component.component, level.level, count_fact.subtree_item_count, "
+        "ba.page_sha256, bs.page_sha256, first_fact.first_key, last_fact.last_key "
+        f"FROM {_PAGE_CHILD} c "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_ANCHOR} a ON a.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_SEAL} s ON s.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_COMPONENT} component "
+        "ON component.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_LEVEL} level ON level.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_COUNT} count_fact "
+        "ON count_fact.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_ANCHOR} ba ON ba.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_SEAL} bs ON bs.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_FIRST} first_fact "
+        "ON first_fact.page_sha256 = c.child_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_LAST} last_fact "
+        "ON last_fact.page_sha256 = c.child_sha256 "
+        "WHERE c.parent_sha256 = %s ORDER BY c.position LIMIT 257",
+        (page_sha256,),
+    )
+    if page.node_kind is GalleryObservationNodeKind.LEAF:
+        if rows:
+            raise GalleryStagingConflictError("DIRECTORY leaf has normalized children")
+        return []
+    if len(rows) != len(page.entries) or len(rows) > 256:
+        raise GalleryStagingConflictError("DIRECTORY branch fanout differs")
+    children: list[_DirectoryChild] = []
+    for position, (row, entry) in enumerate(zip(rows, page.entries)):
+        assert isinstance(entry, GalleryObservationBranchEntry)
+        if len(row) != 11 or any(value is None for value in row):
+            raise GalleryStagingConflictError("DIRECTORY child family is partial")
+        if (
+            row[0] != position
+            or row[1] != entry.child_sha256
+            or any(row[index] != row[1] for index in (2, 3, 7, 8))
+            or row[4] != _COMPONENT_BYTES[GalleryObservationComponent.DIRECTORY]
+            or row[5] != page.level - 1
+            or row[6] != entry.child_subtree_item_count
+        ):
+            raise GalleryStagingConflictError(
+                "DIRECTORY normalized children differ from exact page bytes"
+            )
+        first = require_bounded_bytes(
+            row[9], field="directory child first key", minimum=1, maximum=255
+        )
+        last = require_bounded_bytes(
+            row[10], field="directory child last key", minimum=1, maximum=255
+        )
+        if first > last or (children and children[-1].last_key >= first):
+            raise GalleryStagingConflictError(
+                "DIRECTORY child bounds overlap or reverse"
+            )
+        children.append(
+            _DirectoryChild(
+                entry.child_sha256, entry.child_subtree_item_count, first, last
+            )
+        )
+    return children
+
+
+def _require_directory_file_match(
+    row: tuple[Any, ...], directory: GalleryObservationDirectoryEntry
+) -> None:
+    if directory.file_type is not GalleryObservationDirectoryFileType.REGULAR:
+        raise GalleryStagingConflictError("FILE maps to a nonregular DIRECTORY row")
+    expected = (
+        row[2],
+        row[4],
+        int.from_bytes(row[5], "big"),
+        int.from_bytes(row[6], "big"),
+        int.from_bytes(row[7], "big", signed=True),
+        int.from_bytes(row[8], "big", signed=True),
+    )
+    actual = (
+        directory.name_bytes,
+        directory.size_bytes,
+        directory.device,
+        directory.inode,
+        directory.modified_ns,
+        directory.changed_ns,
+    )
+    if actual != expected or file_key(directory.name_bytes) != row[1]:
+        raise GalleryStagingConflictError("FILE and DIRECTORY facts differ")
 
 
 def _encode_match_body(
