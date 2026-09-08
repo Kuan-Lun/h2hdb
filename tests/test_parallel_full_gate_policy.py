@@ -124,6 +124,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_pipeline_workflows.py",
             "test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit",
         ),
+        # One gallery covers shared canonical values across four namespaces
+        # through publication, exact tag queries and the full READY audit.
+        (
+            "test_vnext_pipeline_workflows.py",
+            "test_shared_tag_value_across_namespaces_survives_publication",
+        ),
         (
             "test_vnext_pipeline_workflows.py",
             "test_live_mariadb_compacted_snapshot_recurrence",
