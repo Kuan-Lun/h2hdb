@@ -1972,6 +1972,12 @@ symbol = "assemble_batch"
 [[evidence.location]]
 path = "src/h2hdb/vnext_source_build_repository.py"
 symbol = "_require_compacted_source_publication"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_batch_repository.py"
+symbol = "SourceBatchRepository"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_batch_plan.py"
+symbol = "prepare_source_batch"
 
 [[evidence]]
 id = "fault.production.source-build"
@@ -3056,6 +3062,18 @@ symbol = "test_marker_cache_survives_restart_and_reuses_prior_membership"
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
 symbol = "test_marker_cache_keeps_complete_source_membership_and_reclaims_removed_gallery"
+[[evidence.location]]
+path = "tests/test_vnext_source_batches.py"
+symbol = "test_source_batches_accumulate_after_restart_without_reobserving_known_galleries"
+[[evidence.location]]
+path = "tests/test_vnext_source_batches.py"
+symbol = "test_known_changes_and_deletions_do_not_consume_new_gallery_budget"
+[[evidence.location]]
+path = "tests/test_vnext_source_batches.py"
+symbol = "test_unpublished_source_cache_cannot_bypass_new_gallery_quota"
+[[evidence.location]]
+path = "tests/test_vnext_source_batches.py"
+symbol = "test_cumulative_batches_rebuild_global_duplicates_like_a_complete_ingest"
 
 [[evidence]]
 id = "lean.data.analysis-bounded-preparation"

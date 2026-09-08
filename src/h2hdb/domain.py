@@ -240,6 +240,23 @@ def _validate_build_id(value: str) -> None:
         raise ValueError("Catalog build ID must be a normalized 32-character UUID")
 
 
+@dataclass(frozen=True, slots=True)
+class SourceBatchBaseline:
+    """Internal immutable publication identity used to fence source admission."""
+
+    receipt_id: bytes | None
+    build_id: bytes | None
+    scope_key: bytes
+
+    def __post_init__(self) -> None:
+        require_digest32(self.scope_key, field="source batch scope_key")
+        if (self.receipt_id is None) != (self.build_id is None):
+            raise ValueError("source batch baseline identity is incomplete")
+        if self.receipt_id is not None:
+            require_uuid16(self.receipt_id, field="source batch receipt_id")
+            require_uuid16(self.build_id, field="source batch build_id")
+
+
 class CatalogBuildPhase(StrEnum):
     discovering = "DISCOVERING"
     staging = "STAGING"

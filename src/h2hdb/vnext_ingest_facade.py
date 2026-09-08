@@ -118,6 +118,8 @@ from .vnext_maintenance_gate_repository import (
     MaintenanceGateTokenCollisionError,
     MaintenanceGateUnavailableError,
 )
+from .vnext_source_batch_plan import prepare_source_batch, require_source_batch_limit
+from .vnext_source_batch_repository import SourceBatchBaseline, SourceBatchRepository
 from .vnext_source_build_repository import (
     AssemblyBatchAttempt,
     AssemblyBatchReceipt,
@@ -303,7 +305,9 @@ class VNextPreparedSource:
     __slots__ = (
         "_active_issue",
         "_active_step",
+        "_batch_baseline",
         "_closed",
+        "_deferred_gallery_count",
         "_machine",
         "_manifest_summary",
         "_plan",
@@ -318,6 +322,8 @@ class VNextPreparedSource:
         plan: SourceDiscoveryPlan,
         manifest_summary: SourceBuildManifestSummary,
         source_root_components: tuple[str, ...],
+        batch_baseline: SourceBatchBaseline | None = None,
+        deferred_gallery_count: int = 0,
         _constructor_token: object,
     ) -> None:
         if _constructor_token is not _PREPARED_SOURCE_TOKEN:
@@ -326,10 +332,19 @@ class VNextPreparedSource:
         self._plan = plan
         self._manifest_summary = manifest_summary
         self._source_root_components = source_root_components
+        self._batch_baseline = batch_baseline
+        self._deferred_gallery_count = deferred_gallery_count
         self._closed = False
         self._machine = _SourceMachine()
         self._active_issue: VNextIssuedSourceStep | None = None
         self._active_step: VNextPreparedSourceStep | None = None
+
+    @property
+    def deferred_gallery_count(self) -> int:
+        """New inventory members left for another batch; not database authority."""
+
+        self._require_open()
+        return self._deferred_gallery_count
 
     def close(self) -> None:
         if not self._closed:
@@ -427,10 +442,20 @@ class VNextIngestFacade:
     def prepare_source(
         self,
         adapter: VNextIngestSourceAdapter,
+        *,
+        max_new_galleries: int | None = None,
     ) -> VNextPreparedSource:
-        """Freeze one complete source snapshot outside database transactions."""
+        """Freeze a complete source cut outside database transactions.
+
+        A batch retains all still-present members of the current published
+        source, refreshing changed observations, and admits at most the requested
+        number of new galleries. Discovery is always complete, so deletion is
+        distinct from deferral. Omit the limit to admit the entire inventory.
+        """
 
         self.__require_open()
+        if max_new_galleries is not None:
+            require_source_batch_limit(max_new_galleries)
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
         root = adapter.source_root_components
@@ -440,6 +465,8 @@ class VNextIngestFacade:
         # owns cleanup if page consumption fails midway.
         plan = SourceDiscoveryPlan.from_locators(_iter_source_locators(adapter))
         snapshot: FrozenSourceObservationSpool | None = None
+        baseline: SourceBatchBaseline | None = None
+        deferred_gallery_count = 0
         try:
             # Reuse the connection, but keep each cache read transaction
             # bounded. Source byte I/O occurs between these transactions and
@@ -447,19 +474,46 @@ class VNextIngestFacade:
             with ExitStack() as resources:
                 connector: SQLConnector | None = None
 
-                def lookup(
-                    probes: tuple[
-                        tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
-                    ],
-                ) -> tuple[CachedSourceObservation | None, ...]:
+                def connection() -> SQLConnector:
                     nonlocal connector
                     if connector is None:
                         connector = resources.enter_context(
                             self.__context.SQLConnector()
                         )
-                    with connector.read_transaction():
+                    return connector
+
+                if max_new_galleries is not None:
+                    with connection().read_transaction():
+                        baseline = SourceBatchRepository.load_baseline(
+                            connection(), source_root_components=root
+                        )
+
+                    def membership(
+                        locators: tuple[tuple[str, ...], ...],
+                    ) -> tuple[bool, ...]:
+                        assert baseline is not None
+                        with connection().read_transaction():
+                            return SourceBatchRepository.lookup_members(
+                                connection(), baseline, locators
+                            )
+
+                    batch = prepare_source_batch(
+                        plan,
+                        max_new_galleries=max_new_galleries,
+                        lookup_members=membership,
+                    )
+                    previous_plan, plan = plan, batch.plan
+                    previous_plan.close()
+                    deferred_gallery_count = batch.deferred_gallery_count
+
+                def lookup(
+                    probes: tuple[
+                        tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
+                    ],
+                ) -> tuple[CachedSourceObservation | None, ...]:
+                    with connection().read_transaction():
                         return SourceMarkerRepository.lookup_batch(
-                            connector,
+                            connection(),
                             source_root_components=root,
                             probes=probes,
                         )
@@ -470,11 +524,16 @@ class VNextIngestFacade:
                     source_root_components=root,
                     cache_lookup=lookup,
                 )
+                if baseline is not None:
+                    with connection().read_transaction():
+                        SourceBatchRepository.require_current(connection(), baseline)
             return VNextPreparedSource(
                 snapshot=snapshot,
                 plan=plan,
                 manifest_summary=snapshot.manifest_summary,
                 source_root_components=root,
+                batch_baseline=baseline,
+                deferred_gallery_count=deferred_gallery_count,
                 _constructor_token=_PREPARED_SOURCE_TOKEN,
             )
         except BaseException:
@@ -535,6 +594,13 @@ class VNextIngestFacade:
                     build_id=machine.build_id,
                 )
             _resume_authority(work, session, now)
+            if (
+                action is _SourceAction.INITIALIZE
+                and source._batch_baseline is not None
+            ):
+                SourceBatchRepository.require_current(
+                    work.connector, source._batch_baseline
+                )
             if bind_policy:
                 trusted_policy = VNextIngestPolicyRepository.require_exact(
                     work,
@@ -703,7 +769,15 @@ class VNextIngestFacade:
                 _SourceAction.INITIALIZE,
                 _SourceAction.LOCATOR_INITIALIZE,
             }:
-                return _resume_authority(work, session, now)
+                authority = _resume_authority(work, session, now)
+                if (
+                    action is _SourceAction.INITIALIZE
+                    and source._batch_baseline is not None
+                ):
+                    SourceBatchRepository.require_current(
+                        work.connector, source._batch_baseline
+                    )
+                return authority
             if action is _SourceAction.ROOT_ALLOCATE:
                 return CanonicalValueRepository.allocate(
                     work,
@@ -743,6 +817,7 @@ class VNextIngestFacade:
                     policy=_source_build_policy_authority(machine.policy),
                     drained_page=machine.drained_page,
                     now=now,
+                    batch_baseline=source._batch_baseline,
                 )
             if action is _SourceAction.DISCOVERY_BATCH:
                 batch = _require_exact_discovery_batch(prepared_step._payload)

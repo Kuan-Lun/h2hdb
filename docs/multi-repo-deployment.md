@@ -171,6 +171,19 @@ A deployment integration follows this order:
 Schema `READY` means the exact database contract is present; it does not mean
 source data or acquisition/presentation bytes have already been ingested.
 
+Resident integrations can pass `max_new_galleries` to `prepare_source()` and
+publish cumulative source batches. Every batch inventories the current source
+again, incorporates removals and refreshes previously admitted galleries, and
+admits a bounded number of new galleries. Previously published source membership
+is retained even when deduplication excluded a gallery from the visible catalog.
+The prepared handle's `deferred_gallery_count` requests another immediate batch;
+it must not be treated as a persisted queue or a publication receipt. Completion
+of a gallery, analysis, or CBZ alone does not make it readable: each batch still
+uses the full sealed publication and library activation protocol. OPDS discovers
+the new current head without restarting. Current-only resource links can expire
+at a later publication; consumers that download complete archives before reading
+do not require historical catalog revisions.
+
 ## Local multi-repository verification
 
 The repositories remain independent and do not form a uv workspace. From the

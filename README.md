@@ -288,6 +288,23 @@ the observation to a new build. Cleanup may evict an unreferenced binding and
 its observation; that cache miss requires preparation again. No marker grants
 authority to caller-supplied observation IDs or audit checksums.
 
+`prepare_source(adapter, max_new_galleries=1000)` admits a cumulative batch.
+It first validates the adapter's complete locator inventory, retains every
+still-present member of the current published source, and selects at most
+1,000 new galleries in canonical locator order. Existing changed galleries are
+refreshed in the same batch and do not consume this allowance; missing galleries
+are removed. An unchanged completion-marker cache avoids reading image bytes,
+but a cache entry from an unpublished attempt does not count as published
+membership. `VNextPreparedSource.deferred_gallery_count` reports remaining new
+galleries so a resident can publish the batch and immediately start another
+fresh inventory. This count is scheduling information, never database authority.
+The current published source is the restart checkpoint, including duplicate
+losers; a stale publication baseline fails before source handoff. Each admitted
+cut still completes the ordinary analysis, artifact, validation and atomic
+publication workflow. Omitting the limit admits the full inventory. No schema
+change or separate persistent cursor is required. A finite, stable source drains
+in successive batches; new source changes are discovered on subsequent passes.
+
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
 call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact
 release-adapter registry. If an unpublished abandoned candidate still protects

@@ -43,6 +43,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from .domain import SourceBatchBaseline
+from .source_errors import VNextSourceChangedError
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
 from .vnext_analysis_family import (
     AnalysisFamilyCollisionError,
@@ -966,6 +968,7 @@ class SourceBuildRepository:
         policy: _SourceBuildPolicyAuthority,
         drained_page: _SourceDrainRetry | None,
         now: int,
+        batch_baseline: SourceBatchBaseline | None = None,
     ) -> SourceBuildHandoff | _SourceDrainRetry:
         """Reserve or replay the sole source working build for this snapshot.
 
@@ -1087,6 +1090,20 @@ class SourceBuildRepository:
             root_page_sha256=root_plan.root_page_sha256,
         )
         base_source = _lock_source_head(work, _DEFAULT_CHANNEL)
+        if batch_baseline is not None:
+            batch_baseline.__post_init__()
+            if batch_baseline.scope_key != scope:
+                raise SourceBuildConflictError("source admission scope differs")
+            if base_source is None and batch_baseline.receipt_id is not None:
+                raise SourceBuildConflictError(
+                    "source batch publication head disappeared"
+                )
+            if (None if base_source is None else base_source.receipt_id) != (
+                batch_baseline.receipt_id
+            ):
+                raise VNextSourceChangedError(
+                    "source batch publication head changed before root handoff"
+                )
         if mapped_build is None:
             _require_latest_source_generation_authority(
                 connector,
