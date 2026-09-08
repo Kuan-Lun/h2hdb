@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-08T20:45:10+00:00",
+  "checked_at": "2026-09-08T21:45:07+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.35.4",
+  "project_version": "0.35.5",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, development and Node registry candidates. Hypothesis 6.168.0 official changelog (https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-0) expands datetime boundary generation and fixes internal cache corruption; existing bounds and APIs remain compatible and this candidate was installed for validation. Other direct candidates match the prior reviewed cohort. The source lock-contention regression, 131256-locator synthetic preparation benchmark, source suites and three live MariaDB 10.11.11 cases pass. No external dependency or schema change is needed. The exact-tree bounded release gate runs separately; no full deep-matrix claim.",
+    "note": "Reviewed every direct build, runtime, development and Node registry candidate against the prior 0.35.4 audit; all latest candidates and bounds are unchanged and the installed validation environment matches them. No dependency changes are needed. The shared tag-value handoff fix passes all 45 gallery staging tests, including missing-claim rollback and exact replay, plus public source-to-publication, namespace-scoped catalog queries and full READY audit on SQLite and real MariaDB 10.11.11. The exact-tree bounded merge release gate runs separately; this receipt does not claim the full deep matrices.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
