@@ -112,6 +112,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_marker.py",
             "test_marker_cache_survives_restart_and_reuses_prior_membership",
         ),
+        # Two same-GID galleries exercise accepted-only analysis, rejection
+        # tombstones and repaired-source restoration across three revisions.
+        (
+            "test_vnext_analysis_qualification.py",
+            "test_live_mariadb_qualification_removes_and_restores_same_gid_winner",
+        ),
         (
             "test_vnext_catalog_reader_mariadb.py",
             "test_mariadb_discovery_facets_and_presentation_hydrate_real_rows",
