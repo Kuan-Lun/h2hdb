@@ -10,6 +10,9 @@ import pytest
 from h2hdb import catalog_refinement, catalog_writer
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.vnext_analysis_repository import AnalysisRepository
+from h2hdb.vnext_cleanup_repository import VNextCleanupRepository
+from h2hdb.vnext_gallery_staging_repository import GalleryObservationStagingRepository
+from h2hdb.vnext_source_marker_repository import SourceMarkerRepository
 
 
 def _manifest() -> tuple[dict[str, object], ...]:
@@ -58,7 +61,7 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
         if obligation_id.startswith("catalog.") and lifecycle == "ready_and_runtime"
     )
     assert tuple(validators) == expected
-    assert len(validators) == 14
+    assert len(validators) == 15
     assert "catalog.bootstrap.v1" not in validators
     assert tuple(validator.__name__ for validator in validators.values()) == tuple(
         ready_check.rsplit(".", 1)[1]
@@ -68,7 +71,7 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
     with pytest.raises(TypeError):
         validators["catalog.bootstrap.v1"] = catalog_refinement.check_bootstrap_v1  # type: ignore[index]
 
-    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 31
+    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 32
     hook = catalog_writer.BUILTIN_WRITER_HOOKS[0]
     binding = catalog_writer.resolve_writer_hook(
         hook.obligation_id,
@@ -114,6 +117,38 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
         cast(dict[str, object], catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS)[
             hook.obligation_id
         ] = binding
+
+
+def test_source_qualification_validator_and_writers_cover_the_exact_authority() -> None:
+    obligation_id = "catalog.source-qualification.v1"
+    assert catalog_refinement.builtin_semantic_validators()[obligation_id] is (
+        catalog_refinement.check_source_qualification_v1
+    )
+    binding = catalog_writer.resolve_writer_hook(
+        obligation_id, "catalog_writer.validate_source_qualification", 1
+    )
+    assert binding is catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS[obligation_id]
+    assert binding.entrypoints == (
+        GalleryObservationStagingRepository.put_metadata,
+        GalleryObservationStagingRepository.seal,
+        SourceMarkerRepository.reuse,
+        VNextCleanupRepository.begin_cycle,
+        VNextCleanupRepository.resume_cycle,
+        VNextCleanupRepository.advance,
+    )
+    assert binding.mutation_relations == frozenset(
+        {
+            "gallery_observation_validation_policy",
+            "gallery_observation_validation_disposition",
+            "gallery_observation_validation_reason",
+            "gallery_observation_validation_source",
+        }
+    )
+    assert binding.authority_relations == binding.mutation_relations | {
+        "gallery_observation",
+        "gallery_observation_tree_root",
+        "source_build_gallery",
+    }
 
 
 def test_analysis_abandon_is_bound_to_every_fenced_state_machine_contract() -> None:
