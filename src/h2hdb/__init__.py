@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = [
     "ArtifactArchiveRenderEvidence",
+    "ArtifactFailureContext",
     "ArtifactPagePresentationEvidence",
     "ArtifactPresentationRenderEvidence",
     "ArtifactReleaseStorageEvidence",
@@ -127,8 +128,10 @@ __all__ = [
     "open_database",
     "resolve_environment_placeholders",
     "catalog_search_field_lexemes",
+    "get_artifact_failure_context",
 ]
 
+from .artifact_errors import get_artifact_failure_context
 from .catalog_errors import (
     CatalogCursorError,
     CatalogIdentifierError,
@@ -149,6 +152,7 @@ from .config_loader import (
 from .domain import (
     DEFAULT_CATALOG_DISCOVERY_QUERY,
     ArtifactArchiveRenderEvidence,
+    ArtifactFailureContext,
     ArtifactPagePresentationEvidence,
     ArtifactPresentationRenderEvidence,
     ArtifactReleaseStorageEvidence,

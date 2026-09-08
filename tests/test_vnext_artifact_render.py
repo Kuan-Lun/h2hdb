@@ -11,7 +11,11 @@ from typing import BinaryIO
 
 import pytest
 
-from h2hdb import VNextSourceChangedError
+from h2hdb import (
+    ArtifactFailureContext,
+    VNextSourceChangedError,
+    get_artifact_failure_context,
+)
 from h2hdb.domain import (
     ArtifactArchiveRenderEvidence,
     ArtifactPresentationRenderEvidence,
@@ -163,10 +167,127 @@ def _verify(
 ) -> None:
     verify_artifact_sources(
         adapter,
+        gid=7,
         source_root_components=("root",),
         gallery_locator_components=("gallery",),
         references=references,
     )
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_source_failure_keeps_type_and_exact_gallery_and_member_context(
+    *, cached: bool
+) -> None:
+    adapter = _Adapter({b"metadata.txt": b"metadata", b"page.jpg": b"changed"})
+    references = (
+        _reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", b"metadata"),
+        _reference(1, ArtifactSourceRole.PAGE, b"page.jpg", b"original"),
+    )
+    with pytest.raises(VNextSourceChangedError) as caught:
+        if cached:
+            _verify(adapter, references)
+        else:
+            _render(adapter, references)
+    assert type(caught.value) is VNextSourceChangedError
+    assert get_artifact_failure_context(caught.value) == ArtifactFailureContext(
+        7, ("root",), ("gallery",), b"page.jpg", len(b"original")
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ArtifactRenderConflictError("sealed evidence changed"),
+        ArtifactRenderNotReadyError("adapter rejected source"),
+        RuntimeError("storage failed"),
+        VNextSourceChangedError("source changed"),
+    ],
+)
+def test_renderer_failure_keeps_original_object_and_gallery_context(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    adapter = _Adapter({b"metadata.txt": b"metadata"})
+
+    def fail_render(
+        _members: Iterable[ArtifactSourceMember],
+        _destination: BinaryIO,
+        *,
+        gid: int,
+    ) -> ArtifactArchiveRenderEvidence:
+        assert gid == 7
+        raise failure
+
+    monkeypatch.setattr(adapter, "render_archive", fail_render)
+    with pytest.raises(type(failure)) as caught:
+        _render(
+            adapter,
+            (_reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", b"metadata"),),
+        )
+    assert caught.value is failure
+    assert get_artifact_failure_context(caught.value) == ArtifactFailureContext(
+        7, ("root",), ("gallery",)
+    )
+
+
+def test_adapter_value_error_retains_cause_and_public_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _Adapter({b"metadata.txt": b"metadata"})
+    failure = ValueError("decoder rejected image")
+
+    def fail_render(
+        _members: Iterable[ArtifactSourceMember],
+        _destination: BinaryIO,
+        *,
+        gid: int,
+    ) -> ArtifactArchiveRenderEvidence:
+        assert gid == 7
+        raise failure
+
+    monkeypatch.setattr(adapter, "render_archive", fail_render)
+    with pytest.raises(ArtifactRenderNotReadyError) as caught:
+        _render(
+            adapter,
+            (_reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", b"metadata"),),
+        )
+    assert caught.value.__cause__ is failure
+    assert get_artifact_failure_context(caught.value) == ArtifactFailureContext(
+        7, ("root",), ("gallery",)
+    )
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_open_source_failure_reports_the_exact_member_before_rendering(
+    monkeypatch: pytest.MonkeyPatch, *, cached: bool
+) -> None:
+    adapter = _Adapter({})
+    original = OSError("source cannot be opened")
+
+    def fail_open(
+        *,
+        source_root_components: tuple[str, ...],
+        gallery_locator_components: tuple[str, ...],
+        source_name: bytes,
+    ) -> BinaryIO:
+        assert source_root_components == ("root",)
+        assert gallery_locator_components == ("gallery",)
+        assert source_name == b"metadata.txt"
+        raise original
+
+    monkeypatch.setattr(adapter, "open_source", fail_open)
+    references = (
+        _reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", b"metadata"),
+    )
+    with pytest.raises(ArtifactRenderNotReadyError) as caught:
+        if cached:
+            _verify(adapter, references)
+        else:
+            _render(adapter, references)
+    assert caught.value.__cause__ is original
+    assert get_artifact_failure_context(caught.value) == ArtifactFailureContext(
+        7, ("root",), ("gallery",), b"metadata.txt", len(b"metadata")
+    )
+    assert not adapter.rendered
 
 
 class _OverlapDetectingSpool(BytesIO):

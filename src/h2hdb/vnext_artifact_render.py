@@ -24,8 +24,10 @@ from tempfile import TemporaryFile
 from threading import Lock
 from typing import BinaryIO, cast
 
+from .artifact_errors import artifact_failure_scope
 from .domain import (
     ArtifactArchiveRenderEvidence,
+    ArtifactFailureContext,
     ArtifactSourceMember,
     ArtifactSourceRole,
 )
@@ -284,12 +286,34 @@ def render_artifact(
 ) -> RenderedArtifact:
     """Verify selected sources once, render bounded bytes, and check evidence."""
 
+    context = ArtifactFailureContext(
+        gid, source_root_components, gallery_locator_components
+    )
+    with artifact_failure_scope(context):
+        return _render_artifact(
+            adapter,
+            gid=gid,
+            source_root_components=source_root_components,
+            gallery_locator_components=gallery_locator_components,
+            references=references,
+        )
+
+
+def _render_artifact(
+    adapter: ArtifactStorageAdapter,
+    *,
+    gid: int,
+    source_root_components: tuple[str, ...],
+    gallery_locator_components: tuple[str, ...],
+    references: Iterable[ArtifactSourceReference],
+) -> RenderedArtifact:
     exact_gid = require_positive_int63(gid, field="artifact render gid")
     source_rows = tuple(references)
     selected, page_positions = _preflight_references(source_rows)
     staged = _stage_verified_members(
         adapter,
         selected,
+        gid=exact_gid,
         source_root_components=source_root_components,
         gallery_locator_components=gallery_locator_components,
     )
@@ -346,6 +370,7 @@ def render_artifact(
 def verify_artifact_sources(
     adapter: ArtifactStorageAdapter,
     *,
+    gid: int,
     source_root_components: tuple[str, ...],
     gallery_locator_components: tuple[str, ...],
     references: Iterable[ArtifactSourceReference],
@@ -354,16 +379,25 @@ def verify_artifact_sources(
 
     selected, _page_positions = _preflight_references(tuple(references))
     for row in selected:
-        source = _open_verified_source(
-            adapter,
-            row,
-            source_root_components=source_root_components,
-            gallery_locator_components=gallery_locator_components,
-        )
-        try:
-            _read_verified_source(row, source, destination=None)
-        finally:
-            source.close()
+        with artifact_failure_scope(
+            ArtifactFailureContext(
+                gid,
+                source_root_components,
+                gallery_locator_components,
+                row.source_name,
+                row.expected_size_bytes,
+            )
+        ):
+            source = _open_verified_source(
+                adapter,
+                row,
+                source_root_components=source_root_components,
+                gallery_locator_components=gallery_locator_components,
+            )
+            try:
+                _read_verified_source(row, source, destination=None)
+            finally:
+                source.close()
 
 
 def _preflight_references(
@@ -445,6 +479,7 @@ def _stage_verified_members(
     adapter: ArtifactStorageAdapter,
     rows: tuple[ArtifactSourceReference, ...],
     *,
+    gid: int,
     source_root_components: tuple[str, ...],
     gallery_locator_components: tuple[str, ...],
 ) -> _StagedMembers:
@@ -455,16 +490,25 @@ def _stage_verified_members(
     try:
         offset = 0
         for row in rows:
-            source = _open_verified_source(
-                adapter,
-                row,
-                source_root_components=source_root_components,
-                gallery_locator_components=gallery_locator_components,
-            )
-            try:
-                _copy_verified_source(row, source, spool)
-            finally:
-                source.close()
+            with artifact_failure_scope(
+                ArtifactFailureContext(
+                    gid,
+                    source_root_components,
+                    gallery_locator_components,
+                    row.source_name,
+                    row.expected_size_bytes,
+                )
+            ):
+                source = _open_verified_source(
+                    adapter,
+                    row,
+                    source_root_components=source_root_components,
+                    gallery_locator_components=gallery_locator_components,
+                )
+                try:
+                    _copy_verified_source(row, source, spool)
+                finally:
+                    source.close()
             read_only = cast(
                 BinaryIO,
                 _ReadOnlySlice(

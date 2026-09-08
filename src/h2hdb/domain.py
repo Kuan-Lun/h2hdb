@@ -31,6 +31,7 @@ __all__ = [
     "CatalogSnapshot",
     "CatalogArtifact",
     "ArtifactArchiveRenderEvidence",
+    "ArtifactFailureContext",
     "ArtifactPagePresentationEvidence",
     "ArtifactPresentationRenderEvidence",
     "ArtifactRenderedPage",
@@ -134,6 +135,7 @@ __all__ = [
     "VNextIngestAdvanceResult",
     "VNextIngestCompletionReceipt",
     "VNextIngestGalleryObservation",
+    "VNextSourceQualification",
     "VNextIngestCursor",
     "VNextIngestPage",
     "VNextIngestPhase",
@@ -168,11 +170,13 @@ from .vnext_domains import (
 from .vnext_identity import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
+    VNextSourceQualification,
     artifact_policy_digest,
     canonical_value_digest,
     decode_artifact_id,
     decode_publication_id,
     encode_source_relative_locator,
+    encode_source_root,
     publication_key,
     validate_file_name,
     validate_namespace,
@@ -1743,6 +1747,32 @@ class ArtifactSourceRole(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactFailureContext:
+    """Diagnostic sealed source identity; never an authorization receipt."""
+
+    gid: int
+    source_root_components: tuple[str, ...]
+    gallery_locator_components: tuple[str, ...]
+    source_name: bytes | None = None
+    expected_size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        require_positive_int63(self.gid, field="artifact failure gid")
+        if not isinstance(self.source_root_components, tuple):
+            raise TypeError("artifact failure source root must be a tuple")
+        if not isinstance(self.gallery_locator_components, tuple):
+            raise TypeError("artifact failure gallery locator must be a tuple")
+        encode_source_root(self.source_root_components)
+        encode_source_relative_locator(self.gallery_locator_components)
+        if self.source_name is not None:
+            validate_file_name(self.source_name)
+        if self.expected_size_bytes is not None:
+            require_int63(
+                self.expected_size_bytes, field="artifact failure source size"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactSourceMember:
     """One exact source stream exposed only for a synchronous render call.
 
@@ -3273,6 +3303,7 @@ class VNextIngestGalleryObservation:
 
     locator_components: tuple[str, ...]
     metadata: GalleryObservationMetadata
+    qualification: VNextSourceQualification = VNextSourceQualification()
 
     def __post_init__(self) -> None:
         if not isinstance(self.locator_components, tuple):
@@ -3281,6 +3312,9 @@ class VNextIngestGalleryObservation:
         if not isinstance(self.metadata, GalleryObservationMetadata):
             raise TypeError("metadata must be GalleryObservationMetadata")
         self.metadata.__post_init__()
+        if type(self.qualification) is not VNextSourceQualification:
+            raise TypeError("qualification must be VNextSourceQualification")
+        self.qualification.__post_init__()
 
 
 @dataclass(frozen=True, slots=True)

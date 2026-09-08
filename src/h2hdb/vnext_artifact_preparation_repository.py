@@ -37,8 +37,10 @@ from tempfile import TemporaryDirectory, TemporaryFile
 from typing import Any, BinaryIO
 
 from . import vnext_identity as identity
+from .artifact_errors import artifact_failure_scope
 from .domain import (
     ArtifactArchiveRenderEvidence,
+    ArtifactFailureContext,
     ArtifactSourceRole,
     ArtifactStorageEvidence,
     CatalogResourceKind,
@@ -1273,6 +1275,7 @@ class ArtifactPreparationRepository:
         _require_matching_adapter(audit.authority, adapter)
         verify_artifact_sources(
             adapter,
+            gid=audit.authority.gid,
             source_root_components=audit.source_root_components,
             gallery_locator_components=audit.gallery_locator_components,
             references=audit.references,
@@ -1346,14 +1349,21 @@ class ArtifactPreparationRepository:
                 )
             )
             archive = rendered.detach_archive()
-            presentation_artifact = prepare_presentation(
-                adapter,
-                archive=archive,
-                acquisition=acquisition,
-                rendered_pages=rendered.evidence.pages,
-                thumbnail_key=thumbnail_key,
-                modified_at=modified_at,
-            )
+            with artifact_failure_scope(
+                ArtifactFailureContext(
+                    authority.gid,
+                    audit.source_root_components,
+                    audit.gallery_locator_components,
+                )
+            ):
+                presentation_artifact = prepare_presentation(
+                    adapter,
+                    archive=archive,
+                    acquisition=acquisition,
+                    rendered_pages=rendered.evidence.pages,
+                    thumbnail_key=thumbnail_key,
+                    modified_at=modified_at,
+                )
             receipt = ArtifactPreparationReceipt(
                 audit=audit,
                 acquisition=acquisition,
