@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-08T13:59:23+00:00",
+  "checked_at": "2026-09-08T20:45:10+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.35.3",
+  "project_version": "0.35.4",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -59,7 +59,7 @@
     {
       "declared": "hypothesis>=6.165.10,<7.0.0",
       "group": "optional:dev",
-      "latest": "6.167.1",
+      "latest": "6.168.0",
       "latest_satisfies": true,
       "name": "hypothesis",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates on Python 3.14. Latest candidates are unchanged from the reviewed September 7 cohort: Pydantic 2.13.5, Ruff 0.16.6, build 1.6.0, Hypothesis 6.167.1, packaging 26.3 and markdownlint-cli2 0.23.2 release notes remain compatible with the existing bounds and APIs. No external dependency upgrade or upper-bound exception is needed. The installed latest cohort passes strict fast checks and new cumulative-source SQLite integration (13 cases) plus live MariaDB 10.11.11 smoke (1 case); the complete exact-tree bounded release gate is required separately at merge. No deep matrices are claimed by this audit.",
+    "note": "Reviewed all direct build, runtime, development and Node registry candidates. Hypothesis 6.168.0 official changelog (https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-0) expands datetime boundary generation and fixes internal cache corruption; existing bounds and APIs remain compatible and this candidate was installed for validation. Other direct candidates match the prior reviewed cohort. The source lock-contention regression, 131256-locator synthetic preparation benchmark, source suites and three live MariaDB 10.11.11 cases pass. No external dependency or schema change is needed. The exact-tree bounded release gate runs separately; no full deep-matrix claim.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
