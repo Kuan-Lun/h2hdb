@@ -117,6 +117,8 @@ __all__ = [
     "FileContentReceipt",
     "FileObservation",
     "VNextSourceCompletionMarker",
+    "VNextSourcePreparationOperation",
+    "VNextSourcePreparationProgress",
     "GallerySourceFile",
     "GallerySourceRecord",
     "GalleryTag",
@@ -3443,3 +3445,39 @@ class VNextIngestAdvanceResult:
             if not isinstance(self.source_receipt, VNextIngestSourceReceipt):
                 raise TypeError("source_receipt must be VNextIngestSourceReceipt")
             self.source_receipt.__post_init__()
+
+
+class VNextSourcePreparationOperation(StrEnum):
+    """Observable local preparation stages; never durable ingest authority."""
+
+    DISCOVERY_TRANSFER = "discovery_transfer"
+    DISCOVERY_ORDER = "discovery_order"
+    BATCH_SELECTION = "batch_selection"
+    BATCH_ORDER = "batch_order"
+    DISCOVERY_CLEANUP = "discovery_cleanup"
+    SOURCE_FREEZE = "source_freeze"
+
+
+@dataclass(frozen=True, slots=True)
+class VNextSourcePreparationProgress:
+    """Absolute gallery counts for one operation in one preparation call.
+
+    ``total=None`` means inventory enumeration has not yet reached exact EOF.
+    Selection counts checked inventory entries, not the admitted batch size.
+    Freeze counts admitted galleries whose observations have been sealed locally.
+    This observation grants no authority to resume or commit database work.
+    """
+
+    operation: VNextSourcePreparationOperation
+    completed: int
+    total: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.operation) is not VNextSourcePreparationOperation:
+            raise TypeError("operation must be VNextSourcePreparationOperation")
+        if type(self.completed) is not int or self.completed < 0:
+            raise ValueError("completed must be a non-negative integer")
+        if self.total is not None and (
+            type(self.total) is not int or self.total < self.completed
+        ):
+            raise ValueError("total must be None or an integer at least completed")

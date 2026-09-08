@@ -115,6 +115,9 @@ __all__ = [
     "VNextPreparedSourceStep",
     "VNextSourceManifestMismatchError",
     "VNextSourceCompletionMarker",
+    "VNextSourcePreparationOperation",
+    "VNextSourcePreparationProgress",
+    "VNextSourcePreparationObserver",
     "VNextSourceChangedError",
     "VNextIngestSession",
     "VNextIngestSourceAdapter",
@@ -207,6 +210,8 @@ from .domain import (
     VNextLibraryActivationItem,
     VNextResolvedIngestPolicy,
     VNextSourceCompletionMarker,
+    VNextSourcePreparationOperation,
+    VNextSourcePreparationProgress,
 )
 from .environment import (
     EnvironmentPlaceholderError,
@@ -217,6 +222,7 @@ from .ports import (
     ArtifactStorageAdapter,
     CatalogReader,
     VNextIngestSourceAdapter,
+    VNextSourcePreparationObserver,
 )
 from .schema_admin import SchemaEpochReadiness
 from .schema_epoch import SchemaEpochReport

@@ -26,9 +26,10 @@ from .domain import (
     VNextIngestGalleryObservation,
     VNextIngestPage,
     VNextSourceCompletionMarker,
+    VNextSourcePreparationOperation,
     _file_content_receipt_from_frozen_facts,
 )
-from .ports import VNextIngestSourceAdapter
+from .ports import VNextIngestSourceAdapter, VNextSourcePreparationObserver
 from .source_errors import VNextSourceChangedError
 from .vnext_domains import (
     INT63_MAX,
@@ -59,6 +60,7 @@ from .vnext_source_build_repository import (
     source_manifest_chain_step,
 )
 from .vnext_source_marker_repository import CachedSourceObservation
+from .vnext_source_progress import report_source_progress
 
 _CONSTRUCTOR_TOKEN = object()
 _PAGE_MAGIC = b"h2hdb-vnext-frozen-source-observation-page-v2\0"
@@ -159,6 +161,7 @@ class FrozenSourceObservationSpool:
         plan: SourceDiscoveryPlan,
         source_root_components: tuple[str, ...],
         cache_lookup: SourceCacheLookup | None = None,
+        progress: VNextSourcePreparationObserver | None = None,
     ) -> FrozenSourceObservationSpool:
         """Consume the live adapter once and seal every observation page."""
 
@@ -182,7 +185,9 @@ class FrozenSourceObservationSpool:
         )
         try:
             spool._create_schema()
-            spool.manifest_summary = spool._freeze_adapter(adapter, plan, cache_lookup)
+            spool.manifest_summary = spool._freeze_adapter(
+                adapter, plan, cache_lookup, progress
+            )
             index.commit()
             return spool
         except BaseException:
@@ -404,6 +409,7 @@ class FrozenSourceObservationSpool:
         adapter: VNextIngestSourceAdapter,
         plan: SourceDiscoveryPlan,
         cache_lookup: SourceCacheLookup | None,
+        progress: VNextSourcePreparationObserver | None,
     ) -> SourceBuildManifestSummary:
         scope = source_scope_key(
             "filesystem",
@@ -412,6 +418,8 @@ class FrozenSourceObservationSpool:
         )
         summary = SourceBuildManifestSummary.empty()
         position = 0
+        operation = VNextSourcePreparationOperation.SOURCE_FREEZE
+        report_source_progress(progress, operation, position, plan.gallery_count)
         while position < plan.gallery_count:
             locators = plan._page(position)[:128]
             if not locators:
@@ -529,6 +537,9 @@ class FrozenSourceObservationSpool:
                     ),
                 )
                 position += 1
+                report_source_progress(
+                    progress, operation, position, plan.gallery_count
+                )
         if position != plan.gallery_count:
             raise FrozenSourceObservationError(
                 "frozen observation count differs from discovery plan"

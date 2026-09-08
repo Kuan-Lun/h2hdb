@@ -7,6 +7,7 @@ __all__ = [
     "ArtifactStorageAdapter",
     "CatalogReader",
     "VNextIngestSourceAdapter",
+    "VNextSourcePreparationObserver",
 ]
 
 from collections.abc import Mapping, Sequence
@@ -47,6 +48,7 @@ from .domain import (
     VNextIngestGalleryObservation,
     VNextIngestPage,
     VNextSourceCompletionMarker,
+    VNextSourcePreparationProgress,
 )
 
 
@@ -280,3 +282,13 @@ class ArtifactReleaseAdapter(Protocol):
         expected_size_bytes: int,
         protection_token: bytes,
     ) -> ArtifactReleaseStorageEvidence: ...
+
+
+class VNextSourcePreparationObserver(Protocol):
+    """Best-effort preparation observation, invoked outside core transactions.
+
+    Implementations should only update in-memory state and return promptly.
+    Ordinary callback exceptions are ignored. Cancellation still propagates.
+    """
+
+    def __call__(self, progress: VNextSourcePreparationProgress, /) -> None: ...

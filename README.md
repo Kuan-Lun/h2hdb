@@ -305,6 +305,20 @@ publication workflow. Omitting the limit admits the full inventory. No schema
 change or separate persistent cursor is required. A finite, stable source drains
 in successive batches; new source changes are discovered on subsequent passes.
 
+`prepare_source(..., progress=observer)` optionally reports immutable
+`VNextSourcePreparationProgress` values during local preparation. The observer
+receives the current operation and absolute completed/total gallery counts;
+`total=None` means discovery has not reached exact EOF. Operations distinguish
+inventory transfer, discovery ordering, cumulative batch selection, batch
+ordering, old inventory cleanup, and observation freezing. Selection counts all
+checked inventory entries; freezing counts only admitted galleries. Callbacks
+run outside catalog database transactions and should update in-memory counters
+promptly. Ordinary observer exceptions do not change ingest results. These
+counts are diagnostic observations, not durable restart or commit authority.
+Discovery ordering consumes fixed-size keyset pages on the same temporary
+connection before writing their positions, so its own read cursor cannot block
+rollback-journal cache spill for a large inventory.
+
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
 call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact
 release-adapter registry. If an unpublished abandoned candidate still protects

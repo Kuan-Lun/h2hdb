@@ -11,7 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
+from .domain import VNextSourcePreparationOperation
+from .ports import VNextSourcePreparationObserver
 from .vnext_source_build_repository import SourceDiscoveryPlan
+from .vnext_source_progress import report_source_progress
 
 MAX_NEW_GALLERIES = 1_000_000
 type SourceMembershipLookup = Callable[[tuple[tuple[str, ...], ...]], tuple[bool, ...]]
@@ -36,11 +39,14 @@ def prepare_source_batch(
     *,
     max_new_galleries: int,
     lookup_members: SourceMembershipLookup,
+    progress: VNextSourcePreparationObserver | None = None,
 ) -> SourceBatchPlan:
     """Read the whole inventory in bounded pages and re-seal selected locators."""
 
     limit = require_source_batch_limit(max_new_galleries)
     deferred = 0
+    operation = VNextSourcePreparationOperation.BATCH_SELECTION
+    report_source_progress(progress, operation, 0, inventory.gallery_count)
 
     def selected_locators() -> Iterator[tuple[str, ...]]:
         nonlocal deferred
@@ -68,6 +74,14 @@ def prepare_source_batch(
                 else:
                     deferred += 1
             position += len(page)
+            report_source_progress(
+                progress, operation, position, inventory.gallery_count
+            )
 
-    plan = SourceDiscoveryPlan.from_locators(selected_locators())
+    plan = SourceDiscoveryPlan.from_locators(
+        selected_locators(),
+        progress=progress,
+        transfer_operation=None,
+        order_operation=VNextSourcePreparationOperation.BATCH_ORDER,
+    )
     return SourceBatchPlan(plan, deferred)

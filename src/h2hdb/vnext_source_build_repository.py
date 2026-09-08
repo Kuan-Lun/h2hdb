@@ -43,7 +43,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from .domain import SourceBatchBaseline
+from .domain import SourceBatchBaseline, VNextSourcePreparationOperation
+from .ports import VNextSourcePreparationObserver
 from .source_errors import VNextSourceChangedError
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
 from .vnext_analysis_family import (
@@ -106,6 +107,7 @@ from .vnext_operational_event_repository import (
     OperationalEffectRepository,
     SupersededDrainPosition,
 )
+from .vnext_source_progress import report_source_progress
 from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
@@ -437,6 +439,14 @@ class SourceDiscoveryPlan:
     def from_locators(
         cls,
         locators: Iterable[tuple[str, ...]],
+        *,
+        progress: VNextSourcePreparationObserver | None = None,
+        transfer_operation: VNextSourcePreparationOperation | None = (
+            VNextSourcePreparationOperation.DISCOVERY_TRANSFER
+        ),
+        order_operation: VNextSourcePreparationOperation = (
+            VNextSourcePreparationOperation.DISCOVERY_ORDER
+        ),
     ) -> SourceDiscoveryPlan:
         untrusted_locators: object = locators
         if isinstance(untrusted_locators, (str, bytes)):
@@ -452,6 +462,8 @@ class SourceDiscoveryPlan:
                 "payload_sha256 BLOB NOT NULL, source_gallery_name BLOB NOT NULL)"
             )
             count = 0
+            if transfer_operation is not None:
+                report_source_progress(progress, transfer_operation, count)
             for components in locators:
                 if not isinstance(components, tuple):
                     raise TypeError("each source locator must be an exact tuple")
@@ -516,27 +528,42 @@ class SourceDiscoveryPlan:
                     ),
                 )
                 count += 1
+                if transfer_operation is not None:
+                    report_source_progress(progress, transfer_operation, count)
             index.commit()
+            if transfer_operation is not None:
+                report_source_progress(progress, transfer_operation, count, count)
 
-            # A second connection keeps only one fixed-width row in memory
-            # while assigning the unsigned BLOB order to durable positions.
-            reader = sqlite3.connect(directory / "index.sqlite3")
+            # Consume each bounded read cursor before writing. A second
+            # connection with an open read cursor prevents rollback-journal
+            # cache spill from obtaining its exclusive lock and can incur a
+            # busy timeout on every dirty page once the inventory is large.
             audit = sha256(_DISCOVERY_AUDIT_PREFIX)
             audit.update(count.to_bytes(8, "big"))
-            try:
-                rows = reader.execute(
-                    "SELECT locator_sha256 FROM locator_entries ORDER BY locator_sha256"
-                )
-                for position, row in enumerate(rows):
+            position = 0
+            after_digest = b""
+            report_source_progress(progress, order_operation, position, count)
+            while position < count:
+                rows = index.execute(
+                    "SELECT locator_sha256 FROM locator_entries "
+                    "WHERE locator_sha256 > ? ORDER BY locator_sha256 LIMIT ?",
+                    (after_digest, _BATCH_LIMIT),
+                ).fetchall()
+                if not rows:
+                    raise SourceDiscoveryPlanError("locator ordering ended early")
+                updates: list[tuple[int, bytes]] = []
+                for row in rows:
                     digest = require_digest32(row[0], field="locator_sha256")
                     audit.update(digest)
-                    index.execute(
-                        "UPDATE locator_entries SET position = ? "
-                        "WHERE locator_sha256 = ? AND position IS NULL",
-                        (position, digest),
-                    )
-            finally:
-                reader.close()
+                    updates.append((position, digest))
+                    position += 1
+                    after_digest = digest
+                index.executemany(
+                    "UPDATE locator_entries SET position = ? "
+                    "WHERE locator_sha256 = ? AND position IS NULL",
+                    updates,
+                )
+                report_source_progress(progress, order_operation, position, count)
             index.commit()
             tree_observation_sha256 = audit.digest()
             return cls(

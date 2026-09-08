@@ -42,11 +42,13 @@ from .domain import (
     VNextIngestSourceReceipt,
     VNextResolvedIngestPolicy,
     VNextSourceCompletionMarker,
+    VNextSourcePreparationOperation,
 )
 from .ports import (
     ArtifactReleaseAdapter,
     ArtifactStorageAdapter,
     VNextIngestSourceAdapter,
+    VNextSourcePreparationObserver,
 )
 from .repository import RepositoryContext
 from .source_errors import VNextSourceChangedError
@@ -145,6 +147,7 @@ from .vnext_source_observation_spool import (
     FrozenGalleryObservation,
     FrozenSourceObservationSpool,
 )
+from .vnext_source_progress import report_source_progress
 from .vnext_transaction import VNextUnitOfWork
 
 _ResultT = TypeVar("_ResultT")
@@ -444,6 +447,7 @@ class VNextIngestFacade:
         adapter: VNextIngestSourceAdapter,
         *,
         max_new_galleries: int | None = None,
+        progress: VNextSourcePreparationObserver | None = None,
     ) -> VNextPreparedSource:
         """Freeze a complete source cut outside database transactions.
 
@@ -454,6 +458,8 @@ class VNextIngestFacade:
         """
 
         self.__require_open()
+        if progress is not None and not callable(progress):
+            raise TypeError("progress must be a callable source preparation observer")
         if max_new_galleries is not None:
             require_source_batch_limit(max_new_galleries)
         if not isinstance(adapter, VNextIngestSourceAdapter):
@@ -463,7 +469,9 @@ class VNextIngestFacade:
             raise TypeError("adapter source_root_components must be an exact tuple")
         # SourceDiscoveryPlan validates the root-independent locator codec and
         # owns cleanup if page consumption fails midway.
-        plan = SourceDiscoveryPlan.from_locators(_iter_source_locators(adapter))
+        plan = SourceDiscoveryPlan.from_locators(
+            _iter_source_locators(adapter), progress=progress
+        )
         snapshot: FrozenSourceObservationSpool | None = None
         baseline: SourceBatchBaseline | None = None
         deferred_gallery_count = 0
@@ -501,9 +509,22 @@ class VNextIngestFacade:
                         plan,
                         max_new_galleries=max_new_galleries,
                         lookup_members=membership,
+                        progress=progress,
                     )
                     previous_plan, plan = plan, batch.plan
+                    report_source_progress(
+                        progress,
+                        VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+                        0,
+                        previous_plan.gallery_count,
+                    )
                     previous_plan.close()
+                    report_source_progress(
+                        progress,
+                        VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+                        previous_plan.gallery_count,
+                        previous_plan.gallery_count,
+                    )
                     deferred_gallery_count = batch.deferred_gallery_count
 
                 def lookup(
@@ -523,6 +544,7 @@ class VNextIngestFacade:
                     plan=plan,
                     source_root_components=root,
                     cache_lookup=lookup,
+                    progress=progress,
                 )
                 if baseline is not None:
                     with connection().read_transaction():
