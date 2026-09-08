@@ -51,6 +51,7 @@ from h2hdb import (
     CatalogRecentOrder,
     CatalogResourceKind,
     CatalogRevisionNotFoundError,
+    CatalogTagFilter,
     CoreConfig,
     DatabaseConfig,
     VNextCatalogFacade,
@@ -214,6 +215,49 @@ def test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit(
         )
     assert pipeline.library.staging == {}
     assert len(pipeline.library.release_calls) == 6
+    pipeline.ready()
+
+
+@pytest.mark.mariadb_smoke
+@pytest.mark.merge_smoke
+def test_shared_tag_value_across_namespaces_survives_publication(
+    db_config: CoreConfig,
+) -> None:
+    initialize_database(db_config)
+    value = "shared-tag-value"
+    namespaces = ("artist", "female", "group", "male")
+    source = MemorySource(
+        [
+            gallery(
+                1001,
+                artists=(value,),
+                extra_tags=tuple((namespace, value) for namespace in namespaces[1:]),
+            )
+        ]
+    )
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
+
+    receipts, _progressed = pipeline.turn()
+
+    assert receipts.source.staged_galleries == 1
+    assert receipts.source.sealed
+    assert receipts.analysis.terminal
+    assert receipts.publication.terminal
+    catalog = VNextCatalogFacade(db_config)
+    revision = catalog.get_catalog_revision()
+    assert (revision.publication_count, revision.artifact_count) == (1, 1)
+    for namespace in namespaces:
+        directory = catalog.list_tag_values(namespace=namespace, revision=revision)
+        assert [tag.value for tag in directory.values] == [value]
+        publications = catalog.list_tag_publications(
+            subject=CatalogTagFilter(namespace=namespace, value=value),
+            revision=revision,
+        )
+        assert [publication.gid for publication in publications.publications] == [1001]
+    assert sorted(library_view(pipeline.library)) == [
+        f"1001:{kind.value}"
+        for kind in (CatalogResourceKind.ACQUISITION, CatalogResourceKind.THUMBNAIL)
+    ]
     pipeline.ready()
 
 

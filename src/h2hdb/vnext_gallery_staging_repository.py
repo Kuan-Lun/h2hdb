@@ -4060,10 +4060,14 @@ def _persist_normalized_leaf_facts(
                         term.tag_id,
                     ),
                 )
+        # Namespaces distinguish tag terms, but canonical values and their
+        # upload claims are shared. Hand off each claim exactly once after
+        # every tag referencing it has acquired its durable relationships.
+        for value_sha256 in dict.fromkeys(value for _, value in natural_keys):
             deleted = connector.execute_affected(
                 "DELETE FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
-                (handle.ingest_generation, source._value_sha256),
+                (handle.ingest_generation, value_sha256),
             )
             if deleted != 1:
                 raise GalleryStagingConflictError(

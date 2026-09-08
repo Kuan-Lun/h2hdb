@@ -1147,8 +1147,10 @@ def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
         connector.close()
 
 
+@pytest.mark.parametrize("shared_value", [False, True])
 def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
     tmp_path: Path,
+    shared_value: bool,
 ) -> None:
     connector = _generated_database(tmp_path / "tag-artist-materialization.sqlite3")
     try:
@@ -1158,13 +1160,27 @@ def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
         command = TagBatchCommand(
             (
                 TagObservation("artist", "Alice"),
-                TagObservation("Artist", "Uppercase"),
-                TagObservation("group", "Circle"),
+                TagObservation("Artist", "Alice" if shared_value else "Uppercase"),
+                TagObservation("group", "Alice" if shared_value else "Circle"),
             ),
             True,
             BatchAttempt(b"t" * 16, None),
         )
         _put_tags(connector, gate, turn, handle, command, now=21)
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (3,)
+        assert connector.fetch_all(
+            "SELECT position FROM catalog_gallery_observation_tags "
+            "WHERE gallery_id = %s AND observation_id = %s ORDER BY position",
+            (handle.gallery_id, handle.observation_id),
+        ) == [(0,), (1,), (2,)]
+        assert (
+            connector.fetch_all(
+                "SELECT value_sha256 FROM operational_canonical_value_uploads "
+                "WHERE generation = %s",
+                (handle.ingest_generation,),
+            )
+            == []
+        )
         artist_tag_id = connector.fetch_one(
             "SELECT tag_id FROM catalog_gallery_observation_tags "
             "WHERE gallery_id = %s AND observation_id = %s AND position = 0",
@@ -1212,6 +1228,45 @@ def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
             ),
         ):
             _put_tags(connector, gate, turn, handle, command, now=23)
+    finally:
+        connector.close()
+
+
+def test_tag_handoff_rejects_missing_shared_value_claim_atomically(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "tag-missing-shared-claim.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = TagBatchCommand(
+            (TagObservation("artist", "Alice"), TagObservation("group", "Alice")),
+            True,
+            BatchAttempt(b"t" * 16, None),
+        )
+        baseline = _request_snapshot(connector)
+        original_execute_affected = connector.execute_affected
+
+        def missing_claim(sql: str, data: tuple[Any, ...] = ()) -> int:
+            if sql.startswith("DELETE FROM operational_canonical_value_uploads "):
+                return 0
+            return original_execute_affected(sql, data)
+
+        with (
+            patch.object(connector, "execute_affected", side_effect=missing_claim),
+            pytest.raises(GalleryStagingConflictError, match="tag canonical claim"),
+        ):
+            _put_tags(connector, gate, turn, handle, command, now=21)
+        assert _request_snapshot(connector) == baseline
+        for table in (
+            "catalog_tag_terms",
+            "catalog_gallery_observation_tags",
+            "catalog_gallery_observation_artists",
+            "operational_canonical_value_uploads",
+        ):
+            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+        assert _put_tags(connector, gate, turn, handle, command, now=22).cursor == 2
     finally:
         connector.close()
 
