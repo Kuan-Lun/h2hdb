@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-08T21:45:07+00:00",
+  "checked_at": "2026-09-08T23:34:08+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.35.5",
+  "project_version": "0.36.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, development and Node registry candidate against the prior 0.35.4 audit; all latest candidates and bounds are unchanged and the installed validation environment matches them. No dependency changes are needed. The shared tag-value handoff fix passes all 45 gallery staging tests, including missing-claim rollback and exact replay, plus public source-to-publication, namespace-scoped catalog queries and full READY audit on SQLite and real MariaDB 10.11.11. The exact-tree bounded merge release gate runs separately; this receipt does not claim the full deep matrices.",
+    "note": "Reviewed all direct build/runtime/optional/development and Node registry candidates, including outside declared upper bounds. All current registry latest candidates support Python 3.14 and remain in their tested bounds; no dependency manifest change was needed. Reviewed official Pydantic 2.13.5 validator/plugin reuse, GC traversal and union fixes; build 1.6.0 constraints-hash verification; Hypothesis 6.168.0 datetime/cache fixes; Ruff 0.16.5/0.16.6 bug fixes; packaging 26.3 requirement/marker fixes; markdownlint-cli2 0.23.2 and Node >=22 requirement. Local Python 3.14.1 and Node 26.7.0 environments already use these latest candidates. Source qualification SQLite/MariaDB regressions, schema/Lean metadata and strict checks validated compatibility; the exact-tree bounded release gate is separate evidence. References: https://github.com/pydantic/pydantic/releases/tag/v2.13.5 ; https://github.com/pypa/build/releases/tag/1.6.0 ; https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-0 ; https://github.com/astral-sh/ruff/releases/tag/0.16.6 ; https://github.com/pypa/packaging/blob/main/CHANGELOG.rst ; https://raw.githubusercontent.com/DavidAnson/markdownlint-cli2/main/CHANGELOG.md .",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
