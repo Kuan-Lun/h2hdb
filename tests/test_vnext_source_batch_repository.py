@@ -120,7 +120,9 @@ def test_source_batch_uses_published_members_including_duplicate_losers(
         replacement_source = MemorySource(
             (first, duplicate), root=("replacement", "root")
         )
-        with facade.prepare_source(replacement_source, max_new_galleries=1) as cut:
+        with facade.prepare_source(
+            replacement_source, policy=published.policy, max_new_galleries=1
+        ) as cut:
             assert cut.deferred_gallery_count == 1
 
         source.put(added)

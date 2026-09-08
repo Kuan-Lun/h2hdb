@@ -82,6 +82,10 @@ class WriterHook:
 _SPECS: tuple[tuple[str, str], ...] = (
     ("catalog.identity-codecs.v1", "catalog_writer.validate_identity_codecs"),
     (
+        "catalog.source-qualification.v1",
+        "catalog_writer.validate_source_qualification",
+    ),
+    (
         "catalog.source-completion-marker.v1",
         "catalog_writer.validate_source_completion_marker",
     ),
@@ -804,6 +808,23 @@ _BOUND_BINDINGS = (
         "catalog.identity-codecs.v1",
         _IDENTITY_WRITERS,
         _contract_relations("catalog.identity-codecs.v1"),
+    ),
+    _binding(
+        "catalog.source-qualification.v1",
+        (
+            GalleryObservationStagingRepository.put_metadata,
+            GalleryObservationStagingRepository.seal,
+            SourceMarkerRepository.reuse,
+            *_CLEANUP_WRITERS,
+        ),
+        frozenset(
+            {
+                "gallery_observation_validation_policy",
+                "gallery_observation_validation_disposition",
+                "gallery_observation_validation_reason",
+                "gallery_observation_validation_source",
+            }
+        ),
     ),
     _binding(
         "catalog.source-completion-marker.v1",

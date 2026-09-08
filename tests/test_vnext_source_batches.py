@@ -44,7 +44,9 @@ def _source_batch(
     source: MarkerSource,
     limit: int | None,
 ) -> tuple[VNextIngestSourceReceipt, int]:
-    with facade.prepare_source(source, max_new_galleries=limit) as prepared:
+    with facade.prepare_source(
+        source, policy=policy, max_new_galleries=limit
+    ) as prepared:
         deferred = prepared.deferred_gallery_count
         for _ in range(10_000):
             issued = facade.issue_source_step(session, policy, prepared)
@@ -187,7 +189,9 @@ def test_unpublished_source_cache_cannot_bypass_new_gallery_quota(
         source.forbidden_reads.update(value.locator for value in galleries)
 
         # All five observations are durable, but none has entered a published head.
-        with facade.prepare_source(source, max_new_galleries=2) as prepared:
+        with facade.prepare_source(
+            source, policy=policy, max_new_galleries=2
+        ) as prepared:
             assert prepared.deferred_gallery_count == 3
             assert source.deep_reads == []
         facade.complete_ingest(session)
@@ -200,7 +204,10 @@ def test_batch_rejects_a_preparation_from_before_another_publication(
     source = MarkerSource(tuple(gallery(gid) for gid in range(1001, 1004)))
     library = MemoryLibrary(source)
     with VNextIngestFacade(db_config, clock=Clock()) as facade:
-        with facade.prepare_source(source, max_new_galleries=2) as stale:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        facade.complete_ingest(session)
+        with facade.prepare_source(source, policy=policy, max_new_galleries=2) as stale:
             receipt, deferred = _publish_batch(db_config, source, library, limit=1)
             assert (receipt.discovered_galleries, deferred) == (1, 2)
             published = _publications(db_config)
@@ -286,7 +293,11 @@ def test_invalid_source_batch_limit_fails_before_discovery(
     source = MarkerSource((gallery(1001),))
     with VNextIngestFacade(sqlite_config) as facade:
         with pytest.raises(ValueError, match="max_new_galleries"):
-            facade.prepare_source(source, max_new_galleries=cast(int, invalid))
+            facade.prepare_source(
+                source,
+                policy=cast(VNextResolvedIngestPolicy, object()),
+                max_new_galleries=cast(int, invalid),
+            )
     assert source.page_calls == 0
     assert source.deep_reads == []
     assert not Path(sqlite_config.database.database).exists()

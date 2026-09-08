@@ -5463,6 +5463,10 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "GO_OBSERVATION_FACTS": tuple(
             direct(table, ("gallery_id", "observation_id"))
             for table in (
+                "catalog_gallery_observation_validation_sources",
+                "catalog_gallery_observation_validation_reasons",
+                "catalog_gallery_observation_validation_dispositions",
+                "catalog_gallery_observation_validation_policies",
                 "catalog_gallery_observation_metadata_locals",
                 "catalog_gallery_observation_directories",
                 "catalog_gallery_observation_stat",

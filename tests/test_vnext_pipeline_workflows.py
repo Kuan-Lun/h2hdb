@@ -1068,7 +1068,7 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     before_stale = snapshot_database(db_config)
     with (
         VNextIngestFacade(db_config, clock=Clock()) as facade,
-        facade.prepare_source(source) as prepared,
+        facade.prepare_source(source, policy=first.policy) as prepared,
     ):
         for stale in (first, second):
             with pytest.raises(FENCE_ERRORS):

@@ -471,13 +471,25 @@ def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
                 "scan_observation_version",
                 "source_file_count",
                 "page_count",
+                "qualification_policy_sha256",
+                "accepted",
+                "qualification_reason",
+                "qualification_source_name",
             }
         )
     )
     if attribute == "request_bytes":
         return attribute, nullable, "BLOB", "BLOB"
     if attribute == "fixed_carry":
-        return attribute, nullable, "BLOB", "VARBINARY(40)"
+        return attribute, nullable, "BLOB", "VARBINARY(255)"
+    if attribute == "qualification_policy_sha256":
+        return attribute, nullable, "BLOB", "BINARY(32)"
+    if attribute == "accepted":
+        return attribute, nullable, "INTEGER", "TINYINT UNSIGNED"
+    if attribute == "qualification_reason":
+        return attribute, nullable, "BLOB", "VARBINARY(64)"
+    if attribute == "qualification_source_name":
+        return attribute, nullable, "BLOB", "VARBINARY(255)"
     if attribute == "utf8_tail":
         return attribute, nullable, "BLOB", "VARBINARY(3)"
     if attribute == "component":
@@ -1671,6 +1683,10 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
             "SOURCE_FILE_COUNT",
             "PAGE_COUNT_PRESENCE",
             "PAGE_COUNT",
+            "QUAL_POLICY",
+            "QUAL_ACCEPTED",
+            "QUAL_REASON",
+            "QUAL_SOURCE",
             "DONE",
         )
         phase_expression = (
@@ -1685,8 +1701,8 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 ),
                 (
                     "ck_gallery_observation_staging_metadata_parser_carry_bounded",
-                    "length(fixed_carry) <= 40 AND length(utf8_tail) <= 3",
-                    "octet_length(fixed_carry) <= 40 AND octet_length(utf8_tail) <= 3",
+                    "length(fixed_carry) <= 255 AND length(utf8_tail) <= 3",
+                    "octet_length(fixed_carry) <= 255 AND octet_length(utf8_tail) <= 3",
                 ),
             ]
         )

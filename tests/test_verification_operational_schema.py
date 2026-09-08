@@ -196,7 +196,7 @@ def _metadata_stream(
     return b"".join(
         (
             prefix,
-            (1).to_bytes(4, "big"),
+            (2).to_bytes(4, "big"),
             (123).to_bytes(8, "big"),
             *fields,
             (1000).to_bytes(8, "big"),
@@ -206,6 +206,10 @@ def _metadata_stream(
             (99).to_bytes(8, "big"),
             bytes((presence,)),
             b"" if page_count is None else page_count.to_bytes(4, "big"),
+            bytes(32),
+            b"\x01",
+            bytes(64),
+            bytes(256),
         )
     )
 
@@ -222,7 +226,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 46
+    assert len(contract.external_relations) == 50
     assert {
         "canonical_value_allocation",
         "canonical_value_page",

@@ -97,12 +97,9 @@ from .vnext_domains import (
 )
 from .vnext_identity import (
     ANALYSIS_ALREADY_UPLOADED_MARKER,
+    GALLERY_OBSERVATION_METADATA_CODEC_VERSION,
     AnalysisTitleScalarReceipt,
-    GalleryObservationBranchEntry,
-    GalleryObservationComponent,
-    GalleryObservationMetadataChunk,
     GalleryObservationMetadataDecoder,
-    GalleryObservationNodeKind,
     SourceSnapshotContentOwner,
     SourceSnapshotCounts,
     SourceSnapshotFileHashDecision,
@@ -110,9 +107,7 @@ from .vnext_identity import (
     SourceSnapshotGidWinner,
     SourceSnapshotPolicy,
     count_analysis_title_scalars,
-    decode_gallery_observation_page,
     effective_content_digest_ordered,
-    gallery_observation_page_digest,
     iter_effective_content_payload_ordered,
     iter_source_snapshot_manifest_payload_rows_ordered,
     source_snapshot_manifest_digest_ordered,
@@ -137,8 +132,25 @@ from .vnext_source_build_repository import (
     source_build_recovery_identity,
     source_build_snapshot_attempt_id,
 )
+from .vnext_source_metadata import SourceMetadataConflictError, iter_metadata_chunks
+from .vnext_source_qualification_repository import (
+    SourceQualificationConflictError,
+    require_source_qualification,
+)
 from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
+
+# Every analysis relation uses the same accepted observation membership. The
+# complete source inventory remains authoritative for discovery and snapshot
+# accounting; a rejected observation is absent only from analysis input.
+_ACCEPTED_SOURCE_MEMBERS = (
+    "(SELECT source.build_id, source.gallery_id, source.observation_id "
+    "FROM catalog_source_build_galleries AS source "
+    "JOIN catalog_gallery_observation_validation_dispositions AS qualification "
+    "ON qualification.gallery_id = source.gallery_id "
+    "AND qualification.observation_id = source.observation_id "
+    "WHERE qualification.accepted = 1)"
+)
 
 _STAGE_CHANGED_GALLERY = b"changed_gallery"
 _STAGE_CHANGED_FILE_HASH = b"changed_file_hash"
@@ -3455,7 +3467,7 @@ def _prepare_gallery(
 ) -> AnalysisGalleryPreparation:
     row = work.connector.fetch_one(
         "SELECT member.observation_id, metadata.gid, metadata.download_time "
-        "FROM catalog_source_build_galleries AS member "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_metadata AS metadata "
         "ON metadata.gallery_id = member.gallery_id "
         "AND metadata.observation_id = member.observation_id "
@@ -3774,12 +3786,23 @@ def _metadata_comparator_facts(
     for chunk in _iter_metadata_chunks(work, gallery_id, observation_id):
         decoder.feed(chunk)
     receipt = decoder.finish()
+    try:
+        require_source_qualification(
+            work.connector, gallery_id, observation_id, receipt
+        )
+    except SourceQualificationConflictError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if not receipt.qualification.accepted:
+        raise AnalysisNotReadyError("rejected source cannot be prepared for analysis")
 
     reader = _PartReader(_iter_metadata_chunks(work, gallery_id, observation_id))
     if reader.read_exact(len(_METADATA_PREFIX)) != _METADATA_PREFIX:
         raise AnalysisCorruptionError("metadata stream prefix changed after seal")
-    if int.from_bytes(reader.read_exact(4), "big") != 1:
-        raise AnalysisCorruptionError("metadata stream codec version is not v1")
+    if (
+        int.from_bytes(reader.read_exact(4), "big")
+        != GALLERY_OBSERVATION_METADATA_CODEC_VERSION
+    ):
+        raise AnalysisCorruptionError("metadata stream codec version is unsupported")
     gid = require_positive_int63(
         int.from_bytes(reader.read_exact(8), "big"),
         field="streamed metadata gid",
@@ -3812,99 +3835,10 @@ def _iter_metadata_chunks(
     gallery_id: int,
     observation_id: int,
 ) -> Iterator[bytes]:
-    roots = work.connector.fetch_all(
-        "SELECT root.root_page_sha256 "
-        "FROM catalog_gallery_observation_tree_roots AS root "
-        "JOIN catalog_gallery_observation_page_descriptor_seals AS seal "
-        "ON seal.page_sha256 = root.root_page_sha256 "
-        "JOIN catalog_gallery_observation_page_descriptor_components AS descriptor "
-        "ON descriptor.page_sha256 = seal.page_sha256 "
-        "WHERE root.gallery_id = %s AND root.observation_id = %s "
-        "AND descriptor.component = %s LIMIT 2",
-        (gallery_id, observation_id, b"METADATA"),
-    )
-    if len(roots) != 1:
-        raise AnalysisCorruptionError("sealed observation lacks one METADATA root")
-    root = require_digest32(roots[0][0], field="metadata root_page_sha256")
-    expected_offset = 0
-
-    def visit(page_sha256: bytes, expected_level: int | None) -> Iterator[bytes]:
-        nonlocal expected_offset
-        row = work.connector.fetch_one(
-            "SELECT page.page_bytes, descriptor.component, level.level, "
-            "count.subtree_item_count "
-            "FROM catalog_gallery_observation_page_descriptor_seals AS seal "
-            "JOIN catalog_gallery_observation_pages AS page "
-            "ON page.page_sha256 = seal.page_sha256 "
-            "JOIN catalog_gallery_observation_page_descriptor_components "
-            "AS descriptor ON descriptor.page_sha256 = seal.page_sha256 "
-            "JOIN catalog_gallery_observation_page_descriptor_levels AS level "
-            "ON level.page_sha256 = seal.page_sha256 "
-            "JOIN catalog_gallery_observation_page_descriptor_subtree_item_counts "
-            "AS count ON count.page_sha256 = seal.page_sha256 "
-            "WHERE seal.page_sha256 = %s",
-            (page_sha256,),
-        )
-        if len(row) != 4:
-            raise AnalysisCorruptionError("metadata page or descriptor is missing")
-        page_bytes = require_bounded_bytes(
-            row[0],
-            field="metadata page_bytes",
-            minimum=1,
-            maximum=64 * 1024,
-        )
-        if gallery_observation_page_digest(page_bytes) != page_sha256:
-            raise AnalysisCorruptionError("metadata page digest differs from bytes")
-        page = decode_gallery_observation_page(page_bytes)
-        level = require_int63(row[2], field="metadata page level")
-        count = require_int63(row[3], field="metadata page subtree count")
-        if (
-            row[1] != b"METADATA"
-            or page.component is not GalleryObservationComponent.METADATA
-            or page.level != level
-            or page.subtree_item_count != count
-            or (expected_level is not None and level != expected_level)
-        ):
-            raise AnalysisCorruptionError("metadata page descriptor differs from bytes")
-        if page.node_kind is GalleryObservationNodeKind.LEAF:
-            for entry in page.entries:
-                if not isinstance(entry, GalleryObservationMetadataChunk):
-                    raise AnalysisCorruptionError(
-                        "metadata leaf has a non-chunk record"
-                    )
-                if entry.byte_offset != expected_offset:
-                    raise AnalysisCorruptionError(
-                        "metadata leaf offsets are not exactly contiguous"
-                    )
-                expected_offset = _sum_int63(
-                    expected_offset,
-                    len(entry.chunk_bytes),
-                    field="metadata stream byte offset",
-                )
-                yield entry.chunk_bytes
-            return
-        normalized = work.connector.fetch_all(
-            "SELECT position, child_sha256 "
-            "FROM catalog_gallery_observation_page_children "
-            "WHERE parent_sha256 = %s ORDER BY position LIMIT 257",
-            (page_sha256,),
-        )
-        encoded = []
-        for position, entry in enumerate(page.entries):
-            if not isinstance(entry, GalleryObservationBranchEntry):
-                raise AnalysisCorruptionError("metadata branch has a leaf record")
-            encoded.append((position, entry.child_sha256))
-        if normalized != encoded:
-            raise AnalysisCorruptionError(
-                "normalized metadata child edges differ from exact page bytes"
-            )
-        for _position, child in normalized:
-            yield from visit(
-                require_digest32(child, field="metadata child_sha256"),
-                level - 1,
-            )
-
-    yield from visit(root, None)
+    try:
+        yield from iter_metadata_chunks(work.connector, gallery_id, observation_id)
+    except SourceMetadataConflictError as error:
+        raise AnalysisCorruptionError(str(error)) from error
 
 
 def _gallery_has_already_uploaded_marker(
@@ -4179,8 +4113,11 @@ def _iter_snapshot_galleries(
         rows = work.connector.fetch_all(
             "SELECT identity.gallery_key, observation.observation_identity_sha256, "
             "member.gallery_id, member.observation_id, metadata.gid, "
-            "scan_count.source_file_count "
+            "scan_count.source_file_count, qualification.accepted "
             "FROM catalog_source_build_galleries AS member "
+            "LEFT JOIN catalog_gallery_observation_validation_dispositions AS qualification "
+            "ON qualification.gallery_id = member.gallery_id "
+            "AND qualification.observation_id = member.observation_id "
             "JOIN catalog_gallery_identities AS identity "
             "ON identity.gallery_id = member.gallery_id "
             "JOIN catalog_gallery_observations AS observation "
@@ -4215,6 +4152,7 @@ def _iter_snapshot_galleries(
                 row[5],
                 field="snapshot source_file_count",
             )
+            accepted = require_bool_byte(row[6], field="snapshot source accepted")
             file_count, byte_count = _gallery_file_counts(
                 work,
                 gallery_id,
@@ -4229,6 +4167,10 @@ def _iter_snapshot_galleries(
                 authority.analysis_id,
                 gallery_id,
             )
+            if not accepted and candidate is not None:
+                raise AnalysisCorruptionError(
+                    "rejected source retained an effective content candidate"
+                )
             yield SourceSnapshotGallery(
                 gallery_key,
                 observation,
@@ -4368,7 +4310,7 @@ def _iter_snapshot_owners(
             )
             member = work.connector.fetch_one(
                 "SELECT candidate.content_sha256 "
-                "FROM catalog_source_build_galleries AS source "
+                "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS source "
                 "JOIN catalog_analysis_content_owner_candidate_resolved AS candidate "
                 "ON candidate.analysis_id = %s "
                 "AND candidate.gallery_id = source.gallery_id "
@@ -4397,7 +4339,7 @@ def _iter_snapshot_winners(
             "JOIN catalog_analysis_gid_candidate_resolved AS candidate "
             "ON candidate.analysis_id = winner.analysis_id "
             "AND candidate.gallery_id = winner.winner_gallery_id "
-            "JOIN catalog_source_build_galleries AS member "
+            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "ON member.build_id = %s "
             "AND member.gallery_id = winner.winner_gallery_id "
             "JOIN catalog_gallery_observation_metadata AS metadata "
@@ -6643,7 +6585,7 @@ def _current_memberships_for_page(
         "WITH proposed(gallery_id) AS ("
         + proposed
         + ") SELECT proposed.gallery_id, member.observation_id "
-        "FROM proposed LEFT JOIN catalog_source_build_galleries AS member "
+        "FROM proposed LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "ON member.build_id = %s AND member.gallery_id = proposed.gallery_id "
         "ORDER BY proposed.gallery_id LIMIT 129",
         (*parameters, authority.build_id),
@@ -7067,10 +7009,10 @@ def _load_content_impact_page(
         "baseline_metadata.download_time, candidate.content_sha256, "
         "candidate.prefer_not_already_uploaded, candidate.title_scalar_count, "
         "candidate.download_time "
-        "FROM proposed LEFT JOIN catalog_source_build_galleries AS current_member "
+        "FROM proposed LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS current_member "
         "ON current_member.build_id = %s "
         "AND current_member.gallery_id = proposed.gallery_id "
-        "LEFT JOIN catalog_source_build_galleries AS baseline_member "
+        "LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS baseline_member "
         "ON baseline_member.build_id = %s "
         "AND baseline_member.gallery_id = proposed.gallery_id "
         "LEFT JOIN catalog_gallery_observation_metadata AS baseline_metadata "
@@ -7148,7 +7090,7 @@ def _load_gid_impact_page(
         + ") SELECT proposed.gallery_id, baseline_member.observation_id, "
         "baseline_metadata.gid, candidate.gallery_id, owner.content_sha256, "
         "current_member.observation_id, current_metadata.gid FROM proposed "
-        "LEFT JOIN catalog_source_build_galleries AS baseline_member "
+        "LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS baseline_member "
         "ON baseline_member.build_id = %s "
         "AND baseline_member.gallery_id = proposed.gallery_id "
         "LEFT JOIN catalog_gallery_observation_metadata AS baseline_metadata "
@@ -7160,7 +7102,7 @@ def _load_gid_impact_page(
         "LEFT JOIN catalog_analysis_content_owner_resolved AS owner "
         "ON owner.analysis_id = %s "
         "AND owner.owner_gallery_id = proposed.gallery_id "
-        "LEFT JOIN catalog_source_build_galleries AS current_member "
+        "LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS current_member "
         "ON current_member.build_id = %s "
         "AND current_member.gallery_id = proposed.gallery_id "
         "LEFT JOIN catalog_gallery_observation_metadata AS current_metadata "
@@ -7350,7 +7292,9 @@ def _content_candidate_validation_keys(
     limit: int,
 ) -> list[tuple[Any, ...]]:
     subqueries = [
-        "SELECT gallery_id FROM catalog_source_build_galleries WHERE build_id = %s",
+        "SELECT gallery_id FROM "
+        + _ACCEPTED_SOURCE_MEMBERS
+        + " AS qualified_source WHERE build_id = %s",
         "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_shadows "
         "WHERE analysis_id = %s",
         "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_tombstones "
@@ -7395,7 +7339,7 @@ def _evaluate_content_owner(
             "candidate.title_scalar_count, candidate.download_time, "
             "metadata.gid, identity.scope_key, identity.locator_sha256 "
             "FROM catalog_analysis_content_owner_candidate_resolved AS candidate "
-            "JOIN catalog_source_build_galleries AS member "
+            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "ON member.build_id = %s AND member.gallery_id = candidate.gallery_id "
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
@@ -7592,7 +7536,7 @@ def _eligible_gallery_gid(
         raise AnalysisCorruptionError("gallery owns multiple resolved content groups")
     require_digest32(owner[0], field="owned content_sha256")
     row = work.connector.fetch_one(
-        "SELECT metadata.gid FROM catalog_source_build_galleries AS member "
+        "SELECT metadata.gid FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_metadata AS metadata "
         "ON metadata.gallery_id = member.gallery_id "
         "AND metadata.observation_id = member.observation_id "
@@ -7754,7 +7698,7 @@ def _evaluate_gid_winner(
             "JOIN catalog_analysis_content_owner_candidate_resolved AS content "
             "ON content.analysis_id = candidate.analysis_id "
             "AND content.gallery_id = candidate.gallery_id "
-            "JOIN catalog_source_build_galleries AS member "
+            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "ON member.build_id = %s AND member.gallery_id = candidate.gallery_id "
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
@@ -7955,7 +7899,9 @@ def _changed_gallery_rows(
     )
     if authority.baseline_analysis_id is None:
         return work.connector.fetch_all(
-            "SELECT gallery_id, 'ADDED' FROM catalog_source_build_galleries "
+            "SELECT gallery_id, 'ADDED' FROM "
+            + _ACCEPTED_SOURCE_MEMBERS
+            + " AS qualified_source "
             "WHERE build_id = %s AND gallery_id > %s "
             "ORDER BY gallery_id LIMIT %s",
             (authority.build_id, boundary, limit),
@@ -7965,15 +7911,15 @@ def _changed_gallery_rows(
         "SELECT delta.gallery_id, delta.change_kind FROM ("
         "SELECT target.gallery_id AS gallery_id, "
         "CASE WHEN base.gallery_id IS NULL THEN 'ADDED' ELSE 'REPLACED' END "
-        "AS change_kind FROM catalog_source_build_galleries AS target "
-        "LEFT JOIN catalog_source_build_galleries AS base "
+        "AS change_kind FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS target "
+        "LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS base "
         "ON base.build_id = %s AND base.gallery_id = target.gallery_id "
         "WHERE target.build_id = %s AND "
         "(base.gallery_id IS NULL OR base.observation_id <> target.observation_id) "
         "UNION ALL "
         "SELECT base.gallery_id AS gallery_id, 'REMOVED' AS change_kind "
-        "FROM catalog_source_build_galleries AS base "
-        "LEFT JOIN catalog_source_build_galleries AS target "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS base "
+        "LEFT JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS target "
         "ON target.build_id = %s AND target.gallery_id = base.gallery_id "
         "WHERE base.build_id = %s AND target.gallery_id IS NULL"
         ") AS delta WHERE delta.gallery_id > %s "
@@ -8004,7 +7950,7 @@ def _changed_file_hash_rows(
     subqueries = [
         "SELECT occurrence.file_sha256 AS file_sha256 "
         "FROM catalog_analysis_changed_galleries AS changed "
-        "JOIN catalog_source_build_galleries AS member "
+        "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "ON member.build_id = %s AND member.gallery_id = changed.gallery_id "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
@@ -8016,7 +7962,7 @@ def _changed_file_hash_rows(
         subqueries.append(
             "SELECT occurrence.file_sha256 AS file_sha256 "
             "FROM catalog_analysis_changed_galleries AS changed "
-            "JOIN catalog_source_build_galleries AS member "
+            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "ON member.build_id = %s AND member.gallery_id = changed.gallery_id "
             "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
             "ON occurrence.gallery_id = member.gallery_id "
@@ -8053,7 +7999,9 @@ def _impacted_gallery_rows(
         # a policy change or a depth-16 parent) materializes every key of its
         # build; the validators expect a shadow for each of them.
         return work.connector.fetch_all(
-            "SELECT gallery_id FROM catalog_source_build_galleries "
+            "SELECT gallery_id FROM "
+            + _ACCEPTED_SOURCE_MEMBERS
+            + " AS qualified_source "
             "WHERE build_id = %s AND gallery_id > %s "
             "ORDER BY gallery_id LIMIT %s",
             (authority.build_id, boundary, limit),
@@ -8072,7 +8020,7 @@ def _impacted_gallery_rows(
             "FROM catalog_analysis_exclusion_delta_changes AS delta "
             "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
             "ON occurrence.file_sha256 = delta.file_sha256 "
-            "JOIN catalog_source_build_galleries AS member "
+            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "ON member.gallery_id = occurrence.gallery_id "
             "AND member.observation_id = occurrence.observation_id "
             "WHERE delta.analysis_id = %s AND member.build_id = %s"
@@ -8087,7 +8035,7 @@ def _impacted_gallery_rows(
             subqueries.append(
                 "SELECT member.gallery_id AS gallery_id "
                 "FROM catalog_analysis_changed_galleries AS changed "
-                "JOIN catalog_source_build_galleries AS changed_member "
+                "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS changed_member "
                 "ON changed_member.gallery_id = changed.gallery_id "
                 "AND changed_member.build_id = %s "
                 "JOIN catalog_gallery_observation_file_hash_occurrences AS shared "
@@ -8095,7 +8043,7 @@ def _impacted_gallery_rows(
                 "AND shared.observation_id = changed_member.observation_id "
                 "JOIN catalog_gallery_observation_file_hash_occurrences AS other "
                 "ON other.file_sha256 = shared.file_sha256 "
-                "JOIN catalog_source_build_galleries AS member "
+                "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
                 "ON member.gallery_id = other.gallery_id "
                 "AND member.observation_id = other.observation_id "
                 "WHERE changed.analysis_id = %s AND member.build_id = %s"
@@ -8128,7 +8076,7 @@ def _decision_work_rows(
     if authority.overlay_depth == 0:
         subqueries.append(
             "SELECT occurrence.file_sha256 AS file_sha256 "
-            "FROM catalog_source_build_galleries AS member "
+            "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
             "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
             "ON occurrence.gallery_id = member.gallery_id "
             "AND occurrence.observation_id = member.observation_id "
@@ -8209,7 +8157,7 @@ def _evaluate_file_decision(
     digest = require_digest32(file_sha256, field="file_sha256")
     occurrence_row = work.connector.fetch_one(
         "SELECT CAST(SUM(occurrence.occurrence_count) AS UNSIGNED) "
-        "FROM catalog_source_build_galleries AS member "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "
@@ -8223,7 +8171,7 @@ def _evaluate_file_decision(
     )
     artist_row = work.connector.fetch_one(
         "SELECT COUNT(DISTINCT artist.artist_tag_id) "
-        "FROM catalog_source_build_galleries AS member "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "
@@ -8237,7 +8185,7 @@ def _evaluate_file_decision(
     maximum_row = work.connector.fetch_one(
         "SELECT MAX(per_gallery.artist_count) FROM ("
         "SELECT member.gallery_id, COUNT(artist.artist_tag_id) AS artist_count "
-        "FROM catalog_source_build_galleries AS member "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "
@@ -8346,7 +8294,7 @@ def _validation_key_rows(
     )
     subqueries = [
         "SELECT occurrence.file_sha256 AS file_sha256 "
-        "FROM catalog_source_build_galleries AS member "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "

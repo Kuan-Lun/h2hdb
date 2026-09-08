@@ -468,7 +468,7 @@ phases = [
   { phase = "GO_FILESYSTEM_VALUES", order = 10, relations = ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"] },
   { phase = "GO_FILESYSTEM_ANCHOR", order = 11, relations = ["gallery_observation_file_filesystem_anchor"] },
   { phase = "GO_FILES", order = 12, relations = ["gallery_observation_file_seal", "gallery_observation_file_file_sha256", "gallery_observation_file_file_no", "gallery_observation_file_artifact_role", "gallery_observation_file_anchor"] },
-  { phase = "GO_OBSERVATION_FACTS", order = 13, relations = ["gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"] },
+  { phase = "GO_OBSERVATION_FACTS", order = 13, relations = ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"] },
   { phase = "GO_DESCRIPTOR", order = 14, relations = ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"] },
   { phase = "GO_ROOT", order = 15, relations = ["gallery_observation_allocation"] },
 ]
@@ -830,7 +830,7 @@ directory_rule = "DIRECTORY leaf entries are sorted by exact opaque POSIX dirent
 seal_rule = "under the exact current ingest head, matching outer owner row with unexpired lease_expires_at and claim fence, inspect only bounded checkpoints, latest request receipts, parser state, frontier and root descriptors; require four COMPLETE streams with exact counts and roots, metadata DONE and scalar congruence, FILE processed_byte_count backed by its empty terminal receipt, non-FILE processed_byte_count zero, and FILE-to-DIRECTORY verification COMPLETE. Insert or exact-compare the scan anchor and its digest, version, and source-file-count members, then insert the PK-only scan seal last. Collision-check the canonical observation descriptor, then atomically insert gallery_observation, its stat anchor and exact terminal FILE-count and byte-count members, the PK-only stat seal last, and source_build_gallery last and CAS the staging state to SEALED while capturing that verified byte count as immutable terminal_byte_count, or require the byte-equal sealed observation-stat view before linking it and CAS to REUSED with the same capture; a REUSED fresh allocation remains eligible for bounded child-first cleanup after that other durable link"
 visibility_rule = "readers join only final source_build_gallery and gallery_observation rows; no OPEN ABANDONED or partially allocated staging row is visible as a source-build gallery"
 canonical_upload_rule = "canonical_value_upload has sole key generation plus value_sha256. The source_root_v1 bootstrap domain may allocate and claim under the exact current ingest head, complete live owner row, and shared maintenance slot before a source_build_generation mapping exists; every non-bootstrap allocation and claim requires the mapping first. Every page and identity seal locks and rechecks head, owner_token, lease_expires_at, claim, and shared maintenance authority while CANONICAL_VALUE cleanup holds exclusive ownership for its whole cycle; takeover resumes only after exact domain, byte_count and deterministic page conflict comparison. Identity seal byte-validates but retains the claim. The first retention-blocking external consumer and deletion of only the callers claim commit atomically under the same fence; a phase-owned dictionary or type row alone never releases the claim. For source_root_v1 that handoff transaction inserts source_scope, source_build, and source_build_generation before deleting the claim. A crash before consumer handoff leaves the claim durable, and residual claims are independently deleted only for completed or strictly superseded generations"
-durable_parser_phases = ["PREFIX", "VERSION", "GID", "TITLE_TAG", "TITLE_LENGTH", "TITLE", "COMMENT_TAG", "COMMENT_LENGTH", "COMMENT", "UPLOAD_ACCOUNT_TAG", "UPLOAD_ACCOUNT_LENGTH", "UPLOAD_ACCOUNT", "UPLOAD_TIME", "DOWNLOAD_TIME", "MODIFIED_TIME", "SCAN_VERSION", "SOURCE_FILE_COUNT", "PAGE_COUNT_PRESENCE", "PAGE_COUNT", "DONE"]
+durable_parser_phases = ["PREFIX", "VERSION", "GID", "TITLE_TAG", "TITLE_LENGTH", "TITLE", "COMMENT_TAG", "COMMENT_LENGTH", "COMMENT", "UPLOAD_ACCOUNT_TAG", "UPLOAD_ACCOUNT_LENGTH", "UPLOAD_ACCOUNT", "UPLOAD_TIME", "DOWNLOAD_TIME", "MODIFIED_TIME", "SCAN_VERSION", "SOURCE_FILE_COUNT", "PAGE_COUNT_PRESENCE", "PAGE_COUNT", "QUAL_POLICY", "QUAL_ACCEPTED", "QUAL_REASON", "QUAL_SOURCE", "DONE"]
 runtime_parser_phase_rule = "only the in-process decoder aliases TITLE_TEXT, COMMENT_TEXT, ACCOUNT_TAG, ACCOUNT_LENGTH, and ACCOUNT_TEXT map respectively to the persisted TITLE, COMMENT, UPLOAD_ACCOUNT_TAG, UPLOAD_ACCOUNT_LENGTH, and UPLOAD_ACCOUNT states; database rows and public validators accept only the exact ordered durable_parser_phases registry, with ASCII case-sensitive equality and no LENGTH, runtime alias, unknown value, trimming, or normalization"
 directory_audit_framing = "SHA256(ascii('h2hdb-vnext-directory-observation-audit-v1\\0') || raw32(DIRECTORY root_page_sha256) || u64be(item_count_int63))"
 metadata_audit_framing = "SHA256(ascii('h2hdb-vnext-metadata-observation-audit-v1\\0') || raw32(METADATA root_page_sha256) || u64be(byte_count_int63))"
@@ -3117,6 +3117,26 @@ attributes = ["gallery_id", "observation_id", "scan_observation_sha256", "scan_o
 declared_keys = [["gallery_id", "observation_id"]]
 
 [[external_relation]]
+name = "gallery_observation_validation_policy"
+attributes = ["gallery_id", "observation_id", "qualification_policy_sha256"]
+declared_keys = [["gallery_id", "observation_id"]]
+
+[[external_relation]]
+name = "gallery_observation_validation_disposition"
+attributes = ["gallery_id", "observation_id", "accepted"]
+declared_keys = [["gallery_id", "observation_id"]]
+
+[[external_relation]]
+name = "gallery_observation_validation_reason"
+attributes = ["gallery_id", "observation_id", "qualification_reason"]
+declared_keys = [["gallery_id", "observation_id"]]
+
+[[external_relation]]
+name = "gallery_observation_validation_source"
+attributes = ["gallery_id", "observation_id", "qualification_source_name"]
+declared_keys = [["gallery_id", "observation_id"]]
+
+[[external_relation]]
 name = "gallery_observation_page_count"
 attributes = ["gallery_id", "observation_id", "page_count"]
 declared_keys = [["gallery_id", "observation_id"]]
@@ -3145,6 +3165,11 @@ declared_keys = [["build_id", "position"], ["build_id", "gallery_id"]]
 name = "gallery_observation_stat"
 attributes = ["gallery_id", "observation_id", "file_count", "byte_count"]
 declared_keys = [["gallery_id", "observation_id"]]
+
+[[attribute_semantic]]
+name = "qualification_policy_sha256"
+classification = "comparator_digest"
+rationale = "Core-derived SHA-256 of the exact registered artifact policy digest and artifacts-required mode under the source-qualification-v1 domain; a cache comparison discriminator embedded in canonical METADATA, not an identity or a substitute for the observation seal."
 
 [[attribute_semantic]]
 name = "batch_key"
@@ -4018,10 +4043,10 @@ rationale = "One latest exact response-loss receipt for bounded FILE traversal a
 [[relation]]
 name = "gallery_observation_staging_metadata_parser"
 kind = "source_of_truth"
-attributes = ["staging_id", "phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "updated_at"]
+attributes = ["staging_id", "phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "qualification_policy_sha256", "accepted", "qualification_reason", "qualification_source_name", "updated_at"]
 declared_keys = [["staging_id"]]
 fds = [
-  { determinant = ["staging_id"], dependent = ["phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "updated_at"] },
+  { determinant = ["staging_id"], dependent = ["phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "qualification_policy_sha256", "accepted", "qualification_reason", "qualification_source_name", "updated_at"] },
 ]
 foreign_keys = [
   { attributes = ["staging_id"], relation = "gallery_observation_staging", referenced_attributes = ["staging_id"] },

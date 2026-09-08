@@ -12,7 +12,7 @@ __all__ = ["FrozenGalleryObservation", "FrozenSourceObservationSpool"]
 
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -160,6 +160,7 @@ class FrozenSourceObservationSpool:
         *,
         plan: SourceDiscoveryPlan,
         source_root_components: tuple[str, ...],
+        qualification_policy_sha256: bytes = bytes(32),
         cache_lookup: SourceCacheLookup | None = None,
         progress: VNextSourcePreparationObserver | None = None,
     ) -> FrozenSourceObservationSpool:
@@ -186,7 +187,7 @@ class FrozenSourceObservationSpool:
         try:
             spool._create_schema()
             spool.manifest_summary = spool._freeze_adapter(
-                adapter, plan, cache_lookup, progress
+                adapter, plan, cache_lookup, progress, qualification_policy_sha256
             )
             index.commit()
             return spool
@@ -410,6 +411,7 @@ class FrozenSourceObservationSpool:
         plan: SourceDiscoveryPlan,
         cache_lookup: SourceCacheLookup | None,
         progress: VNextSourcePreparationObserver | None,
+        qualification_policy_sha256: bytes,
     ) -> SourceBuildManifestSummary:
         scope = source_scope_key(
             "filesystem",
@@ -471,6 +473,7 @@ class FrozenSourceObservationSpool:
                     locator_components=components,
                     marker=markers[components],
                     cached=cached_by_locator.get(components),
+                    qualification_policy_sha256=qualification_policy_sha256,
                 )
                 observation_identity = gallery_observation_descriptor_digest(descriptor)
                 locator_payload = encode_source_relative_locator(components)
@@ -555,6 +558,7 @@ class FrozenSourceObservationSpool:
         locator_components: tuple[str, ...],
         marker: VNextSourceCompletionMarker | None,
         cached: CachedSourceObservation | None,
+        qualification_policy_sha256: bytes,
     ) -> tuple[GalleryObservationDescriptor, int, int]:
         if cached is not None:
             if cached.marker != marker:
@@ -584,6 +588,7 @@ class FrozenSourceObservationSpool:
                 position=position,
                 locator_sha256=locator_sha256,
                 observation=observation,
+                qualification_policy_sha256=qualification_policy_sha256,
             )
             descriptor = GalleryObservationDescriptor(
                 roots[GalleryObservationComponent.METADATA].root_page_sha256,
@@ -711,6 +716,7 @@ class FrozenSourceObservationSpool:
         position: int,
         locator_sha256: bytes,
         observation: VNextIngestGalleryObservation,
+        qualification_policy_sha256: bytes,
     ) -> dict[GalleryObservationComponent, GalleryObservationComponentRoot]:
         roots: dict[GalleryObservationComponent, GalleryObservationComponentRoot] = {}
         roots[GalleryObservationComponent.FILE] = self._freeze_named_component(
@@ -733,10 +739,15 @@ class FrozenSourceObservationSpool:
             locator_sha256=locator_sha256,
             observation=observation,
         )
+        qualified_metadata = replace(
+            observation.metadata,
+            qualification_policy_sha256=qualification_policy_sha256,
+            qualification=observation.qualification,
+        )
         roots[GalleryObservationComponent.METADATA] = self._freeze_metadata_component(
             position=position,
             locator_sha256=locator_sha256,
-            observation=observation,
+            observation=replace(observation, metadata=qualified_metadata),
         )
         return roots
 

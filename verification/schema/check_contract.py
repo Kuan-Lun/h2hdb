@@ -379,6 +379,7 @@ class GalleryObservationIdentityContract:
     framing: str
     write_obligation: str
     reuse_obligation: str
+    qualification_obligation: str
 
 
 @dataclass(frozen=True)
@@ -1807,17 +1808,21 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 174,
+        "catalog_physical_table_count_after": 178,
         "catalog_relations_added_after_recomposition": (
             "title_search_posting",
             "gallery_observation_completion_marker",
             "tag_publication_order",
             "tag_directory_order",
+            "gallery_observation_validation_policy",
+            "gallery_observation_validation_disposition",
+            "gallery_observation_validation_reason",
+            "gallery_observation_validation_source",
         ),
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 67,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 241,
+        "total_physical_table_count_after": 245,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -3437,6 +3442,7 @@ def validate_cross_manifest_contracts(
 _DATA_MACHINE_OBLIGATION_IDS = frozenset(
     {
         "catalog.identity-codecs.v1",
+        "catalog.source-qualification.v1",
         "catalog.source-completion-marker.v1",
         "catalog.canonical-reference-domains.v1",
         "catalog.source-baseline-channel.v1",
@@ -4090,6 +4096,7 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "file_identity_contract.read_obligation",
         "gallery_observation_identity_contract.write_obligation",
         "gallery_observation_identity_contract.reuse_obligation",
+        "gallery_observation_identity_contract.qualification_obligation",
         "gallery_observation_page_contract.collision_obligation",
         "gallery_observation_page_contract.materialization_rule",
         "gallery_observation_page_contract.seal_obligation",
@@ -5825,6 +5832,19 @@ def _validate_gallery_observation_identity_contract(
         )
     ):
         errors.append(f"{prefix} collision/revalidation obligations are incomplete")
+    if not all(
+        term in contract.qualification_obligation
+        for term in (
+            "METADATA codec v2",
+            "registered artifact policy digest",
+            "artifacts-required byte",
+            "Marker reuse requires this exact policy",
+            "Retain every source membership",
+            "restricting analysis to accepted observations",
+            "READY independently decodes canonical metadata",
+        )
+    ):
+        errors.append(f"{prefix} qualification obligations are incomplete")
     relation = relations.get(contract.relation)
     if relation is None:
         errors.append(f"{prefix} references an unknown relation")
@@ -12514,6 +12534,7 @@ def _parse_gallery_observation_identity_contract(
         framing=_string(value, "framing", context),
         write_obligation=_string(value, "write_obligation", context),
         reuse_obligation=_string(value, "reuse_obligation", context),
+        qualification_obligation=_string(value, "qualification_obligation", context),
     )
 
 

@@ -874,7 +874,7 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
         assert tuple(provider.writer_hook_bindings) == (
             expected_recurring_obligation_ids
         )
-        assert len(provider.writer_hook_bindings) == 31
+        assert len(provider.writer_hook_bindings) == 32
         assert not provider.blockers
         assert not any("validators are missing" in value for value in provider.blockers)
         assert not any("undeclared IDs" in value for value in provider.blockers)
@@ -931,8 +931,8 @@ def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> Non
         obligation for obligation in recurring if obligation["id"] not in installed_ids
     )
 
-    assert len(recurring) == 31
-    assert len(installed_ids) == 31
+    assert len(recurring) == 32
+    assert len(installed_ids) == 32
     assert len(writer_blockers) == len(unresolved) == 0
     assert installed_ids == frozenset(value["id"] for value in recurring)
     assert installed_ids.isdisjoint(building_only_ids)
@@ -1130,7 +1130,7 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
 def test_generated_manifests_are_backend_specific_and_well_formed() -> None:
     assert ARTIFACT_DATA["artifact_version"] == 1
     assert ARTIFACT_DATA["epoch"] == 3
-    assert ARTIFACT_DATA["schema_version"] == 5
+    assert ARTIFACT_DATA["schema_version"] == 6
     assert len(ARTIFACT_DATA["source_manifest_sha256"]) == 64
     sqlite_manifest = ARTIFACT_DATA["backends"]["sqlite"]["ddl_manifest_sha256"]
     mariadb_manifest = ARTIFACT_DATA["backends"]["mariadb"]["ddl_manifest_sha256"]

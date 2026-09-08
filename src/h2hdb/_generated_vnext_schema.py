@@ -10,8 +10,8 @@ from ._schema_artifact_codec import _load_pinned_schema_artifact_resource
 
 _RESOURCE_NAME = "_generated_vnext_schema.bin"
 _PICKLE_PROTOCOL = 5
-_RAW_SIZE = 4227612
-_RAW_SHA256 = "06b05cb50abcb372726fc1a7683f98f6394d55aad776e40247929649f2d98681"
+_RAW_SIZE = 4243447
+_RAW_SHA256 = "68eb1e10421920f82226e5db39545945576c6ff3111a11be3217b5beeaf42642"
 
 ARTIFACT = _load_pinned_schema_artifact_resource(
     package=__package__,

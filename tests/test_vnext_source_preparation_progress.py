@@ -141,7 +141,12 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
     from contextlib import contextmanager
 
     from test_vnext_source_marker import MarkerSource
-    from vnext_pipeline import gallery, initialize_database
+    from vnext_pipeline import (
+        claim_session,
+        gallery,
+        ingest_policy,
+        initialize_database,
+    )
 
     from h2hdb import VNextIngestFacade
     from h2hdb.sql_connector import SQLConnector
@@ -169,8 +174,10 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
 
     monkeypatch.setattr(SQLConnector, "read_transaction", read_transaction)
     with VNextIngestFacade(db_config) as facade:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         with facade.prepare_source(
-            source, max_new_galleries=10, progress=observe
+            source, policy=policy, max_new_galleries=10, progress=observe
         ) as cut:
             assert cut.deferred_gallery_count == 3
     assert len(source.deep_reads) == 10
@@ -191,7 +198,11 @@ def test_public_preparation_rejects_noncallable_observer_before_source_io() -> N
 
     with VNextIngestFacade(CoreConfig()) as facade:
         with pytest.raises(TypeError, match="progress must be a callable"):
-            facade.prepare_source(cast(Any, object()), progress=cast(Any, object()))
+            facade.prepare_source(
+                cast(Any, object()),
+                policy=cast(Any, object()),
+                progress=cast(Any, object()),
+            )
 
 
 def test_progress_rejects_unknown_operation() -> None:

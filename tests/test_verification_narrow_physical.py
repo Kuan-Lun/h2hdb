@@ -53,7 +53,7 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
 
     assert report.is_policy_clean
     assert not report.is_fully_narrow
-    assert len(report.relations) == 174
+    assert len(report.relations) == 178
     assert tuple(relation.table for relation in report.violations) == (
         "catalog_analysis_batch_receipt_stored",
         "catalog_analysis_checkpoints",
@@ -136,7 +136,7 @@ def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tabl
     ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=174, narrow=126, wide=48" in rendered
+    assert "relations=178, narrow=130, wide=48" in rendered
     assert "Approved wide relations (complete):" in rendered
     assert "catalog_gallery_identities" in rendered
 

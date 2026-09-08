@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 __all__ = [
     "LibraryActivationCheckpoint",
     "LibraryActivationStatus",
@@ -446,6 +448,7 @@ class VNextIngestFacade:
         self,
         adapter: VNextIngestSourceAdapter,
         *,
+        policy: VNextResolvedIngestPolicy,
         max_new_galleries: int | None = None,
         progress: VNextSourcePreparationObserver | None = None,
     ) -> VNextPreparedSource:
@@ -464,6 +467,17 @@ class VNextIngestFacade:
             require_source_batch_limit(max_new_galleries)
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
+        _require_resolved_source_policy(policy)
+        trusted_policy = self.__read(
+            lambda connector: VNextIngestPolicyRepository.require_exact(
+                VNextUnitOfWork(connector, backend=self.__backend), policy
+            )
+        )
+        qualification_policy = sha256(
+            b"h2hdb-source-qualification-policy-v1\0"
+            + trusted_policy.artifact_policy_sha256
+            + bytes((int(trusted_policy.policy.artifacts_required),))
+        ).digest()
         root = adapter.source_root_components
         if not isinstance(root, tuple):
             raise TypeError("adapter source_root_components must be an exact tuple")
@@ -537,6 +551,7 @@ class VNextIngestFacade:
                             connection(),
                             source_root_components=root,
                             probes=probes,
+                            qualification_policy_sha256=qualification_policy,
                         )
 
                 snapshot = FrozenSourceObservationSpool.freeze(
@@ -545,11 +560,12 @@ class VNextIngestFacade:
                     source_root_components=root,
                     cache_lookup=lookup,
                     progress=progress,
+                    qualification_policy_sha256=qualification_policy,
                 )
                 if baseline is not None:
                     with connection().read_transaction():
                         SourceBatchRepository.require_current(connection(), baseline)
-            return VNextPreparedSource(
+            prepared = VNextPreparedSource(
                 snapshot=snapshot,
                 plan=plan,
                 manifest_summary=snapshot.manifest_summary,
@@ -558,6 +574,8 @@ class VNextIngestFacade:
                 deferred_gallery_count=deferred_gallery_count,
                 _constructor_token=_PREPARED_SOURCE_TOKEN,
             )
+            prepared._machine.policy = trusted_policy
+            return prepared
         except BaseException:
             if snapshot is not None:
                 snapshot.close()
@@ -1821,6 +1839,7 @@ def _require_resolved_source_policy(policy: VNextResolvedIngestPolicy) -> None:
     if not isinstance(policy, VNextResolvedIngestPolicy):
         raise TypeError("policy must be VNextResolvedIngestPolicy")
     policy.__post_init__()
+    policy.policy.__post_init__()
     if (
         policy.policy.manifest_algorithm_version != 1
         or policy.policy.file_order_version != 1

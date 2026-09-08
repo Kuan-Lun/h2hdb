@@ -270,8 +270,11 @@ def test_marker_change_during_preparation_does_not_seed_a_cache_entry(
     library = MemoryLibrary(source)
     source.change_during_observation = True
     with VNextIngestFacade(db_config) as facade:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         with pytest.raises(VNextSourceChangedError, match="marker changed"):
-            facade.prepare_source(source)
+            facade.prepare_source(source, policy=policy)
+        facade.complete_ingest(session)
 
     source.change_during_observation = False
     source.deep_reads.clear()
@@ -310,7 +313,7 @@ def test_completion_marker_rejects_corrupt_authority(
     with VNextIngestFacade(db_config, clock=Clock()) as facade:
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
-        with facade.prepare_source(source) as prepared:
+        with facade.prepare_source(source, policy=policy) as prepared:
             for _ in range(512):
                 issued = facade.issue_source_step(session, policy, prepared)
                 local = facade.prepare_source_step(prepared, issued)
@@ -349,7 +352,7 @@ def test_cached_source_step_recovers_commit_faults_and_rejects_stale_owner(
     ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
-        with facade.prepare_source(source) as prepared:
+        with facade.prepare_source(source, policy=policy) as prepared:
             checked = False
             for _ in range(512):
                 issued = facade.issue_source_step(session, policy, prepared)

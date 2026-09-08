@@ -142,6 +142,10 @@ from .vnext_manifest_family import (
     load_source_build_family,
 )
 from .vnext_source_marker_family import bind_completion_marker
+from .vnext_source_qualification_repository import (
+    persist_source_qualification,
+    require_source_qualification,
+)
 from .vnext_transaction import (
     LockRank,
     VNextUnitOfWork,
@@ -1477,7 +1481,7 @@ class GalleryObservationStagingRepository:
             f"SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail, gid, "
             "title_byte_count, comment_byte_count, upload_account_byte_count, "
             "upload_time, download_time, modified_time, scan_observation_version, "
-            f"source_file_count, page_count, updated_at FROM {_PARSER} "
+            f"source_file_count, page_count, qualification_policy_sha256, accepted, qualification_reason, qualification_source_name, updated_at FROM {_PARSER} "
             "WHERE staging_id = %s",
             (current.staging_id,),
         )
@@ -1496,6 +1500,9 @@ class GalleryObservationStagingRepository:
             checkpoints,
         )
         metadata_receipt = GalleryObservationMetadataDecoder(parser_state).finish()
+        require_source_qualification(
+            work.connector, current.gallery_id, current.observation_id, metadata_receipt
+        )
         if (
             metadata_receipt.source_file_count != file_count
             or match_checkpoint.matched_count != file_count
@@ -2332,7 +2339,7 @@ def _put_component_page(
             f"SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail, gid, "
             "title_byte_count, comment_byte_count, upload_account_byte_count, "
             "upload_time, download_time, modified_time, scan_observation_version, "
-            f"source_file_count, page_count, updated_at FROM {_PARSER} "
+            f"source_file_count, page_count, qualification_policy_sha256, accepted, qualification_reason, qualification_source_name, updated_at FROM {_PARSER} "
             "WHERE staging_id = %s",
             (handle.staging_id,),
         )
@@ -5168,6 +5175,9 @@ def _persist_metadata_facts(
     root_page_sha256: bytes,
 ) -> None:
     receipt = GalleryObservationMetadataDecoder(state).finish()
+    persist_source_qualification(
+        connector, handle.gallery_id, handle.observation_id, receipt
+    )
     source_gallery_name = _derive_source_gallery_name(
         connector,
         gallery_id=handle.gallery_id,
@@ -5495,8 +5505,8 @@ def _insert_parser(connector: Any, staging_id: bytes, now: int) -> None:
         "(staging_id, phase, fixed_carry, remaining_text_bytes, utf8_tail, gid, "
         "title_byte_count, comment_byte_count, upload_account_byte_count, "
         "upload_time, download_time, modified_time, scan_observation_version, "
-        "source_file_count, page_count, updated_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "source_file_count, page_count, qualification_policy_sha256, accepted, qualification_reason, qualification_source_name, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (staging_id, *values, now),
     )
 
@@ -5515,7 +5525,7 @@ def _update_parser(
         "title_byte_count = %s, comment_byte_count = %s, "
         "upload_account_byte_count = %s, upload_time = %s, download_time = %s, "
         "modified_time = %s, scan_observation_version = %s, "
-        "source_file_count = %s, page_count = %s, updated_at = %s "
+        "source_file_count = %s, page_count = %s, qualification_policy_sha256 = %s, accepted = %s, qualification_reason = %s, qualification_source_name = %s, updated_at = %s "
         "WHERE staging_id = %s",
         (*values, now, staging_id),
         authority="gallery metadata parser",
@@ -5538,17 +5548,23 @@ def _parser_values(state: GalleryObservationMetadataDecoderState) -> tuple[Any, 
         state.scan_observation_version,
         state.source_file_count,
         state.page_count,
+        state.qualification_policy_sha256,
+        None if state.accepted is None else int(state.accepted),
+        state.qualification_reason,
+        state.qualification_source_name,
     )
 
 
 def _decode_parser(
     row: tuple[Any, ...],
 ) -> tuple[GalleryObservationMetadataDecoderState, int]:
-    if len(row) != 15:
+    if len(row) != 19:
         raise GalleryStagingNotReadyError("metadata parser row is missing")
+    if row[15] not in {None, 0, 1}:
+        raise GalleryStagingNotReadyError("metadata qualification accepted is invalid")
     state = GalleryObservationMetadataDecoderState(
         _runtime_parser_phase(row[0]),
-        require_bounded_bytes(row[1], field="parser fixed_carry", maximum=40),
+        require_bounded_bytes(row[1], field="parser fixed_carry", maximum=255),
         require_int63(row[2], field="parser remaining_text_bytes"),
         require_bounded_bytes(row[3], field="parser utf8_tail", maximum=3),
         None if row[4] is None else require_positive_int63(row[4], field="parser gid"),
@@ -5575,10 +5591,24 @@ def _decode_parser(
             else require_int63(row[12], field="parser source_file_count")
         ),
         None if row[13] is None else require_int63(row[13], field="parser page_count"),
+        None
+        if row[14] is None
+        else require_digest32(row[14], field="parser qualification policy"),
+        None if row[15] is None else bool(row[15]),
+        None
+        if row[16] is None
+        else require_bounded_bytes(
+            row[16], field="parser qualification reason", maximum=64
+        ),
+        None
+        if row[17] is None
+        else require_bounded_bytes(
+            row[17], field="parser qualification source", maximum=255
+        ),
     )
     # Construction validates all phase/carry/scalar coherence.
     GalleryObservationMetadataDecoder(state)
-    return state, require_int63(row[14], field="parser updated_at")
+    return state, require_int63(row[18], field="parser updated_at")
 
 
 def _durable_parser_phase(runtime: str) -> str:

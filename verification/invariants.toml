@@ -3534,6 +3534,93 @@ symbol = "test_live_mariadb_production_page_rolls_back_and_replays_receipt"
 path = "tests/test_vnext_analysis_decision_batch.py"
 symbol = "test_incremental_page_loads_parent_policy_once_and_preserves_overlay"
 
+[[evidence]]
+id = "lean.data.source-qualification"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "For arbitrary finite lists of qualified gallery observations, rejected observations contribute no digests, accepted observations preserve every ordered digest including repetitions, and qualification commutes with concatenation. The existing exact overlay laws apply to the resulting accepted input maps."
+assumptions = ["Qualification booleans represent the sealed canonical source observations. The theorem does not prove decoder correctness, filesystem effects, SQL extraction, or the adapter's classification of errors."]
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "rejected_gallery_contributes_no_digests"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "accepted_gallery_preserves_all_ordered_digests"
+[[evidence.location]]
+path = "verification/lean/AnalysisBoundedPreparation.lean"
+symbol = "qualification_preserves_append"
+
+[[evidence]]
+id = "runtime.production.source-qualification"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Source staging and READY independently compare the immutable normalized qualification family with canonical METADATA. Analysis uses accepted observation membership for changed galleries, file decisions, content ownership and GID selection, while snapshot accounting retains every source gallery; comparator preparation checks the normalized qualification against the canonical bytes again."
+assumptions = ["The adapter is responsible for qualifying the exact observed source under its declared policy; core owns the immutable qualification authority and does not decode images."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_qualification_repository.py"
+symbol = "persist_source_qualification"
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_qualification_repository.py"
+symbol = "require_source_qualification"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "check_source_qualification_v1"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_changed_gallery_rows"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_evaluate_file_decision"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_metadata_comparator_facts"
+
+[[evidence]]
+id = "fault.production.source-qualification"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Generated SQLite metadata fixtures and the complete READY audit reject a missing qualification disposition, changed policy or disposition, and unexpected rejection reason or source facts when they disagree with the canonical METADATA stream. Source sealing rejects a rejection leaf that identifies metadata rather than an observed PAGE."
+assumptions = ["These corruption and source-scope controls validate normalized qualification authority; they do not model filesystem corruption or establish decoder behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_qualification.py"
+symbol = "test_analysis_metadata_rejects_qualification_not_bound_to_canonical_bytes"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_qualification.py"
+symbol = "test_ready_rejects_qualification_disagreeing_with_canonical_metadata"
+[[evidence.location]]
+path = "tests/test_vnext_source_qualification.py"
+symbol = "test_rejection_must_identify_an_observed_page"
+
+[[evidence]]
+id = "integration.production.source-qualification"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "Three complete SQLite and MariaDB analysis generations transition a source from accepted to rejected to repaired. SQLite distinct-content and shared-content cases, plus a shared-content MariaDB smoke case, preserve complete source counts, remove rejected file contributions and GID candidacy, select a valid alternative with the same GID, and restore the repaired winner. File decisions are compared with an independent full oracle that filters qualification in Python. Public SQLite source-to-publication cycles reuse unchanged rejection receipts, re-qualify both galleries after an artifact policy change, and preserve qualification children for every retained observation after removal; codec checkpoints resume at every byte boundary. A one-row SQLite cleanup cycle removes all four qualification children for an unreachable observation while preserving the complete children of two reachable observations."
+assumptions = ["These finite fixtures run the production analysis orchestrator through snapshot handoff with one-row batches. The MariaDB case is explicitly selected by the bounded smoke profile. They do not render images or exercise filesystem publication activation."]
+[[evidence.location]]
+path = "tests/test_vnext_analysis_qualification.py"
+symbol = "test_rejected_source_is_removed_from_analysis_and_repair_restores_same_gid_winner"
+
+[[evidence.location]]
+path = "tests/test_vnext_analysis_qualification.py"
+symbol = "test_live_mariadb_qualification_removes_and_restores_same_gid_winner"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_qualification.py"
+symbol = "test_qualification_metadata_roundtrips_every_checkpoint"
+[[evidence.location]]
+path = "tests/test_vnext_source_qualification.py"
+symbol = "test_rejection_cache_rechecks_policy_and_preserves_retained_source_authority"
+
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_locations"
+
 [[invariant]]
 id = "catalog.source-completion-marker.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
@@ -3830,3 +3917,12 @@ tla = { status = "covered", evidence = ["tla.gallery-staging-retirement.small"] 
 runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.gallery-staging", "runtime.production.gallery-staging-request-budget", "runtime.production.cleanup"] }
 fault = { status = "covered", evidence = ["fault.production.gallery-staging-request-budget", "fault.production.cleanup", "fault.pipeline.statement-matrix"] }
 integration = { status = "covered", evidence = ["integration.sqlite.gallery-staging-retirement", "integration.live-mariadb.gallery-staging-request-budget"] }
+
+[[invariant]]
+id = "catalog.source-qualification.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "covered", evidence = ["lean.data.source-qualification", "lean.data.overlay-exactness"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no source qualification scalar, decoder policy, or qualified observation projection; arbitrary source-list projection is covered by Lean and concrete persistence by runtime evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-qualification", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-qualification"] }
+integration = { status = "covered", evidence = ["integration.production.source-qualification"] }

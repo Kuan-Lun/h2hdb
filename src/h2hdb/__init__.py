@@ -102,6 +102,7 @@ __all__ = [
     "VNextIngestCompletionReceipt",
     "VNextIngestFacade",
     "VNextIngestGalleryObservation",
+    "VNextSourceQualification",
     "VNextIngestCursor",
     "VNextIngestPage",
     "VNextIngestPhase",
@@ -216,6 +217,7 @@ from .domain import (
     VNextSourceCompletionMarker,
     VNextSourcePreparationOperation,
     VNextSourcePreparationProgress,
+    VNextSourceQualification,
 )
 from .environment import (
     EnvironmentPlaceholderError,

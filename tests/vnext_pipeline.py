@@ -755,7 +755,7 @@ def run_source(
     step_budget: int = 10_000,
     boundary: Boundary = None,
 ) -> VNextIngestSourceReceipt:
-    with facade.prepare_source(source) as prepared:
+    with facade.prepare_source(source, policy=policy) as prepared:
         for _ in range(step_budget):
             _notify(boundary, "source.issue")
             issued = facade.issue_source_step(session, policy, prepared)

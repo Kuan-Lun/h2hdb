@@ -2395,8 +2395,11 @@ def _spool_projection_metadata(
         spool.seek(0)
         if _read_exact(spool, len(_METADATA_PREFIX)) != _METADATA_PREFIX:
             raise PublicationCandidateConflictError("METADATA prefix changed")
-        if int.from_bytes(_read_exact(spool, 4), "big") != 1:
-            raise PublicationCandidateConflictError("METADATA codec is not v1")
+        if (
+            int.from_bytes(_read_exact(spool, 4), "big")
+            != identity.GALLERY_OBSERVATION_METADATA_CODEC_VERSION
+        ):
+            raise PublicationCandidateConflictError("unsupported METADATA codec")
         gid = int.from_bytes(_read_exact(spool, 8), "big")
         if _read_exact(spool, 1) != b"\x01":
             raise PublicationCandidateConflictError("METADATA title tag changed")

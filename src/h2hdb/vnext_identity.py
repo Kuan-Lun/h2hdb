@@ -76,6 +76,7 @@ __all__ = [
     "GalleryObservationEncodedPage",
     "GalleryObservationTree",
     "GalleryObservationMetadata",
+    "VNextSourceQualification",
     "GalleryObservationDescriptor",
     "CanonicalValueChunk",
     "CanonicalValueBranchEntry",
@@ -237,7 +238,7 @@ ARTIFACT_STORAGE_KEY_CODEC_VERSION = 2
 ARTIFACT_STORAGE_KEY_MAXIMUM_BYTES = 4096
 SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION = 1
 GALLERY_OBSERVATION_DESCRIPTOR_CODEC_VERSION = 1
-GALLERY_OBSERVATION_METADATA_CODEC_VERSION = 1
+GALLERY_OBSERVATION_METADATA_CODEC_VERSION = 2
 GALLERY_OBSERVATION_PAGE_CODEC_VERSION = 1
 GALLERY_OBSERVATION_PAGE_MAXIMUM_BYTES = 65536
 GALLERY_OBSERVATION_BRANCH_CAPACITY = 256
@@ -265,6 +266,10 @@ GALLERY_OBSERVATION_DURABLE_PARSER_PHASES = (
     "SOURCE_FILE_COUNT",
     "PAGE_COUNT_PRESENCE",
     "PAGE_COUNT",
+    "QUAL_POLICY",
+    "QUAL_ACCEPTED",
+    "QUAL_REASON",
+    "QUAL_SOURCE",
     "DONE",
 )
 EFFECTIVE_CONTENT_DIGEST_DOMAIN = "effective_content_v1"
@@ -631,6 +636,39 @@ class GalleryObservationTree:
 
 
 @dataclass(frozen=True, slots=True)
+class VNextSourceQualification:
+    """Adapter certification of complete source readability, without byte policy."""
+
+    accepted: bool = True
+    reason_code: str | None = None
+    source_name: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.accepted) is not bool:
+            raise ByteDomainError("qualification accepted must be bool")
+        if self.accepted:
+            if self.reason_code is not None or self.source_name is not None:
+                raise ByteDomainError(
+                    "accepted qualification cannot carry rejection facts"
+                )
+            return
+        if type(self.reason_code) is not str or not 1 <= len(self.reason_code) <= 64:
+            raise ByteDomainError(
+                "qualification reason_code must contain 1..64 ASCII characters"
+            )
+        if any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in self.reason_code
+        ):
+            raise ByteDomainError(
+                "qualification reason_code must use lowercase ASCII identifiers"
+            )
+        if type(self.source_name) is not bytes:
+            raise ByteDomainError("rejected qualification requires a source_name")
+        validate_file_name(self.source_name)
+
+
+@dataclass(frozen=True, slots=True)
 class GalleryObservationMetadata:
     """Fixed-field input to the streaming METADATA component codec."""
 
@@ -644,8 +682,16 @@ class GalleryObservationMetadata:
     scan_observation_version: int
     source_file_count: int
     page_count: int | None
+    qualification_policy_sha256: bytes = bytes(32)
+    qualification: VNextSourceQualification = VNextSourceQualification()
 
     def __post_init__(self) -> None:
+        _require_digest(
+            self.qualification_policy_sha256, field_name="qualification policy"
+        )
+        if type(self.qualification) is not VNextSourceQualification:
+            raise ByteDomainError("qualification must be VNextSourceQualification")
+        self.qualification.__post_init__()
         _require_positive_int63(self.gid, field_name="gid")
         for field_name in ("title", "comment", "upload_account"):
             _validate_unbounded_utf8(getattr(self, field_name), field_name=field_name)
@@ -793,8 +839,16 @@ class GalleryObservationMetadataScalarReceipt:
     scan_observation_version: int
     source_file_count: int
     page_count: int | None
+    qualification_policy_sha256: bytes = bytes(32)
+    qualification: VNextSourceQualification = VNextSourceQualification()
 
     def __post_init__(self) -> None:
+        _require_digest(
+            self.qualification_policy_sha256, field_name="qualification policy"
+        )
+        if type(self.qualification) is not VNextSourceQualification:
+            raise ByteDomainError("qualification must be VNextSourceQualification")
+        self.qualification.__post_init__()
         _require_positive_int63(self.gid, field_name="gid")
         for field_name in (
             "title_byte_count",
@@ -837,6 +891,10 @@ class GalleryObservationMetadataDecoderState:
     scan_observation_version: int | None
     source_file_count: int | None
     page_count: int | None
+    qualification_policy_sha256: bytes | None = None
+    accepted: bool | None = None
+    qualification_reason: bytes | None = None
+    qualification_source_name: bytes | None = None
 
     def __post_init__(self) -> None:
         if type(self.phase) is not str:
@@ -872,6 +930,37 @@ class GalleryObservationMetadataDecoderState:
             )
         if self.page_count is not None:
             _require_uint(self.page_count, bits=32, field_name="page_count")
+        if self.qualification_policy_sha256 is not None:
+            _require_digest(
+                self.qualification_policy_sha256, field_name="qualification policy"
+            )
+        if self.accepted is not None and type(self.accepted) is not bool:
+            raise ByteDomainError("qualification accepted checkpoint must be bool")
+        if self.qualification_reason is not None:
+            reason = _require_bytes(
+                self.qualification_reason, field_name="qualification reason"
+            )
+            if len(reason) > 64 or any(
+                value not in b"abcdefghijklmnopqrstuvwxyz0123456789_"
+                for value in reason
+            ):
+                raise ByteDomainError(
+                    "qualification reason checkpoint is not canonical"
+                )
+            if self.accepted is None or bool(reason) == self.accepted:
+                raise ByteDomainError(
+                    "qualification reason checkpoint disagrees with acceptance"
+                )
+        if self.qualification_source_name is not None:
+            source = _require_bytes(
+                self.qualification_source_name, field_name="qualification source"
+            )
+            if source:
+                validate_file_name(source)
+            if self.accepted is None or bool(source) == self.accepted:
+                raise ByteDomainError(
+                    "qualification source checkpoint disagrees with acceptance"
+                )
 
 
 class GalleryObservationMetadataDecoder:
@@ -895,6 +984,10 @@ class GalleryObservationMetadataDecoder:
         "SOURCE_FILE_COUNT": 8,
         "PAGE_COUNT_PRESENCE": 1,
         "PAGE_COUNT": 4,
+        "QUAL_POLICY": 32,
+        "QUAL_ACCEPTED": 1,
+        "QUAL_REASON": 64,
+        "QUAL_SOURCE": 256,
     }
     _PHASE_ORDER = (
         "PREFIX",
@@ -916,6 +1009,10 @@ class GalleryObservationMetadataDecoder:
         "SOURCE_FILE_COUNT",
         "PAGE_COUNT_PRESENCE",
         "PAGE_COUNT",
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
         "DONE",
     )
 
@@ -936,6 +1033,10 @@ class GalleryObservationMetadataDecoder:
             self._scan_version: int | None = None
             self._source_file_count: int | None = None
             self._page_count: int | None = None
+            self._qualification_policy_sha256: bytes | None = None
+            self._accepted: bool | None = None
+            self._qualification_reason: bytes | None = None
+            self._qualification_source_name: bytes | None = None
             return
         if type(state) is not GalleryObservationMetadataDecoderState:
             raise ByteDomainError(
@@ -997,6 +1098,10 @@ class GalleryObservationMetadataDecoder:
                 "SOURCE_FILE_COUNT": 3,
                 "PAGE_COUNT_PRESENCE": 3,
                 "PAGE_COUNT": 3,
+                "QUAL_POLICY": 3,
+                "QUAL_ACCEPTED": 3,
+                "QUAL_REASON": 3,
+                "QUAL_SOURCE": 3,
                 "DONE": 3,
             }
             known_count = known_text_counts[state.phase]
@@ -1010,6 +1115,10 @@ class GalleryObservationMetadataDecoder:
             "modified_time": "SCAN_VERSION",
             "scan_observation_version": "SOURCE_FILE_COUNT",
             "source_file_count": "PAGE_COUNT_PRESENCE",
+            "qualification_policy_sha256": "QUAL_ACCEPTED",
+            "accepted": "QUAL_REASON",
+            "qualification_reason": "QUAL_SOURCE",
+            "qualification_source_name": "DONE",
         }
         for field_name, first_phase in required_after.items():
             value = getattr(state, field_name)
@@ -1020,7 +1129,10 @@ class GalleryObservationMetadataDecoder:
                 )
         if state.phase == "PAGE_COUNT" and state.page_count is not None:
             raise ByteDomainError("PAGE_COUNT checkpoint already has a page count")
-        if state.phase != "DONE" and state.page_count is not None:
+        if (
+            phase_index < self._PHASE_ORDER.index("QUAL_POLICY")
+            and state.page_count is not None
+        ):
             raise ByteDomainError("page_count exists before metadata DONE")
         self._phase = state.phase
         self._fixed_carry = bytearray(
@@ -1039,6 +1151,10 @@ class GalleryObservationMetadataDecoder:
         self._scan_version = state.scan_observation_version
         self._source_file_count = state.source_file_count
         self._page_count = state.page_count
+        self._qualification_policy_sha256 = state.qualification_policy_sha256
+        self._accepted = state.accepted
+        self._qualification_reason = state.qualification_reason
+        self._qualification_source_name = state.qualification_source_name
 
     @property
     def state(self) -> GalleryObservationMetadataDecoderState:
@@ -1061,6 +1177,10 @@ class GalleryObservationMetadataDecoder:
             self._scan_version,
             self._source_file_count,
             self._page_count,
+            self._qualification_policy_sha256,
+            self._accepted,
+            self._qualification_reason,
+            self._qualification_source_name,
         )
 
     def feed(self, part: bytes) -> None:
@@ -1121,6 +1241,17 @@ class GalleryObservationMetadataDecoder:
         assert self._modified_time is not None
         assert self._scan_version is not None
         assert self._source_file_count is not None
+        assert self._qualification_policy_sha256 is not None
+        assert self._accepted is not None
+        assert self._qualification_reason is not None
+        assert self._qualification_source_name is not None
+        qualification = VNextSourceQualification(
+            self._accepted,
+            None
+            if not self._qualification_reason
+            else self._qualification_reason.decode("ascii"),
+            self._qualification_source_name or None,
+        )
         return GalleryObservationMetadataScalarReceipt(
             self._gid,
             self._text_lengths[0],
@@ -1132,6 +1263,8 @@ class GalleryObservationMetadataDecoder:
             self._scan_version,
             self._source_file_count,
             self._page_count,
+            self._qualification_policy_sha256,
+            qualification,
         )
 
     def _accept_fixed(self, value: bytes) -> None:
@@ -1204,7 +1337,7 @@ class GalleryObservationMetadataDecoder:
         elif phase == "PAGE_COUNT_PRESENCE":
             if value == b"\x00":
                 self._page_count = None
-                self._phase = "DONE"
+                self._phase = "QUAL_POLICY"
             elif value == b"\x01":
                 self._phase = "PAGE_COUNT"
             else:
@@ -1215,6 +1348,26 @@ class GalleryObservationMetadataDecoder:
                 bits=32,
                 field_name="page_count",
             )
+            self._phase = "QUAL_POLICY"
+        elif phase == "QUAL_POLICY":
+            self._qualification_policy_sha256 = value
+            self._phase = "QUAL_ACCEPTED"
+        elif phase == "QUAL_ACCEPTED":
+            if value not in {b"\x00", b"\x01"}:
+                raise ByteDomainError("qualification accepted must be zero or one")
+            self._accepted = value == b"\x01"
+            self._phase = "QUAL_REASON"
+        elif phase == "QUAL_REASON":
+            reason = value.rstrip(b"\x00")
+            if b"\x00" in reason:
+                raise ByteDomainError("qualification reason padding is not canonical")
+            self._qualification_reason = reason
+            self._phase = "QUAL_SOURCE"
+        elif phase == "QUAL_SOURCE":
+            length = value[0]
+            if any(value[1 + length :]):
+                raise ByteDomainError("qualification source padding is not canonical")
+            self._qualification_source_name = value[1 : 1 + length]
             self._phase = "DONE"
         else:  # pragma: no cover - closed phase registry
             raise AssertionError("unreachable metadata decoder phase")
@@ -3904,6 +4057,11 @@ def iter_gallery_observation_metadata_stream(
     else:
         yield b"\x01"
         yield metadata.page_count.to_bytes(4, "big")
+    yield metadata.qualification_policy_sha256
+    yield bytes((int(metadata.qualification.accepted),))
+    yield (metadata.qualification.reason_code or "").encode("ascii").ljust(64, b"\x00")
+    source_name = metadata.qualification.source_name or b""
+    yield bytes((len(source_name),)) + source_name.ljust(255, b"\x00")
 
 
 def encode_gallery_observation_metadata(metadata: GalleryObservationMetadata) -> bytes:
@@ -3920,7 +4078,7 @@ def decode_gallery_observation_metadata(payload: bytes) -> GalleryObservationMet
     """Decode the fixed metadata stream and reject unknown/trailing fields."""
 
     encoded = _require_bytes(payload, field_name="gallery observation metadata")
-    validate_gallery_observation_metadata_parts((encoded,))
+    scalar = validate_gallery_observation_metadata_parts((encoded,))
     if not encoded.startswith(_GALLERY_OBSERVATION_METADATA_PREFIX):
         raise ByteDomainError("gallery observation metadata has the wrong prefix")
     offset = len(_GALLERY_OBSERVATION_METADATA_PREFIX)
@@ -3957,7 +4115,7 @@ def decode_gallery_observation_metadata(payload: bytes) -> GalleryObservationMet
         page_count, offset = _take_uint(encoded, offset, 4, "page_count")
     else:
         raise ByteDomainError("page_count presence must be exactly zero or one")
-    if offset != len(encoded):
+    if offset + 353 != len(encoded):
         raise ByteDomainError("gallery observation metadata contains trailing bytes")
     return GalleryObservationMetadata(
         gid,
@@ -3970,6 +4128,8 @@ def decode_gallery_observation_metadata(payload: bytes) -> GalleryObservationMet
         scan_version,
         source_file_count,
         page_count,
+        scalar.qualification_policy_sha256,
+        scalar.qualification,
     )
 
 

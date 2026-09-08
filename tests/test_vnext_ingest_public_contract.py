@@ -113,7 +113,9 @@ def test_public_source_page_is_keyset_addressed_and_bounded() -> None:
         )
 
 
-def test_public_observations_and_source_adapter_are_repository_independent() -> None:
+def test_public_observations_and_source_adapter_are_repository_independent(
+    tmp_path: Path,
+) -> None:
     receipt = FileContentReceipt.from_parts((b"abc",))
     file = FileObservation(
         b"001.jpg",
@@ -190,13 +192,19 @@ def test_public_observations_and_source_adapter_are_repository_independent() -> 
 
     assert isinstance(Source(), VNextIngestSourceAdapter)
 
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=":memory:"))
-    with VNextIngestFacade(config).prepare_source(Source()) as prepared:
-        assert isinstance(prepared, VNextPreparedSource)
-        assert not hasattr(prepared, "plan")
+    path = tmp_path / "public-source.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    with VNextIngestFacade(config) as facade:
+        session = facade.try_claim_ingest(True, 1_000_000)
+        assert session is not None
+        policy = facade.ensure_policy(session, _policy())
+        with facade.prepare_source(Source(), policy=policy) as prepared:
+            assert isinstance(prepared, VNextPreparedSource)
+            assert not hasattr(prepared, "plan")
 
 
-def test_prepare_source_uses_canonical_locator_key_order() -> None:
+def test_prepare_source_uses_canonical_locator_key_order(tmp_path: Path) -> None:
     class Source:
         source_root_components = ("root",)
 
@@ -253,9 +261,15 @@ def test_prepare_source_uses_canonical_locator_key_order() -> None:
         ) -> VNextIngestPage[TagObservation]:
             return VNextIngestPage((), None, True)
 
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=":memory:"))
-    with VNextIngestFacade(config).prepare_source(Source()):
-        pass
+    path = tmp_path / "source-order.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    with VNextIngestFacade(config) as facade:
+        session = facade.try_claim_ingest(True, 1_000_000)
+        assert session is not None
+        policy = facade.ensure_policy(session, _policy())
+        with facade.prepare_source(Source(), policy=policy):
+            pass
 
 
 def test_public_session_is_a_neutral_primitive_receipt() -> None:
@@ -827,7 +841,7 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
         _policy(),
     )
 
-    with facade.prepare_source(EmptySource()) as source:
+    with facade.prepare_source(EmptySource(), policy=policy) as source:
         issued = facade.issue_source_step(session, policy, source)
         assert isinstance(issued, VNextIssuedSourceStep)
         local = facade.prepare_source_step(source, issued)
@@ -926,11 +940,11 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
                 **{field_name: getattr(alternate, field_name)},
             )
             with facade.prepare_source(
-                MemorySource(root=("forged-policy", field_name))
+                MemorySource(root=("forged-policy", field_name)), policy=policy
             ) as source:
                 with pytest.raises(
-                    VNextIngestPolicyConflictError,
-                    match="caller-substituted authority",
+                    ValueError,
+                    match="bound to another ingest policy",
                 ):
                     facade.issue_source_step(session, forged, source)
 
@@ -1016,7 +1030,7 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
     )
     invalid_nested = replace(policy, policy=invalid_natural_policy)
     with facade.prepare_source(
-        MemorySource(root=("invalid-natural-policy",))
+        MemorySource(root=("invalid-natural-policy",)), policy=policy
     ) as source:
         with pytest.raises(ValueError, match="must be positive"):
             facade.issue_source_step(session, invalid_nested, source)
@@ -1033,7 +1047,9 @@ def test_bound_source_policy_isolated_from_late_caller_mutation(tmp_path: Path) 
     assert session is not None
     caller_policy = facade.ensure_policy(session, _policy())
 
-    with facade.prepare_source(MemorySource(root=("late-policy-mutation",))) as source:
+    with facade.prepare_source(
+        MemorySource(root=("late-policy-mutation",)), policy=caller_policy
+    ) as source:
         issued = facade.issue_source_step(session, caller_policy, source)
         local = facade.prepare_source_step(source, issued)
         facade.commit_source_step(session, local)
@@ -1126,7 +1142,9 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
         session: VNextIngestSession,
         resolved_policy: Any,
     ) -> Any:
-        with facade.prepare_source(EmptyGallerySource()) as source:
+        with facade.prepare_source(
+            EmptyGallerySource(), policy=resolved_policy
+        ) as source:
             for _ in range(40):
                 issued = facade.issue_source_step(session, resolved_policy, source)
                 local = facade.prepare_source_step(source, issued)
@@ -1315,7 +1333,7 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
         _policy(),
     )
 
-    with facade.prepare_source(EmptyGallerySource()) as source:
+    with facade.prepare_source(EmptyGallerySource(), policy=policy) as source:
         for _ in range(40):
             issued = facade.issue_source_step(session, policy, source)
             local = facade.prepare_source_step(source, issued)
@@ -1535,7 +1553,7 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
         return None if not row else (row[0], row[1])
 
     def drive_until(predicate: Any) -> None:
-        with facade.prepare_source(adapter) as source:
+        with facade.prepare_source(adapter, policy=policy) as source:
             for _ in range(160):
                 issued = facade.issue_source_step(session, policy, source)
                 local = facade.prepare_source_step(source, issued)

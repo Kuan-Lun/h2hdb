@@ -322,10 +322,19 @@ Schema變更依序進行：
 - Public ingest orchestration把 transaction-owned issue/commit與 adapter-owned
   local preparation分開；filesystem與 object-storage不得進入 core DB
   transaction。
+- 每個 sealed source observation的 METADATA codec v2包含 immutable qualification
+  policy digest與 accepted/rejected結果。Core以 normalized children exact-compare
+  canonical metadata；rejected結果必須指向該 observation中一個 sealed PAGE。
+  Source snapshot保留所有 observations與 FILE facts，analysis的spam、content、
+  GID選擇與overlay只使用accepted observations。不得逐頁丟棄後假裝整本有效。
+  Marker reuse同時驗證producer完成證據與目前artifact policy/required mode；
+  changed marker或policy須重新觀測。Cleanup依source/analysis reachability保留
+  qualification children，無引用時bounded child-first回收。圖片解碼與resource
+  errors分類由adapter負責，不得聲稱SQL qualification證明了外部bytes可解碼。
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 5只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 6只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為

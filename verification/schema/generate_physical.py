@@ -104,6 +104,12 @@ def runtime_obligation_records(
             catalog["file_identity_contract"]["read_obligation"],
         ),
         (
+            "gallery_observation_identity_contract.qualification_obligation",
+            catalog["gallery_observation_identity_contract"][
+                "qualification_obligation"
+            ],
+        ),
+        (
             "gallery_observation_identity_contract.write_obligation",
             catalog["gallery_observation_identity_contract"]["write_obligation"],
         ),
@@ -366,6 +372,9 @@ TIMESTAMP_ATTRIBUTES = {
 
 
 NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
+    "qualification_reason": shape("BLOB", "VARBINARY(64)"),
+    "qualification_source_name": shape("BLOB", "VARBINARY(255)"),
+    "accepted": shape("INTEGER", "TINYINT UNSIGNED"),
     "allocated_at": UNIX_MICROSECONDS,
     "advanced_at": UNIX_MICROSECONDS,
     "algorithm_version": U32,
@@ -606,6 +615,10 @@ TABLE_NAMES = {
     "gallery_observation_discovery_fingerprint": "catalog_gallery_observation_discovery_fingerprints",
     "gallery_observation_metadata_digest": "catalog_gallery_observation_metadata_digests",
     "gallery_observation_raw_content": "catalog_gallery_observation_raw_content",
+    "gallery_observation_validation_policy": "catalog_gallery_observation_validation_policies",
+    "gallery_observation_validation_disposition": "catalog_gallery_observation_validation_dispositions",
+    "gallery_observation_validation_reason": "catalog_gallery_observation_validation_reasons",
+    "gallery_observation_validation_source": "catalog_gallery_observation_validation_sources",
     "gallery_observation_page_count": "catalog_gallery_observation_page_counts",
     "gallery_observation_directory": "catalog_gallery_observation_directories",
     "gallery_observation_stat": "catalog_gallery_observation_stat",
@@ -1261,6 +1274,16 @@ def relation_checks(
     if "page_limit" in attributes:
         sqlite.append("page_limit BETWEEN 1 AND 128")
         maria.append("page_limit BETWEEN 1 AND 128")
+    if "accepted" in attributes:
+        sqlite.append("accepted IN (0, 1)")
+        maria.append("accepted IN (0, 1)")
+    for attribute, maximum in (
+        ("qualification_reason", 64),
+        ("qualification_source_name", 255),
+    ):
+        if attribute in attributes:
+            sqlite.append(f"length({attribute}) BETWEEN 1 AND {maximum}")
+            maria.append(f"octet_length({attribute}) BETWEEN 1 AND {maximum}")
     if "page_count" in attributes:
         sqlite.append("page_count BETWEEN 0 AND 4096")
         maria.append("page_count BETWEEN 0 AND 4096")

@@ -24,13 +24,13 @@ stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
 selected_catalog_physical_relations_after = 54
-catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order"]
+catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source"]
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 174
+catalog_physical_table_count_after = 178
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 67
 total_physical_table_count_before = 381
-total_physical_table_count_after = 241
+total_physical_table_count_after = 245
 conditional_one_gigabyte_limit_required = false
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -285,6 +285,7 @@ write_obligation = "derive file_key deterministically by SHA-256 over the exact 
 read_obligation = "read the authoritative file-name identity row, recompute file_key and derive file_role from exact name_bytes on every runtime boundary and READY validation, and reject unknown algorithm/classifier versions, Unicode normalization, case folding, trimming, or collation-based filename identity"
 
 [gallery_observation_identity_contract]
+qualification_obligation = "Before the immutable observation seal, exact-compare the complete source qualification scalar family against METADATA codec v2; qualification_policy_sha256 is sha256 of h2hdb-source-qualification-policy-v1 NUL, the registered artifact policy digest and one artifacts-required byte. Marker reuse requires this exact policy as well as producer completion evidence. Retain every source membership while restricting analysis to accepted observations; READY independently decodes canonical metadata and compares every mandatory and rejected-only child. The adapter owns image validity, and metadata-only adapters attest accepted neutral data. No claim is made that SQL proves image decoding or external storage availability."
 relation = "gallery_observation"
 gallery_attribute = "gallery_id"
 identifier_attribute = "observation_id"
@@ -837,7 +838,7 @@ child_phases = [
   ["gallery_observation_file_seal"],
   ["gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_file_no"],
   ["gallery_observation_file_anchor"],
-  ["gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"],
+  ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"],
   ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"],
 ]
 
@@ -1818,6 +1819,19 @@ covers = [
 description = "Recompute every stable domain-separated identity from its exact versioned byte codec, including absolute source roots, canonical values, scopes, gallery keys, publication keys, file names, bounded observation descriptors and collision-checked FILE/TAG/DIRECTORY page trees, artifact semantics, and catalog-facing identifiers; collision paths compare the complete semantic tuple or exact payload."
 
 [[semantic_obligation]]
+id = "catalog.source-qualification.v1"
+version = 1
+class = "source_qualification"
+lifecycle = "ready_and_runtime"
+ready_check = "catalog_refinement.check_source_qualification_v1"
+writer_hook = "catalog_writer.validate_source_qualification"
+writer_hook_version = 1
+scope = "catalog.source-qualification"
+relations = ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation", "gallery_observation_tree_root", "source_build_gallery"]
+covers = ["machine_contract.source-qualification", "gallery_observation_identity_contract.qualification_obligation"]
+description = "Canonical METADATA v2 seals the exact source qualification policy and adapter-issued accepted/rejected result. Every observation has exactly one policy and disposition child; rejected observations also have one bounded reason and one observed PAGE leaf, and accepted observations have neither rejection child. Full source membership remains present for admission and deletion; only accepted members contribute to global analysis. Fresh source preparation derives the qualification policy from the complete registered artifact policy and artifacts-required mode, compares it on marker reuse, and fences it through the prepared source policy. Source mutation and storage failures do not become rejected observations."
+
+[[semantic_obligation]]
 id = "catalog.source-completion-marker.v1"
 version = 1
 class = "source_observation_reuse"
@@ -2752,6 +2766,11 @@ values = ["1", "2", "16.0.0", "65536", "1024", "64", "16"]
 # FD-sensitive names are classified explicitly.  In particular, an audit or
 # The observational digest has no identity authority and therefore implies no FD.
 # Only canonical_identity_digest and payload_digest carry identity semantics.
+[[attribute_semantic]]
+name = "qualification_policy_sha256"
+classification = "comparator_digest"
+rationale = "Core-derived SHA-256 of the exact registered artifact policy digest and artifacts-required mode under the source-qualification-v1 domain; a cache comparison discriminator embedded in canonical METADATA, not an identity or a substitute for the observation seal."
+
 [[attribute_semantic]]
 name = "analysis_id"
 classification = "surrogate_identifier"
@@ -3883,6 +3902,42 @@ foreign_keys = [
   { attributes = ["source_gallery_name"], relation = "source_gallery_name_gid", referenced_attributes = ["source_gallery_name"] },
 ]
 materialization = { authoritative = false, rationale = "Provide one FK-addressable narrow access path from a gallery location to its exact parser basename without repeating GID or upload time.", derived_from = ["gallery_identity", "source_locator_identity", "source_gallery_name_gid"], refresh_strategy = "insert or exact-compare only the source_gallery_name obtained by joining gallery_identity.locator_sha256 to source_locator_identity after its deterministic basename-to-GID row exists" }
+
+[[relation]]
+name = "gallery_observation_validation_policy"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "qualification_policy_sha256"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["qualification_policy_sha256"] }]
+foreign_keys = [{ attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] }]
+rationale = "Immutable adapter-issued source qualification scalar, decoded and exact-compared against the canonical METADATA stream before the observation seal; qualification preserves complete source membership and never changes PAGE roles."
+
+[[relation]]
+name = "gallery_observation_validation_disposition"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "accepted"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["accepted"] }]
+foreign_keys = [{ attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] }]
+rationale = "Immutable adapter-issued source qualification scalar, decoded and exact-compared against the canonical METADATA stream before the observation seal; qualification preserves complete source membership and never changes PAGE roles."
+
+[[relation]]
+name = "gallery_observation_validation_reason"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "qualification_reason"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["qualification_reason"] }]
+foreign_keys = [{ attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] }]
+rationale = "Immutable adapter-issued source qualification scalar, decoded and exact-compared against the canonical METADATA stream before the observation seal; qualification preserves complete source membership and never changes PAGE roles."
+
+[[relation]]
+name = "gallery_observation_validation_source"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "qualification_source_name"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["qualification_source_name"] }]
+foreign_keys = [{ attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] }]
+rationale = "Immutable adapter-issued source qualification scalar, decoded and exact-compared against the canonical METADATA stream before the observation seal; qualification preserves complete source membership and never changes PAGE roles."
 
 [[relation]]
 name = "gallery_observation_metadata_local"

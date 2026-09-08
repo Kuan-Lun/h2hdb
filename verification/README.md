@@ -628,8 +628,33 @@ and catalog rebuild, with no migration or compatibility path.
 ## Capacity change accounting
 
 The capacity plan retains the historical 190-to-54 selected-family recomposition
-counts. The title posting subset is declared separately as one physical relation
-added afterward, so the current catalog/combined counts are 171/238. The existing
-capacity measurement still describes its original measured shapes; regenerating
-the receipt binds those unchanged measurements and this explicit count adjustment
-to the current manifest without claiming a new database benchmark run.
+counts. Later additions, including title postings and source qualification, are
+accounted separately by the logical manifest and executable capacity checker.
+The existing capacity measurement still describes its original measured shapes;
+the receipt generator verifies those shapes and benchmark inputs before binding
+the unchanged raw measurements to the current manifests. Regenerating this
+receipt does not claim a new database benchmark run.
+
+## Source qualification authority
+
+Epoch 3/schema version 6 and METADATA codec v2 bind each source observation's
+artifact policy digest and qualification result into canonical metadata. The
+normalized policy and disposition children are mandatory; reason and source
+name children exist only for rejected observations. Before sealing and during
+READY auditing, core independently decodes the metadata and checks the exact
+child family. A rejected source name must identify one sealed PAGE in the same
+observation. Cleanup removes these children before their unreachable parent.
+
+Complete source membership remains authoritative for discovery and caching.
+Analysis derives spam counts, content candidates, GID winners, and baseline
+changes only from accepted observations. Qualification changing from accepted
+to rejected behaves as an analysis removal, and a repaired observation behaves
+as an addition. SQLite and live MariaDB integration cases exercise this sequence
+with a valid alternative sharing the same GID and content. Separate fault tests
+corrupt the normalized children and verify fail-closed validation.
+
+The source-qualification Lean theorems prove the stated list projection and
+append properties for arbitrary mathematical inputs. They do not prove Python
+image decoding, filesystem stability, or SQL transaction execution. Runtime
+refinement, fault, and backend integration evidence are indexed separately by
+`catalog.source-qualification.v1` in `invariants.toml`.

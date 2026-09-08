@@ -15,7 +15,7 @@ from .vnext_canonical_value_repository import (
     load_and_validate_single_page_canonical_values,
 )
 from .vnext_catalog_identity_family import load_gallery_identities
-from .vnext_domains import require_uuid16
+from .vnext_domains import require_digest32, require_uuid16
 from .vnext_gallery_staging_repository import (
     GalleryStagingSeal,
     _authorize_outer,
@@ -64,6 +64,7 @@ class SourceMarkerRepository:
         source_root_components: tuple[str, ...],
         locator_components: tuple[str, ...],
         marker: VNextSourceCompletionMarker,
+        qualification_policy_sha256: bytes,
     ) -> CachedSourceObservation | None:
         """Load the newest retained binding by exact source identity and marker."""
 
@@ -71,6 +72,7 @@ class SourceMarkerRepository:
             connector,
             source_root_components=source_root_components,
             probes=((locator_components, marker),),
+            qualification_policy_sha256=qualification_policy_sha256,
         )[0]
 
     @staticmethod
@@ -79,9 +81,13 @@ class SourceMarkerRepository:
         *,
         source_root_components: tuple[str, ...],
         probes: tuple[tuple[tuple[str, ...], VNextSourceCompletionMarker], ...],
+        qualification_policy_sha256: bytes,
     ) -> tuple[CachedSourceObservation | None, ...]:
         """Resolve at most 128 probes, validating the shared root only once."""
 
+        require_digest32(
+            qualification_policy_sha256, field="qualification_policy_sha256"
+        )
         if type(probes) is not tuple or len(probes) > 128:
             raise ValueError("source marker lookup accepts at most 128 probes")
         if not probes:
@@ -112,11 +118,13 @@ class SourceMarkerRepository:
         slots = ", ".join("%s" for _ in locators)
         rows = connector.fetch_all(
             "SELECT identity.locator_sha256, identity.gallery_id, identity.gallery_key, "
-            "binding.observation_id, binding.file_key "
+            "binding.observation_id, binding.file_key, qualification.qualification_policy_sha256 "
             "FROM catalog_gallery_identities AS identity "
             f"LEFT JOIN {_BINDING} AS binding ON binding.gallery_id = identity.gallery_id "
             f"AND binding.observation_id = (SELECT latest.observation_id FROM {_BINDING} AS latest "
             "WHERE latest.gallery_id = identity.gallery_id ORDER BY latest.observation_id DESC LIMIT 1) "
+            "LEFT JOIN catalog_gallery_observation_validation_policies AS qualification "
+            "ON qualification.gallery_id = binding.gallery_id AND qualification.observation_id = binding.observation_id "
             f"WHERE identity.scope_key = %s AND identity.locator_sha256 IN ({slots})",
             (scope, *locators),
         )
@@ -139,7 +147,7 @@ class SourceMarkerRepository:
             if row is None:
                 result.append(None)
                 continue
-            if len(row) != 5 or row[2] != gallery_key(scope, locator):
+            if len(row) != 6 or row[2] != gallery_key(scope, locator):
                 raise SourceMarkerConflictError(
                     "source marker gallery identity differs"
                 )
@@ -161,7 +169,15 @@ class SourceMarkerRepository:
             cached = cached_observations.get((row[1], row[3]))
             if cached is None:
                 raise SourceMarkerConflictError("retained marker binding disappeared")
-            result.append(cached if cached.marker == marker else None)
+            if row[5] is None:
+                raise SourceMarkerConflictError(
+                    "cached source qualification policy is absent"
+                )
+            result.append(
+                cached
+                if cached.marker == marker and row[5] == qualification_policy_sha256
+                else None
+            )
         return tuple(result)
 
     @staticmethod

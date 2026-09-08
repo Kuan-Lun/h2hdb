@@ -2048,26 +2048,31 @@ def test_observation_metadata_exact_golden_roundtrip_and_every_split_checkpoint(
 ):
     metadata = _metadata_fixture()
     payload = encode_gallery_observation_metadata(metadata)
-    expected = bytes.fromhex(
-        "68326864622d766e6578742d67616c6c6572792d6f62736572766174696f6e2d6d6574616461746100"
-        "00000001"
-        "0000000000000007"
-        "01"
-        "0000000000000001"
-        "61"
-        "02"
-        "0000000000000009"
-        "e8979de8a193e5aeb6"
-        "03"
-        "0000000000000004"
-        "61636374"
-        "000000000000000b"
-        "000000000000000c"
-        "000000000000000d"
-        "00000001"
-        "0000000000000002"
-        "01"
-        "00000003"
+    expected = (
+        bytes.fromhex(
+            "68326864622d766e6578742d67616c6c6572792d6f62736572766174696f6e2d6d6574616461746100"
+            "00000002"
+            "0000000000000007"
+            "01"
+            "0000000000000001"
+            "61"
+            "02"
+            "0000000000000009"
+            "e8979de8a193e5aeb6"
+            "03"
+            "0000000000000004"
+            "61636374"
+            "000000000000000b"
+            "000000000000000c"
+            "000000000000000d"
+            "00000001"
+            "0000000000000002"
+            "01"
+            "00000003"
+        )
+        + bytes(32)
+        + b"\x01"
+        + bytes(64 + 256)
     )
 
     assert payload == expected
@@ -2309,6 +2314,10 @@ def test_observation_audit_frames_and_durable_parser_registry_are_closed() -> No
         "SOURCE_FILE_COUNT",
         "PAGE_COUNT_PRESENCE",
         "PAGE_COUNT",
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
         "DONE",
     )
     for phase in GALLERY_OBSERVATION_DURABLE_PARSER_PHASES:

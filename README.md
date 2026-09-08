@@ -13,7 +13,7 @@ sibling packages.
 
 ## What this package provides
 
-- One generated epoch-3/schema-v5 schema for SQLite and MariaDB.
+- One generated epoch-3/schema-v6 schema for SQLite and MariaDB.
 - Safe initialization, full schema auditing, and lightweight readiness probes.
 - Current-catalog discovery with Unicode-normalized search, exact facets,
   keyset pagination, and fixed recently uploaded/downloaded windows.
@@ -28,8 +28,8 @@ closed if the catalog advances or the value was forged.
 
 ## Compatibility model
 
-The active database identity is `epoch=3`, `schema_version=5`. This is a
-greenfield contract: schema v5 does not upgrade or adopt schema v4 or any older
+The active database identity is `epoch=3`, `schema_version=6`. This is a
+greenfield contract: schema v6 does not upgrade or adopt schema v5 or any older
 database, provide compatibility views, retain old list APIs, or dual-write old
 and new shapes. Replace an earlier database with a truly empty database and
 rebuild it from source through the current ingest integration.
@@ -109,7 +109,7 @@ Choose the operation from database state:
 
 | Database state or caller | Operation |
 | --- | --- |
-| Truly empty database | Run `migrate` to construct epoch 3/schema v5 |
+| Truly empty database | Run `migrate` to construct epoch 3/schema v6 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
 | Matching `READY` epoch | Run read-only `check` for the full audit |
 | Consumer startup | Run `check`; never initialize schema |

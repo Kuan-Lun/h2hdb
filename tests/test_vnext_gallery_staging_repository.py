@@ -1629,6 +1629,10 @@ def test_parser_phase_mapping_and_audit_digest_goldens_are_closed() -> None:
         "SOURCE_FILE_COUNT",
         "PAGE_COUNT_PRESENCE",
         "PAGE_COUNT",
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
         "DONE",
     }
     for phase in runtime_phases:
@@ -2292,7 +2296,11 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
         b"r" * 32,
     )
 
-    derived_query, derived_data = recorder.queries[0]
+    derived_query, derived_data = next(
+        (query, data)
+        for query, data in recorder.queries
+        if "FROM catalog_gallery_identities AS identity" in query
+    )
     assert "FROM catalog_gallery_identities AS identity" in derived_query
     assert "JOIN catalog_source_locator_identity AS locator" in derived_query
     assert "identity.gallery_id = %s" in derived_query

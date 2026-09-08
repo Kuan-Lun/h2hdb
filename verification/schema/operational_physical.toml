@@ -2750,6 +2750,90 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
+relation = "gallery_observation_validation_policy"
+table = "catalog_gallery_observation_validation_policies"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "qualification_policy_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_validation_disposition"
+table = "catalog_gallery_observation_validation_dispositions"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "accepted"
+sqlite_type = "INTEGER"
+mariadb_type = "TINYINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_validation_reason"
+table = "catalog_gallery_observation_validation_reasons"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "qualification_reason"
+sqlite_type = "BLOB"
+mariadb_type = "VARBINARY(64)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_validation_source"
+table = "catalog_gallery_observation_validation_sources"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "qualification_source_name"
+sqlite_type = "BLOB"
+mariadb_type = "VARBINARY(255)"
+nullable = false
+
+[[external_stub]]
 relation = "gallery_observation_page_count"
 table = "catalog_gallery_observation_page_counts"
 primary_key = ["gallery_id", "observation_id"]
@@ -5279,7 +5363,7 @@ mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
 attribute = "fixed_carry"
 name = "fixed_carry"
 sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
-mariadb = { type = "VARBINARY(40)", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(255)", nullable = false, collation = "NONE" }
 [[relation.column]]
 attribute = "remaining_text_bytes"
 name = "remaining_text_bytes"
@@ -5341,6 +5425,26 @@ name = "page_count"
 sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "INT UNSIGNED", nullable = true, collation = "NONE" }
 [[relation.column]]
+attribute = "qualification_policy_sha256"
+name = "qualification_policy_sha256"
+sqlite = { type = "BLOB", nullable = true, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = true, collation = "NONE" }
+[[relation.column]]
+attribute = "accepted"
+name = "accepted"
+sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
+mariadb = { type = "TINYINT UNSIGNED", nullable = true, collation = "NONE" }
+[[relation.column]]
+attribute = "qualification_reason"
+name = "qualification_reason"
+sqlite = { type = "BLOB", nullable = true, collation = "NONE" }
+mariadb = { type = "VARBINARY(64)", nullable = true, collation = "NONE" }
+[[relation.column]]
+attribute = "qualification_source_name"
+name = "qualification_source_name"
+sqlite = { type = "BLOB", nullable = true, collation = "NONE" }
+mariadb = { type = "VARBINARY(255)", nullable = true, collation = "NONE" }
+[[relation.column]]
 attribute = "updated_at"
 name = "updated_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
@@ -5352,8 +5456,8 @@ referenced_relation = "gallery_observation_staging"
 referenced_attributes = ["staging_id"]
 [[relation.check]]
 name = "ck_gallery_observation_staging_metadata_parser_storage_domain"
-sqlite_expression = "(comment_byte_count IS NULL OR typeof(comment_byte_count) = 'integer') AND comment_byte_count >= 0 AND (download_time IS NULL OR typeof(download_time) = 'integer') AND download_time >= 0 AND typeof(fixed_carry) = 'blob' AND (gid IS NULL OR typeof(gid) = 'integer') AND gid >= 0 AND (modified_time IS NULL OR typeof(modified_time) = 'integer') AND modified_time >= 0 AND (page_count IS NULL OR typeof(page_count) = 'integer') AND page_count >= 0 AND typeof(phase) = 'text' AND typeof(remaining_text_bytes) = 'integer' AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR typeof(scan_observation_version) = 'integer') AND scan_observation_version >= 0 AND (source_file_count IS NULL OR typeof(source_file_count) = 'integer') AND source_file_count >= 0 AND typeof(staging_id) = 'blob' AND (title_byte_count IS NULL OR typeof(title_byte_count) = 'integer') AND title_byte_count >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR typeof(upload_account_byte_count) = 'integer') AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR typeof(upload_time) = 'integer') AND upload_time >= 0 AND typeof(utf8_tail) = 'blob'"
-mariadb_expression = "(comment_byte_count IS NULL OR comment_byte_count IS NOT NULL) AND comment_byte_count >= 0 AND (download_time IS NULL OR download_time IS NOT NULL) AND download_time >= 0 AND fixed_carry IS NOT NULL AND (gid IS NULL OR gid IS NOT NULL) AND gid >= 0 AND (modified_time IS NULL OR modified_time IS NOT NULL) AND modified_time >= 0 AND (page_count IS NULL OR page_count IS NOT NULL) AND page_count >= 0 AND phase IS NOT NULL AND remaining_text_bytes IS NOT NULL AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR scan_observation_version IS NOT NULL) AND scan_observation_version >= 0 AND (source_file_count IS NULL OR source_file_count IS NOT NULL) AND source_file_count >= 0 AND staging_id IS NOT NULL AND (title_byte_count IS NULL OR title_byte_count IS NOT NULL) AND title_byte_count >= 0 AND updated_at IS NOT NULL AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR upload_account_byte_count IS NOT NULL) AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR upload_time IS NOT NULL) AND upload_time >= 0 AND utf8_tail IS NOT NULL"
+sqlite_expression = "(accepted IS NULL OR typeof(accepted) = 'integer') AND accepted >= 0 AND (comment_byte_count IS NULL OR typeof(comment_byte_count) = 'integer') AND comment_byte_count >= 0 AND (download_time IS NULL OR typeof(download_time) = 'integer') AND download_time >= 0 AND typeof(fixed_carry) = 'blob' AND (gid IS NULL OR typeof(gid) = 'integer') AND gid >= 0 AND (modified_time IS NULL OR typeof(modified_time) = 'integer') AND modified_time >= 0 AND (page_count IS NULL OR typeof(page_count) = 'integer') AND page_count >= 0 AND typeof(phase) = 'text' AND (qualification_policy_sha256 IS NULL OR typeof(qualification_policy_sha256) = 'blob') AND (qualification_reason IS NULL OR typeof(qualification_reason) = 'blob') AND (qualification_source_name IS NULL OR typeof(qualification_source_name) = 'blob') AND typeof(remaining_text_bytes) = 'integer' AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR typeof(scan_observation_version) = 'integer') AND scan_observation_version >= 0 AND (source_file_count IS NULL OR typeof(source_file_count) = 'integer') AND source_file_count >= 0 AND typeof(staging_id) = 'blob' AND (title_byte_count IS NULL OR typeof(title_byte_count) = 'integer') AND title_byte_count >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR typeof(upload_account_byte_count) = 'integer') AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR typeof(upload_time) = 'integer') AND upload_time >= 0 AND typeof(utf8_tail) = 'blob'"
+mariadb_expression = "(accepted IS NULL OR accepted IS NOT NULL) AND accepted >= 0 AND (comment_byte_count IS NULL OR comment_byte_count IS NOT NULL) AND comment_byte_count >= 0 AND (download_time IS NULL OR download_time IS NOT NULL) AND download_time >= 0 AND fixed_carry IS NOT NULL AND (gid IS NULL OR gid IS NOT NULL) AND gid >= 0 AND (modified_time IS NULL OR modified_time IS NOT NULL) AND modified_time >= 0 AND (page_count IS NULL OR page_count IS NOT NULL) AND page_count >= 0 AND phase IS NOT NULL AND (qualification_policy_sha256 IS NULL OR qualification_policy_sha256 IS NOT NULL) AND (qualification_reason IS NULL OR qualification_reason IS NOT NULL) AND (qualification_source_name IS NULL OR qualification_source_name IS NOT NULL) AND remaining_text_bytes IS NOT NULL AND remaining_text_bytes >= 0 AND (scan_observation_version IS NULL OR scan_observation_version IS NOT NULL) AND scan_observation_version >= 0 AND (source_file_count IS NULL OR source_file_count IS NOT NULL) AND source_file_count >= 0 AND staging_id IS NOT NULL AND (title_byte_count IS NULL OR title_byte_count IS NOT NULL) AND title_byte_count >= 0 AND updated_at IS NOT NULL AND updated_at >= 0 AND (upload_account_byte_count IS NULL OR upload_account_byte_count IS NOT NULL) AND upload_account_byte_count >= 0 AND (upload_time IS NULL OR upload_time IS NOT NULL) AND upload_time >= 0 AND utf8_tail IS NOT NULL"
 [[relation.check]]
 name = "ck_gallery_observation_staging_metadata_parser_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
@@ -5416,12 +5520,12 @@ sqlite_expression = "scan_observation_version IS NULL OR scan_observation_versio
 mariadb_expression = "scan_observation_version IS NULL OR scan_observation_version >= 0 AND scan_observation_version <= 4294967295"
 [[relation.check]]
 name = "ck_gallery_observation_staging_metadata_parser_phase"
-sqlite_expression = "phase IN ('PREFIX', 'VERSION', 'GID', 'TITLE_TAG', 'TITLE_LENGTH', 'TITLE', 'COMMENT_TAG', 'COMMENT_LENGTH', 'COMMENT', 'UPLOAD_ACCOUNT_TAG', 'UPLOAD_ACCOUNT_LENGTH', 'UPLOAD_ACCOUNT', 'UPLOAD_TIME', 'DOWNLOAD_TIME', 'MODIFIED_TIME', 'SCAN_VERSION', 'SOURCE_FILE_COUNT', 'PAGE_COUNT_PRESENCE', 'PAGE_COUNT', 'DONE')"
-mariadb_expression = "phase IN ('PREFIX', 'VERSION', 'GID', 'TITLE_TAG', 'TITLE_LENGTH', 'TITLE', 'COMMENT_TAG', 'COMMENT_LENGTH', 'COMMENT', 'UPLOAD_ACCOUNT_TAG', 'UPLOAD_ACCOUNT_LENGTH', 'UPLOAD_ACCOUNT', 'UPLOAD_TIME', 'DOWNLOAD_TIME', 'MODIFIED_TIME', 'SCAN_VERSION', 'SOURCE_FILE_COUNT', 'PAGE_COUNT_PRESENCE', 'PAGE_COUNT', 'DONE')"
+sqlite_expression = "phase IN ('PREFIX', 'VERSION', 'GID', 'TITLE_TAG', 'TITLE_LENGTH', 'TITLE', 'COMMENT_TAG', 'COMMENT_LENGTH', 'COMMENT', 'UPLOAD_ACCOUNT_TAG', 'UPLOAD_ACCOUNT_LENGTH', 'UPLOAD_ACCOUNT', 'UPLOAD_TIME', 'DOWNLOAD_TIME', 'MODIFIED_TIME', 'SCAN_VERSION', 'SOURCE_FILE_COUNT', 'PAGE_COUNT_PRESENCE', 'PAGE_COUNT', 'QUAL_POLICY', 'QUAL_ACCEPTED', 'QUAL_REASON', 'QUAL_SOURCE', 'DONE')"
+mariadb_expression = "phase IN ('PREFIX', 'VERSION', 'GID', 'TITLE_TAG', 'TITLE_LENGTH', 'TITLE', 'COMMENT_TAG', 'COMMENT_LENGTH', 'COMMENT', 'UPLOAD_ACCOUNT_TAG', 'UPLOAD_ACCOUNT_LENGTH', 'UPLOAD_ACCOUNT', 'UPLOAD_TIME', 'DOWNLOAD_TIME', 'MODIFIED_TIME', 'SCAN_VERSION', 'SOURCE_FILE_COUNT', 'PAGE_COUNT_PRESENCE', 'PAGE_COUNT', 'QUAL_POLICY', 'QUAL_ACCEPTED', 'QUAL_REASON', 'QUAL_SOURCE', 'DONE')"
 [[relation.check]]
 name = "ck_gallery_observation_staging_metadata_parser_carry_bounded"
-sqlite_expression = "length(fixed_carry) <= 40 AND length(utf8_tail) <= 3"
-mariadb_expression = "octet_length(fixed_carry) <= 40 AND octet_length(utf8_tail) <= 3"
+sqlite_expression = "length(fixed_carry) <= 255 AND length(utf8_tail) <= 3"
+mariadb_expression = "octet_length(fixed_carry) <= 255 AND octet_length(utf8_tail) <= 3"
 
 [[relation]]
 name = "canonical_value_upload"

@@ -5031,6 +5031,10 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_gallery_observation_file_filesystem_anchors",
     )
     assert tuple(spec.table for spec in observation["GO_OBSERVATION_FACTS"]) == (
+        "catalog_gallery_observation_validation_sources",
+        "catalog_gallery_observation_validation_reasons",
+        "catalog_gallery_observation_validation_dispositions",
+        "catalog_gallery_observation_validation_policies",
         "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_directories",
         "catalog_gallery_observation_stat",
@@ -6429,6 +6433,24 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
         gate = _exclusive(connector)
         source_name = b"shared-gallery"
         gid = 9_001
+        qualification_facts = (
+            (
+                "catalog_gallery_observation_validation_policies",
+                "qualification_policy_sha256",
+                b"p" * 32,
+            ),
+            ("catalog_gallery_observation_validation_dispositions", "accepted", 0),
+            (
+                "catalog_gallery_observation_validation_reasons",
+                "qualification_reason",
+                b"invalid_image",
+            ),
+            (
+                "catalog_gallery_observation_validation_sources",
+                "qualification_source_name",
+                b"001.jpg",
+            ),
+        )
         _fixture_rows(
             connector,
             [
@@ -6485,12 +6507,29 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
             ],
         )
 
+        _fixture_rows(
+            connector,
+            [
+                (
+                    f"INSERT INTO {table} (gallery_id, observation_id, {column}) "
+                    "VALUES (%s, %s, %s)",
+                    (*pair, value),
+                )
+                for table, column, value in qualification_facts
+                for pair in ((42, 1), (42, 2), (298, 1))
+            ],
+        )
+
         observation_phases = cleanup_module._STATIC_PLANS[
             CleanupTargetKind.GALLERY_OBSERVATION
         ].phases
         assert tuple(
             spec.table for spec in observation_phases["GO_OBSERVATION_FACTS"]
         ) == (
+            "catalog_gallery_observation_validation_sources",
+            "catalog_gallery_observation_validation_reasons",
+            "catalog_gallery_observation_validation_dispositions",
+            "catalog_gallery_observation_validation_policies",
             "catalog_gallery_observation_metadata_locals",
             "catalog_gallery_observation_directories",
             "catalog_gallery_observation_stat",
@@ -6526,10 +6565,15 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
             gate,
             CleanupTargetKind.GALLERY_OBSERVATION,
             42,
-            max_rows=8,
+            max_rows=1,
         )
         _drain(connector, gate, cycle, now=100)
 
+        for table, column, value in qualification_facts:
+            assert connector.fetch_all(
+                f"SELECT gallery_id, observation_id, {column} FROM {table} "
+                "ORDER BY gallery_id, observation_id"
+            ) == [(42, 2, value), (298, 1, value)]
         assert connector.fetch_all(
             "SELECT gallery_id, observation_id "
             "FROM catalog_gallery_observation_metadata_locals "

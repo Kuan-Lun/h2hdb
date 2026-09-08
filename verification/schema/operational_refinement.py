@@ -3079,6 +3079,10 @@ def check_gallery_staging_contract_v1(
             "SOURCE_FILE_COUNT",
             "PAGE_COUNT_PRESENCE",
             "PAGE_COUNT",
+            "QUAL_POLICY",
+            "QUAL_ACCEPTED",
+            "QUAL_REASON",
+            "QUAL_SOURCE",
             "DONE",
         ],
         "runtime_parser_phase_rule": "only the in-process decoder aliases TITLE_TEXT, COMMENT_TEXT, ACCOUNT_TAG, ACCOUNT_LENGTH, and ACCOUNT_TEXT map respectively to the persisted TITLE, COMMENT, UPLOAD_ACCOUNT_TAG, UPLOAD_ACCOUNT_LENGTH, and UPLOAD_ACCOUNT states; database rows and public validators accept only the exact ordered durable_parser_phases registry, with ASCII case-sensitive equality and no LENGTH, runtime alias, unknown value, trimming, or normalization",
@@ -3096,7 +3100,7 @@ def check_gallery_staging_contract_v1(
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_contract).hexdigest() != (
-        "1693cf759a9aa1e297815a2a9a43a7bd804d82ec1cc1d9fd433f346e18e0fda7"
+        "76c16f19b4648d5157d04bf53a10037d69dd714bf903ee886856c9dcc604bfa0"
     ):
         raise ValueError("gallery staging exact protocol text drifts")
     gc_boundary = logical.get("gallery_page_gc_boundary")
@@ -4088,8 +4092,8 @@ def gallery_metadata_parser_state(facts: GalleryMetadataParserFacts) -> str:
         and 0 <= facts.next_field_remaining <= 9223372036854775807
         and len(facts.prior_utf8_tail) <= 3
         and len(facts.next_utf8_tail) <= 3
-        and len(facts.prior_fixed_carry) <= 40
-        and len(facts.next_fixed_carry) <= 40
+        and len(facts.prior_fixed_carry) <= 255
+        and len(facts.next_fixed_carry) <= 255
         and 1 <= facts.chunk_length <= 32768
         and facts.transition_exact
         and facts.extracted_scalars_portable
@@ -4116,6 +4120,10 @@ class GalleryMetadataParserState:
     utf8_tail: bytes = b""
     fixed_carry: bytes = b""
     scalars: tuple[tuple[str, int], ...] = ()
+    qualification_policy_sha256: bytes | None = None
+    accepted: int | None = None
+    qualification_reason: bytes | None = None
+    qualification_source_name: bytes | None = None
 
 
 _GALLERY_METADATA_PREFIX = b"h2hdb-vnext-gallery-observation-metadata\0"
@@ -4134,8 +4142,12 @@ _GALLERY_METADATA_FIXED_PHASES: dict[str, tuple[int, str, str | None]] = {
     "MODIFIED_TIME": (8, "SCAN_VERSION", "modified_time"),
     "SCAN_VERSION": (4, "SOURCE_FILE_COUNT", "scan_version"),
     "SOURCE_FILE_COUNT": (8, "PAGE_COUNT_PRESENCE", "source_file_count"),
-    "PAGE_COUNT_PRESENCE": (1, "DONE", "page_count_presence"),
-    "PAGE_COUNT": (4, "DONE", "page_count"),
+    "PAGE_COUNT_PRESENCE": (1, "QUAL_POLICY", "page_count_presence"),
+    "PAGE_COUNT": (4, "QUAL_POLICY", "page_count"),
+    "QUAL_POLICY": (32, "QUAL_ACCEPTED", "qualification_policy_sha256"),
+    "QUAL_ACCEPTED": (1, "QUAL_REASON", "accepted"),
+    "QUAL_REASON": (64, "QUAL_SOURCE", "qualification_reason"),
+    "QUAL_SOURCE": (256, "DONE", "qualification_source_name"),
 }
 _GALLERY_METADATA_TEXT_NEXT = {
     "TITLE": "COMMENT_TAG",
@@ -4230,7 +4242,7 @@ def _validate_gallery_metadata_parser_state(state: GalleryMetadataParserState) -
         raise ValueError("metadata parser phase is unregistered")
     if not 0 <= state.field_remaining <= 9223372036854775807:
         raise ValueError("metadata field length is outside portable int63")
-    if len(state.utf8_tail) > 3 or len(state.fixed_carry) > 40:
+    if len(state.utf8_tail) > 3 or len(state.fixed_carry) > 255:
         raise ValueError("metadata parser carry is outside its fixed bound")
     if state.phase in _GALLERY_METADATA_TEXT_NEXT:
         if state.fixed_carry:
@@ -4264,7 +4276,13 @@ def _validate_gallery_metadata_parser_state(state: GalleryMetadataParserState) -
         )
         if not state.scalars or state.scalars[-1] != ("page_count_presence", 1):
             raise ValueError("metadata page-count phase lacks exact presence authority")
-    elif state.phase == "DONE":
+    elif state.phase in {
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
+        "DONE",
+    }:
         base = _GALLERY_METADATA_SCALAR_PREFIX["PAGE_COUNT_PRESENCE"]
         if len(state.scalars) == len(base) + 1:
             expected_names = base + ("page_count_presence",)
@@ -4280,6 +4298,56 @@ def _validate_gallery_metadata_parser_state(state: GalleryMetadataParserState) -
         expected_names = _GALLERY_METADATA_SCALAR_PREFIX[state.phase]
     if names != expected_names:
         raise ValueError("metadata durable scalars are not the exact phase prefix")
+    qualification_phases = (
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
+        "DONE",
+    )
+    known = (
+        qualification_phases.index(state.phase)
+        if state.phase in qualification_phases
+        else 0
+    )
+    for index, field in enumerate(_GALLERY_METADATA_QUALIFICATION_FIELDS):
+        value = getattr(state, field)
+        if (value is not None) != (index < known):
+            raise ValueError(
+                "qualification fields are not the exact parser phase prefix"
+            )
+    if state.qualification_policy_sha256 is not None and (
+        not isinstance(state.qualification_policy_sha256, bytes)
+        or len(state.qualification_policy_sha256) != 32
+    ):
+        raise ValueError("qualification policy must be exactly 32 bytes")
+    if state.accepted is not None and state.accepted not in {0, 1}:
+        raise ValueError("qualification acceptance must be zero or one")
+    if state.qualification_reason is not None and (
+        not isinstance(state.qualification_reason, bytes)
+        or len(state.qualification_reason) > 64
+        or any(
+            byte not in b"abcdefghijklmnopqrstuvwxyz0123456789_"
+            for byte in state.qualification_reason
+        )
+    ):
+        raise ValueError("qualification reason is not a bounded ASCII identifier")
+    if state.qualification_source_name is not None and (
+        not isinstance(state.qualification_source_name, bytes)
+        or len(state.qualification_source_name) > 255
+        or b"/" in state.qualification_source_name
+        or b"\\" in state.qualification_source_name
+        or b"\x00" in state.qualification_source_name
+        or state.qualification_source_name in {b".", b".."}
+    ):
+        raise ValueError("qualification source is not a source leaf")
+    if state.phase == "DONE":
+        rejected = state.accepted == 0
+        if (
+            bool(state.qualification_reason) != rejected
+            or bool(state.qualification_source_name) != rejected
+        ):
+            raise ValueError("qualification outcome and rejection facts disagree")
     for name, value in state.scalars:
         maximum = (
             0xFFFFFFFF
@@ -4296,6 +4364,14 @@ def _append_metadata_scalar(
     if any(existing == name for existing, _value in scalars):
         raise ValueError("metadata scalar was decoded twice")
     return scalars + ((name, value),)
+
+
+_GALLERY_METADATA_QUALIFICATION_FIELDS = (
+    "qualification_policy_sha256",
+    "accepted",
+    "qualification_reason",
+    "qualification_source_name",
+)
 
 
 _GALLERY_METADATA_ROW_SCALARS = (
@@ -4330,6 +4406,8 @@ def gallery_metadata_parser_state_to_row(
             "scan_version" if column == "scan_observation_version" else column
         )
         result[column] = scalar_values.get(internal_name)
+    for field in _GALLERY_METADATA_QUALIFICATION_FIELDS:
+        result[field] = getattr(state, field)
     return result
 
 
@@ -4344,6 +4422,7 @@ def gallery_metadata_parser_state_from_row(
         "remaining_text_bytes",
         "utf8_tail",
         *_GALLERY_METADATA_ROW_SCALARS,
+        *_GALLERY_METADATA_QUALIFICATION_FIELDS,
     }
     if set(row) != expected_columns:
         raise ValueError("metadata parser row columns drift")
@@ -4374,7 +4453,13 @@ def gallery_metadata_parser_state_from_row(
         if row["page_count"] is not None:
             raise ValueError("metadata page-count value appears before decoding")
         scalars.append(("page_count_presence", 1))
-    elif phase == "DONE":
+    elif phase in {
+        "QUAL_POLICY",
+        "QUAL_ACCEPTED",
+        "QUAL_REASON",
+        "QUAL_SOURCE",
+        "DONE",
+    }:
         page_count = row["page_count"]
         if page_count is None:
             scalars.append(("page_count_presence", 0))
@@ -4386,6 +4471,10 @@ def gallery_metadata_parser_state_from_row(
         utf8_tail=utf8_tail,
         fixed_carry=fixed_carry,
         scalars=tuple(scalars),
+        qualification_policy_sha256=row["qualification_policy_sha256"],
+        accepted=row["accepted"],
+        qualification_reason=row["qualification_reason"],
+        qualification_source_name=row["qualification_source_name"],
     )
     _validate_gallery_metadata_parser_state(state)
     if gallery_metadata_parser_state_to_row(state) != dict(row):
@@ -4419,6 +4508,9 @@ def advance_gallery_metadata_parser(
     utf8_tail = state.utf8_tail
     fixed_carry = state.fixed_carry
     scalars = state.scalars
+    qualification = {
+        field: getattr(state, field) for field in _GALLERY_METADATA_QUALIFICATION_FIELDS
+    }
     offset = 0
     while offset < len(chunk) or (
         phase in _GALLERY_METADATA_TEXT_NEXT and remaining == 0
@@ -4453,11 +4545,23 @@ def advance_gallery_metadata_parser(
         if phase == "PREFIX":
             if token != _GALLERY_METADATA_PREFIX:
                 raise ValueError("metadata stream prefix mismatch")
+        elif phase in {"QUAL_POLICY", "QUAL_ACCEPTED", "QUAL_REASON", "QUAL_SOURCE"}:
+            if phase == "QUAL_POLICY":
+                qualification["qualification_policy_sha256"] = token
+            elif phase == "QUAL_ACCEPTED":
+                qualification["accepted"] = token[0]
+            elif phase == "QUAL_REASON":
+                qualification["qualification_reason"] = token.rstrip(b"\x00")
+            else:
+                length = token[0]
+                if any(token[1 + length :]):
+                    raise ValueError("qualification source padding is not canonical")
+                qualification["qualification_source_name"] = token[1 : 1 + length]
         else:
             if field is None:
                 raise ValueError("metadata fixed phase lacks its scalar field")
             value = int.from_bytes(token, "big")
-            if field == "version" and value != 1:
+            if field == "version" and value != 2:
                 raise ValueError("metadata stream version mismatch")
             if field == "title_tag" and value != 1:
                 raise ValueError("metadata title tag mismatch")
@@ -4478,7 +4582,7 @@ def advance_gallery_metadata_parser(
                 if value not in {0, 1}:
                     raise ValueError("metadata page-count presence is invalid")
                 scalars = _append_metadata_scalar(scalars, field, value)
-                next_phase = "PAGE_COUNT" if value == 1 else "DONE"
+                next_phase = "PAGE_COUNT" if value == 1 else "QUAL_POLICY"
             elif field not in {
                 "version",
                 "title_tag",
@@ -4497,6 +4601,7 @@ def advance_gallery_metadata_parser(
         utf8_tail=utf8_tail,
         fixed_carry=fixed_carry,
         scalars=scalars,
+        **qualification,
     )
     _validate_gallery_metadata_parser_state(result)
     if terminal:

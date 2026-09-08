@@ -29,6 +29,7 @@ __all__ = [
     "check_retention_contract_v2",
     "check_role_derivation_v1",
     "check_source_baseline_channel_v1",
+    "check_source_qualification_v1",
     "check_source_completion_marker_v1",
     "check_state_machines_v1",
     "validate_builtin_semantic_manifest",
@@ -70,6 +71,8 @@ from .vnext_canonical_value_repository import (
 )
 from .vnext_domains import require_ascii_bytes, require_digest32
 from .vnext_source_marker_family import SourceMarkerConflictError, _load_cached_batch
+from .vnext_source_metadata import iter_metadata_chunks
+from .vnext_source_qualification_repository import require_source_qualification
 from .vnext_state_machine_contract import validate_catalog_state_machine_contract
 
 type SemanticValidator = Callable[[SQLConnector], None]
@@ -95,6 +98,11 @@ _SPECS = (
         "catalog.identity-codecs.v1",
         "ready_and_runtime",
         "catalog_refinement.check_identity_codecs_v1",
+    ),
+    (
+        "catalog.source-qualification.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_source_qualification_v1",
     ),
     (
         "catalog.source-completion-marker.v1",
@@ -6864,6 +6872,32 @@ def check_identity_codecs_v1(connector: SQLConnector) -> None:
     _active_source_contexts(connector)
 
 
+def check_source_qualification_v1(connector: SQLConnector) -> None:
+    """Reconstruct every retained qualification from its exact canonical byte tree."""
+
+    after_gallery = after_observation = 0
+    while True:
+        rows = connector.fetch_all(
+            "SELECT gallery_id, observation_id FROM catalog_gallery_observations "
+            "WHERE gallery_id > %s OR (gallery_id = %s AND observation_id > %s) "
+            "ORDER BY gallery_id, observation_id LIMIT 128",
+            (after_gallery, after_gallery, after_observation),
+        )
+        if not rows:
+            return
+        for gallery_id, observation_id in rows:
+            try:
+                receipt = identity.validate_gallery_observation_metadata_parts(
+                    iter_metadata_chunks(connector, gallery_id, observation_id)
+                )
+                require_source_qualification(
+                    connector, gallery_id, observation_id, receipt
+                )
+            except (TypeError, ValueError) as error:
+                raise CatalogSemanticValidationError(str(error)) from error
+        after_gallery, after_observation = rows[-1]
+
+
 def check_canonical_reference_domains_v1(connector: SQLConnector) -> None:
     """Validate the closed registry and every retained canonical reference."""
 
@@ -7564,6 +7598,7 @@ def builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
     validators: Mapping[str, SemanticValidator] = MappingProxyType(
         {
             "catalog.identity-codecs.v1": check_identity_codecs_v1,
+            "catalog.source-qualification.v1": check_source_qualification_v1,
             "catalog.source-completion-marker.v1": check_source_completion_marker_v1,
             "catalog.canonical-reference-domains.v1": check_canonical_reference_domains_v1,
             "catalog.source-baseline-channel.v1": check_source_baseline_channel_v1,

@@ -2149,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "3c078ba619a9b95b8729d0de339814f6978cfd4a9a4a5c2a45d1574b197eda8f"
+def operationalManifestSha256 : String := "1d1d3526635c7fbbd429923a876e5058b0d2cbb45195ec26a292054c658de976"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -3966,10 +3966,10 @@ theorem gallery_observation_staging_match_receipt_bcnf : BCNF gallery_observatio
 
 def gallery_observation_staging_metadata_parser_contract : RelationContract where
   name := "gallery_observation_staging_metadata_parser"
-  attributes := ["staging_id", "phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "updated_at"]
+  attributes := ["staging_id", "phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "qualification_policy_sha256", "accepted", "qualification_reason", "qualification_source_name", "updated_at"]
   declaredKeys := [["staging_id"]]
   declaredFDs := [
-    { determinant := ["staging_id"], dependent := ["phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "updated_at"] }
+    { determinant := ["staging_id"], dependent := ["phase", "fixed_carry", "remaining_text_bytes", "utf8_tail", "gid", "title_byte_count", "comment_byte_count", "upload_account_byte_count", "upload_time", "download_time", "modified_time", "scan_observation_version", "source_file_count", "page_count", "qualification_policy_sha256", "accepted", "qualification_reason", "qualification_source_name", "updated_at"] }
   ]
 
 theorem gallery_observation_staging_metadata_parser_schema_well_formed :

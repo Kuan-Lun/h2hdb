@@ -399,7 +399,7 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
     assert session is not None
     policy = facade.ensure_policy(session, _policy())
 
-    with facade.prepare_source(_BoundarySource(file_count)) as source:
+    with facade.prepare_source(_BoundarySource(file_count), policy=policy) as source:
         expected = source._manifest_summary
         for _step in range(300):
             issued = facade.issue_source_step(session, policy, source)
@@ -446,7 +446,7 @@ def test_staging_uses_only_frozen_spool_after_prepare_and_close_cleans_it(
     policy = facade.ensure_policy(session, _policy())
     adapter = _BoundarySource(257)
 
-    source = facade.prepare_source(adapter)
+    source = facade.prepare_source(adapter, policy=policy)
     snapshot_directory = source._snapshot._directory
     expected = source._manifest_summary
     assert snapshot_directory.is_dir()
@@ -510,7 +510,7 @@ def test_live_mutation_after_prepare_stages_the_frozen_snapshot(
     policy = facade.ensure_policy(session, _policy())
     adapter = _BoundarySource(1)
 
-    with facade.prepare_source(adapter) as source:
+    with facade.prepare_source(adapter, policy=policy) as source:
         frozen = source._manifest_summary
         adapter._observation = VNextIngestGalleryObservation(
             adapter._observation.locator_components,
@@ -556,13 +556,16 @@ def test_frozen_pages_replay_exactly_and_metadata_resumes_from_byte_cursor(
     facade = VNextIngestFacade(
         CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
     )
+    session = facade.try_claim_ingest(True, 1_000_000)
+    assert session is not None
+    policy = facade.ensure_policy(session, _policy())
     adapter = _BoundarySource(257)
     adapter._observation = VNextIngestGalleryObservation(
         adapter._observation.locator_components,
         replace(adapter._observation.metadata, title="x" * 40_000),
     )
 
-    with facade.prepare_source(adapter) as source:
+    with facade.prepare_source(adapter, policy=policy) as source:
         locator = source._plan._page(0)[0]
         components = source._plan._decode_locator(
             locator.position,
@@ -641,7 +644,7 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
     policy = facade.ensure_policy(session, _policy())
     adapter = _BoundarySource(1)
 
-    with facade.prepare_source(adapter) as source:
+    with facade.prepare_source(adapter, policy=policy) as source:
         exact = source._manifest_summary
         source._manifest_summary = SourceBuildManifestSummary(
             sha256(b"defensive-codec-mismatch").digest(),
@@ -687,7 +690,9 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
         stable_session = stable_facade.try_claim_ingest(True, 1_000_000)
         assert stable_session is not None
         stable_policy = stable_facade.ensure_policy(stable_session, _policy())
-        with stable_facade.prepare_source(adapter) as stable_source:
+        with stable_facade.prepare_source(
+            adapter, policy=stable_policy
+        ) as stable_source:
             for _step in range(200):
                 issued = stable_facade.issue_source_step(
                     stable_session,
@@ -730,7 +735,7 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
     adapter = _BoundarySource(1)
 
     with (
-        facade.prepare_source(adapter) as source,
+        facade.prepare_source(adapter, policy=policy) as source,
         patch.object(
             SourceBuildRepository,
             "abandon",
@@ -768,7 +773,7 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
     successor_session = successor.try_claim_ingest(True, 1_000_000)
     assert successor_session is not None
     successor_policy = successor.ensure_policy(successor_session, _policy())
-    with successor.prepare_source(adapter) as source:
+    with successor.prepare_source(adapter, policy=successor_policy) as source:
         for _step in range(200):
             issued = successor.issue_source_step(
                 successor_session,
@@ -804,7 +809,7 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
     assert first_session is not None
     first_policy = first.ensure_policy(first_session, _policy())
 
-    with first.prepare_source(adapter) as source:
+    with first.prepare_source(adapter, policy=first_policy) as source:
         exact = source._manifest_summary
         source._manifest_summary = SourceBuildManifestSummary(
             sha256(b"mariadb-defensive-codec-mismatch").digest(),
@@ -835,7 +840,7 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
         session = facade.try_claim_ingest(True, 1_000_000)
         assert session is not None
         policy = facade.ensure_policy(session, _policy())
-        with facade.prepare_source(adapter) as source:
+        with facade.prepare_source(adapter, policy=policy) as source:
             for _step in range(200):
                 issued = facade.issue_source_step(session, policy, source)
                 prepared = facade.prepare_source_step(source, issued)

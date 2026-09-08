@@ -677,6 +677,38 @@ def _seed_published_commit(
     return receipt_id
 
 
+def _seed_qualification(
+    connector: SQLiteConnector,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    qualification: identity.VNextSourceQualification | None = None,
+) -> None:
+    qualification = qualification or identity.VNextSourceQualification()
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_validation_policies "
+        "(gallery_id, observation_id, qualification_policy_sha256) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, bytes(32)),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_validation_dispositions "
+        "(gallery_id, observation_id, accepted) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, int(qualification.accepted)),
+    )
+    if not qualification.accepted:
+        assert qualification.reason_code is not None
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_validation_reasons "
+            "(gallery_id, observation_id, qualification_reason) VALUES (%s, %s, %s)",
+            (gallery_id, observation_id, qualification.reason_code.encode("ascii")),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_validation_sources "
+            "(gallery_id, observation_id, qualification_source_name) VALUES (%s, %s, %s)",
+            (gallery_id, observation_id, qualification.source_name),
+        )
+
+
 def _seed_gallery(
     connector: SQLiteConnector,
     *,
@@ -687,6 +719,7 @@ def _seed_gallery(
     occurrences: tuple[tuple[bytes, int], ...],
     artists: tuple[int, ...],
     serial: int,
+    qualification: identity.VNextSourceQualification | None = None,
 ) -> None:
     locator = sha256(b"locator" + gallery_id.to_bytes(8, "big")).digest()
     if not connector.fetch_one(
@@ -725,6 +758,12 @@ def _seed_gallery(
         "INSERT INTO catalog_gallery_observation_allocations "
         "(gallery_id, observation_id, allocated_at) VALUES (%s, %s, 1)",
         (gallery_id, observation_id),
+    )
+    _seed_qualification(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=observation_id,
+        qualification=qualification,
     )
     observation = sha256(
         b"observation"
@@ -839,10 +878,11 @@ def _seed_preparation_facts(
     gallery_id: int,
     observation_id: int,
     file_sha256: bytes,
+    metadata: GalleryObservationMetadata | None = None,
 ) -> None:
     """Add one exact metadata tree and one normalized CONTENT file."""
 
-    metadata = GalleryObservationMetadata(
+    metadata = metadata or GalleryObservationMetadata(
         10_000 + gallery_id,
         f"streamed title {gallery_id}",
         "",
@@ -858,6 +898,26 @@ def _seed_preparation_facts(
     bounds_by_page: dict[bytes, tuple[bytes, bytes]] = {}
     for encoded in tree.pages:
         page = decode_gallery_observation_page(encoded.page_bytes)
+        existing = connector.fetch_one(
+            "SELECT page_bytes FROM catalog_gallery_observation_pages "
+            "WHERE page_sha256 = %s",
+            (encoded.page_sha256,),
+        )
+        if existing:
+            assert existing == (encoded.page_bytes,)
+            first = connector.fetch_one(
+                "SELECT first_key FROM catalog_gallery_observation_page_key_bounds_first_keys "
+                "WHERE page_sha256 = %s",
+                (encoded.page_sha256,),
+            )
+            last = connector.fetch_one(
+                "SELECT last_key FROM catalog_gallery_observation_page_key_bounds_last_keys "
+                "WHERE page_sha256 = %s",
+                (encoded.page_sha256,),
+            )
+            assert len(first) == len(last) == 1
+            bounds_by_page[encoded.page_sha256] = (bytes(first[0]), bytes(last[0]))
+            continue
         seed_gallery_page_descriptor(
             connector,
             page_sha256=encoded.page_sha256,
@@ -901,20 +961,31 @@ def _seed_preparation_facts(
         "WHERE identity.gallery_id = %s",
         (gallery_id,),
     )[0]
-    connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-        (metadata.gid, metadata.upload_time),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
-        "VALUES (%s, %s)",
-        (source_gallery_name, metadata.gid),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_source_name_accesses "
-        "(gallery_id, source_gallery_name) VALUES (%s, %s)",
-        (gallery_id, source_gallery_name),
-    )
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_gallery_upload_times WHERE gid = %s", (metadata.gid,)
+    ):
+        connector.execute(
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
+            (metadata.gid, metadata.upload_time),
+        )
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_source_gallery_name_gids WHERE source_gallery_name = %s",
+        (source_gallery_name,),
+    ):
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
+            "VALUES (%s, %s)",
+            (source_gallery_name, metadata.gid),
+        )
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_gallery_source_name_accesses WHERE gallery_id = %s",
+        (gallery_id,),
+    ):
+        connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+            (gallery_id, source_gallery_name),
+        )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_metadata_locals "
         "(gallery_id, observation_id, download_time, modified_time) "
@@ -945,12 +1016,15 @@ def _seed_preparation_facts(
     )
     name = f"content-{gallery_id}.jpg".encode("ascii")
     file_key = identity.file_key(name)
-    seed_file_name_identity(
-        connector,
-        file_key=file_key,
-        name_bytes=name,
-        file_role=b"CONTENT",
-    )
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_file_name_identities WHERE file_key = %s", (file_key,)
+    ):
+        seed_file_name_identity(
+            connector,
+            file_key=file_key,
+            name_bytes=name,
+            file_role=b"CONTENT",
+        )
     seed_gallery_observation_file(
         connector,
         gallery_id=gallery_id,
@@ -1620,6 +1694,14 @@ def _independent_file_oracle(
         maximum = 0
         occurrence_count = 0
         for gallery_id, observation_id, count in members:
+            disposition = connector.fetch_one(
+                "SELECT accepted FROM catalog_gallery_observation_validation_dispositions "
+                "WHERE gallery_id = %s AND observation_id = %s",
+                (gallery_id, observation_id),
+            )
+            assert disposition in {(0,), (1,)}
+            if disposition == (0,):
+                continue
             occurrence_count += int(count)
             artists = {
                 int(row[0])
@@ -1631,7 +1713,8 @@ def _independent_file_oracle(
             }
             all_artists.update(artists)
             maximum = max(maximum, len(artists))
-        result[bytes(digest)] = (occurrence_count, len(all_artists), maximum)
+        if occurrence_count:
+            result[bytes(digest)] = (occurrence_count, len(all_artists), maximum)
     return result
 
 
@@ -4975,6 +5058,9 @@ def _impact_batch_select_profile(
                     "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
                     (build, gallery_id, gallery_id),
                 )
+                _seed_qualification(
+                    connector, gallery_id=gallery_id, observation_id=gallery_id
+                )
                 connector.execute(
                     "INSERT INTO catalog_analysis_changed_galleries "
                     "(analysis_id, gallery_id, change_kind) VALUES (%s, %s, 'ADDED')",
@@ -5502,6 +5588,7 @@ def test_depth_zero_impact_loaders_do_not_join_real_zero_identifier_rows(
                 "(build_id, gallery_id, observation_id) VALUES (%s, 1, 1)",
                 (zero,),
             )
+            _seed_qualification(connector, gallery_id=1, observation_id=1)
             _seed_minimal_gid_metadata(
                 connector,
                 gallery_id=1,

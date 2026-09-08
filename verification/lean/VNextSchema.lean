@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "35bf7f206ae2565bd6029b34a53aa178b3c80a046c8aa06697e2851729f707a0"
+def catalogManifestSha256 : String := "1f5bedbdf5c9eae929da5b16781765324f4c007cc7e0388386fbd2ecc33456e1"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -3523,6 +3523,190 @@ theorem gallery_source_name_access_bcnf_check :
 
 theorem gallery_source_name_access_bcnf : BCNF gallery_source_name_access_contract :=
   bcnfCheck_sound gallery_source_name_access_contract gallery_source_name_access_bcnf_check
+
+def gallery_observation_validation_policy_contract : RelationContract where
+  name := "gallery_observation_validation_policy"
+  attributes := ["gallery_id", "observation_id", "qualification_policy_sha256"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["qualification_policy_sha256"] }
+  ]
+
+theorem gallery_observation_validation_policy_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_validation_policy_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_policy_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_validation_policy_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_policy_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_validation_policy_contract :=
+  keysDetermineAllCheck_sound gallery_observation_validation_policy_contract
+    gallery_observation_validation_policy_candidate_keys_check
+
+theorem gallery_observation_validation_policy_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_validation_policy_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_policy_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_validation_policy_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_validation_policy_contract
+    gallery_observation_validation_policy_candidate_keys_minimal_check
+
+theorem gallery_observation_validation_policy_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_validation_policy_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_policy_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_validation_policy_contract :=
+  closureFixedPointCheck_sound gallery_observation_validation_policy_contract
+    gallery_observation_validation_policy_closure_fixed_check
+
+theorem gallery_observation_validation_policy_bcnf_check :
+    bcnfCheck gallery_observation_validation_policy_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_policy_bcnf : BCNF gallery_observation_validation_policy_contract :=
+  bcnfCheck_sound gallery_observation_validation_policy_contract gallery_observation_validation_policy_bcnf_check
+
+def gallery_observation_validation_disposition_contract : RelationContract where
+  name := "gallery_observation_validation_disposition"
+  attributes := ["gallery_id", "observation_id", "accepted"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["accepted"] }
+  ]
+
+theorem gallery_observation_validation_disposition_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_validation_disposition_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_disposition_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_validation_disposition_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_disposition_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_validation_disposition_contract :=
+  keysDetermineAllCheck_sound gallery_observation_validation_disposition_contract
+    gallery_observation_validation_disposition_candidate_keys_check
+
+theorem gallery_observation_validation_disposition_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_validation_disposition_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_disposition_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_validation_disposition_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_validation_disposition_contract
+    gallery_observation_validation_disposition_candidate_keys_minimal_check
+
+theorem gallery_observation_validation_disposition_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_validation_disposition_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_disposition_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_validation_disposition_contract :=
+  closureFixedPointCheck_sound gallery_observation_validation_disposition_contract
+    gallery_observation_validation_disposition_closure_fixed_check
+
+theorem gallery_observation_validation_disposition_bcnf_check :
+    bcnfCheck gallery_observation_validation_disposition_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_disposition_bcnf : BCNF gallery_observation_validation_disposition_contract :=
+  bcnfCheck_sound gallery_observation_validation_disposition_contract gallery_observation_validation_disposition_bcnf_check
+
+def gallery_observation_validation_reason_contract : RelationContract where
+  name := "gallery_observation_validation_reason"
+  attributes := ["gallery_id", "observation_id", "qualification_reason"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["qualification_reason"] }
+  ]
+
+theorem gallery_observation_validation_reason_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_validation_reason_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_reason_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_validation_reason_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_reason_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_validation_reason_contract :=
+  keysDetermineAllCheck_sound gallery_observation_validation_reason_contract
+    gallery_observation_validation_reason_candidate_keys_check
+
+theorem gallery_observation_validation_reason_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_validation_reason_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_reason_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_validation_reason_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_validation_reason_contract
+    gallery_observation_validation_reason_candidate_keys_minimal_check
+
+theorem gallery_observation_validation_reason_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_validation_reason_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_reason_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_validation_reason_contract :=
+  closureFixedPointCheck_sound gallery_observation_validation_reason_contract
+    gallery_observation_validation_reason_closure_fixed_check
+
+theorem gallery_observation_validation_reason_bcnf_check :
+    bcnfCheck gallery_observation_validation_reason_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_reason_bcnf : BCNF gallery_observation_validation_reason_contract :=
+  bcnfCheck_sound gallery_observation_validation_reason_contract gallery_observation_validation_reason_bcnf_check
+
+def gallery_observation_validation_source_contract : RelationContract where
+  name := "gallery_observation_validation_source"
+  attributes := ["gallery_id", "observation_id", "qualification_source_name"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["qualification_source_name"] }
+  ]
+
+theorem gallery_observation_validation_source_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_validation_source_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_source_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_validation_source_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_source_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_validation_source_contract :=
+  keysDetermineAllCheck_sound gallery_observation_validation_source_contract
+    gallery_observation_validation_source_candidate_keys_check
+
+theorem gallery_observation_validation_source_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_validation_source_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_source_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_validation_source_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_validation_source_contract
+    gallery_observation_validation_source_candidate_keys_minimal_check
+
+theorem gallery_observation_validation_source_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_validation_source_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_source_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_validation_source_contract :=
+  closureFixedPointCheck_sound gallery_observation_validation_source_contract
+    gallery_observation_validation_source_closure_fixed_check
+
+theorem gallery_observation_validation_source_bcnf_check :
+    bcnfCheck gallery_observation_validation_source_contract = true := by
+  native_decide
+
+theorem gallery_observation_validation_source_bcnf : BCNF gallery_observation_validation_source_contract :=
+  bcnfCheck_sound gallery_observation_validation_source_contract gallery_observation_validation_source_bcnf_check
 
 def gallery_observation_metadata_local_contract : RelationContract where
   name := "gallery_observation_metadata_local"
@@ -11113,6 +11297,10 @@ def manifestContracts : List RelationContract := [
   gallery_upload_time_contract,
   source_gallery_name_gid_contract,
   gallery_source_name_access_contract,
+  gallery_observation_validation_policy_contract,
+  gallery_observation_validation_disposition_contract,
+  gallery_observation_validation_reason_contract,
+  gallery_observation_validation_source_contract,
   gallery_observation_metadata_local_contract,
   gallery_observation_metadata_contract,
   gallery_observation_scan_contract,
@@ -11284,7 +11472,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 220 := by
+    manifestContracts.length = 224 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -13757,6 +13945,10 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_upload_time_contract ∧
     BCNF source_gallery_name_gid_contract ∧
     BCNF gallery_source_name_access_contract ∧
+    BCNF gallery_observation_validation_policy_contract ∧
+    BCNF gallery_observation_validation_disposition_contract ∧
+    BCNF gallery_observation_validation_reason_contract ∧
+    BCNF gallery_observation_validation_source_contract ∧
     BCNF gallery_observation_metadata_local_contract ∧
     BCNF gallery_observation_scan_contract ∧
     BCNF gallery_observation_discovery_fingerprint_contract ∧
@@ -13931,6 +14123,10 @@ theorem all_manifest_base_relations_bcnf :
     gallery_upload_time_bcnf,
     source_gallery_name_gid_bcnf,
     gallery_source_name_access_bcnf,
+    gallery_observation_validation_policy_bcnf,
+    gallery_observation_validation_disposition_bcnf,
+    gallery_observation_validation_reason_bcnf,
+    gallery_observation_validation_source_bcnf,
     gallery_observation_metadata_local_bcnf,
     gallery_observation_scan_bcnf,
     gallery_observation_discovery_fingerprint_bcnf,
@@ -14115,6 +14311,10 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_upload_time_contract ∧
     KeysDetermineAllAttributes source_gallery_name_gid_contract ∧
     KeysDetermineAllAttributes gallery_source_name_access_contract ∧
+    KeysDetermineAllAttributes gallery_observation_validation_policy_contract ∧
+    KeysDetermineAllAttributes gallery_observation_validation_disposition_contract ∧
+    KeysDetermineAllAttributes gallery_observation_validation_reason_contract ∧
+    KeysDetermineAllAttributes gallery_observation_validation_source_contract ∧
     KeysDetermineAllAttributes gallery_observation_metadata_local_contract ∧
     KeysDetermineAllAttributes gallery_observation_metadata_contract ∧
     KeysDetermineAllAttributes gallery_observation_scan_contract ∧
@@ -14335,6 +14535,10 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_upload_time_candidate_keys_determine_all_attributes,
     source_gallery_name_gid_candidate_keys_determine_all_attributes,
     gallery_source_name_access_candidate_keys_determine_all_attributes,
+    gallery_observation_validation_policy_candidate_keys_determine_all_attributes,
+    gallery_observation_validation_disposition_candidate_keys_determine_all_attributes,
+    gallery_observation_validation_reason_candidate_keys_determine_all_attributes,
+    gallery_observation_validation_source_candidate_keys_determine_all_attributes,
     gallery_observation_metadata_local_candidate_keys_determine_all_attributes,
     gallery_observation_metadata_candidate_keys_determine_all_attributes,
     gallery_observation_scan_candidate_keys_determine_all_attributes,

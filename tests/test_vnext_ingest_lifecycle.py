@@ -124,7 +124,7 @@ def test_public_ingest_facade_context_closes_owned_cache_and_fails_closed(
     assert receipt.close_count == 1
 
     closed_calls: tuple[Callable[[], object], ...] = (
-        lambda: facade.prepare_source(cast(Any, object())),
+        lambda: facade.prepare_source(cast(Any, object()), policy=cast(Any, object())),
         lambda: facade.issue_source_step(
             cast(Any, object()), cast(Any, object()), cast(Any, object())
         ),

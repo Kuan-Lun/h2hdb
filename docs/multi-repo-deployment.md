@@ -2,25 +2,42 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-3/schema-v3 catalog facade; ingest uses the
+consume the epoch-3/schema-v6 catalog facade; ingest uses the
 transaction-owning ingest facade and downloader uses the queue facade. No
 sibling may query `catalog_*` or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-3/schema-v3 database. Catalog and operational relations are
+There is one epoch-3/schema-v6 database. Catalog and operational relations are
 generated for both SQLite and MariaDB from the same closed-world logical
 manifests. Those manifests and their executable schema reports are the
 authority for relation shapes, projections, bootstrap facts, decompositions,
 and semantic obligations; deployment documentation intentionally does not copy
 counts that would drift as the schema evolves.
 
-Schema v5 includes revision-scoped discovery order, normalized search postings,
+Schema v6 includes revision-scoped discovery order, normalized search postings,
 facet order/count authority, acquisition descriptors, and presentation
 descriptors. Operational events remain publication-owned current/retry state,
 not OPDS history or a durable delivery queue. Bounded current-only cleanup
 retires unreachable finalized non-head state while retaining identities and
 objects protected by live work or published revisions.
+
+Source observations carry an immutable qualification result and policy digest
+inside their canonical metadata. Core checks the normalized facts against that
+metadata before sealing. Rejected galleries remain in the complete source
+snapshot with all their file observations; analysis excludes them from spam
+counts, content ownership, and GID selection. A rejected gallery cannot suppress
+a valid alternative with the same GID. Repairing the source completion marker
+or changing the artifact policy causes requalification, and the next publication
+can restore the gallery. An unchanged rejected observation can reuse its cached
+result under the same policy.
+
+Image decoding and the distinction between invalid source data and temporary
+resource failures belong to ingest adapters. Core does not decode images or
+turn arbitrary adapter failures into a permanent rejection. Qualification
+children follow their observation's reachability: older analysis ancestry may
+keep them after a publication is retired, and bounded cleanup removes them only
+after the observation becomes unreachable.
 
 An older publication commit can be reclaimed while a newer incremental
 analysis still needs the older analysis and source provenance. If that source
@@ -48,16 +65,16 @@ full check at startup and may use the lightweight readiness probe separately.
 ## Fresh initialization
 
 The greenfield schema has no upgrade/adoption path, compatibility view, legacy
-read API, or dual-write period. Schema v1 cannot be opened or migrated in place
-by schema v3. Before replacing any earlier database, stop all writers and take
-the backups required by that deployment. Create a truly empty database, rebuild
-it from source through the current ingest integration, and run:
+read API, or dual-write period. Schema v5 and older databases cannot be opened
+or migrated in place by schema v6. Before replacing an earlier database, stop all
+writers and take the backups required by that deployment. Create a truly empty
+database, rebuild it from source through the current ingest integration, and run:
 
 ```bash
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=5`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=6`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -86,7 +103,7 @@ epoch; it does not execute numbered historical migrations.
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
 no numbered-migration module, old list API, or legacy hand-written schema
 repository. All producers and consumers in one deployment must use the same
-schema-v3 public contract; mixed schema versions are unsupported.
+schema-v6 public contract; mixed schema versions are unsupported.
 
 ## Consumer boundaries
 

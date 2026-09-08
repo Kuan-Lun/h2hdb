@@ -516,7 +516,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 174, 75, 67, 381, 241)
+    ) == (306, 178, 75, 67, 381, 245)
     assert plan.conditional_one_gigabyte_limit_required is False
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -702,7 +702,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         (
             "catalog_physical_table_count_after",
             173,
-            "catalog_physical_table_count_after must be 174",
+            "catalog_physical_table_count_after must be 178",
         ),
         (
             "affected_operational_relations",
@@ -4030,7 +4030,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "174 BCNF base relations" in valid.stdout
+    assert "178 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (

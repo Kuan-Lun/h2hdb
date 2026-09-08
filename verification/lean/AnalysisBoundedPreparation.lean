@@ -126,4 +126,34 @@ theorem decision_page_with_rejection_sentinel_logical_bytes_bounded
     (bounded : rows ≤ 129) :
     rows * 72 ≤ 9288 := by omega
 
+/-- Qualification selects whole observations before any global file analysis.
+    The original gallery list remains available as complete source membership. -/
+def qualifiedSourceDigests : List (Bool × List Digest) → List Digest
+  | [] => []
+  | (accepted, digests) :: tail =>
+      if accepted then digests ++ qualifiedSourceDigests tail
+      else qualifiedSourceDigests tail
+
+theorem rejected_gallery_contributes_no_digests
+    (digests : List Digest) (remaining : List (Bool × List Digest)) :
+    qualifiedSourceDigests ((false, digests) :: remaining) =
+      qualifiedSourceDigests remaining := by
+  simp [qualifiedSourceDigests]
+
+theorem accepted_gallery_preserves_all_ordered_digests
+    (digests : List Digest) (remaining : List (Bool × List Digest)) :
+    qualifiedSourceDigests ((true, digests) :: remaining) =
+      digests ++ qualifiedSourceDigests remaining := by
+  simp [qualifiedSourceDigests]
+
+theorem qualification_preserves_append
+    (left right : List (Bool × List Digest)) :
+    qualifiedSourceDigests (left ++ right) =
+      qualifiedSourceDigests left ++ qualifiedSourceDigests right := by
+  induction left with
+  | nil => simp [qualifiedSourceDigests]
+  | cons head tail ih =>
+      rcases head with ⟨accepted, digests⟩
+      cases accepted <;> simp [qualifiedSourceDigests, ih, List.append_assoc]
+
 end H2HDB.Verification.AnalysisBoundedPreparation
