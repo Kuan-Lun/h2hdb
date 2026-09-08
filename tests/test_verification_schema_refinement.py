@@ -86,7 +86,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 95
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 96
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -94,6 +94,9 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
     assert {
         binding["path"]: binding["semantic_obligation_id"] for binding in bindings
     } == owners
+    assert owners["gallery_observation_identity_contract.qualification_obligation"] == (
+        "catalog.source-qualification.v1"
+    )
 
 
 def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
@@ -418,8 +421,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 220
-    assert len(physical_spec.implemented_relations) == 207
+    assert len(logical.relations) == 224
+    assert len(physical_spec.implemented_relations) == 211
     assert set(physical_spec.inline_projections) == {
         "canonical_value_page",
         "canonical_value_page_descriptor",
@@ -440,6 +443,20 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
         relation.relation for relation in physical_spec.implemented_relations
     }
     assert physical_spec.complete
+    for relation_name, value_column in (
+        ("gallery_observation_validation_policy", "qualification_policy_sha256"),
+        ("gallery_observation_validation_disposition", "accepted"),
+        ("gallery_observation_validation_reason", "qualification_reason"),
+        ("gallery_observation_validation_source", "qualification_source_name"),
+    ):
+        qualification = physical_spec.relation(relation_name)
+        assert qualification is not None and qualification.kind == "table"
+        assert qualification.primary_key == ("gallery_id", "observation_id")
+        assert tuple(column.attribute for column in qualification.columns) == (
+            "gallery_id",
+            "observation_id",
+            value_column,
+        )
     assert "analysis_run" not in physical_spec.pending_relations
     assert "analysis_state_component_seal" not in physical_spec.pending_relations
     assert physical_spec.relation("analysis_run") is not None
@@ -1219,7 +1236,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 207
+    assert len(report.checked_relations) == 211
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
