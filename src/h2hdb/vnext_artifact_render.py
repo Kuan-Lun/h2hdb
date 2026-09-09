@@ -22,9 +22,11 @@ from hashlib import sha256
 from io import UnsupportedOperation
 from tempfile import TemporaryFile
 from threading import Lock
+from types import TracebackType
 from typing import BinaryIO, cast
 
 from .artifact_errors import artifact_failure_scope
+from .artifact_resources import close_artifact_resources
 from .domain import (
     ArtifactArchiveRenderEvidence,
     ArtifactFailureContext,
@@ -43,8 +45,6 @@ from .vnext_domains import (
 _COPY_CHUNK_BYTES = 64 * 1024
 _MAXIMUM_SOURCE_MEMBERS = 65_536
 _MAXIMUM_RENDERED_PAGES = 4_096
-_MAXIMUM_SELECTED_MEMBER_BYTES = 64 * 1024 * 1024
-_MAXIMUM_SELECTED_SOURCE_BYTES = (1 << 32) - 1
 _MAXIMUM_RENDERED_ARTIFACT_BYTES = (1 << 32) - 1
 
 
@@ -109,8 +109,13 @@ class RenderedArtifact:
             raise ValueError("rendered artifact is closed")
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        close_artifact_resources(self.close, primary_error=error)
 
     def detach_archive(self) -> BinaryIO:
         """Transfer the verified archive stream to the next core-owned stage."""
@@ -121,8 +126,8 @@ class RenderedArtifact:
         return self.archive
 
 
-class _BoundedRandomAccessWriter:
-    """Seekable delegate that prevents sparse or sequential growth past a cap."""
+class _BoundedArtifactStream:
+    """Readable scratch stream with bounded sparse and sequential growth."""
 
     __slots__ = ("_delegate", "_maximum")
 
@@ -146,6 +151,14 @@ class _BoundedRandomAccessWriter:
                 "artifact renderer destination accepted a partial write"
             )
         return written
+
+    def read(self, size: int = -1) -> bytes:
+        result = self._delegate.read(size)
+        if not isinstance(result, bytes):
+            raise ArtifactRenderConflictError(
+                "artifact destination returned a non-bytes chunk"
+            )
+        return result
 
     def seek(self, offset: int, whence: int = 0) -> int:
         position = self._delegate.seek(offset, whence)
@@ -176,7 +189,7 @@ class _BoundedRandomAccessWriter:
         return True
 
     def readable(self) -> bool:
-        return False
+        return True
 
 
 class _ReadOnlySlice:
@@ -317,12 +330,12 @@ def _render_artifact(
         source_root_components=source_root_components,
         gallery_locator_components=gallery_locator_components,
     )
-    archive = cast(BinaryIO, TemporaryFile(mode="w+b"))
-    archive_owned = True
+    archive: BinaryIO | None = None
     try:
+        archive = cast(BinaryIO, TemporaryFile(mode="w+b"))
         destination = cast(
             BinaryIO,
-            _BoundedRandomAccessWriter(
+            _BoundedArtifactStream(
                 archive,
                 _MAXIMUM_RENDERED_ARTIFACT_BYTES,
             ),
@@ -358,13 +371,17 @@ def _render_artifact(
                 "rendered pages do not exactly cover sealed PAGE sources"
             )
         archive.seek(0)
-        result = RenderedArtifact(archive=archive, evidence=evidence)
-        archive_owned = False
-        return result
-    finally:
+        # Release sources before transferring archive ownership. A failed source
+        # close must still close the archive that the caller has not received.
         staged.close()
-        if archive_owned:
-            archive.close()
+        return RenderedArtifact(archive=archive, evidence=evidence)
+    except BaseException as error:
+        close_artifact_resources(
+            staged.close,
+            *(() if archive is None else (archive.close,)),
+            primary_error=error,
+        )
+        raise
 
 
 def verify_artifact_sources(
@@ -396,7 +413,10 @@ def verify_artifact_sources(
             )
             try:
                 _read_verified_source(row, source, destination=None)
-            finally:
+            except BaseException as error:
+                close_artifact_resources(source.close, primary_error=error)
+                raise
+            else:
                 source.close()
 
 
@@ -430,15 +450,11 @@ def _preflight_references(
             row.expected_size_bytes,
             field="selected artifact source size",
         )
-        if size > _MAXIMUM_SELECTED_MEMBER_BYTES:
-            raise ArtifactRenderNotReadyError(
-                "selected artifact source exceeds the core member byte bound"
-            )
-        if aggregate > _MAXIMUM_SELECTED_SOURCE_BYTES - size:
-            raise ArtifactRenderNotReadyError(
-                "selected artifact sources exceed the core aggregate byte bound"
-            )
-        aggregate += size
+        # Extents use the shared int63 address domain, without an independent
+        # per-source or aggregate resource policy imposed on source bytes.
+        aggregate = require_int63(
+            aggregate + size, field="selected artifact source extent end"
+        )
     return selected, tuple(row.position for row in pages)
 
 
@@ -470,9 +486,9 @@ class _StagedMembers:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            for member in self.members:
-                member.source.close()
-            self._spool.close()
+            close_artifact_resources(
+                *(member.source.close for member in self.members), self._spool.close
+            )
 
 
 def _stage_verified_members(
@@ -486,7 +502,6 @@ def _stage_verified_members(
     spool = cast(BinaryIO, TemporaryFile(mode="w+b"))
     spool_lock = Lock()
     members: list[ArtifactSourceMember] = []
-    owned = True
     try:
         offset = 0
         for row in rows:
@@ -507,7 +522,10 @@ def _stage_verified_members(
                 )
                 try:
                     _copy_verified_source(row, source, spool)
-                finally:
+                except BaseException as error:
+                    close_artifact_resources(source.close, primary_error=error)
+                    raise
+                else:
                     source.close()
             read_only = cast(
                 BinaryIO,
@@ -529,18 +547,18 @@ def _stage_verified_members(
                 )
             )
             offset += row.expected_size_bytes
-        staged = _StagedMembers(
+        return _StagedMembers(
             spool=spool,
             rows=rows,
             members=tuple(members),
         )
-        owned = False
-        return staged
-    finally:
-        if owned:
-            for member in members:
-                member.source.close()
-            spool.close()
+    except BaseException as error:
+        close_artifact_resources(
+            *(member.source.close for member in members),
+            spool.close,
+            primary_error=error,
+        )
+        raise
 
 
 def _open_verified_source(

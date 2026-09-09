@@ -11,8 +11,10 @@ from datetime import datetime
 from hashlib import sha256
 from io import UnsupportedOperation
 from tempfile import TemporaryFile
+from types import TracebackType
 from typing import BinaryIO, cast
 
+from .artifact_resources import close_artifact_resources
 from .domain import (
     ArtifactPagePresentationEvidence,
     ArtifactPresentationRenderEvidence,
@@ -59,8 +61,13 @@ class PreparedPresentationArtifact:
             raise ValueError("prepared presentation artifact is closed")
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        close_artifact_resources(self.close, primary_error=error)
 
 
 class _ReadOnlyArchive:
@@ -204,7 +211,6 @@ def prepare_presentation(
         )
     archive.seek(0)
     thumbnail = cast(BinaryIO, TemporaryFile(mode="w+b"))
-    owned = True
     try:
         try:
             evidence = adapter.render_presentation(
@@ -240,18 +246,16 @@ def prepare_presentation(
             evidence=evidence,
         )
         thumbnail.seek(0)
-        result = PreparedPresentationArtifact(
+        return PreparedPresentationArtifact(
             presentation=PreparedPublicationPresentation(
                 pages,
                 thumbnail_resource,
             ),
             thumbnail=thumbnail,
         )
-        owned = False
-        return result
-    finally:
-        if owned:
-            thumbnail.close()
+    except BaseException as error:
+        close_artifact_resources(thumbnail.close, primary_error=error)
+        raise
 
 
 def _verify_pages(

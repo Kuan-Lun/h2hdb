@@ -34,10 +34,12 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
+from types import TracebackType
 from typing import Any, BinaryIO
 
 from . import vnext_identity as identity
 from .artifact_errors import artifact_failure_scope
+from .artifact_resources import close_artifact_resources
 from .domain import (
     ArtifactArchiveRenderEvidence,
     ArtifactFailureContext,
@@ -508,18 +510,22 @@ class ArtifactPreparationReceipt:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            try:
-                self._archive.close()
-            finally:
-                self._presentation_artifact.close()
+            close_artifact_resources(
+                self._archive.close, self._presentation_artifact.close
+            )
 
     def __enter__(self) -> ArtifactPreparationReceipt:
         if self._closed:
             raise ValueError("artifact preparation receipt is closed")
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        close_artifact_resources(self.close, primary_error=error)
 
     @property
     def artifact_sha256(self) -> bytes:
@@ -1375,12 +1381,18 @@ class ArtifactPreparationRepository:
             archive = None
             presentation_artifact = None
             return receipt
-        finally:
-            rendered.close()
-            if archive is not None:
-                archive.close()
-            if presentation_artifact is not None:
-                presentation_artifact.close()
+        except BaseException as error:
+            close_artifact_resources(
+                rendered.close,
+                *(() if archive is None else (archive.close,)),
+                *(
+                    ()
+                    if presentation_artifact is None
+                    else (presentation_artifact.close,)
+                ),
+                primary_error=error,
+            )
+            raise
 
     @staticmethod
     def protect_prepared_artifact(

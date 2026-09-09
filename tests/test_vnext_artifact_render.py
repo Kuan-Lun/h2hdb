@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Buffer, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from errno import ENOSPC
 from hashlib import sha256
-from io import BytesIO
+from io import BytesIO, RawIOBase
+from pathlib import Path
+from tempfile import TemporaryFile
 from threading import Barrier, Lock
 from time import sleep
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 import pytest
 
+import h2hdb.vnext_artifact_render as render_module
 from h2hdb import (
     ArtifactFailureContext,
     VNextSourceChangedError,
@@ -31,6 +35,7 @@ from h2hdb.vnext_artifact_render import (
     ArtifactRenderNotReadyError,
     ArtifactSourceReference,
     RenderedArtifact,
+    _BoundedArtifactStream,
     _ReadOnlySlice,
     render_artifact,
     verify_artifact_sources,
@@ -504,20 +509,75 @@ def test_render_rejects_page_over_core_member_bound_before_open() -> None:
     assert adapter.opened == []
 
 
-def test_render_rejects_selected_member_byte_bound_before_open() -> None:
-    reference = ArtifactSourceReference(
-        0,
-        ArtifactSourceRole.METADATA,
-        b"metadata.txt",
-        b"x" * 32,
-        64 * 1024 * 1024 + 1,
+def test_render_accepts_source_authority_above_four_gib_before_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    references = tuple(
+        ArtifactSourceReference(
+            position,
+            ArtifactSourceRole.METADATA if position == 0 else ArtifactSourceRole.PAGE,
+            f"source-{position}".encode(),
+            b"x" * 32,
+            64 * 1024 * 1024 + 1,
+        )
+        for position in range(65)
     )
     adapter = _Adapter({})
+    failure = VNextSourceChangedError("source no longer exists")
 
-    with pytest.raises(ArtifactRenderNotReadyError, match="member byte bound"):
-        _render(adapter, (reference,))
+    def changed(**_kwargs: object) -> BinaryIO:
+        raise failure
 
-    assert adapter.opened == []
+    monkeypatch.setattr(adapter, "open_source", changed)
+    with pytest.raises(VNextSourceChangedError) as caught:
+        _render(adapter, references)
+    assert caught.value is failure
+
+
+class _RepeatingSource(RawIOBase):
+    def __init__(self, size: int) -> None:
+        self.remaining = size
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        assert 0 < size <= 64 * 1024
+        self.read_sizes.append(size)
+        count = min(size, self.remaining)
+        self.remaining -= count
+        return b"x" * count
+
+
+def test_render_streams_source_larger_than_64_mib_to_real_disk_and_closes_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    size = 64 * 1024 * 1024 + 1
+    digest = sha256()
+    for _ in range(1024):
+        digest.update(b"x" * (64 * 1024))
+    digest.update(b"x")
+    source = _RepeatingSource(size)
+    adapter = _NonConsumingAdapter({b"metadata.txt": cast(BinaryIO, source)})
+    spools: list[BinaryIO] = []
+
+    def temporary(**_kwargs: object) -> BinaryIO:
+        spool = TemporaryFile(mode="w+b", dir=tmp_path)
+        spools.append(spool)
+        return spool
+
+    monkeypatch.setattr(render_module, "TemporaryFile", temporary)
+    reference = ArtifactSourceReference(
+        0, ArtifactSourceRole.METADATA, b"metadata.txt", digest.digest(), size
+    )
+    with _render(adapter, (reference,)) as rendered:
+        assert rendered.archive.read() == b"rendered"
+        assert spools[0].closed
+        assert not spools[1].closed
+    assert source.remaining == 0
+    assert source.closed
+    assert max(source.read_sizes) == 64 * 1024
+    assert source.read_sizes[-1] == 1  # Exact trailing-byte probe.
+    assert all(spool.closed for spool in spools)
+    assert not tuple(tmp_path.iterdir())
 
 
 class _AlternatingSeekableSource(BytesIO):
@@ -647,3 +707,217 @@ def test_render_fully_verifies_sources_before_nonconsuming_renderer_runs() -> No
 
     assert adapter.opened == [b"metadata.txt"]
     assert adapter.rendered == []
+
+
+class _FaultingStream(BytesIO):
+    def __init__(
+        self,
+        payload: bytes = b"",
+        *,
+        write_error: BaseException | None = None,
+        close_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(payload)
+        self.write_error = write_error
+        self.close_error = close_error
+        self.close_count = 0
+
+    def write(self, data: Buffer, /) -> int:
+        if self.write_error is not None:
+            raise self.write_error
+        return super().write(data)
+
+    def close(self) -> None:
+        self.close_count += 1
+        super().close()
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _metadata_reference() -> tuple[ArtifactSourceReference, ...]:
+    return (_reference(0, ArtifactSourceRole.METADATA, b"metadata.txt", b"metadata"),)
+
+
+def test_stage_enospc_survives_source_and_spool_close_errors_with_member_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = OSError(ENOSPC, "source spool is full")
+    source = _FaultingStream(
+        b"metadata", close_error=OSError("source close also failed")
+    )
+    spool = _FaultingStream(
+        write_error=failure, close_error=OSError(ENOSPC, "spool flush also failed")
+    )
+    monkeypatch.setattr(render_module, "TemporaryFile", lambda **_kwargs: spool)
+    with pytest.raises(OSError) as caught:
+        _render(_Adapter({b"metadata.txt": source}), _metadata_reference())
+    assert caught.value is failure
+    assert get_artifact_failure_context(failure) == ArtifactFailureContext(
+        7, ("root",), ("gallery",), b"metadata.txt", len(b"metadata")
+    )
+    assert source.closed and spool.closed
+    assert source.close_count == spool.close_count == 1
+    assert len(failure.__notes__) == 3  # Two cleanup errors and source context.
+    assert "source close also failed" in failure.__notes__[0]
+    assert any("spool flush also failed" in note for note in failure.__notes__)
+
+
+def test_archive_creation_failure_releases_staged_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged = _FaultingStream(close_error=OSError("staged close also failed"))
+    failure = OSError(ENOSPC, "cannot create archive")
+    count = 0
+
+    def temporary(**_kwargs: object) -> BinaryIO:
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise failure
+        return staged
+
+    monkeypatch.setattr(render_module, "TemporaryFile", temporary)
+    with pytest.raises(OSError) as caught:
+        _render(_Adapter({b"metadata.txt": b"metadata"}), _metadata_reference())
+    assert caught.value is failure
+    assert staged.closed
+    assert staged.close_count == 1
+    assert any("staged close also failed" in note for note in failure.__notes__)
+
+
+@pytest.mark.parametrize("renderer_fails", [False, True])
+def test_render_closes_every_resource_when_source_close_fails(
+    monkeypatch: pytest.MonkeyPatch, *, renderer_fails: bool
+) -> None:
+    stage_error = OSError(ENOSPC, "source close failed")
+    staged = _FaultingStream(close_error=stage_error)
+    archive = _FaultingStream(close_error=OSError("archive close failed"))
+    allocated = iter((staged, archive))
+    monkeypatch.setattr(
+        render_module, "TemporaryFile", lambda **_kwargs: next(allocated)
+    )
+    adapter = _Adapter({b"metadata.txt": b"metadata"})
+    renderer_error = RuntimeError("rendering failed")
+
+    def failed_render(
+        *_args: object, **_kwargs: object
+    ) -> ArtifactArchiveRenderEvidence:
+        raise renderer_error
+
+    if renderer_fails:
+        monkeypatch.setattr(adapter, "render_archive", failed_render)
+    expected = renderer_error if renderer_fails else stage_error
+    with pytest.raises(type(expected)) as caught:
+        _render(adapter, _metadata_reference())
+    assert caught.value is expected
+    assert staged.closed and archive.closed
+    assert staged.close_count == archive.close_count == 1
+    assert any("archive close failed" in note for note in expected.__notes__)
+
+
+def test_failed_slice_close_does_not_skip_other_slices_or_aggregate_spool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spools = (_FaultingStream(), _FaultingStream())
+    allocated = iter(spools)
+    monkeypatch.setattr(
+        render_module, "TemporaryFile", lambda **_kwargs: next(allocated)
+    )
+    closed: list[_ReadOnlySlice] = []
+    original = _ReadOnlySlice.close
+    failure = OSError("first slice close failed")
+
+    def close_slice(source: _ReadOnlySlice) -> None:
+        original(source)
+        closed.append(source)
+        if len(closed) == 1:
+            raise failure
+
+    monkeypatch.setattr(_ReadOnlySlice, "close", close_slice)
+    adapter = _Adapter({b"metadata.txt": b"metadata", b"page": b"page"})
+    references = (
+        *_metadata_reference(),
+        _reference(1, ArtifactSourceRole.PAGE, b"page", b"page"),
+    )
+    with pytest.raises(OSError) as caught:
+        _render(adapter, references)
+    assert caught.value is failure
+    assert len(closed) == 2
+    assert all(source.closed for source in closed)
+    assert all(spool.closed and spool.close_count == 1 for spool in spools)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_source_digest_failure_is_not_replaced_by_source_close_failure(
+    *, cached: bool
+) -> None:
+    source = _FaultingStream(b"changed!", close_error=OSError("source close failed"))
+    adapter = _Adapter({b"metadata.txt": source})
+    with pytest.raises(VNextSourceChangedError, match="digest differs") as caught:
+        if cached:
+            _verify(adapter, _metadata_reference())
+        else:
+            _render(adapter, _metadata_reference())
+    assert source.closed
+    assert any("source close failed" in note for note in caught.value.__notes__)
+    assert get_artifact_failure_context(caught.value) == ArtifactFailureContext(
+        7, ("root",), ("gallery",), b"metadata.txt", len(b"metadata")
+    )
+
+
+def test_rendered_archive_context_preserves_body_failure_when_close_fails() -> None:
+    with _render(
+        _Adapter({b"metadata.txt": b"metadata"}), _metadata_reference()
+    ) as original:
+        evidence = original.evidence
+    stream = _FaultingStream(close_error=OSError(ENOSPC, "archive close failed"))
+    rendered = RenderedArtifact(archive=stream, evidence=evidence)
+    failure = RuntimeError("protect failed")
+    with pytest.raises(RuntimeError) as caught, rendered:
+        raise failure
+    assert caught.value is failure
+    assert stream.closed
+    assert any("archive close failed" in note for note in failure.__notes__)
+    rendered.close()
+    assert stream.close_count == 1
+
+
+def test_adapter_can_inspect_and_rewrite_the_same_bounded_scratch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _Adapter({b"metadata.txt": b"metadata"})
+    original_render = adapter.render_archive
+
+    def inspect_render(
+        members: Iterable[ArtifactSourceMember], destination: BinaryIO, *, gid: int
+    ) -> ArtifactArchiveRenderEvidence:
+        evidence = original_render(members, destination, gid=gid)
+        assert (
+            destination.readable() and destination.seekable() and destination.writable()
+        )
+        destination.seek(0)
+        assert destination.read(4) == b"meta"
+        assert destination.read() == b"data"
+        destination.seek(0)
+        assert destination.write(b"metadata") == len(b"metadata")
+        destination.truncate()
+        return evidence
+
+    monkeypatch.setattr(adapter, "render_archive", inspect_render)
+    with _render(adapter, _metadata_reference()) as rendered:
+        assert rendered.archive.read() == b"metadata"
+
+
+@pytest.mark.parametrize("operation", ["write", "seek", "truncate"])
+def test_readable_scratch_retains_output_growth_bounds(operation: str) -> None:
+    delegate = BytesIO(b"four")
+    scratch = _BoundedArtifactStream(delegate, 4)
+    assert scratch.read() == b"four"
+    with pytest.raises(ArtifactRenderNotReadyError, match="core resource bound"):
+        if operation == "write":
+            scratch.write(b"x")
+        elif operation == "seek":
+            scratch.seek(5)
+        else:
+            scratch.truncate(5)
+    assert delegate.getvalue() == b"four"

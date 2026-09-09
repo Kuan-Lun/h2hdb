@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from errno import ENOSPC
 from hashlib import sha256
 from io import BytesIO
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 import pytest
 
+import h2hdb.vnext_artifact_presentation as presentation_module
 from h2hdb.domain import (
     ArtifactPagePresentationEvidence,
     ArtifactPresentationRenderEvidence,
@@ -16,7 +18,12 @@ from h2hdb.domain import (
     StorageObjectDescriptor,
     StorageObjectKey,
 )
-from h2hdb.vnext_artifact_presentation import prepare_presentation
+from h2hdb.ports import ArtifactStorageAdapter
+from h2hdb.vnext_artifact_preparation_repository import ArtifactPreparationReceipt
+from h2hdb.vnext_artifact_presentation import (
+    PreparedPresentationArtifact,
+    prepare_presentation,
+)
 from h2hdb.vnext_artifact_render import (
     ArtifactRenderConflictError,
     ArtifactRenderNotReadyError,
@@ -239,3 +246,125 @@ def test_prepare_empty_presentation_requires_no_thumbnail_bytes_or_key() -> None
         assert prepared.presentation.pages == ()
         assert prepared.presentation.thumbnail is None
         assert prepared.thumbnail.read() == b""
+
+
+class _CloseFailure(BytesIO):
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
+        super().close()
+        raise self.failure
+
+
+def test_presentation_enospc_keeps_original_error_when_thumbnail_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = OSError(ENOSPC, "thumbnail write failed")
+    thumbnail = _CloseFailure(OSError(ENOSPC, "thumbnail flush failed"))
+    adapter = _Adapter(pages=_pages(), thumbnail=b"thumbnail")
+
+    def fail_render(
+        *_args: object, **_kwargs: object
+    ) -> ArtifactPresentationRenderEvidence:
+        raise failure
+
+    monkeypatch.setattr(adapter, "render_presentation", fail_render)
+    monkeypatch.setattr(
+        presentation_module, "TemporaryFile", lambda **_kwargs: thumbnail
+    )
+    archive = BytesIO(_ARCHIVE)
+    with pytest.raises(ArtifactRenderNotReadyError) as caught:
+        prepare_presentation(
+            cast(ArtifactStorageAdapter, adapter),
+            archive=archive,
+            acquisition=_acquisition(),
+            rendered_pages=_RENDERED,
+            thumbnail_key=StorageObjectKey("fixture-v2", ("thumbnail",)),
+            modified_at=_MODIFIED,
+        )
+    assert caught.value.__cause__ is failure
+    assert any("thumbnail flush failed" in note for note in caught.value.__notes__)
+    assert thumbnail.closed and thumbnail.close_count == 1
+    assert not archive.closed  # Acquisition ownership remains with the caller.
+
+
+def test_presentation_creation_failure_leaves_caller_archive_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = OSError(ENOSPC, "cannot create thumbnail")
+
+    def temporary(**_kwargs: object) -> BinaryIO:
+        raise failure
+
+    monkeypatch.setattr(presentation_module, "TemporaryFile", temporary)
+    archive = BytesIO(_ARCHIVE)
+    adapter = _Adapter(pages=(), thumbnail=None)
+    with pytest.raises(OSError) as caught:
+        prepare_presentation(
+            cast(ArtifactStorageAdapter, adapter),
+            archive=archive,
+            acquisition=_acquisition(),
+            rendered_pages=(),
+            thumbnail_key=None,
+            modified_at=_MODIFIED,
+        )
+    assert caught.value is failure
+    assert not archive.closed
+
+
+def _empty_presentation(thumbnail: BinaryIO) -> PreparedPresentationArtifact:
+    adapter = _Adapter(pages=(), thumbnail=None)
+    with prepare_presentation(
+        cast(ArtifactStorageAdapter, adapter),
+        archive=BytesIO(_ARCHIVE),
+        acquisition=_acquisition(),
+        rendered_pages=(),
+        thumbnail_key=None,
+        modified_at=_MODIFIED,
+    ) as original:
+        presentation = original.presentation
+    return PreparedPresentationArtifact(presentation=presentation, thumbnail=thumbnail)
+
+
+def test_presentation_context_does_not_replace_body_error_with_close_error() -> None:
+    thumbnail = _CloseFailure(OSError(ENOSPC, "thumbnail close failed"))
+    presentation = _empty_presentation(thumbnail)
+    failure = RuntimeError("protection failed")
+    with pytest.raises(RuntimeError) as caught, presentation:
+        raise failure
+    assert caught.value is failure
+    assert any("thumbnail close failed" in note for note in failure.__notes__)
+    presentation.close()
+    assert thumbnail.closed and thumbnail.close_count == 1
+
+
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_preparation_receipt_releases_both_resources_when_each_close_fails(
+    *, body_fails: bool
+) -> None:
+    archive_error = OSError(ENOSPC, "archive close failed")
+    archive = _CloseFailure(archive_error)
+    thumbnail = _CloseFailure(OSError(ENOSPC, "thumbnail close failed"))
+    # The receipt's database authority is irrelevant to its owned-stream cleanup;
+    # construct only that ownership state without forging a usable receipt.
+    receipt = object.__new__(ArtifactPreparationReceipt)
+    receipt._archive = archive
+    receipt._presentation_artifact = _empty_presentation(thumbnail)
+    receipt._closed = False
+    body_error = RuntimeError("storage protection failed")
+    expected = body_error if body_fails else archive_error
+    with pytest.raises(type(expected)) as caught, receipt:
+        if body_fails:
+            raise body_error
+    assert caught.value is expected
+    assert archive.closed and thumbnail.closed
+    assert archive.close_count == thumbnail.close_count == 1
+    assert any("thumbnail close failed" in note for note in archive_error.__notes__)
+    if body_fails:
+        assert any("archive close failed" in note for note in body_error.__notes__)
+        assert any("thumbnail close failed" in note for note in body_error.__notes__)
+    receipt.close()
+    assert archive.close_count == thumbnail.close_count == 1

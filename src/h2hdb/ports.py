@@ -248,7 +248,14 @@ class ArtifactStorageAdapter(Protocol):
         destination: BinaryIO,
         *,
         gid: int,
-    ) -> ArtifactArchiveRenderEvidence: ...
+    ) -> ArtifactArchiveRenderEvidence:
+        """Render into core-owned readable, seekable, writable scratch storage.
+
+        The adapter may inspect its output in place; core independently checks
+        bytes against returned evidence. Writes and truncation remain bounded.
+        The adapter must not close the destination or retain it after returning.
+        """
+        ...
 
     def protect(
         self,
