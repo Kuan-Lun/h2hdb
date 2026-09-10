@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-_LEGACY_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\.\d+)*$")
 _IGNORED_PATHS = (
     ".Codex/**",
     ".claude/**",
@@ -101,20 +100,8 @@ def _matches(path: str, patterns: tuple[str, ...] | list[str]) -> bool:
 def _parse_version(value: str) -> tuple[int, int, int]:
     match = _VERSION_PATTERN.fullmatch(value)
     if match is None:
-        raise ValueError(f"candidate version must use X.Y.Z: {value}")
+        raise ValueError(f"project version must use X.Y.Z: {value}")
     major, minor, patch = match.groups()
-    return int(major), int(minor), int(patch)
-
-
-def _base_version(value: str) -> tuple[int, int, int]:
-    match = _VERSION_PATTERN.fullmatch(value)
-    if match is not None:
-        major, minor, patch = match.groups()
-        return int(major), int(minor), int(patch)
-    legacy = _LEGACY_VERSION_PATTERN.fullmatch(value)
-    if legacy is None:
-        raise ValueError(f"unsupported base version: {value}")
-    major, minor, patch, _legacy_counter = legacy.groups()
     return int(major), int(minor), int(patch)
 
 
@@ -200,6 +187,8 @@ def main() -> int:
     candidate_document = _load_toml(candidate_tree)
     base_version_text = str(base_document["project"]["version"])
     candidate_version_text = str(candidate_document["project"]["version"])
+    base_version = _parse_version(base_version_text)
+    candidate_version = _parse_version(candidate_version_text)
 
     changed_paths = tuple(
         path
@@ -254,9 +243,8 @@ def main() -> int:
         or re.search(r"^BREAKING CHANGE:", messages, re.MULTILINE)
     )
     feature = bool(re.search(r"^feat(?:\([^\n)]+\))?:", messages, re.MULTILINE))
-    candidate_version = _parse_version(candidate_version_text)
     expected = _expected_version(
-        _base_version(base_version_text),
+        base_version,
         breaking=breaking,
         feature=feature,
     )

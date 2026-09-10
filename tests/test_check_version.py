@@ -25,20 +25,6 @@ def _load_module(name: str, path: Path) -> ModuleType:
 policy = _load_module("h2hdb_check_version", CHECK_VERSION)
 
 
-def test_legacy_four_part_version_normalizes_to_three_part_baseline() -> None:
-    assert policy._base_version("0.23.0.11") == (0, 23, 0)
-    assert policy._expected_version((0, 23, 0), breaking=False, feature=False) == (
-        0,
-        23,
-        1,
-    )
-    assert policy._expected_version((0, 23, 0), breaking=True, feature=False) == (
-        0,
-        24,
-        0,
-    )
-
-
 def test_candidate_version_must_use_exactly_three_parts() -> None:
     assert policy._parse_version("0.23.1") == (0, 23, 1)
     with pytest.raises(ValueError, match="must use X.Y.Z"):
