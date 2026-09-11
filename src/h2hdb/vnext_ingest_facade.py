@@ -473,8 +473,10 @@ class VNextIngestFacade:
 
         A batch keeps the last published observation of an incomplete gallery
         and independently prepares other galleries. Only successfully frozen new
-        galleries consume the admission budget. Discovery must include existing
-        incomplete locators; an absent locator represents a confirmed deletion.
+        galleries consume the admission budget. An inventory omission alone
+        never proves deletion: every omitted published locator gets a fresh
+        adapter.gallery_exists probe. Only False removes it; presence or
+        temporary uncertainty restores it for observation or published fallback.
         Omit the limit to admit every complete gallery in the inventory.
         """
 

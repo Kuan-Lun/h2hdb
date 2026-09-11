@@ -12,7 +12,8 @@ class VNextSourceChangedError(RuntimeError):
 class VNextSourceDeferredError(VNextSourceChangedError):
     """One gallery is incomplete or changing; retry it in a later source turn.
 
-    Discovery must retain the locator of an existing, incomplete gallery. The
-    facade preserves its last published observation and skips new incomplete
+    The facade independently probes published locators omitted by discovery;
+    only confirmed absence permits deletion. For a present incomplete gallery it
+    preserves the last published observation, and it skips new incomplete
     galleries without discarding other galleries' preparation.
     """

@@ -192,9 +192,13 @@ Resident integrations can pass `max_new_galleries` to `prepare_source()` and
 publish cumulative source batches. Every batch inventories the current source
 again, independently confirms apparent removals, refreshes completed galleries,
 and admits a bounded number of successfully observed new galleries. Discovery
-must include existing incomplete gallery locators. Its omissions are checked
-against the published inventory using the adapter's fresh `gallery_exists()`
-probe before any previously published member is removed.
+may omit incomplete galleries; an inventory omission alone never proves deletion.
+Core checks every omitted published locator with the adapter's fresh
+`gallery_exists()` probe. Only a confirmed `False` removes that member. `True` or
+transient uncertainty reported as `VNextSourceDeferredError` restores the locator
+to the source plan for observation or published-observation fallback. The probe
+checks gallery presence independently of completion-marker availability, so a
+published gallery with a missing marker remains eligible for fallback.
 
 A gallery-level `VNextSourceDeferredError` discards only that gallery's provisional
 observation pages and invokes the adapter's idempotent

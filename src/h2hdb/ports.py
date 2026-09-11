@@ -164,10 +164,13 @@ class VNextIngestSourceAdapter(Protocol):
     response loss.  The facade always requests the registered leaf capacity:
     256 FILE rows, 192 DIRECTORY rows, and 256 TAG rows.
 
-    Discovery includes incomplete existing locators; omission means confirmed
-    deletion. A gallery-level read can raise VNextSourceDeferredError to preserve
-    its last published observation (or skip a new gallery) for this source turn.
-    Global identity changes and failures retain VNextSourceChangedError semantics.
+    Discovery may omit incomplete galleries. Omission alone never proves a
+    published gallery was deleted: the facade probes every omitted published
+    locator with gallery_exists and removes it only on a confirmed False result.
+    Present or temporarily uncertain locators are restored to the source plan.
+    A gallery-level read can raise VNextSourceDeferredError to preserve its last
+    published observation (or skip a new gallery) for this source turn. Global
+    identity changes and failures retain VNextSourceChangedError semantics.
     """
 
     @property
