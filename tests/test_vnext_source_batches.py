@@ -197,8 +197,10 @@ def test_unpublished_source_cache_cannot_bypass_new_gallery_quota(
         facade.complete_ingest(session)
 
 
+@pytest.mark.parametrize("limit", [None, 2])
 def test_batch_rejects_a_preparation_from_before_another_publication(
     db_config: CoreConfig,
+    limit: int | None,
 ) -> None:
     initialize_database(db_config)
     source = MarkerSource(tuple(gallery(gid) for gid in range(1001, 1004)))
@@ -207,7 +209,9 @@ def test_batch_rejects_a_preparation_from_before_another_publication(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         facade.complete_ingest(session)
-        with facade.prepare_source(source, policy=policy, max_new_galleries=2) as stale:
+        with facade.prepare_source(
+            source, policy=policy, max_new_galleries=limit
+        ) as stale:
             receipt, deferred = _publish_batch(db_config, source, library, limit=1)
             assert (receipt.discovered_galleries, deferred) == (1, 2)
             published = _publications(db_config)

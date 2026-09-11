@@ -11,7 +11,6 @@ import pytest
 
 from h2hdb import VNextSourcePreparationOperation as Operation
 from h2hdb import VNextSourcePreparationProgress as Progress
-from h2hdb.vnext_source_batch_plan import prepare_source_batch
 from h2hdb.vnext_source_build_repository import SourceDiscoveryPlan
 
 
@@ -57,12 +56,12 @@ def test_discovery_order_can_acquire_cache_spill_lock(
         assert digests == tuple(sorted(digests))
 
 
-def test_discovery_and_batch_observations_have_exact_totals() -> None:
+def test_discovery_observations_have_exact_totals() -> None:
     observations: list[Progress] = []
     with SourceDiscoveryPlan.from_locators(
         ((f"gallery-{index:05d}",) for index in range(259)),
         progress=observations.append,
-    ) as inventory:
+    ):
         assert observations[0] == Progress(Operation.DISCOVERY_TRANSFER, 0)
         assert Progress(Operation.DISCOVERY_TRANSFER, 259, 259) in observations
         order = [
@@ -75,23 +74,6 @@ def test_discovery_and_batch_observations_have_exact_totals() -> None:
             Progress(Operation.DISCOVERY_ORDER, 256, 259),
             Progress(Operation.DISCOVERY_ORDER, 259, 259),
         ]
-        observations.clear()
-        selected = prepare_source_batch(
-            inventory,
-            max_new_galleries=10,
-            lookup_members=lambda page: (False,) * len(page),
-            progress=observations.append,
-        )
-        with selected.plan as batch:
-            assert batch.gallery_count == 10
-            assert selected.deferred_gallery_count == 249
-            assert observations[0] == Progress(Operation.BATCH_SELECTION, 0, 259)
-            assert Progress(Operation.BATCH_SELECTION, 259, 259) in observations
-            assert observations[-1] == Progress(Operation.BATCH_ORDER, 10, 10)
-            assert not any(
-                value.operation == Operation.DISCOVERY_TRANSFER
-                for value in observations
-            )
 
 
 def test_observer_failure_does_not_change_discovery_identity() -> None:
@@ -182,15 +164,14 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
             assert cut.deferred_gallery_count == 3
     assert len(source.deep_reads) == 10
     assert callback_reads and not any(callback_reads)
-    assert Progress(Operation.BATCH_SELECTION, 13, 13) in observations
     assert Progress(Operation.DISCOVERY_CLEANUP, 0, 13) in observations
     assert Progress(Operation.DISCOVERY_CLEANUP, 13, 13) in observations
-    assert observations[-1] == Progress(Operation.SOURCE_FREEZE, 10, 10)
+    assert Progress(Operation.SOURCE_FREEZE, 13, 13) in observations
     assert [
         value.completed
         for value in observations
         if value.operation == Operation.SOURCE_FREEZE
-    ] == list(range(11))
+    ] == list(range(14))
 
 
 def test_public_preparation_rejects_noncallable_observer_before_source_io() -> None:

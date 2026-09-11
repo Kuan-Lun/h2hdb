@@ -254,6 +254,12 @@ class MemorySource:
         terminal = len(keys) <= limit
         return VNextIngestPage(items, None if terminal else items[-1], terminal)
 
+    def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+        return locator_components in self._galleries
+
+    def discard_gallery_observation(self, locator_components: tuple[str, ...]) -> None:
+        pass
+
     def observe_completion_marker(
         self,
         locator_components: tuple[str, ...],

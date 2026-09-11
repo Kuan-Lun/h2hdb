@@ -150,6 +150,14 @@ def test_public_observations_and_source_adapter_are_repository_independent(
             assert after_locator is None and limit == 256
             return VNextIngestPage((("gallery",),), None, True)
 
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
+
         def observe_completion_marker(
             self,
             locator_components: tuple[str, ...],
@@ -218,6 +226,14 @@ def test_prepare_source_uses_canonical_locator_key_order(tmp_path: Path) -> None
             # Canonical framing sorts the one-byte component before the
             # two-byte component even though Python string order does not.
             return VNextIngestPage((("b",), ("aa",), ("a", "nested")), None, True)
+
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
 
         def observe_completion_marker(
             self,
@@ -790,6 +806,14 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
             assert after_locator is None and limit == 256
             return VNextIngestPage((), None, True)
 
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
+
         def observe_completion_marker(
             self,
             locator_components: tuple[str, ...],
@@ -1091,6 +1115,14 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
             assert after_locator is None and limit == 256
             return VNextIngestPage((("gallery",),), None, True)
 
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
+
         def observe_completion_marker(
             self,
             locator_components: tuple[str, ...],
@@ -1277,6 +1309,14 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
             assert after_locator is None and limit == 256
             return VNextIngestPage((("gallery",),), None, True)
 
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
+
         def observe_completion_marker(
             self,
             locator_components: tuple[str, ...],
@@ -1441,6 +1481,14 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
             prove_no_database_write_transaction()
             assert after_locator is None and limit == 256
             return VNextIngestPage(tuple(observations), None, True)
+
+        def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+            return locator_components == ("gallery",)
+
+        def discard_gallery_observation(
+            self, locator_components: tuple[str, ...]
+        ) -> None:
+            pass
 
         def observe_completion_marker(
             self,

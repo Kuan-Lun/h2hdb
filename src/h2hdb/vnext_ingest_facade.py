@@ -53,7 +53,7 @@ from .ports import (
     VNextSourcePreparationObserver,
 )
 from .repository import RepositoryContext
-from .source_errors import VNextSourceChangedError
+from .source_errors import VNextSourceChangedError, VNextSourceDeferredError
 from .sql_connector import SQLConnector
 from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import (
@@ -122,7 +122,7 @@ from .vnext_maintenance_gate_repository import (
     MaintenanceGateTokenCollisionError,
     MaintenanceGateUnavailableError,
 )
-from .vnext_source_batch_plan import prepare_source_batch, require_source_batch_limit
+from .vnext_source_batch_plan import require_source_batch_limit
 from .vnext_source_batch_repository import SourceBatchBaseline, SourceBatchRepository
 from .vnext_source_build_repository import (
     AssemblyBatchAttempt,
@@ -313,6 +313,7 @@ class VNextPreparedSource:
         "_batch_baseline",
         "_closed",
         "_deferred_gallery_count",
+        "_waiting_gallery_count",
         "_machine",
         "_manifest_summary",
         "_plan",
@@ -329,6 +330,7 @@ class VNextPreparedSource:
         source_root_components: tuple[str, ...],
         batch_baseline: SourceBatchBaseline | None = None,
         deferred_gallery_count: int = 0,
+        waiting_gallery_count: int = 0,
         _constructor_token: object,
     ) -> None:
         if _constructor_token is not _PREPARED_SOURCE_TOKEN:
@@ -339,6 +341,7 @@ class VNextPreparedSource:
         self._source_root_components = source_root_components
         self._batch_baseline = batch_baseline
         self._deferred_gallery_count = deferred_gallery_count
+        self._waiting_gallery_count = waiting_gallery_count
         self._closed = False
         self._machine = _SourceMachine()
         self._active_issue: VNextIssuedSourceStep | None = None
@@ -346,10 +349,24 @@ class VNextPreparedSource:
 
     @property
     def deferred_gallery_count(self) -> int:
-        """New inventory members left for another batch; not database authority."""
+        """New galleries deferred by the admission quota; not database authority."""
 
         self._require_open()
         return self._deferred_gallery_count
+
+    @property
+    def gallery_count(self) -> int:
+        """Number of exact admitted observations in this prepared source."""
+
+        self._require_open()
+        return self._manifest_summary.gallery_count
+
+    @property
+    def waiting_gallery_count(self) -> int:
+        """Incomplete galleries requiring a later fresh observation."""
+
+        self._require_open()
+        return self._waiting_gallery_count
 
     def close(self) -> None:
         if not self._closed:
@@ -454,10 +471,11 @@ class VNextIngestFacade:
     ) -> VNextPreparedSource:
         """Freeze a complete source cut outside database transactions.
 
-        A batch retains all still-present members of the current published
-        source, refreshing changed observations, and admits at most the requested
-        number of new galleries. Discovery is always complete, so deletion is
-        distinct from deferral. Omit the limit to admit the entire inventory.
+        A batch keeps the last published observation of an incomplete gallery
+        and independently prepares other galleries. Only successfully frozen new
+        galleries consume the admission budget. Discovery must include existing
+        incomplete locators; an absent locator represents a confirmed deletion.
+        Omit the limit to admit every complete gallery in the inventory.
         """
 
         self.__require_open()
@@ -504,28 +522,121 @@ class VNextIngestFacade:
                         )
                     return connector
 
-                if max_new_galleries is not None:
+                with connection().read_transaction():
+                    baseline = SourceBatchRepository.load_baseline(
+                        connection(), source_root_components=root
+                    )
+
+                def missing_published_locators() -> Iterator[tuple[str, ...]]:
+                    assert baseline is not None
+                    after_gallery_id = 0
+                    while True:
+                        with connection().read_transaction():
+                            page = SourceBatchRepository.list_locators(
+                                connection(),
+                                baseline,
+                                after_gallery_id=after_gallery_id,
+                            )
+                        if not page:
+                            return
+                        for gallery_id, locator in page:
+                            after_gallery_id = gallery_id
+                            if plan._contains_locator(locator):
+                                continue
+                            try:
+                                present = adapter.gallery_exists(locator)
+                            except VNextSourceDeferredError:
+                                present = True
+                            if type(present) is not bool:
+                                raise TypeError("gallery_exists must return bool")
+                            if present:
+                                yield locator
+
+                with SourceDiscoveryPlan.from_locators(
+                    missing_published_locators(),
+                    transfer_operation=None,
+                ) as missing:
+                    if missing.gallery_count:
+                        inventory = plan
+
+                        def combined_locators() -> Iterator[tuple[str, ...]]:
+                            for source_plan in (inventory, missing):
+                                start = 0
+                                while start < source_plan.gallery_count:
+                                    for item in source_plan._page(start):
+                                        yield source_plan._decode_locator(
+                                            item.position, item.locator_sha256
+                                        )
+                                        start += 1
+
+                        plan = SourceDiscoveryPlan.from_locators(
+                            combined_locators(),
+                            progress=progress,
+                        )
+                        inventory.close()
+
+                def membership(
+                    locators: tuple[tuple[str, ...], ...],
+                ) -> tuple[bool, ...]:
+                    assert baseline is not None
                     with connection().read_transaction():
-                        baseline = SourceBatchRepository.load_baseline(
-                            connection(), source_root_components=root
+                        return SourceBatchRepository.lookup_members(
+                            connection(), baseline, locators
                         )
 
-                    def membership(
-                        locators: tuple[tuple[str, ...], ...],
-                    ) -> tuple[bool, ...]:
-                        assert baseline is not None
-                        with connection().read_transaction():
-                            return SourceBatchRepository.lookup_members(
-                                connection(), baseline, locators
-                            )
+                def fallback(
+                    locator: tuple[str, ...],
+                ) -> CachedSourceObservation | None:
+                    assert baseline is not None
+                    with connection().read_transaction():
+                        return SourceBatchRepository.lookup_observations(
+                            connection(),
+                            baseline,
+                            (locator,),
+                            qualification_policy_sha256=qualification_policy,
+                        )[0]
 
-                    batch = prepare_source_batch(
-                        plan,
-                        max_new_galleries=max_new_galleries,
-                        lookup_members=membership,
+                def lookup(
+                    probes: tuple[
+                        tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
+                    ],
+                ) -> tuple[CachedSourceObservation | None, ...]:
+                    with connection().read_transaction():
+                        candidates = SourceMarkerRepository.lookup_batch(
+                            connection(),
+                            source_root_components=root,
+                            probes=probes,
+                            qualification_policy_sha256=qualification_policy,
+                        )
+                        if trusted_policy.policy.artifacts_required:
+                            assert baseline is not None
+                            return SourceBatchRepository.retain_published_observations(
+                                connection(),
+                                baseline,
+                                candidates,
+                            )
+                        return candidates
+
+                snapshot = FrozenSourceObservationSpool.freeze(
+                    adapter,
+                    plan=plan,
+                    source_root_components=root,
+                    cache_lookup=lookup,
+                    membership_lookup=membership,
+                    fallback_lookup=fallback,
+                    max_new_galleries=max_new_galleries,
+                    progress=progress,
+                    qualification_policy_sha256=qualification_policy,
+                )
+                deferred_gallery_count = snapshot.deferred_gallery_count
+                if snapshot.manifest_summary.gallery_count != plan.gallery_count:
+                    selected = SourceDiscoveryPlan.from_locators(
+                        snapshot.selected_locators(),
                         progress=progress,
+                        transfer_operation=None,
+                        order_operation=VNextSourcePreparationOperation.BATCH_ORDER,
                     )
-                    previous_plan, plan = plan, batch.plan
+                    previous_plan, plan = plan, selected
                     report_source_progress(
                         progress,
                         VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
@@ -539,32 +650,8 @@ class VNextIngestFacade:
                         previous_plan.gallery_count,
                         previous_plan.gallery_count,
                     )
-                    deferred_gallery_count = batch.deferred_gallery_count
-
-                def lookup(
-                    probes: tuple[
-                        tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
-                    ],
-                ) -> tuple[CachedSourceObservation | None, ...]:
-                    with connection().read_transaction():
-                        return SourceMarkerRepository.lookup_batch(
-                            connection(),
-                            source_root_components=root,
-                            probes=probes,
-                            qualification_policy_sha256=qualification_policy,
-                        )
-
-                snapshot = FrozenSourceObservationSpool.freeze(
-                    adapter,
-                    plan=plan,
-                    source_root_components=root,
-                    cache_lookup=lookup,
-                    progress=progress,
-                    qualification_policy_sha256=qualification_policy,
-                )
-                if baseline is not None:
-                    with connection().read_transaction():
-                        SourceBatchRepository.require_current(connection(), baseline)
+                with connection().read_transaction():
+                    SourceBatchRepository.require_current(connection(), baseline)
             prepared = VNextPreparedSource(
                 snapshot=snapshot,
                 plan=plan,
@@ -572,6 +659,7 @@ class VNextIngestFacade:
                 source_root_components=root,
                 batch_baseline=baseline,
                 deferred_gallery_count=deferred_gallery_count,
+                waiting_gallery_count=snapshot.waiting_gallery_count,
                 _constructor_token=_PREPARED_SOURCE_TOKEN,
             )
             prepared._machine.policy = trusted_policy

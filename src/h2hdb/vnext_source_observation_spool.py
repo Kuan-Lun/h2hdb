@@ -30,7 +30,7 @@ from .domain import (
     _file_content_receipt_from_frozen_facts,
 )
 from .ports import VNextIngestSourceAdapter, VNextSourcePreparationObserver
-from .source_errors import VNextSourceChangedError
+from .source_errors import VNextSourceDeferredError
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -46,6 +46,7 @@ from .vnext_identity import (
     GalleryObservationDescriptor,
     GalleryObservationDirectoryFileType,
     artifact_source_manifest_digest,
+    decode_source_relative_locator,
     encode_source_relative_locator,
     gallery_key,
     gallery_observation_descriptor_digest,
@@ -71,6 +72,8 @@ type SourceCacheLookup = Callable[
     [tuple[tuple[tuple[str, ...], VNextSourceCompletionMarker], ...]],
     tuple[CachedSourceObservation | None, ...],
 ]
+type SourceMembershipLookup = Callable[[tuple[tuple[str, ...], ...]], tuple[bool, ...]]
+type SourceFallbackLookup = Callable[[tuple[str, ...]], CachedSourceObservation | None]
 _COMPONENT_CAPACITY = {
     GalleryObservationComponent.FILE: 256,
     GalleryObservationComponent.DIRECTORY: 192,
@@ -131,6 +134,8 @@ class FrozenSourceObservationSpool:
         "_index",
         "_temporary",
         "manifest_summary",
+        "deferred_gallery_count",
+        "waiting_gallery_count",
         "source_root_components",
     )
 
@@ -152,6 +157,8 @@ class FrozenSourceObservationSpool:
         self._closed = False
         self.source_root_components = source_root_components
         self.manifest_summary = manifest_summary
+        self.deferred_gallery_count = 0
+        self.waiting_gallery_count = 0
 
     @classmethod
     def freeze(
@@ -162,6 +169,9 @@ class FrozenSourceObservationSpool:
         source_root_components: tuple[str, ...],
         qualification_policy_sha256: bytes = bytes(32),
         cache_lookup: SourceCacheLookup | None = None,
+        membership_lookup: SourceMembershipLookup | None = None,
+        fallback_lookup: SourceFallbackLookup | None = None,
+        max_new_galleries: int | None = None,
         progress: VNextSourcePreparationObserver | None = None,
     ) -> FrozenSourceObservationSpool:
         """Consume the live adapter once and seal every observation page."""
@@ -187,13 +197,53 @@ class FrozenSourceObservationSpool:
         try:
             spool._create_schema()
             spool.manifest_summary = spool._freeze_adapter(
-                adapter, plan, cache_lookup, progress, qualification_policy_sha256
+                adapter,
+                plan,
+                cache_lookup,
+                progress,
+                qualification_policy_sha256,
+                membership_lookup=membership_lookup,
+                fallback_lookup=fallback_lookup,
+                max_new_galleries=max_new_galleries,
             )
             index.commit()
             return spool
         except BaseException:
             spool.close()
             raise
+
+    def selected_locators(self) -> Iterator[tuple[str, ...]]:
+        """Replay the admitted inventory in the original digest order."""
+
+        position = 0
+        while position < self.manifest_summary.gallery_count:
+            self._require_open()
+            rows = self._index.execute(
+                "SELECT position, locator_sha256 FROM galleries "
+                "WHERE position >= ? ORDER BY position LIMIT 128",
+                (position,),
+            ).fetchall()
+            if not rows:
+                raise FrozenSourceObservationError("selected locator page disappeared")
+            for exact_position, digest in rows:
+                if exact_position != position:
+                    raise FrozenSourceObservationError(
+                        "selected locator positions changed"
+                    )
+                payload = self._index.execute(
+                    "SELECT locator_payload FROM galleries WHERE position = ?",
+                    (position,),
+                ).fetchone()
+                if payload is None:
+                    raise FrozenSourceObservationError("selected locator disappeared")
+                components = decode_source_relative_locator(bytes(payload[0]))
+                self.open_gallery(
+                    position=position,
+                    locator_sha256=digest,
+                    locator_components=components,
+                )
+                yield components
+                position += 1
 
     def close(self) -> None:
         if not self._closed:
@@ -412,6 +462,10 @@ class FrozenSourceObservationSpool:
         cache_lookup: SourceCacheLookup | None,
         progress: VNextSourcePreparationObserver | None,
         qualification_policy_sha256: bytes,
+        *,
+        membership_lookup: SourceMembershipLookup | None,
+        fallback_lookup: SourceFallbackLookup | None,
+        max_new_galleries: int | None,
     ) -> SourceBuildManifestSummary:
         scope = source_scope_key(
             "filesystem",
@@ -420,6 +474,7 @@ class FrozenSourceObservationSpool:
         )
         summary = SourceBuildManifestSummary.empty()
         position = 0
+        admitted_new = 0
         operation = VNextSourcePreparationOperation.SOURCE_FREEZE
         report_source_progress(progress, operation, position, plan.gallery_count)
         while position < plan.gallery_count:
@@ -428,12 +483,27 @@ class FrozenSourceObservationSpool:
                 raise FrozenSourceObservationError(
                     "source discovery plan ended before gallery_count"
                 )
+            components_page = tuple(
+                plan._decode_locator(locator.position, locator.locator_sha256)
+                for locator in locators
+            )
+            membership = (
+                (False,) * len(locators)
+                if membership_lookup is None
+                else membership_lookup(components_page)
+            )
+            if len(membership) != len(locators) or any(
+                type(known) is not bool for known in membership
+            ):
+                raise ValueError("source membership lookup returned an invalid page")
             markers: dict[tuple[str, ...], VNextSourceCompletionMarker | None] = {}
-            for locator in locators:
-                components = plan._decode_locator(
-                    locator.position, locator.locator_sha256
-                )
-                marker = adapter.observe_completion_marker(components)
+            deferred: set[tuple[str, ...]] = set()
+            for components in components_page:
+                try:
+                    marker = adapter.observe_completion_marker(components)
+                except VNextSourceDeferredError:
+                    deferred.add(components)
+                    continue
                 if marker is not None:
                     if not isinstance(marker, VNextSourceCompletionMarker):
                         raise TypeError("source completion marker has an invalid type")
@@ -457,7 +527,7 @@ class FrozenSourceObservationSpool:
                         probes, matches, strict=True
                     )
                 }
-            for locator in locators:
+            for locator, known in zip(locators, membership, strict=True):
                 if locator.position != position:
                     raise FrozenSourceObservationError(
                         "source discovery positions are not contiguous"
@@ -466,15 +536,64 @@ class FrozenSourceObservationSpool:
                     locator.position,
                     locator.locator_sha256,
                 )
-                descriptor, file_count, byte_count = self._freeze_gallery(
-                    adapter,
-                    position=position,
-                    locator_sha256=locator.locator_sha256,
-                    locator_components=components,
-                    marker=markers[components],
-                    cached=cached_by_locator.get(components),
-                    qualification_policy_sha256=qualification_policy_sha256,
-                )
+                position += 1
+                if (
+                    not known
+                    and components not in deferred
+                    and max_new_galleries is not None
+                    and admitted_new >= max_new_galleries
+                ):
+                    self.deferred_gallery_count += 1
+                    report_source_progress(
+                        progress, operation, position, plan.gallery_count
+                    )
+                    continue
+                selected_position = summary.gallery_count
+                try:
+                    if components in deferred:
+                        raise VNextSourceDeferredError(
+                            "gallery completion evidence is deferred"
+                        )
+                    descriptor, file_count, byte_count = self._freeze_gallery(
+                        adapter,
+                        position=selected_position,
+                        locator_sha256=locator.locator_sha256,
+                        locator_components=components,
+                        marker=markers[components],
+                        cached=cached_by_locator.get(components),
+                        qualification_policy_sha256=qualification_policy_sha256,
+                    )
+                except VNextSourceDeferredError:
+                    # Partial local pages are never durable authority. The same
+                    # compact position may immediately be used by the next gallery.
+                    self._discard_gallery(selected_position)
+                    adapter.discard_gallery_observation(components)
+                    self.waiting_gallery_count += 1
+                    prior = (
+                        None if fallback_lookup is None else fallback_lookup(components)
+                    )
+                    if prior is None:
+                        if known:
+                            raise FrozenSourceObservationError(
+                                "published fallback disappeared"
+                            )
+                        report_source_progress(
+                            progress, operation, position, plan.gallery_count
+                        )
+                        continue
+                    self._store_completion_marker(
+                        position=selected_position,
+                        locator_sha256=locator.locator_sha256,
+                        marker=prior.marker,
+                        cached=prior,
+                        file_count=prior.file_count,
+                        byte_count=prior.byte_count,
+                    )
+                    descriptor = prior.descriptor
+                    file_count, byte_count = prior.file_count, prior.byte_count
+                else:
+                    if not known:
+                        admitted_new += 1
                 observation_identity = gallery_observation_descriptor_digest(descriptor)
                 locator_payload = encode_source_relative_locator(components)
                 if (
@@ -495,7 +614,7 @@ class FrozenSourceObservationSpool:
                     "directory_item_count, observation_identity_sha256) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        position,
+                        selected_position,
                         locator.locator_sha256,
                         locator_payload,
                         locator.payload_sha256,
@@ -513,7 +632,7 @@ class FrozenSourceObservationSpool:
                 summary = SourceBuildManifestSummary(
                     source_manifest_chain_step(
                         summary.manifest_sha256,
-                        position=position,
+                        position=selected_position,
                         gallery_key_bytes=gallery_key(
                             scope,
                             locator.locator_sha256,
@@ -539,7 +658,6 @@ class FrozenSourceObservationSpool:
                         field="byte_count",
                     ),
                 )
-                position += 1
                 report_source_progress(
                     progress, operation, position, plan.gallery_count
                 )
@@ -548,6 +666,14 @@ class FrozenSourceObservationSpool:
                 "frozen observation count differs from discovery plan"
             )
         return summary
+
+    def _discard_gallery(self, position: int) -> None:
+        self._index.execute(
+            "DELETE FROM component_pages WHERE gallery_position = ?", (position,)
+        )
+        self._index.execute(
+            "DELETE FROM completion_markers WHERE position = ?", (position,)
+        )
 
     def _freeze_gallery(
         self,
@@ -605,7 +731,7 @@ class FrozenSourceObservationSpool:
         if marker is not None:
             after = adapter.observe_completion_marker(locator_components)
             if after != marker:
-                raise VNextSourceChangedError(
+                raise VNextSourceDeferredError(
                     "source completion marker changed during gallery preparation"
                 )
             self._store_completion_marker(

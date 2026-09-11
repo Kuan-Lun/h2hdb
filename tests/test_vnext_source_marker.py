@@ -40,7 +40,6 @@ from h2hdb import (
     VNextIngestFacade,
     VNextIngestGalleryObservation,
     VNextIngestPage,
-    VNextSourceChangedError,
     VNextSourceCompletionMarker,
 )
 from h2hdb.vnext_ingest_fence_repository import IngestFenceUnavailableError
@@ -59,6 +58,10 @@ class MarkerSource(MemorySource):
         self.forbidden_reads: set[tuple[str, ...]] = set()
         self.marker_calls = 0
         self.change_during_observation = False
+        self.discarded_observations: list[tuple[str, ...]] = []
+
+    def discard_gallery_observation(self, locator_components: tuple[str, ...]) -> None:
+        self.discarded_observations.append(locator_components)
 
     def observe_completion_marker(
         self, locator_components: tuple[str, ...]
@@ -272,8 +275,11 @@ def test_marker_change_during_preparation_does_not_seed_a_cache_entry(
     with VNextIngestFacade(db_config) as facade:
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
-        with pytest.raises(VNextSourceChangedError, match="marker changed"):
-            facade.prepare_source(source, policy=policy)
+        with facade.prepare_source(source, policy=policy) as prepared:
+            assert prepared.waiting_gallery_count == 1
+            assert prepared.deferred_gallery_count == 0
+            assert prepared.gallery_count == 0
+            assert source.discarded_observations == [original.locator]
         facade.complete_ingest(session)
 
     source.change_during_observation = False

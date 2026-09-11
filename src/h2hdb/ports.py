@@ -163,6 +163,11 @@ class VNextIngestSourceAdapter(Protocol):
     Every page method is keyset-addressed and may be called again after
     response loss.  The facade always requests the registered leaf capacity:
     256 FILE rows, 192 DIRECTORY rows, and 256 TAG rows.
+
+    Discovery includes incomplete existing locators; omission means confirmed
+    deletion. A gallery-level read can raise VNextSourceDeferredError to preserve
+    its last published observation (or skip a new gallery) for this source turn.
+    Global identity changes and failures retain VNextSourceChangedError semantics.
     """
 
     @property
@@ -174,6 +179,24 @@ class VNextIngestSourceAdapter(Protocol):
         after_locator: tuple[str, ...] | None,
         limit: int,
     ) -> VNextIngestPage[tuple[str, ...]]: ...
+
+    def gallery_exists(self, locator_components: tuple[str, ...]) -> bool:
+        """Freshly confirm presence regardless of completion-marker availability.
+
+        Return False only for a confirmed absent gallery. Transient uncertainty
+        can raise VNextSourceDeferredError; source-wide identity changes retain
+        their whole-turn failure semantics.
+        """
+        ...
+
+    def discard_gallery_observation(self, locator_components: tuple[str, ...]) -> None:
+        """Discard this turn's provisional gallery bytes after rejected observation.
+
+        This is idempotent local cleanup, including rejection detected by the
+        facade's own final marker comparison. It must not delete published bytes
+        or read or modify the producer's source.
+        """
+        ...
 
     def observe_gallery(
         self,

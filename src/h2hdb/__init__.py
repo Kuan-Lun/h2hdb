@@ -121,6 +121,7 @@ __all__ = [
     "VNextSourcePreparationProgress",
     "VNextSourcePreparationObserver",
     "VNextSourceChangedError",
+    "VNextSourceDeferredError",
     "VNextIngestSession",
     "VNextIngestSourceAdapter",
     "VNextIngestSourceReceipt",
@@ -232,7 +233,7 @@ from .ports import (
 )
 from .schema_admin import SchemaEpochReadiness
 from .schema_epoch import SchemaEpochReport
-from .source_errors import VNextSourceChangedError
+from .source_errors import VNextSourceChangedError, VNextSourceDeferredError
 from .vnext_download_ingest_repository import (
     DownloadHandoff,
     DownloadIngestUnavailableError,

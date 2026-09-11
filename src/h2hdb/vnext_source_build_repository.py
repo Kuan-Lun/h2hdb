@@ -87,6 +87,7 @@ from .vnext_identity import (
     gallery_key,
     iter_source_relative_locator_payload,
     iter_source_root_payload,
+    source_relative_locator_digest,
     source_root_digest,
     source_scope_key,
     validate_source_relative_locator_parts,
@@ -665,6 +666,18 @@ class SourceDiscoveryPlan:
         ):
             raise SourceDiscoveryPlanError("decoded locator digest changed")
         return components
+
+    def _contains_locator(self, components: tuple[str, ...]) -> bool:
+        self._require_open()
+        digest = source_relative_locator_digest(_LOCATOR_DOMAIN, components)
+        row = self._index.execute(
+            "SELECT position FROM locator_entries WHERE locator_sha256 = ?", (digest,)
+        ).fetchone()
+        if row is None:
+            return False
+        if self._decode_locator(row[0], digest) != components:
+            raise SourceDiscoveryPlanError("discovery locator preimage differs")
+        return True
 
     def _page(self, start_position: int) -> tuple[PreparedDiscoveryLocator, ...]:
         self._require_open()

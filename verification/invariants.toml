@@ -1976,8 +1976,17 @@ symbol = "_require_compacted_source_publication"
 path = "src/h2hdb/vnext_source_batch_repository.py"
 symbol = "SourceBatchRepository"
 [[evidence.location]]
-path = "src/h2hdb/vnext_source_batch_plan.py"
-symbol = "prepare_source_batch"
+path = "src/h2hdb/vnext_source_observation_spool.py"
+symbol = "_freeze_adapter"
+[[evidence.location]]
+path = "tests/test_vnext_source_deferral.py"
+symbol = "test_updating_gallery_keeps_published_version_while_other_galleries_advance"
+[[evidence.location]]
+path = "tests/test_vnext_source_deferral.py"
+symbol = "test_discovery_omission_requires_fresh_absence_before_deleting_published_gallery"
+[[evidence.location]]
+path = "tests/test_vnext_source_deferral.py"
+symbol = "test_unpublished_newer_marker_binding_cannot_replace_deferred_published_observation"
 
 [[evidence]]
 id = "fault.production.source-build"

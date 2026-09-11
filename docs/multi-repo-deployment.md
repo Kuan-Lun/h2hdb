@@ -190,11 +190,36 @@ source data or acquisition/presentation bytes have already been ingested.
 
 Resident integrations can pass `max_new_galleries` to `prepare_source()` and
 publish cumulative source batches. Every batch inventories the current source
-again, incorporates removals and refreshes previously admitted galleries, and
-admits a bounded number of new galleries. Previously published source membership
-is retained even when deduplication excluded a gallery from the visible catalog.
-The prepared handle's `deferred_gallery_count` requests another immediate batch;
-it must not be treated as a persisted queue or a publication receipt. Completion
+again, independently confirms apparent removals, refreshes completed galleries,
+and admits a bounded number of successfully observed new galleries. Discovery
+must include existing incomplete gallery locators. Its omissions are checked
+against the published inventory using the adapter's fresh `gallery_exists()`
+probe before any previously published member is removed.
+
+A gallery-level `VNextSourceDeferredError` discards only that gallery's provisional
+observation pages and invokes the adapter's idempotent
+`discard_gallery_observation()` hook to discard provisional captured source bytes,
+including when the facade itself detects a changed final completion marker.
+The last published observation remains referenced under the
+same qualification policy; a new incomplete gallery is omitted without consuming
+the admission budget. No mutable copy or additional persistent queue is created.
+The frozen source is a collection of independently completed observations and
+need not describe an instant at which every source gallery was quiescent.
+Previously published source membership includes galleries excluded by catalog
+deduplication. A changed qualification policy requires fresh observation and
+cannot use a deferred old observation as new-policy evidence.
+
+The prepared handle's `gallery_count` reports the exact admitted observation count.
+Its `deferred_gallery_count` reports quota backlog suitable for
+another immediate batch. `waiting_gallery_count` reports incomplete galleries
+that must be retried after the normal polling delay, even if the marker monitor
+has not signaled another change. Both are process-local scheduling hints, never
+a persisted queue or publication receipt. Restart discards unfinished private
+spools and prepares a new source turn against the durable published baseline.
+When artifacts are required, a retained but unpublished source observation must
+be freshly observed so the integration can rebuild its private immutable byte
+snapshot. An unpublished source seal alone cannot prove those bytes survived a
+terminated process. Completion
 of a gallery, analysis, or CBZ alone does not make it readable: each batch still
 uses the full sealed publication and library activation protocol. OPDS discovers
 the new current head without restarting. Current-only resource links can expire
