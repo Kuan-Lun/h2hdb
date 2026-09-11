@@ -112,6 +112,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_marker.py",
             "test_marker_cache_survives_restart_and_reuses_prior_membership",
         ),
+        # One gallery verifies that the restarted batch driver timestamps
+        # facade calls in the DB clock domain even when the host is behind.
+        (
+            "test_vnext_source_deferral.py",
+            "test_source_batch_clock_is_independent_of_host_clock_skew",
+        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
