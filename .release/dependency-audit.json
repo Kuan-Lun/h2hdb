@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-09T09:35:20+00:00",
+  "checked_at": "2026-09-11T04:43:25+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.36.1",
+  "project_version": "0.37.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -41,7 +41,7 @@
     {
       "declared": "build>=1.5.0",
       "group": "optional:dev",
-      "latest": "1.6.0",
+      "latest": "1.6.1",
       "latest_satisfies": true,
       "name": "build",
       "python_3_14": true,
@@ -104,7 +104,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.6",
+      "latest": "0.16.7",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build/runtime/optional/development and Node registry latest candidates, including outside declared upper bounds, against the reviewed 0.36.0 receipt. No registry candidate or dependency manifest changed; all latest candidates remain within supported bounds and support Python 3.14. Local Python 3.14.1 and Node 26.7.0 environments use the same reviewed latest versions. Retained review covers Pydantic 2.13.5 validator/plugin reuse and GC fixes, build 1.6.0 constraints-hash verification, Hypothesis 6.168.0 datetime/cache fixes, Ruff 0.16.6 fixes, packaging 26.3 requirement/marker fixes and markdownlint-cli2 0.23.2 with Node >=22. Source byte policy removal, in-place readable archive scratch and ENOSPC cleanup passed 56 focused render/presentation/receipt tests and repository fast checks with these dependencies; exact-tree bounded merge gate remains separate evidence. References: https://github.com/pydantic/pydantic/releases/tag/v2.13.5 ; https://github.com/pypa/build/releases/tag/1.6.0 ; https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-0 ; https://github.com/astral-sh/ruff/releases/tag/0.16.6 ; https://github.com/pypa/packaging/blob/main/CHANGELOG.rst ; https://raw.githubusercontent.com/DavidAnson/markdownlint-cli2/main/CHANGELOG.md .",
+    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including versions outside current bounds. Compared with the previous receipt, only build 1.6.1 and Ruff 0.16.7 are newer: official build 1.6.1 CHANGELOG.rst fixes the Windows symlink probe regression; official Ruff 0.16.7 release notes describe lint/formatter fixes and preview-only additions. Both were installed and the complete fast gate passed; all installed direct Python packages now match the audited latest candidates, all declarations admit those candidates, and each supports Python 3.14. Core source deferral, marker, quota, published baseline fencing and restart regressions passed, including the new mandatory discard lifecycle. The breaking change is the source adapter protocol requiring gallery_exists and discard_gallery_observation; no schema, epoch, stored observation codec or library format changes and no migration or compatibility shim. The exact-tree release gate separately validates the final tree with the canonical bounded pytest merge profile, formal checks and distribution checks; this receipt does not claim manual deep matrices or Windows execution.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
