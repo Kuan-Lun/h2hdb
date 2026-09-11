@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import cast
 
 import pytest
 from test_vnext_source_marker import MarkerSource
+from vnext_fault_harness import open_connector
 from vnext_pipeline import (
     Clock,
     MemoryLibrary,
@@ -35,6 +37,23 @@ from h2hdb import (
     VNextResolvedIngestPolicy,
     VNextSourceChangedError,
 )
+from h2hdb.vnext_manifest_family import database_unix_microseconds
+from h2hdb.vnext_transaction import VNextUnitOfWork
+
+
+@contextmanager
+def _source_batch_clock(config: CoreConfig) -> Iterator[Callable[[], int]]:
+    # Sealed prerequisites use the DB clock. A container's clock need not agree
+    # with the host; this test driver must use the same clock for facade calls.
+    with closing(open_connector(config)) as connector:
+
+        def now() -> int:
+            with connector.read_transaction():
+                return database_unix_microseconds(
+                    VNextUnitOfWork(connector, backend=config.database.sql_type)
+                )
+
+        yield now
 
 
 def _source_batch(
@@ -69,7 +88,10 @@ def _publish_batch(
     artifacts_required: bool = False,
 ) -> tuple[VNextIngestSourceReceipt, int]:
     # Reopening every turn proves that membership is durable, not a caller cursor.
-    with VNextIngestFacade(config, clock=Clock()) as facade:
+    with (
+        _source_batch_clock(config) as clock,
+        VNextIngestFacade(config, clock=clock) as facade,
+    ):
         session = claim_session(facade)
         policy = facade.ensure_policy(
             session, ingest_policy(artifacts_required=artifacts_required)

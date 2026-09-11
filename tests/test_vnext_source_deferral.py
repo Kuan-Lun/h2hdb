@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import closing
+from time import time_ns
 from typing import Literal
 
 import pytest
@@ -133,6 +134,19 @@ def test_updating_gallery_keeps_published_version_while_other_galleries_advance(
         publications[0].artifacts[0].artifact_id
         != original_publication.artifacts[0].artifact_id
     )
+
+
+@pytest.mark.mariadb_smoke
+def test_source_batch_clock_is_independent_of_host_clock_skew(
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_database(db_config)
+    # The MariaDB server may run in a VM with a clock ahead of the test host.
+    # Make that separation deterministic, including when using local SQLite.
+    monkeypatch.setattr("time.time_ns", lambda: time_ns() - 60_000_000_000)
+    source = UpdatingSource([gallery(1001, title="Clock-independent")])
+    _publish_batch(db_config, source, MemoryLibrary(source), limit=1)
+    assert [item.title for item in _publications(db_config)] == ["Clock-independent"]
 
 
 @pytest.mark.parametrize("limit", [None, 1])
