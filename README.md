@@ -453,6 +453,61 @@ timeout and requires Docker. Deep matrix results are not part of the
 exact-tree release receipt and must not be reported as though every merge ran
 them.
 
+### Opt-in deployment acceptance
+
+`scripts/check-deployment-acceptance.py` tests the supplied deployment's actual
+ingest and OPDS Compose commands, dependencies, read-only mounts, wrappers, and
+healthchecks against disposable MariaDB 10.11.11. It reads only the explicit
+Compose file and public wrappers; it does not load deployment env files,
+credentials, configurations, or media. Supply already-built local role images
+from that deployment Dockerfile and a Python environment containing the tested
+ingest/core cohort and Pillow for synthetic fixture generation.
+
+The host must support POSIX descriptor-relative file access. Evidence readers
+reject symbolic links and special files before exporting container-written data:
+
+```bash
+.venv/bin/python scripts/check-deployment-acceptance.py \
+  --deployment-root /path/to/deployment \
+  --fixture-python /path/to/cohort/.venv/bin/python \
+  --context desktop-linux \
+  --ingest-image local/acceptance-ingest:tested \
+  --opds-image local/acceptance-opds:tested \
+  --mariadb-image mariadb:10.11.11 \
+  --output /tmp/h2hdb-acceptance-128 \
+  --base-count 128 --append-count 100 --pages 2 --lifecycle --http-artifacts
+```
+
+The script pins local image identities, replaces production resources with
+unique labeled resources and synthetic reader/writer accounts, and publishes no
+host ports. The fixture uses deterministic unique images and writes
+`galleryinfo.txt` last. The independent oracle verifies exact catalog membership,
+page identity and raster content, archive bytes, and unchanged file identity.
+Restart, append, and optional marker lifecycle scenarios require completed work
+and the expected catalog; a replayed COMPLETE receipt does not prove new analysis.
+`--http-artifacts` also downloads the first and last GID CBZs through OPDS after
+each scenario, checking search identity, byte size, SHA-256, and Range responses.
+
+Run increasing `--base-count` values sequentially with the same page profile to
+measure growth. `--instrumented` adds test-only startup, SQL, render, and explicit
+Python fsync observations. Run it separately from the uninstrumented baseline;
+its observer cost is not free. `--faults --instrumented` additionally interrupts
+a real durable library installation with SIGTERM and SIGKILL, checks OPDS fencing,
+and verifies restart recovery. These tests do not simulate machine power loss.
+They remain opt-in and are never launched by ordinary pytest or the merge gate.
+
+The output contains command logs, pinned cohort/platform metadata, scenario and
+oracle results, and a label-scoped Docker cleanup receipt. Consumers stop before
+the database; their final log tails are saved and checked before resource removal.
+Synthetic fixtures are removed after verified Docker cleanup unless
+`--keep-fixtures` is supplied;
+failed cleanup preserves their paths for diagnosis. Successful functional checks
+are distinct from acceptable latency: local Docker timings do not establish a NAS
+SLO or coverage of a hundred-thousand-gallery corpus. Test helpers themselves have
+offline unit tests; set `H2HDB_ACCEPTANCE_PYTHON` to the explicit cohort interpreter
+when running `tests/test_deployment_acceptance_fixture.py` to also exercise its
+real SQLite ingest and byte oracle.
+
 Run `scripts/check-mariadb-server-crash-deep.sh` for the separately bounded
 MariaDB 10.11.11 server-crash case. It sends `SIGKILL` only to its uniquely
 named disposable database container, restarts MariaDB on the same uniquely

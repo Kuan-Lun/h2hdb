@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from .compose import OWNER_LABEL
+from .compose import OWNER_LABEL, SERVICES
 
 _RESOURCES = (
     ("containers", ("ps", "-aq"), ("rm", "-f")),
@@ -186,6 +186,12 @@ class Commands:
         removed: dict[str, list[str]] = {kind: [] for kind, _, _ in _RESOURCES}
         remaining: dict[str, list[str] | None] = {}
         foreign: dict[str, list[str] | None] = {}
+        consumers = [SERVICES["opds"], SERVICES["ingest"]]
+        shutdown: dict[str, Any] = {
+            "services": consumers,
+            "status": "skipped",
+            "logs": {"status": "not_collected", "tail_lines_per_service": 200},
+        }
 
         def failure(
             phase: str, error: BaseException, *, diagnostic: bool = False
@@ -193,19 +199,8 @@ class Commands:
             item = {"phase": phase, "error": f"{type(error).__name__}: {error}"}
             (notes if diagnostic else errors).append(item)
 
-        try:
-            self.compose(
-                project,
-                compose_path,
-                ["logs", "--no-color", "--timestamps"],
-                cleanup=True,
-                timeout=5,
-            )
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
-            failure("logs", error, diagnostic=True)
-
-        # Compose down acts on project labels. Do not let it remove an unrelated
-        # resource carrying this project label without our explicit owner label.
+        # Compose stop/down act on project labels. Do not let them affect an
+        # unrelated resource carrying this project label without our owner label.
         for kind, arguments, _remove in _RESOURCES:
             try:
                 owned = self._list(
@@ -224,6 +219,50 @@ class Commands:
                 foreign[kind] = None
                 failure(f"down ownership check: {kind}", error, diagnostic=True)
         if all(items == [] for items in foreign.values()):
+            # The disposable database intentionally is not an ingest dependency
+            # in the preserved deployment. Stop only its consumers first so their
+            # shutdown transactions and final log records retain a live database.
+            try:
+                self.compose(
+                    project,
+                    compose_path,
+                    ["stop", "--timeout", "10", *consumers],
+                    cleanup=True,
+                    timeout=15,
+                )
+                shutdown["status"] = "stopped"
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                subprocess.TimeoutExpired,
+            ) as error:
+                shutdown["status"] = "failed"
+                failure("consumer stop", error)
+            try:
+                logs = self.compose(
+                    project,
+                    compose_path,
+                    ["logs", "--no-color", "--timestamps", "--tail", "200", *consumers],
+                    cleanup=True,
+                    timeout=5,
+                )
+                log_path = self.output / "cleanup-consumers.log"
+                log_path.write_text(logs, encoding="utf-8")
+                shutdown["logs"].update(status="captured", output=log_path.name)
+                if "Traceback (most recent call last)" in logs or "[ERROR]" in logs:
+                    failure(
+                        "consumer shutdown logs",
+                        RuntimeError("Stopped consumer logs contain a runtime error"),
+                    )
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                subprocess.TimeoutExpired,
+            ) as error:
+                shutdown["logs"]["status"] = "failed"
+                failure("consumer logs", error)
             try:
                 self.compose(
                     project,
@@ -240,9 +279,15 @@ class Commands:
             ) as error:
                 failure("compose down", error, diagnostic=True)
         else:
+            failure(
+                "consumer shutdown ownership",
+                RuntimeError(
+                    "Consumer shutdown and final logs require verified project ownership"
+                ),
+            )
             notes.append(
                 {
-                    "phase": "compose down",
+                    "phase": "compose stop/logs/down",
                     "error": "Skipped because project ownership is foreign or unverified",
                 }
             )
@@ -293,6 +338,7 @@ class Commands:
             "remaining": remaining,
             "removed": removed,
             "foreign_project_resources": foreign,
+            "consumer_shutdown": shutdown,
             "errors": errors,
             "diagnostics": notes,
         }

@@ -114,17 +114,43 @@ class FakeDocker:
         }
         self.foreign: dict[str, set[str]] = {kind: set() for kind in self.resources}
         self.fail_logs = False
+        self.fail_stop = False
         self.fail_down = False
         self.fail_remove: set[str] = set()
         self.fail_final_listing: str | None = None
         self.removing = False
+        self.consumer_logs = "consumers exited normally\n"
 
     def run(self, command: Sequence[str], **options: Any) -> str:
         self.calls.append(list(command))
         assert list(command[:3]) == ["docker", "--context", "test-context"]
         if "compose" in command:
-            if "logs" in command and self.fail_logs:
-                raise subprocess.TimeoutExpired(command, 1, output="partial logs")
+            if "stop" in command:
+                assert list(command[-5:]) == [
+                    "stop",
+                    "--timeout",
+                    "10",
+                    "h2hdb-opds",
+                    "h2hdb-ingest",
+                ]
+                assert options["cleanup"] is True and options["timeout"] == 15
+                if self.fail_stop:
+                    raise subprocess.TimeoutExpired(
+                        command, 1, output="stop incomplete"
+                    )
+            if "logs" in command:
+                assert list(command[-7:]) == [
+                    "logs",
+                    "--no-color",
+                    "--timestamps",
+                    "--tail",
+                    "200",
+                    "h2hdb-opds",
+                    "h2hdb-ingest",
+                ]
+                if self.fail_logs:
+                    raise subprocess.TimeoutExpired(command, 1, output="partial logs")
+                return self.consumer_logs
             if "down" in command:
                 assert "--remove-orphans" not in command
                 if self.fail_down:
@@ -182,7 +208,9 @@ def test_cleanup_falls_back_after_logs_and_down_fail(
     fake = FakeDocker()
     runner = admitted(tmp_path, monkeypatch, fake)
     fake.fail_logs = fake.fail_down = True
-    receipt = runner.cleanup(PROJECT, tmp_path / "compose.json")
+    with pytest.raises(execution.CleanupError) as error:
+        runner.cleanup(PROJECT, tmp_path / "compose.json")
+    receipt = error.value.receipt
     assert receipt["verified_empty"] is True
     assert receipt["remaining"] == {kind: [] for kind in fake.resources}
     assert receipt["removed"] == {
@@ -190,11 +218,69 @@ def test_cleanup_falls_back_after_logs_and_down_fail(
         "networks": ["network-a"],
         "volumes": ["volume-a"],
     }
-    assert {item["phase"] for item in receipt["diagnostics"]} == {
-        "logs",
-        "compose down",
-    }
+    assert {item["phase"] for item in receipt["diagnostics"]} == {"compose down"}
+    assert {item["phase"] for item in receipt["errors"]} == {"consumer logs"}
+    assert receipt["consumer_shutdown"]["logs"]["status"] == "failed"
     assert json.loads((runner.output / "cleanup.json").read_text()) == receipt
+
+
+def test_cleanup_stops_consumers_then_captures_final_logs_before_database_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeDocker()
+    runner = admitted(tmp_path, monkeypatch, fake)
+    receipt = runner.cleanup(PROJECT, tmp_path / "compose.json")
+    compose_calls = [command for command in fake.calls if "compose" in command]
+    assert [
+        next(name for name in ("stop", "logs", "down") if name in command)
+        for command in compose_calls
+    ] == ["stop", "logs", "down"]
+    first_mutation = fake.calls.index(compose_calls[0])
+    assert sum("--filter" in command for command in fake.calls[:first_mutation]) == 12
+    assert receipt["verified_empty"] is True
+    assert receipt["errors"] == []
+    assert receipt["consumer_shutdown"]["status"] == "stopped"
+    assert receipt["consumer_shutdown"]["logs"] == {
+        "status": "captured",
+        "tail_lines_per_service": 200,
+        "output": "cleanup-consumers.log",
+    }
+    assert (runner.output / "cleanup-consumers.log").read_text() == fake.consumer_logs
+
+
+def test_stop_failure_still_captures_logs_and_removes_every_owned_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeDocker()
+    runner = admitted(tmp_path, monkeypatch, fake)
+    fake.fail_stop = fake.fail_down = True
+    with pytest.raises(execution.CleanupError) as error:
+        runner.cleanup(PROJECT, tmp_path / "compose.json")
+    receipt = error.value.receipt
+    assert receipt["verified_empty"] is True
+    assert receipt["consumer_shutdown"]["status"] == "failed"
+    assert receipt["consumer_shutdown"]["logs"]["status"] == "captured"
+    assert {item["phase"] for item in receipt["errors"]} == {"consumer stop"}
+    assert receipt["removed"]["containers"] == ["container-a", "container-b"]
+    assert receipt["removed"]["networks"] == ["network-a"]
+    assert receipt["removed"]["volumes"] == ["volume-a"]
+
+
+@pytest.mark.parametrize(
+    "failure", ["[ERROR] database unavailable", "Traceback (most recent call last):"]
+)
+def test_shutdown_runtime_errors_cannot_be_reported_as_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    fake = FakeDocker()
+    runner = admitted(tmp_path, monkeypatch, fake)
+    fake.consumer_logs = failure + "\n"
+    with pytest.raises(execution.CleanupError) as error:
+        runner.cleanup(PROJECT, tmp_path / "compose.json")
+    receipt = error.value.receipt
+    assert receipt["verified_empty"] is True
+    assert {item["phase"] for item in receipt["errors"]} == {"consumer shutdown logs"}
+    assert (runner.output / "cleanup-consumers.log").read_text() == fake.consumer_logs
 
 
 def test_cleanup_attempts_other_resources_after_individual_removal_failure(
@@ -223,11 +309,15 @@ def test_cleanup_preserves_foreign_project_resources_and_skips_compose_down(
     fake = FakeDocker()
     runner = admitted(tmp_path, monkeypatch, fake)
     fake.foreign["containers"] = {"unrelated-container"}
-    receipt = runner.cleanup(PROJECT, tmp_path / "compose.json")
+    with pytest.raises(execution.CleanupError) as error:
+        runner.cleanup(PROJECT, tmp_path / "compose.json")
+    receipt = error.value.receipt
     assert receipt["verified_empty"] is True
     assert fake.foreign["containers"] == {"unrelated-container"}
     assert receipt["foreign_project_resources"]["containers"] == ["unrelated-container"]
-    assert not any("down" in command for command in fake.calls)
+    assert not any("compose" in command for command in fake.calls)
+    assert receipt["consumer_shutdown"]["status"] == "skipped"
+    assert receipt["consumer_shutdown"]["logs"]["status"] == "not_collected"
 
 
 def test_failed_inventory_cannot_be_reported_as_empty(
