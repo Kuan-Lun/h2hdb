@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-11T04:43:25+00:00",
+  "checked_at": "2026-09-13T08:36:17+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.37.0",
+  "project_version": "0.37.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including versions outside current bounds. Compared with the previous receipt, only build 1.6.1 and Ruff 0.16.7 are newer: official build 1.6.1 CHANGELOG.rst fixes the Windows symlink probe regression; official Ruff 0.16.7 release notes describe lint/formatter fixes and preview-only additions. Both were installed and the complete fast gate passed; all installed direct Python packages now match the audited latest candidates, all declarations admit those candidates, and each supports Python 3.14. Core source deferral, marker, quota, published baseline fencing and restart regressions passed, including the new mandatory discard lifecycle. The breaking change is the source adapter protocol requiring gallery_exists and discard_gallery_observation; no schema, epoch, stored observation codec or library format changes and no migration or compatibility shim. The exact-tree release gate separately validates the final tree with the canonical bounded pytest merge profile, formal checks and distribution checks; this receipt does not claim manual deep matrices or Windows execution.",
+    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including versions outside declared upper bounds. No registry candidate changed from the 2026-09-11 receipt; installed direct dependencies match all audited latest versions, all declarations admit the candidates, and all Python candidates support Python 3.14. Existing upstream release-note reviews remain applicable; no dependency declarations or packages changed. This compatible patch batches catalog reads and exact child comparisons, groups private scratch transactions, bounds corrupt parent-edge reads, and adds bounded INFO summaries with opt-in DEBUG diagnostics. Independent BUILD/VALIDATE snapshots and fencing remain intact; schema, source protocol and artifact formats do not change, and no migration or compatibility path is added or removed. Focused SQLite regression and explicit-source ingest logging/CBZ/publication integration checks passed; live MariaDB and the exact-tree bounded release profile are separate validation evidence and are not implied by this audit receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
