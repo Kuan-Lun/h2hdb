@@ -12,6 +12,7 @@ from threading import Lock
 from typing import cast
 
 from .config_loader import CoreConfig, DatabaseAccessMode
+from .ingest_performance import instrument_connector
 from .logger import HentaiDBLogger, setup_logger
 from .sql_connector import SQLConnector as AbstractSQLConnector
 from .sql_connector import SQLConnectorParams
@@ -100,7 +101,7 @@ class RepositoryContext:
             with lifecycle_lock:
                 if closed:
                     raise RuntimeError("Database runtime is closed")
-                return connector_factory()
+                return instrument_connector(connector_factory())
 
         def close_context() -> None:
             nonlocal closed
