@@ -449,7 +449,7 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
 
     with (
         connector.transaction(),
-        patch.object(connector, "fetch_one", wraps=connector.fetch_one) as fetched,
+        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
     ):
         committed = process()
     aggregate_statements = [
@@ -459,7 +459,7 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
         or "COUNT(DISTINCT artist.artist_tag_id)" in call.args[0]
         or "MAX(per_gallery.artist_count)" in call.args[0]
     ]
-    assert len(aggregate_statements) == 6
+    assert len(aggregate_statements) == 3
     assert committed.row_count == 2
     # Simulate a lost successful response: a new transaction only replays the
     # receipt, with original source independently re-evaluated and no DML.
@@ -475,9 +475,17 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             "execute_affected",
             side_effect=AssertionError("receipt replay advanced checkpoint"),
         ),
+        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
     ):
         replay = process()
     assert replay.replayed and replay.next_cursor == committed.next_cursor
+    assert (
+        sum(
+            "SUM(occurrence.occurrence_count)" in call.args[0]
+            for call in fetched.call_args_list
+        )
+        == 1
+    )
     with connector.transaction():
         AnalysisRepository.process_file_hash_decision_batch(
             work(),
@@ -488,18 +496,26 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             max_rows=128,
             now=201,
         )
-    for page in range(2):
-        with connector.transaction():
-            validated = AnalysisRepository.validate_file_hash_decision_batch(
-                work(),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=run.analysis_id,
-                batch_key=f"validate-{page}".encode(),
-                max_rows=128,
-                now=300 + page,
-            )
+    with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
+        for page in range(2):
+            with connector.transaction():
+                validated = AnalysisRepository.validate_file_hash_decision_batch(
+                    work(),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=f"validate-{page}".encode(),
+                    max_rows=128,
+                    now=300 + page,
+                )
     assert validated.component_sealed
+    assert (
+        sum(
+            "SUM(occurrence.occurrence_count)" in call.args[0]
+            for call in fetched.call_args_list
+        )
+        == 1
+    )
     with connector.read_transaction():
         expected = _independent_file_oracle(cast(Any, connector), build)
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:

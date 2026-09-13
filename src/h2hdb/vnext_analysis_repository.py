@@ -6018,7 +6018,7 @@ def _require_file_decision_page(
     *,
     require_delta: bool,
 ) -> int:
-    """Freshly evaluate source for validation/replay; batch only stored scalars."""
+    """Freshly aggregate source and exact-compare every validation/replay key."""
 
     keys = require_file_decision_page_keys(digests)
     if not keys:
@@ -6051,9 +6051,10 @@ def _require_file_decision_page(
         if require_delta and authority.baseline_analysis_id is not None
         else authority.policy
     )
+    targets = _evaluate_file_decision_page(work, authority, keys)
     live_count = 0
     for digest in keys:
-        target = _evaluate_file_decision(work, authority, digest)
+        target = targets.get(digest)
         parent = parents.get(digest)
         if require_delta:
             delta = delta_by_key[digest]
@@ -8068,33 +8069,26 @@ def _decision_work_rows(
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
-    subqueries = [
-        "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
-        "WHERE analysis_id = %s"
+    subqueries: list[tuple[str, tuple[Any, ...]]] = [
+        (
+            "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
+            "WHERE analysis_id = %s",
+            (authority.analysis_id,),
+        )
     ]
-    parameters: list[Any] = [authority.analysis_id]
     if authority.overlay_depth == 0:
         subqueries.append(
-            "SELECT occurrence.file_sha256 AS file_sha256 "
-            "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-            "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-            "ON occurrence.gallery_id = member.gallery_id "
-            "AND occurrence.observation_id = member.observation_id "
-            "WHERE member.build_id = %s"
+            (
+                "SELECT occurrence.file_sha256 AS file_sha256 "
+                "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
+                "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
+                "ON occurrence.gallery_id = member.gallery_id "
+                "AND occurrence.observation_id = member.observation_id "
+                "WHERE member.build_id = %s",
+                (authority.build_id,),
+            )
         )
-        parameters.append(authority.build_id)
-    where = "" if after is None else " WHERE workset.file_sha256 > %s"
-    if after is not None:
-        parameters.append(require_digest32(after, field="decision cursor"))
-    parameters.append(limit)
-    return work.connector.fetch_all(
-        "SELECT workset.file_sha256 FROM ("
-        + " UNION ".join(subqueries)
-        + ") AS workset"
-        + where
-        + " ORDER BY workset.file_sha256 LIMIT %s",
-        tuple(parameters),
-    )
+    return _file_hash_union_page(work, subqueries, after=after, limit=limit)
 
 
 def _materialize_decision_page(
@@ -8114,8 +8108,9 @@ def _materialize_decision_page(
     deltas: list[AnalysisExclusionDeltaFamily] = []
     shadows: list[AnalysisFileHashDecisionShadowFamily] = []
     tombstones: list[bytes] = []
+    targets = _evaluate_file_decision_page(work, authority, keys)
     for digest in keys:
-        target = _evaluate_file_decision(work, authority, digest)
+        target = targets.get(digest)
         parent = parents.get(digest)
         deltas.append(
             AnalysisExclusionDeltaFamily(
@@ -8149,59 +8144,111 @@ def _materialize_decision_page(
         raise AnalysisCorruptionError(str(error)) from error
 
 
-def _evaluate_file_decision(
+def _evaluate_file_decision_page(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    file_sha256: bytes,
-) -> _Decision | None:
-    digest = require_digest32(file_sha256, field="file_sha256")
-    occurrence_row = work.connector.fetch_one(
-        "SELECT CAST(SUM(occurrence.occurrence_count) AS UNSIGNED) "
-        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
+    digests: Sequence[bytes],
+) -> dict[bytes, _Decision]:
+    """Recompute a bounded page from source; never reuse materialized decisions."""
+
+    keys = require_file_decision_page_keys(digests)
+    if not keys:
+        return {}
+    placeholders = ", ".join("%s" for _digest in keys)
+    source = (
+        " FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "
-        "WHERE member.build_id = %s AND occurrence.file_sha256 = %s",
-        (authority.build_id, digest),
     )
-    if len(occurrence_row) != 1 or occurrence_row[0] is None:
-        return None
-    occurrence_count = require_positive_int63(
-        occurrence_row[0], field="decision occurrence_count"
-    )
-    artist_row = work.connector.fetch_one(
-        "SELECT COUNT(DISTINCT artist.artist_tag_id) "
-        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-        "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-        "ON occurrence.gallery_id = member.gallery_id "
-        "AND occurrence.observation_id = member.observation_id "
+    artists = (
         "LEFT JOIN catalog_gallery_observation_artists AS artist "
         "ON artist.gallery_id = member.gallery_id "
         "AND artist.observation_id = member.observation_id "
-        "WHERE member.build_id = %s AND occurrence.file_sha256 = %s",
-        (authority.build_id, digest),
     )
-    artist_count = require_int63(artist_row[0], field="decision artist_count")
-    maximum_row = work.connector.fetch_one(
-        "SELECT MAX(per_gallery.artist_count) FROM ("
-        "SELECT member.gallery_id, COUNT(artist.artist_tag_id) AS artist_count "
-        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-        "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-        "ON occurrence.gallery_id = member.gallery_id "
-        "AND occurrence.observation_id = member.observation_id "
-        "LEFT JOIN catalog_gallery_observation_artists AS artist "
-        "ON artist.gallery_id = member.gallery_id "
-        "AND artist.observation_id = member.observation_id "
-        "WHERE member.build_id = %s AND occurrence.file_sha256 = %s "
-        "GROUP BY member.gallery_id"
-        ") AS per_gallery",
-        (authority.build_id, digest),
+    predicate = (
+        f"WHERE member.build_id = %s AND occurrence.file_sha256 IN ({placeholders}) "
     )
-    maximum = require_int63(
-        0 if maximum_row[0] is None else maximum_row[0],
+    parameters = (authority.build_id, *keys, len(keys) + 1)
+    occurrences = _require_file_decision_aggregate_rows(
+        work.connector.fetch_all(
+            "SELECT occurrence.file_sha256, "
+            "CAST(SUM(occurrence.occurrence_count) AS UNSIGNED)"
+            + source
+            + predicate
+            + "GROUP BY occurrence.file_sha256 ORDER BY occurrence.file_sha256 LIMIT %s",
+            parameters,
+        ),
+        keys=keys,
+        field="decision occurrence_count",
+        positive=True,
+    )
+    artist_counts = _require_file_decision_aggregate_rows(
+        work.connector.fetch_all(
+            "SELECT occurrence.file_sha256, COUNT(DISTINCT artist.artist_tag_id)"
+            + source
+            + artists
+            + predicate
+            + "GROUP BY occurrence.file_sha256 ORDER BY occurrence.file_sha256 LIMIT %s",
+            parameters,
+        ),
+        keys=keys,
+        field="decision artist_count",
+    )
+    maxima = _require_file_decision_aggregate_rows(
+        work.connector.fetch_all(
+            "SELECT per_gallery.file_sha256, MAX(per_gallery.artist_count) FROM ("
+            "SELECT occurrence.file_sha256, member.gallery_id, "
+            "COUNT(artist.artist_tag_id) AS artist_count"
+            + source
+            + artists
+            + predicate
+            + "GROUP BY occurrence.file_sha256, member.gallery_id"
+            ") AS per_gallery GROUP BY per_gallery.file_sha256 "
+            "ORDER BY per_gallery.file_sha256 LIMIT %s",
+            parameters,
+        ),
+        keys=keys,
         field="decision maximum_gallery_artist_count",
     )
-    return _Decision(occurrence_count, artist_count, maximum)
+    if (
+        occurrences.keys() != artist_counts.keys()
+        or occurrences.keys() != maxima.keys()
+    ):
+        raise AnalysisCorruptionError(
+            "file-decision source aggregates disagree on keys"
+        )
+    return {
+        digest: _Decision(occurrences[digest], artist_counts[digest], maxima[digest])
+        for digest in occurrences
+    }
+
+
+def _require_file_decision_aggregate_rows(
+    rows: Sequence[tuple[Any, ...]],
+    *,
+    keys: tuple[bytes, ...],
+    field: str,
+    positive: bool = False,
+) -> dict[bytes, int]:
+    expected = set(keys)
+    result: dict[bytes, int] = {}
+    for row in rows:
+        if len(row) != 2:
+            raise AnalysisCorruptionError(
+                "file-decision source aggregate has wrong shape"
+            )
+        digest = require_digest32(row[0], field="file-decision source aggregate key")
+        if digest not in expected or digest in result:
+            raise AnalysisCorruptionError(
+                "file-decision source aggregate has unexpected or duplicate keys"
+            )
+        result[digest] = (
+            require_positive_int63(row[1], field=field)
+            if positive
+            else require_int63(row[1], field=field)
+        )
+    return result
 
 
 def _excluded(decision: _Decision | None, policy: _Policy) -> int:
@@ -8292,41 +8339,77 @@ def _validation_key_rows(
         "catalog_a_file_decision_shadow_gallery_artist_max",
         "catalog_a_file_decision_shadow_seals",
     )
-    subqueries = [
-        "SELECT occurrence.file_sha256 AS file_sha256 "
-        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-        "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-        "ON occurrence.gallery_id = member.gallery_id "
-        "AND occurrence.observation_id = member.observation_id "
-        "WHERE member.build_id = %s",
+    subqueries: list[tuple[str, tuple[Any, ...]]] = [
+        (
+            "SELECT occurrence.file_sha256 AS file_sha256 "
+            "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
+            "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
+            "ON occurrence.gallery_id = member.gallery_id "
+            "AND occurrence.observation_id = member.observation_id "
+            "WHERE member.build_id = %s",
+            (authority.build_id,),
+        ),
         *(
-            f"SELECT file_sha256 FROM {table} WHERE analysis_id = %s"
+            (
+                f"SELECT file_sha256 FROM {table} WHERE analysis_id = %s",
+                (authority.analysis_id,),
+            )
             for table in shadow_tables
         ),
-        "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_tombstone "
-        "WHERE analysis_id = %s",
-    ]
-    parameters: list[Any] = [
-        authority.build_id,
-        *(authority.analysis_id for _table in shadow_tables),
-        authority.analysis_id,
+        (
+            "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_tombstone "
+            "WHERE analysis_id = %s",
+            (authority.analysis_id,),
+        ),
     ]
     if authority.baseline_analysis_id is not None:
         subqueries.append(
-            "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_resolved "
-            "WHERE analysis_id = %s"
+            (
+                "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_resolved "
+                "WHERE analysis_id = %s",
+                (authority.baseline_analysis_id,),
+            )
         )
-        parameters.append(authority.baseline_analysis_id)
-    where = "" if after is None else " WHERE keyset.file_sha256 > %s"
+    return _file_hash_union_page(work, subqueries, after=after, limit=limit)
+
+
+def _file_hash_union_page(
+    work: VNextUnitOfWork,
+    subqueries: Sequence[tuple[str, tuple[Any, ...]]],
+    *,
+    after: bytes | None,
+    limit: int,
+) -> list[tuple[Any, ...]]:
+    """Merge bounded distinct prefixes without losing any union member."""
+    require_positive_int63(limit, field="file hash key page limit")
+    if limit > _MAX_BATCH_ROWS + 1:
+        raise ValueError("file hash key page limit exceeds the server cap")
     if after is not None:
-        parameters.append(require_digest32(after, field="validation cursor"))
+        require_digest32(after, field="file hash key cursor")
+    where = "" if after is None else " WHERE key_source.file_sha256 > %s"
+    pages: list[str] = []
+    parameters: list[Any] = []
+    for query, values in subqueries:
+        # A key outside one branch's first `limit` DISTINCT keys has at least
+        # `limit` predecessors in the union too. Deduplication must precede
+        # LIMIT: one hash can occur in arbitrarily many source galleries.
+        pages.append(
+            "SELECT file_sha256 FROM ("
+            "SELECT DISTINCT key_source.file_sha256 FROM ("
+            + query
+            + ") AS key_source"
+            + where
+            + " ORDER BY key_source.file_sha256 LIMIT %s) AS key_page"
+        )
+        parameters.extend(values)
+        if after is not None:
+            parameters.append(after)
+        parameters.append(limit)
     parameters.append(limit)
     return work.connector.fetch_all(
         "SELECT keyset.file_sha256 FROM ("
-        + " UNION ".join(subqueries)
-        + ") AS keyset"
-        + where
-        + " ORDER BY keyset.file_sha256 LIMIT %s",
+        + " UNION ".join(pages)
+        + ") AS keyset ORDER BY keyset.file_sha256 LIMIT %s",
         tuple(parameters),
     )
 

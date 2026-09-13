@@ -3486,7 +3486,7 @@ layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
 claim = "At most 128 file hashes share bounded exact scalar lookups and per-table multi-row inserts. Key-restricted union queries expose partial and orphan family members; all proposed facts are compared before seal-last writes. Independent validation and replay recompute source decisions and reload durable scalar authority; the existing fenced transaction owns the final receipt and checkpoint."
-assumptions = ["The source SUM and artist aggregates remain independently evaluated per hash and are not bounded by the number of batch keys. SQL planners and transaction isolation are backend obligations validated by actual query plans and integration tests."]
+assumptions = ["Three source aggregate queries independently recompute every hash in a page; source fanout is not bounded by the number of batch keys. Key pagination bounds each distinct union input, not the rows a planner may scan inside source or ancestor-resolution branches. SQL planners and transaction isolation are backend obligations validated by actual query plans and integration tests."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_decision_batch.py"
 symbol = "load_file_decision_shadow_page"
@@ -3499,6 +3499,12 @@ symbol = "_materialize_decision_page"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_require_file_decision_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_evaluate_file_decision_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_file_hash_union_page"
 
 [[evidence]]
 id = "fault.production.analysis-scalar-batch"
@@ -3528,7 +3534,7 @@ id = "integration.production.analysis-scalar-batch"
 layer = "integration"
 strength = "runtime_integration"
 directness = "direct"
-claim = "SQLite and opt-in MariaDB compare a 128-key scalar batch against the original independent per-family writers, validate exact idempotent replay and indexed query plans, and run a foreign-key-enabled production decision stage through rollback, lost-response replay and independent validation. Incremental coverage verifies parent policy reuse and exact shadow/tombstone resolution."
+claim = "SQLite and opt-in MariaDB compare a 128-key scalar batch against independent per-family writers and grouped source aggregates against a Python oracle, validate exact idempotent replay and indexed query plans, and run a foreign-key-enabled production decision stage through rollback, lost-response replay and independent validation. Incremental coverage verifies parent policy reuse and exact shadow/tombstone resolution. Paged union cases compare all keys with an independent set oracle, including duplicate occurrences, rejected sources, isolated shadow children and ancestor tombstones."
 assumptions = ["Only the small production MariaDB page case is selected for bounded smoke; the 128-key scalar-reference case and its two-key query-plan probe remain manual live evidence. The fixtures do not measure high-fanout aggregation or whole-corpus capacity."]
 [[evidence.location]]
 path = "tests/test_vnext_analysis_decision_batch.py"
@@ -3542,6 +3548,18 @@ symbol = "test_live_mariadb_production_page_rolls_back_and_replays_receipt"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_decision_batch.py"
 symbol = "test_incremental_page_loads_parent_policy_once_and_preserves_overlay"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_source_aggregate_batch.py"
+symbol = "test_sqlite_source_aggregates_match_python_oracle_for_a_full_page"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_source_aggregate_batch.py"
+symbol = "test_live_mariadb_source_aggregates_match_python_oracle_for_a_full_page"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_file_hash_paging.py"
+symbol = "test_sqlite_file_hash_pages_cover_sources_orphans_and_baseline"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_file_hash_paging.py"
+symbol = "test_live_mariadb_file_hash_pages_cover_sources_orphans_and_baseline"
 
 [[evidence]]
 id = "lean.data.source-qualification"
@@ -3581,7 +3599,7 @@ path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_changed_gallery_rows"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
-symbol = "_evaluate_file_decision"
+symbol = "_evaluate_file_decision_page"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_metadata_comparator_facts"
