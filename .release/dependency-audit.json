@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-13T10:15:38+00:00",
+  "checked_at": "2026-09-13T12:58:22+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.37.2",
+  "project_version": "0.37.3",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including releases outside upper bounds. Candidate inventory is identical to the committed 0.37.1 audit; installed Python direct dependencies match every latest candidate, all declarations admit the candidates, and all Python candidates support Python 3.14. The prior upstream release-note reviews remain applicable; no dependency declarations or packages changed. This quality review separates bounded canonical bytes from streaming metadata, centralizes typed plan decoding and immutable timestamp comparison, and separates neutral SQL measurements from safe-boundary ingest logging. Compatibility follows from unchanged schema, public APIs and artifact formats; it was not a design constraint. No data migration or compatibility shim is required. Focused catalog, telemetry, facade, real SQLite/CBZ ingest and 10 live MariaDB tests passed. The exact-tree bounded release gate and installed-wheel cohort are separate evidence and are not implied by this audit receipt.",
+    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including releases outside upper bounds. The 12 Python entries and one Node entry are unchanged from the committed 0.37.2 audit; all latest candidates satisfy declarations and all Python candidates support Python 3.14, so the prior upstream release-note reviews remain applicable. No dependency declarations changed. This release replaces per-digest source aggregates with independently recomputed bounded page aggregates and bounds distinct inputs to file-hash union pagination. Full validation, receipt replay and exact overlay comparisons remain; schema, public APIs and stored formats are unchanged as a result of the selected design, not a compatibility constraint. No migration or compatibility shim is required. Focused SQLite tests (147) and six live MariaDB 10.11.11 integration cases passed. Disposable SQLite and MariaDB benchmarks compared every result with an independent seed oracle and the committed baseline. Static checks and formal coverage metadata passed. The exact-tree bounded release gate and installed-wheel cohort are separate evidence, not implied by this dependency receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
