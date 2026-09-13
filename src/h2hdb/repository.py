@@ -12,10 +12,10 @@ from threading import Lock
 from typing import cast
 
 from .config_loader import CoreConfig, DatabaseAccessMode
-from .ingest_performance import instrument_connector
 from .logger import HentaiDBLogger, setup_logger
 from .sql_connector import SQLConnector as AbstractSQLConnector
 from .sql_connector import SQLConnectorParams
+from .sql_performance import instrument_connector
 
 
 @dataclass(frozen=True)

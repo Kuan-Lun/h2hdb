@@ -1,10 +1,8 @@
-"""Bounded, process-local ingest diagnostics; never durable work authority.
+"""Bounded ingest diagnostics emitted only at completed facade-call boundaries.
 
-SQL counters describe connector calls, not wire statements (``execute_many``
-counts once). Connection timing includes pool checkout and connection probes;
-transaction timing includes begin/commit/rollback. The remaining step time
-includes Python, private scratch I/O, adapters, and scheduling, not just CPU.
-No SQL text, parameters, credentials, or authority tokens enter the log.
+SQL observers only accumulate process-local counters. Nested calls defer their
+records to the outer call, and overlapping calls report separately instead of
+sharing a stage accumulator. No diagnostic callback runs under a telemetry lock.
 """
 
 from __future__ import annotations
@@ -17,12 +15,13 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from threading import Lock
 from time import perf_counter
-from typing import Any
+from typing import Literal
 
-from .sql_connector import SQLConnector
+from .sql_performance import execution_owner, measure_sql, read_clock
 
 _REPORT_INTERVAL_SECONDS = 60.0
 _QUERY_LIMIT = 64
+_NESTED_RECORD_LIMIT = 64
 
 
 @dataclass
@@ -36,8 +35,17 @@ class _Counters:
     transaction_seconds: float = 0.0
 
     def add(self, other: _Counters) -> None:
-        for name in self.__dataclass_fields__:
-            setattr(self, name, getattr(self, name) + getattr(other, name))
+        self.sql_calls += other.sql_calls
+        self.sql_seconds += other.sql_seconds
+        self.read_rows += other.read_rows
+        self.connection_calls += other.connection_calls
+        self.connection_seconds += other.connection_seconds
+        self.transaction_calls += other.transaction_calls
+        self.transaction_seconds += other.transaction_seconds
+
+    @property
+    def seconds(self) -> float:
+        return self.sql_seconds + self.connection_seconds + self.transaction_seconds
 
     def text(self) -> str:
         return (
@@ -50,6 +58,13 @@ class _Counters:
         )
 
 
+@dataclass(frozen=True)
+class _Diagnostic:
+    owner: IngestPerformance
+    message: str
+    debug: bool
+
+
 @dataclass
 class PerformanceStep:
     owner: IngestPerformance
@@ -57,15 +72,34 @@ class PerformanceStep:
     phase: str
     operation: str
     generation: int
-    started: float
-    last_report: float
+    started: float | None
+    execution: tuple[int, object | None]
+    parent: PerformanceStep | None
+    overlap_epoch: int = 0
+    active: bool = True
     counters: _Counters = field(default_factory=_Counters)
     queries: dict[str, tuple[int, float]] = field(default_factory=dict)
     processed_rows: int = 0
     replayed: bool = False
     terminal: bool = False
+    nested_seconds: float = 0.0
+    nested_calls: int = 0
+    deferred: list[_Diagnostic] = field(default_factory=list)
+    omitted_records: int = 0
 
-    def record(self, category: str, elapsed: float, query: str, rows: int) -> None:
+    def elapsed(self, now: float | None) -> float:
+        if self.started is None or now is None:
+            return 0.0
+        return max(0.0, now - self.started)
+
+    def record_sql_operation(
+        self,
+        category: Literal["sql", "connection", "transaction"],
+        elapsed: float,
+        query: str,
+        rows: int,
+    ) -> None:
+        """Only bounded memory updates; never call a logger or clock here."""
         counters = self.counters
         if category == "sql":
             counters.sql_calls += 1
@@ -83,22 +117,57 @@ class PerformanceStep:
         else:
             counters.transaction_calls += 1
             counters.transaction_seconds += elapsed
-        now = self.owner.clock()
-        if now - self.last_report >= _REPORT_INTERVAL_SECONDS:
-            self.last_report = now
-            self.owner.emit_step(self, "in_progress", now, debug=False)
+
+    def defer(self, records: list[_Diagnostic]) -> None:
+        remaining = _NESTED_RECORD_LIMIT - len(self.deferred)
+        self.deferred.extend(records[:remaining])
+        self.omitted_records += max(0, len(records) - remaining)
 
 
 _active_step: ContextVar[PerformanceStep | None] = ContextVar(
     "h2hdb_ingest_performance", default=None
 )
+_emitting: ContextVar[bool] = ContextVar(
+    "h2hdb_ingest_performance_emitting", default=False
+)
+
+
+def _current_step() -> PerformanceStep | None:
+    sample = _active_step.get()
+    if sample is None or not sample.active or sample.execution != execution_owner():
+        return None
+    return sample
+
+
+def describe_ingest_step(*, operation: str | bytes, generation: int) -> None:
+    """Attach already validated authority labels without inspecting handles."""
+    sample = _current_step()
+    if sample is None:
+        return
+    if type(operation) is bytes:
+        try:
+            operation = operation.decode("ascii")
+        except UnicodeDecodeError:
+            operation = "INVALID"
+    sample.operation = (
+        operation
+        if type(operation) is str
+        and 0 < len(operation) <= 64
+        and operation.isascii()
+        and all(character.isalnum() or character == "_" for character in operation)
+        else "INVALID"
+    )
+    sample.generation = (
+        generation if type(generation) is int and 0 <= generation < 2**63 else 0
+    )
 
 
 @dataclass
 class _Stage:
     key: tuple[str, str, int]
-    started: float
-    reported: float
+    started: float | None
+    reported: float | None
+    finished: float | None
     calls: int = 0
     processed_rows: int = 0
     replayed: int = 0
@@ -107,7 +176,7 @@ class _Stage:
 
 
 class IngestPerformance:
-    """One bounded stage accumulator per facade, with optional per-call detail."""
+    """One sequential stage per facade; nested/overlapping calls stay separate."""
 
     def __init__(
         self,
@@ -124,51 +193,76 @@ class IngestPerformance:
         self.clock = clock
         self._stage: _Stage | None = None
         self._lock = Lock()
+        self._active_roots = 0
+        self._overlap_epoch = 0
+        self._closed = False
 
     @contextmanager
     def step(
         self, pipeline: str, phase: str, operation: str, generation: int
     ) -> Iterator[PerformanceStep]:
-        started = self.clock()
+        started = read_clock(self.clock)
         sample = PerformanceStep(
-            self, pipeline, phase, operation, generation, started, started
+            self,
+            pipeline,
+            phase,
+            operation,
+            generation,
+            started,
+            execution_owner(),
+            _current_step(),
         )
+        with self._lock:
+            if sample.parent is None:
+                self._active_roots += 1
+                if self._active_roots > 1:
+                    self._overlap_epoch += 1
+            sample.overlap_epoch = self._overlap_epoch
         token = _active_step.set(sample)
-        if self.debug:
-            self.emit_step(sample, "started", started, debug=True)
         failed = False
         try:
-            yield sample
+            with measure_sql(sample, clock=self.clock):
+                yield sample
         except BaseException:
             failed = True
             raise
         finally:
+            sample.active = False
             _active_step.reset(token)
-            now = self.clock()
-            if failed or self.debug:
-                self.emit_step(
-                    sample,
-                    "failed" if failed else "completed",
-                    now,
-                    debug=not failed,
-                )
-            self._complete(sample, now, failed=failed)
+            now = read_clock(self.clock)
+            try:
+                records = self._complete(sample, now, failed=failed)
+                if sample.parent is not None:
+                    sample.parent.nested_seconds += sample.elapsed(now)
+                    sample.parent.nested_calls += 1 + sample.nested_calls
+                    sample.parent.omitted_records += sample.omitted_records
+                    sample.parent.defer(records)
+                else:
+                    for record in records:
+                        record.owner._emit(record)
+            except Exception:
+                # Diagnostic formatting/aggregation must not change DB outcomes.
+                pass
 
-    def emit_step(
-        self, sample: PerformanceStep, event: str, now: float, *, debug: bool
-    ) -> None:
-        elapsed = max(0.0, now - sample.started)
-        counted = (
-            sample.counters.sql_seconds
-            + sample.counters.connection_seconds
-            + sample.counters.transaction_seconds
-        )
+    def _step_record(
+        self,
+        sample: PerformanceStep,
+        event: str,
+        now: float | None,
+        *,
+        scope: str,
+        debug: bool,
+    ) -> _Diagnostic:
+        elapsed = sample.elapsed(now)
+        own_seconds = max(0.0, elapsed - sample.nested_seconds)
         message = (
             f"ingest_db_performance event={event} backend={self.backend} "
             f"pipeline={sample.pipeline} operation={sample.operation} "
-            f"generation={sample.generation} phase={sample.phase} "
-            f"elapsed_seconds={elapsed:.6f} "
-            f"other_seconds={max(0.0, elapsed - counted):.6f} "
+            f"generation={sample.generation} phase={sample.phase} scope={scope} "
+            f"elapsed_seconds={elapsed:.6f} call_seconds={own_seconds:.6f} "
+            f"other_seconds={max(0.0, own_seconds - sample.counters.seconds):.6f} "
+            f"nested_calls={sample.nested_calls} nested_seconds={sample.nested_seconds:.6f} "
+            f"omitted_nested_records={sample.omitted_records} "
             f"processed_rows={sample.processed_rows} replayed={int(sample.replayed)} "
             f"{sample.counters.text()}"
         )
@@ -179,141 +273,129 @@ class IngestPerformance:
             message += " query_top=" + ",".join(
                 f"{key}:{count}:{seconds:.6f}" for key, (count, seconds) in top
             )
-        self._emit(message, debug=debug)
+        return _Diagnostic(self, message, debug)
 
-    def _complete(self, sample: PerformanceStep, now: float, *, failed: bool) -> None:
+    def _complete(
+        self, sample: PerformanceStep, now: float | None, *, failed: bool
+    ) -> list[_Diagnostic]:
+        records = list(sample.deferred)
         with self._lock:
+            if sample.parent is None:
+                self._active_roots -= 1
+            if self._closed:
+                return records
+            concurrent = sample.parent is None and (
+                self._active_roots > 0 or sample.overlap_epoch != self._overlap_epoch
+            )
+            isolated = sample.parent is not None or concurrent
+            if (
+                isolated
+                or failed
+                or self.debug
+                or sample.nested_calls > 0
+                or sample.omitted_records > 0
+                or sample.elapsed(now) >= _REPORT_INTERVAL_SECONDS
+            ):
+                records.append(
+                    self._step_record(
+                        sample,
+                        "failed" if failed else "completed",
+                        now,
+                        scope="nested"
+                        if sample.parent is not None
+                        else "concurrent"
+                        if concurrent
+                        else "sequential",
+                        debug=self.debug and not failed,
+                    )
+                )
+            if isolated:
+                if concurrent:
+                    records.extend(self._flush("overlap", sample.started))
+                return records
             key = (sample.pipeline, sample.operation, sample.generation)
             if self._stage is None or self._stage.key != key:
-                self._flush("transition", sample.started)
-                self._stage = _Stage(key, sample.started, now)
-                self._report(self._stage, "started", sample.started)
+                records.extend(self._flush("transition", sample.started))
+                self._stage = _Stage(key, sample.started, now, now)
+                records.append(self._report(self._stage, "started", sample.started))
             stage = self._stage
             stage.calls += 1
             stage.processed_rows += sample.processed_rows
             stage.replayed += int(sample.replayed)
             stage.counters.add(sample.counters)
+            stage.finished = now
             stage.phases[sample.phase] = stage.phases.get(sample.phase, 0.0) + max(
-                0.0, now - sample.started
+                0.0, sample.elapsed(now) - sample.nested_seconds
             )
             if failed or sample.terminal:
-                self._flush("failed" if failed else "terminal", now)
-            elif now - stage.reported >= _REPORT_INTERVAL_SECONDS:
-                self._report(stage, "progress", now)
+                records.extend(self._flush("failed" if failed else "terminal", now))
+            elif (
+                now is not None
+                and stage.reported is not None
+                and now - stage.reported >= _REPORT_INTERVAL_SECONDS
+            ):
+                records.append(self._report(stage, "progress", now))
+        return records
 
-    def _report(self, stage: _Stage, event: str, now: float) -> None:
+    def _report(self, stage: _Stage, event: str, now: float | None) -> _Diagnostic:
         pipeline, operation, generation = stage.key
         call_seconds = sum(stage.phases.values())
-        database_seconds = (
-            stage.counters.sql_seconds
-            + stage.counters.connection_seconds
-            + stage.counters.transaction_seconds
+        wall_seconds = (
+            max(0.0, now - stage.started)
+            if now is not None and stage.started is not None
+            else 0.0
         )
         message = (
             f"ingest_db_performance event=stage_{event} backend={self.backend} "
             f"pipeline={pipeline} operation={operation} generation={generation} "
-            f"wall_seconds={max(0.0, now - stage.started):.6f} "
-            f"call_seconds={call_seconds:.6f} "
-            f"other_seconds={max(0.0, call_seconds - database_seconds):.6f} "
-            f"calls={stage.calls} "
-            f"processed_rows={stage.processed_rows} replayed_calls={stage.replayed} "
-            f"{stage.counters.text()}"
+            f"wall_seconds={wall_seconds:.6f} call_seconds={call_seconds:.6f} "
+            f"other_seconds={max(0.0, call_seconds - stage.counters.seconds):.6f} "
+            f"calls={stage.calls} processed_rows={stage.processed_rows} "
+            f"replayed_calls={stage.replayed} {stage.counters.text()}"
         )
         message += " " + " ".join(
             f"{phase}_seconds={seconds:.6f}"
             for phase, seconds in sorted(stage.phases.items())
         )
-        self._emit(message, debug=False)
         stage.reported = now
+        return _Diagnostic(self, message, False)
 
-    def _flush(self, event: str, now: float) -> None:
-        if self._stage is not None:
-            self._report(self._stage, event, now)
-            self._stage = None
+    def _flush(self, event: str, now: float | None) -> list[_Diagnostic]:
+        stage = self._stage
+        self._stage = None
+        if stage is None:
+            return []
+        if stage.finished is not None:
+            now = max(stage.finished, now) if now is not None else stage.finished
+        return [self._report(stage, event, now)]
 
     def close(self) -> None:
+        now = read_clock(self.clock)
         with self._lock:
-            self._flush("closed", self.clock())
-
-    def _emit(self, message: str, *, debug: bool) -> None:
-        if self.level > (logging.DEBUG if debug else logging.INFO):
+            if self._closed:
+                return
+            self._closed = True
+            records = self._flush("closed", now)
+        sample = _current_step()
+        if sample is not None:
+            sample.defer(records)
             return
+        for record in records:
+            self._emit(record)
+
+    def _emit(self, record: _Diagnostic) -> None:
+        if _emitting.get() or self.level > (
+            logging.DEBUG if record.debug else logging.INFO
+        ):
+            return
+        token = _emitting.set(True)
         try:
-            if debug:
-                self.logger.debug(message)
+            if record.debug:
+                self.logger.debug(record.message)
             else:
-                self.logger.info(message)
+                self.logger.info(record.message)
         except Exception:
             # A diagnostic handler must not change commit/retry semantics.
             pass
-
-
-def instrument_connector(connector: SQLConnector) -> SQLConnector:
-    """Only instrument factory calls made inside an explicit ingest scope."""
-    sample = _active_step.get()
-    return connector if sample is None else _MeasuredConnector(connector, sample)
-
-
-class _MeasuredConnector(SQLConnector):
-    def __init__(self, connector: SQLConnector, sample: PerformanceStep) -> None:
-        self._connector = connector
-        self._sample = sample
-
-    def _call[T](self, category: str, action: Callable[[], T], query: str = "") -> T:
-        started = self._sample.owner.clock()
-        rows = 0
-        try:
-            result = action()
-            if isinstance(result, list):
-                rows = len(result)
-            elif isinstance(result, tuple) and result:
-                rows = 1
-            return result
         finally:
-            self._sample.record(
-                category, max(0.0, self._sample.owner.clock() - started), query, rows
-            )
-
-    def connect(self) -> None:
-        self._call("connection", self._connector.connect)
-
-    def close(self) -> None:
-        self._call("connection", self._connector.close)
-
-    def begin(self) -> None:
-        self._call("transaction", self._connector.begin)
-
-    def begin_read(self) -> None:
-        self._call("transaction", self._connector.begin_read)
-
-    def commit(self) -> None:
-        self._call("transaction", self._connector.commit)
-
-    def rollback(self) -> None:
-        self._call("transaction", self._connector.rollback)
-
-    def check_table_exists(self, table_name: str) -> bool:
-        return self._call(
-            "sql",
-            lambda: self._connector.check_table_exists(table_name),
-            "check_table_exists",
-        )
-
-    def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
-        self._call("sql", lambda: self._connector.execute(query, data), query)
-
-    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
-        return self._call(
-            "sql", lambda: self._connector.execute_affected(query, data), query
-        )
-
-    def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
-        self._call("sql", lambda: self._connector.execute_many(query, data), query)
-
-    def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
-        return self._call("sql", lambda: self._connector.fetch_one(query, data), query)
-
-    def fetch_all(
-        self, query: str, data: tuple[Any, ...] = ()
-    ) -> list[tuple[Any, ...]]:
-        return self._call("sql", lambda: self._connector.fetch_all(query, data), query)
+            _emitting.reset(token)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from test_vnext_ingest_analysis import _Clock, _policy, _seed_empty, _session
 
 from h2hdb import (
     CoreConfig,
@@ -13,6 +14,7 @@ from h2hdb import (
     VNextDatabaseAdminFacade,
     VNextIngestFacade,
 )
+from h2hdb.config_loader import LoggerConfig
 from h2hdb.ingest_performance import IngestPerformance
 
 
@@ -129,9 +131,45 @@ def test_empty_recovery_probe_finishes_before_uninstrumented_work(
             final = records_at_completion[-1].getMessage()
             assert "event=stage_terminal " in final
             assert "operation=RECOVERY " in final
+            assert f"generation={session.ingest_generation} " in final
             assert "wall_seconds=0.000000 " in final
             assert "calls=1 " in final
             # Source observation can take hours outside an instrumented call.
             # Closing later must not attribute that gap to the completed probe.
             performance_now = 3600.0
         assert tuple(caplog.records) == records_at_completion
+
+
+def test_analysis_owner_labels_fresh_and_replayed_steps_after_validation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    database = tmp_path / "analysis.sqlite3"
+    build_id, gate, turn = _seed_empty(database)
+    session = _session(gate, turn)
+    config = CoreConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(database)),
+        logger=LoggerConfig.model_validate({"level": "debug"}),
+    )
+    with caplog.at_level(logging.DEBUG, logger="h2hdb.ingest_performance"):
+        with VNextIngestFacade(config, clock=_Clock()) as facade:
+            with closing(
+                facade.prepare_analysis(build_id, _policy(), max_rows=8)
+            ) as plan:
+                issued = facade.issue_analysis_step(session, plan)
+                assert facade.issue_analysis_step(session, plan) is issued
+                prepared = facade.prepare_analysis_step(plan, issued)
+                assert facade.prepare_analysis_step(plan, issued) is prepared
+                result = facade.commit_analysis_step(session, prepared)
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "h2hdb.ingest_performance"
+        and "event=completed " in record.getMessage()
+    ]
+    assert len(messages) == 5
+    for message in messages:
+        assert f"operation={result.stage.decode('ascii')} " in message
+        assert f"generation={session.ingest_generation} " in message
+    assert sum("phase=issue " in message for message in messages) == 2
+    assert sum("phase=prepare " in message for message in messages) == 2
+    assert sum("phase=commit " in message for message in messages) == 1

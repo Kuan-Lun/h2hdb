@@ -1232,14 +1232,8 @@ class VNextIngestFacade:
         """Issue one bounded analysis action from durable authority."""
 
         self.__require_open()
-        with self.__performance.step(
-            "analysis", "issue", "ISSUE", _performance_generation(session)
-        ) as measurement:
-            issued = self.__analysis_orchestrator().issue_analysis_step(
-                session, prepared
-            )
-            measurement.operation = _analysis_performance_operation(issued)
-            return issued
+        with self.__performance.step("analysis", "issue", "ISSUE", 0):
+            return self.__analysis_orchestrator().issue_analysis_step(session, prepared)
 
     def prepare_analysis_step(
         self,
@@ -1252,8 +1246,8 @@ class VNextIngestFacade:
         with self.__performance.step(
             "analysis",
             "prepare",
-            _analysis_performance_operation(issued),
-            _performance_generation(_performance_session(issued)),
+            "PREPARE",
+            0,
         ):
             return self.__analysis_orchestrator().prepare_analysis_step(
                 prepared, issued
@@ -1270,8 +1264,8 @@ class VNextIngestFacade:
         with self.__performance.step(
             "analysis",
             "commit",
-            _analysis_performance_operation(_performance_issued(prepared_step)),
-            _performance_generation(session),
+            "COMMIT",
+            0,
         ) as measurement:
             result = self.__analysis_orchestrator().commit_analysis_step(
                 session,
@@ -1290,12 +1284,8 @@ class VNextIngestFacade:
         """Issue one bounded publication action from durable authority."""
 
         self.__require_open()
-        with self.__performance.step(
-            "publication", "issue", "ISSUE", _performance_generation(session)
-        ) as measurement:
-            issued = self.__publication_orchestrator().issue_step(session, policy)
-            measurement.operation = _publication_performance_operation(issued)
-            return issued
+        with self.__performance.step("publication", "issue", "ISSUE", 0):
+            return self.__publication_orchestrator().issue_step(session, policy)
 
     def try_issue_publication_recovery_step(
         self,
@@ -1312,12 +1302,10 @@ class VNextIngestFacade:
 
         self.__require_open()
         with self.__performance.step(
-            "publication", "issue", "RECOVERY", _performance_generation(session)
+            "publication", "issue", "RECOVERY", 0
         ) as measurement:
             issued = self.__publication_orchestrator().try_issue_recovery_step(session)
-            if issued is not None:
-                measurement.operation = _publication_performance_operation(issued)
-            else:
+            if issued is None:
                 measurement.terminal = True
             return issued
 
@@ -1335,8 +1323,8 @@ class VNextIngestFacade:
         with self.__performance.step(
             "publication",
             "prepare",
-            _publication_performance_operation(issued),
-            _performance_generation(_performance_session(issued)),
+            "PREPARE",
+            0,
         ):
             return self.__publication_orchestrator().prepare_step(
                 issued,
@@ -1356,8 +1344,8 @@ class VNextIngestFacade:
         with self.__performance.step(
             "publication",
             "commit",
-            _publication_performance_operation(_performance_issued(prepared)),
-            _performance_generation(session),
+            "COMMIT",
+            0,
         ) as measurement:
             result = self.__publication_orchestrator().commit_step(session, prepared)
             measurement.processed_rows = result.processed_rows
@@ -1913,60 +1901,6 @@ class VNextIngestFacade:
     def __require_open_unlocked(self) -> None:
         if self.__closed:
             raise ValueError("ingest facade is closed")
-
-
-def _performance_generation(session: object) -> int:
-    if not isinstance(session, VNextIngestSession):
-        return 0
-    value = getattr(session, "ingest_generation", None)
-    return value if type(value) is int and 0 <= value < 2**63 else 0
-
-
-def _performance_session(issued: object) -> object:
-    if isinstance(issued, (VNextIssuedAnalysisStep, VNextIssuedPublicationStep)):
-        return getattr(issued, "_session", None)
-    return None
-
-
-def _performance_issued(prepared: object) -> object:
-    if isinstance(prepared, (VNextPreparedAnalysisStep, VNextPreparedPublicationStep)):
-        return getattr(prepared, "_issued", None)
-    return None
-
-
-def _performance_operation(value: object) -> str:
-    if (
-        isinstance(value, str)
-        and 0 < len(value) <= 64
-        and value.isascii()
-        and all(character.isalnum() or character == "_" for character in value)
-    ):
-        return value
-    return "INVALID"
-
-
-def _publication_performance_operation(issued: object) -> str:
-    # Diagnostics must leave malformed handles to the authoritative validator.
-    if not isinstance(issued, VNextIssuedPublicationStep):
-        return "INVALID"
-    try:
-        return _performance_operation(issued.operation)
-    except AttributeError, TypeError, ValueError:
-        return "INVALID"
-
-
-def _analysis_performance_operation(issued: object) -> str:
-    if not isinstance(issued, VNextIssuedAnalysisStep):
-        return "INVALID"
-    try:
-        if issued._payload is not None and issued._payload.stage is not None:
-            return _performance_operation(issued._payload.stage.decode("ascii"))
-        local = issued._analysis._machine.local
-        if local is not None:
-            return _performance_operation(local.stage.decode("ascii"))
-        return _performance_operation(issued._action.value)
-    except AttributeError, TypeError, ValueError:
-        return "INVALID"
 
 
 def _public_session(

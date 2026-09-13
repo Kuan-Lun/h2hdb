@@ -324,8 +324,10 @@ the standard `h2hdb.ingest_performance` logger and the application's handlers.
 The default `logger.level` remains `info`. INFO records summarize each logical
 operation, including issue/prepare/commit seconds, processed rows, SQL calls and
 time, connection checkout/close time, and transaction begin/commit/rollback time.
-Summaries also appear at 60-second checkpoints when a call or SQL operation
-returns. These checkpoints are not a background heartbeat: integrations should
+Summaries also appear at 60-second checkpoints when a facade call returns.
+SQL measurement only updates in-memory counters; handlers run after the outer
+facade call releases its transactions and internal locks. A long-running call
+is reported on completion, not by a background heartbeat: integrations should
 retain their progress reporter to show an operation blocked inside a call.
 Stage `wall_seconds` includes time between calls; `call_seconds` sums the calls
 themselves. `other_seconds` includes Python, private scratch I/O, adapters, and
@@ -333,23 +335,34 @@ scheduling, and must not be interpreted as CPU time alone. SQL counters measure
 connector calls, so `execute_many` counts once; connection calls are leases and
 do not imply new TCP connections. Driver-internal setup queries belong to
 connection time. These diagnostics cover the calling thread, not adapter worker
-threads or source scanning.
+threads or source scanning. Sequential calls share a bounded stage accumulator.
+Nested and overlapping calls produce separate `scope=nested` or
+`scope=concurrent` records. Parent call time excludes nested call time; nested
+records wait for the outer call to finish, with at most 64 deferred records and
+an explicit omitted-record count. Expired or copied scopes cannot attribute
+another thread or task's work to a completed call.
 
 Setting the application's core logger configuration to `{"level": "debug"}`
-adds per-call records and the five most expensive query fingerprints, each with
+adds per-call completion records and the five most expensive query fingerprints, each with
 its call count and elapsed seconds. A fingerprint is the first 16 hexadecimal
 characters of SHA-256 over the SQL template's UTF-8 bytes; query statistics keep
 at most 64 templates plus an overflow bucket per call. SQL text, parameters,
 credentials, and authority tokens are never logged. Configuration and handler
-thresholds both apply; diagnostic handler failures do not change commit or retry
-results.
+thresholds both apply; ordinary diagnostic clock, recorder, or handler failures
+do not change commit or retry results. Operation labels come from the
+orchestrator's validated state, without diagnostic inspection of caller handles.
 
 Catalog preparation validates common tag values in batches of at most 128 and
 retains their bytes in a private disk cache for that plan. BUILD and VALIDATE
 prepare separate plans and independently revalidate their source snapshots.
 Private scratch writes share one transaction, and failed preparation discards
 the entire plan. Durable catalog child writes and comparisons remain bounded to
-128 children while grouping compatible SQL operations. These optimizations do
+128 children while grouping compatible SQL operations. Already bounded canonical
+scalars register directly, while unknown-length metadata uses a disk spool;
+both inputs share exact domain, length and payload collision checks. Search
+lexemes are deduplicated within each bounded field before registration. Typed
+plan records centralize decoding for catalog writers and validators, and upload
+time comparison independently checks immutable GID authority. These optimizations do
 not change the schema or artifact format and require no data rebuild.
 
 After `complete_ingest()` releases its SHARED gate lease, resident integrations

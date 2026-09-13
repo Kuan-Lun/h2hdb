@@ -25,6 +25,7 @@ from time import time_ns
 from typing import TypeVar
 
 from .domain import VNextIngestSession, VNextResolvedIngestPolicy
+from .ingest_performance import describe_ingest_step
 from .repository import RepositoryContext
 from .vnext_analysis_repository import (
     AnalysisBatchResult,
@@ -333,6 +334,7 @@ class VNextIngestAnalysisOrchestrator:
         if active is not None:
             _require_same_session_authority(active._session, session)
             self.__write(lambda work: _resume_authority(work, session, self.__clock()))
+            _describe_analysis_step(active)
             return active
 
         machine = analysis._machine
@@ -395,6 +397,7 @@ class VNextIngestAnalysisOrchestrator:
             _constructor_token=_ISSUED_ANALYSIS_STEP_TOKEN,
         )
         analysis._active_issue = issued
+        _describe_analysis_step(issued)
         return issued
 
     def prepare_analysis_step(
@@ -409,6 +412,7 @@ class VNextIngestAnalysisOrchestrator:
             raise TypeError("issued must be VNextIssuedAnalysisStep")
         if issued._analysis is not analysis or analysis._active_issue is not issued:
             raise ValueError("issued analysis step is stale or belongs elsewhere")
+        _describe_analysis_step(issued)
         if analysis._active_step is not None:
             return analysis._active_step
 
@@ -476,6 +480,7 @@ class VNextIngestAnalysisOrchestrator:
             raise ValueError("prepared analysis step is stale")
         _require_same_session_authority(issued._session, session)
         gate, turn = _repository_authority(session)
+        _describe_analysis_step(issued)
         action = prepared_step._action
         local = _local_for_commit(analysis, prepared_step)
         now = require_int63(self.__clock(), field="analysis commit now")
@@ -622,6 +627,18 @@ def _require_resolved_policy(policy: VNextResolvedIngestPolicy) -> None:
     if not isinstance(policy, VNextResolvedIngestPolicy):
         raise TypeError("policy must be VNextResolvedIngestPolicy")
     policy.__post_init__()
+
+
+def _describe_analysis_step(issued: VNextIssuedAnalysisStep) -> None:
+    """Label diagnostics from the validated, orchestrator-owned state."""
+    operation: str | bytes = issued._action.value
+    if issued._payload is not None and issued._payload.stage is not None:
+        operation = issued._payload.stage
+    elif issued._analysis._machine.local is not None:
+        operation = issued._analysis._machine.local.stage
+    describe_ingest_step(
+        operation=operation, generation=issued._session.ingest_generation
+    )
 
 
 def _require_prepared_analysis(

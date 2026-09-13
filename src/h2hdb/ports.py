@@ -12,7 +12,7 @@ __all__ = [
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import BinaryIO, Literal, Protocol, runtime_checkable
 
 from .domain import (
     DEFAULT_CATALOG_DISCOVERY_QUERY,
@@ -50,6 +50,18 @@ from .domain import (
     VNextSourceCompletionMarker,
     VNextSourcePreparationProgress,
 )
+
+
+class _SQLPerformanceRecorder(Protocol):
+    """Process-local SQL diagnostics; observers never own database outcomes."""
+
+    def record_sql_operation(
+        self,
+        category: Literal["sql", "connection", "transaction"],
+        elapsed: float,
+        query: str,
+        rows: int,
+    ) -> None: ...
 
 
 @runtime_checkable

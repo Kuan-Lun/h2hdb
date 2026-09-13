@@ -42,6 +42,7 @@ from .domain import (
     VNextLibraryActivationItem,
     VNextResolvedIngestPolicy,
 )
+from .ingest_performance import describe_ingest_step
 from .ports import ArtifactReleaseAdapter, ArtifactStorageAdapter
 from .repository import RepositoryContext
 from .sql_connector import SQLConnector
@@ -904,6 +905,7 @@ class VNextIngestPublication:
         self.__require_open()
         now = require_int63(self.__clock(), field="publication recovery issue now")
         gate, coordinated = _repository_authority(session)
+        describe_ingest_step(operation="RECOVERY", generation=session.ingest_generation)
         with self.__context.SQLConnector() as connector:
             with connector.transaction():
                 work = VNextUnitOfWork(connector, backend=self.__backend)
@@ -949,6 +951,9 @@ class VNextIngestPublication:
         self.__require_drain_progress(action, payload)
 
         self.__require_open()
+        describe_ingest_step(
+            operation=action.value, generation=session.ingest_generation
+        )
         return VNextIssuedPublicationStep(
             action=action,
             payload=payload,
@@ -1006,6 +1011,9 @@ class VNextIngestPublication:
         self.__require_drain_progress(action, payload)
 
         self.__require_open()
+        describe_ingest_step(
+            operation=action.value, generation=session.ingest_generation
+        )
         return VNextIssuedPublicationStep(
             action=action,
             payload=payload,
@@ -1029,6 +1037,9 @@ class VNextIngestPublication:
         issued_session = exact._session
         action = exact._action
         payload: object = exact._payload
+        describe_ingest_step(
+            operation=action.value, generation=issued_session.ingest_generation
+        )
 
         if action in {_Action.BUILD_CATALOG, _Action.VALIDATE_CATALOG}:
             with self.__publication_plan_lock:
@@ -1140,6 +1151,10 @@ class VNextIngestPublication:
         exact = _require_prepared(prepared)
         _require_same_session_authority(exact._issued._session, session)
         gate, coordinated = _repository_authority(session)
+        describe_ingest_step(
+            operation=exact._issued._action.value,
+            generation=session.ingest_generation,
+        )
         now = require_int63(self.__clock(), field="publication commit now")
         try:
             with self.__context.SQLConnector() as connector:
