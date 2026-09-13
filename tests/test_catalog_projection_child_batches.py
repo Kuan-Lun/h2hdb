@@ -216,6 +216,8 @@ def test_physical_publication_batch_rejects_129_rows_before_query(
         "UPDATE catalog_publication_storage SET modified_at = modified_at + 1",
         "DELETE FROM catalog_publication_storage",
         "UPDATE catalog_publication_download_times SET download_time = download_time + 1",
+        "UPDATE catalog_gallery_upload_times SET upload_time = upload_time + 1",
+        "DELETE FROM catalog_gallery_upload_times",
         "UPDATE catalog_publication_occurrence_identities SET revision = revision + 1",
         "UPDATE catalog_subjects SET tag_id = 3 WHERE position = 0",
         "UPDATE catalog_contributors SET role = X'77726f6e67'",

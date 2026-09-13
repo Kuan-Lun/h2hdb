@@ -2181,15 +2181,11 @@ def _prepare_projection_publication(
                 byte_count=metadata.account_count,
                 field="projection uploader account",
             )
-            account = _register_projection_canonical_value(
+            account = _register_projection_canonical_bytes(
                 database,
                 payload,
                 domain="contributor_name_utf8_v1",
-                parts=_iter_file_range(
-                    metadata_file,
-                    metadata.account_offset,
-                    metadata.account_count,
-                ),
+                value=account_value,
             )
             database.execute(
                 "INSERT INTO contributors "
@@ -2281,20 +2277,20 @@ def _prepare_projection_publication(
             )
             if namespace == b"language" and language is None:
                 if tag_value_bytes:
-                    language = _register_projection_canonical_value(
+                    language = _register_projection_canonical_bytes(
                         database,
                         payload,
                         domain="catalog_language_utf8_v1",
-                        parts=(tag_value_bytes,),
+                        value=tag_value_bytes,
                     )
                     language_value = tag_value_bytes
             if namespace in _CONTRIBUTOR_NAMESPACES:
                 if tag_value_bytes:
-                    contributor_name = _register_projection_canonical_value(
+                    contributor_name = _register_projection_canonical_bytes(
                         database,
                         payload,
                         domain="contributor_name_utf8_v1",
-                        parts=(tag_value_bytes,),
+                        value=tag_value_bytes,
                     )
                     inserted = database.execute(
                         "INSERT OR IGNORE INTO contributors "
@@ -2313,11 +2309,11 @@ def _prepare_projection_publication(
             tag_after = position
     if language is None:
         language_value = b"und"
-        language = _register_projection_canonical_value(
+        language = _register_projection_canonical_bytes(
             database,
             payload,
             domain="catalog_language_utf8_v1",
-            parts=(b"und",),
+            value=b"und",
         )
     if language_value is None:
         raise PublicationCandidateConflictError("projection language value is missing")
@@ -2630,57 +2626,102 @@ def _register_projection_canonical_value(
     domain: str,
     parts: Iterable[bytes],
 ) -> bytes:
-    plan = CanonicalValueUploadPlan.from_parts(domain, parts)
-    try:
-        existing = database.execute(
-            "SELECT digest_domain, payload_offset, byte_count "
-            "FROM canonical_values WHERE value_sha256 = ?",
-            (sqlite3.Binary(plan.value_sha256),),
-        ).fetchone()
-        if existing is not None:
-            if (
-                bytes(existing[0]) != plan.digest_domain
-                or require_int63(existing[2], field="canonical value byte_count")
-                != plan.byte_count
-                or not _equal_streams(
-                    _iter_file_range(
-                        payload,
-                        require_int63(existing[1], field="canonical value offset"),
-                        plan.byte_count,
-                    ),
-                    plan.iter_payload_parts(),
-                )
-            ):
-                raise PublicationCandidateConflictError(
-                    "catalog canonical digest collides with different exact bytes"
-                )
-            return plan.value_sha256
-        payload.seek(0, 2)
-        offset = require_int63(payload.tell(), field="canonical payload offset")
-        written = 0
-        for part in plan.iter_payload_parts():
-            if payload.write(part) != len(part):
-                raise OSError("canonical projection spool accepted a partial write")
-            written += len(part)
-        if written != plan.byte_count:
-            raise PublicationCandidateConflictError(
-                "canonical projection spool changed byte count"
-            )
-        payload.flush()
-        database.execute(
-            "INSERT INTO canonical_values "
-            "(value_sha256, digest_domain, payload_offset, byte_count) "
-            "VALUES (?, ?, ?, ?)",
-            (
-                sqlite3.Binary(plan.value_sha256),
-                sqlite3.Binary(plan.digest_domain),
-                offset,
-                plan.byte_count,
-            ),
+    """Count and hash an unknown-length stream using a bounded disk spool."""
+
+    with CanonicalValueUploadPlan.from_parts(domain, parts) as plan:
+        return _register_projection_canonical_payload(
+            database,
+            payload,
+            digest_domain=plan.digest_domain,
+            value_sha256=plan.value_sha256,
+            byte_count=plan.byte_count,
+            parts=plan.iter_payload_parts(),
         )
-        return plan.value_sha256
-    finally:
-        plan.close()
+
+
+def _register_projection_canonical_bytes(
+    database: sqlite3.Connection,
+    payload: BinaryIO,
+    *,
+    domain: str,
+    value: bytes,
+) -> bytes:
+    """Register an already bounded scalar without allocating an upload spool."""
+
+    exact = require_bounded_bytes(
+        value,
+        field="projection canonical scalar",
+        maximum=65_536,
+    )
+    value_sha256 = identity.canonical_value_digest(domain, exact)
+    return _register_projection_canonical_payload(
+        database,
+        payload,
+        digest_domain=domain.encode("ascii", errors="strict"),
+        value_sha256=value_sha256,
+        byte_count=len(exact),
+        parts=(exact,),
+    )
+
+
+def _register_projection_canonical_payload(
+    database: sqlite3.Connection,
+    payload: BinaryIO,
+    *,
+    digest_domain: bytes,
+    value_sha256: bytes,
+    byte_count: int,
+    parts: Iterable[bytes],
+) -> bytes:
+    """Intern a locally hashed value, comparing exact bytes on every reuse."""
+
+    existing = database.execute(
+        "SELECT digest_domain, payload_offset, byte_count "
+        "FROM canonical_values WHERE value_sha256 = ?",
+        (sqlite3.Binary(value_sha256),),
+    ).fetchone()
+    if existing is not None:
+        if (
+            bytes(existing[0]) != digest_domain
+            or require_int63(existing[2], field="canonical value byte_count")
+            != byte_count
+            or not _equal_streams(
+                _iter_file_range(
+                    payload,
+                    require_int63(existing[1], field="canonical value offset"),
+                    byte_count,
+                ),
+                parts,
+            )
+        ):
+            raise PublicationCandidateConflictError(
+                "catalog canonical digest collides with different exact bytes"
+            )
+        return value_sha256
+    payload.seek(0, 2)
+    offset = require_int63(payload.tell(), field="canonical payload offset")
+    written = 0
+    for part in parts:
+        if payload.write(part) != len(part):
+            raise OSError("canonical projection spool accepted a partial write")
+        written += len(part)
+    if written != byte_count:
+        raise PublicationCandidateConflictError(
+            "canonical projection spool changed byte count"
+        )
+    payload.flush()
+    database.execute(
+        "INSERT INTO canonical_values "
+        "(value_sha256, digest_domain, payload_offset, byte_count) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            sqlite3.Binary(value_sha256),
+            sqlite3.Binary(digest_domain),
+            offset,
+            byte_count,
+        ),
+    )
+    return value_sha256
 
 
 def _register_projection_search_field(
@@ -2691,12 +2732,18 @@ def _register_projection_search_field(
     parts: Iterable[bytes],
     title: bool = False,
 ) -> None:
+    # The tokenizer consumes the entire field and enforces its fixed NFD byte
+    # budget before yielding. This field-local membership set stays bounded.
+    seen: set[bytes] = set()
     for lexeme in iter_search_field_lexemes(parts):
-        value_sha256 = _register_projection_canonical_value(
+        if lexeme in seen:
+            continue
+        seen.add(lexeme)
+        value_sha256 = _register_projection_canonical_bytes(
             database,
             payload,
             domain="search_lexeme_utf8_v1",
-            parts=(lexeme,),
+            value=lexeme,
         )
         database.execute(
             "INSERT OR IGNORE INTO search_postings "
@@ -3293,10 +3340,26 @@ def _lock_projection_upload_claims(
             )
 
 
+@dataclass(frozen=True, slots=True)
+class _PlannedPublication:
+    gallery_id: int
+    summary_sha256: bytes
+    language_sha256: bytes
+    published_at: int
+    download_time: int
+    modified_at: int
+    source_title_sha256: bytes
+    source_gallery_name: bytes
+    title_sha256: bytes
+    sort_title_sha256: bytes
+    content_sha256: bytes | None
+    order_position: int
+
+
 def _plan_publication(
     plan: PublicationCatalogProjectionPlan,
     publication_key: bytes,
-) -> tuple[Any, ...]:
+) -> _PlannedPublication:
     row = plan._database.execute(
         "SELECT gallery_id, summary_sha256, language_sha256, published_at, "
         "download_time, modified_at, source_title_sha256, "
@@ -3308,7 +3371,28 @@ def _plan_publication(
         raise PublicationCandidateConflictError(
             "catalog projection plan publication is missing"
         )
-    return tuple(row)
+    return _PlannedPublication(
+        gallery_id=require_positive_int63(row[0], field="planned gallery_id"),
+        summary_sha256=require_digest32(row[1], field="planned summary_sha256"),
+        language_sha256=require_digest32(row[2], field="planned language_sha256"),
+        published_at=require_int63(row[3], field="planned published_at"),
+        download_time=require_int63(row[4], field="planned download_time"),
+        modified_at=require_int63(row[5], field="planned modified_at"),
+        source_title_sha256=require_digest32(
+            row[6], field="planned source_title_sha256"
+        ),
+        source_gallery_name=require_bounded_bytes(
+            row[7], field="planned source_gallery_name", minimum=1, maximum=255
+        ),
+        title_sha256=require_digest32(row[8], field="planned title_sha256"),
+        sort_title_sha256=require_digest32(row[9], field="planned sort_title_sha256"),
+        content_sha256=(
+            None
+            if row[10] is None
+            else require_digest32(row[10], field="planned content_sha256")
+        ),
+        order_position=require_int63(row[11], field="planned order_position"),
+    )
 
 
 def _plan_canonical(
@@ -3394,6 +3478,8 @@ def _consume_projection_canonical(
 
 @dataclass(frozen=True, slots=True)
 class _ProjectionRow:
+    """One exact row in a single catalog relation, for insertion or comparison."""
+
     table: str
     key_columns: tuple[str, ...]
     value_columns: tuple[str, ...]
@@ -3470,7 +3556,7 @@ def _simple_projection_row(
     if child.kind == _CATALOG_CHILD_ORDER:
         publication = _plan_publication(plan, key)
         position = _position_subkey(child.subkey, field="publication order position")
-        if position != require_int63(publication[11], field="planned order position"):
+        if position != publication.order_position:
             raise PublicationCandidateConflictError("catalog order differs from plan")
         return _ProjectionRow(
             _PUBLICATION_ORDER_TABLE,
@@ -3604,11 +3690,9 @@ def _insert_projection_child(
     revision = authority.candidate.reserved_revision
     publication = _plan_publication(plan, child.publication_key)
     if child.kind == _CATALOG_CHILD_PUBLICATION:
-        summary = require_digest32(publication[1], field="publication summary_sha256")
-        language = require_digest32(publication[2], field="publication language_sha256")
-        source_title = require_digest32(
-            publication[6], field="publication source_title_sha256"
-        )
+        summary = publication.summary_sha256
+        language = publication.language_sha256
+        source_title = publication.source_title_sha256
         _consume_projection_canonical(
             work,
             plan,
@@ -3623,10 +3707,7 @@ def _insert_projection_child(
             expected_domain=b"catalog_language_utf8_v1",
             child_cursor=child.cursor,
         )
-        published_at = require_int63(
-            publication[3],
-            field="publication published_at",
-        )
+        published_at = publication.published_at
         identity_row = work.connector.fetch_one(
             "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
             "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
@@ -3651,16 +3732,10 @@ def _insert_projection_child(
                 CatalogPublicationFamily(
                     revision,
                     child.publication_key,
-                    require_positive_int63(
-                        publication[0],
-                        field="publication gallery_id",
-                    ),
+                    publication.gallery_id,
                     summary,
                     language,
-                    require_int63(
-                        publication[5],
-                        field="publication modified_at",
-                    ),
+                    publication.modified_at,
                     source_title,
                 ),
                 backend=work.backend,
@@ -3677,13 +3752,8 @@ def _insert_projection_child(
         expected = CatalogPublicationTitleFamily(
             revision,
             child.publication_key,
-            require_digest32(publication[6], field="source_title_sha256"),
-            require_bounded_bytes(
-                publication[7],
-                field="source_gallery_name",
-                minimum=1,
-                maximum=255,
-            ),
+            publication.source_title_sha256,
+            publication.source_gallery_name,
         )
         try:
             ensure_catalog_publication_title_family(
@@ -3700,11 +3770,11 @@ def _insert_projection_child(
             ) from error
         return
     if child.kind == _CATALOG_CHILD_CONTENT:
-        if publication[10] is None:
+        if publication.content_sha256 is None:
             raise PublicationCandidateConflictError(
                 "catalog content child has no effective-content identity"
             )
-        content = require_digest32(publication[10], field="publication content_sha256")
+        content = publication.content_sha256
         _require_existing_canonical_domain(
             work,
             content,
@@ -3726,10 +3796,7 @@ def _insert_projection_child(
                 CatalogPublicationDownloadTimeFamily(
                     revision,
                     child.publication_key,
-                    require_int63(
-                        publication[4],
-                        field="publication download_time",
-                    ),
+                    publication.download_time,
                 ),
                 backend=work.backend,
             )
@@ -3830,19 +3897,14 @@ def _insert_projection_title(
     authority: _MutationAuthority,
     plan: PublicationCatalogProjectionPlan,
     publication_key: bytes,
-    publication: tuple[Any, ...],
+    publication: _PlannedPublication,
     *,
     child_cursor: bytes,
 ) -> None:
-    source_title = require_digest32(publication[6], field="source_title_sha256")
-    source_gallery_name = require_bounded_bytes(
-        publication[7],
-        field="source_gallery_name",
-        minimum=1,
-        maximum=255,
-    )
-    title = require_digest32(publication[8], field="title_sha256")
-    sort_title = require_digest32(publication[9], field="sort_title_sha256")
+    source_title = publication.source_title_sha256
+    source_gallery_name = publication.source_gallery_name
+    title = publication.title_sha256
+    sort_title = publication.sort_title_sha256
     _consume_projection_canonical(
         work,
         plan,
@@ -4291,6 +4353,31 @@ def _catalog_child_kind_rows(
     )
 
 
+def _compare_publication_upload_times(
+    work: VNextUnitOfWork,
+    expected: dict[bytes, int],
+) -> None:
+    """Compare publication timestamps through their immutable GID authority."""
+
+    if not expected:
+        return
+    if len(expected) > _CATALOG_BATCH_ROWS:
+        raise ValueError("catalog publication timestamp batch exceeds 128 rows")
+    actual = work.connector.fetch_all(
+        "SELECT identity.publication_key, upload.upload_time "
+        "FROM catalog_publication_identities AS identity "
+        "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
+        "WHERE identity.publication_key IN ("
+        + ", ".join("%s" for _ in expected)
+        + ") LIMIT %s",
+        (*expected, len(expected) + 1),
+    )
+    if len(actual) != len(expected) or set(actual) != set(expected.items()):
+        raise PublicationCandidateConflictError(
+            "catalog publication upload times differ from independent evaluator"
+        )
+
+
 def _compare_projection_children(
     work: VNextUnitOfWork,
     authority: _MutationAuthority,
@@ -4302,6 +4389,7 @@ def _compare_projection_children(
     revision = authority.candidate.reserved_revision
     rows: list[_ProjectionRow] = []
     publications: list[CatalogPublicationFamily] = []
+    upload_times: dict[bytes, int] = {}
     download_times: list[CatalogPublicationDownloadTimeFamily] = []
     search_values: set[bytes] = set()
     for child in children:
@@ -4325,38 +4413,23 @@ def _compare_projection_children(
                 CatalogPublicationFamily(
                     revision,
                     key,
-                    require_positive_int63(publication[0], field="planned gallery_id"),
-                    require_digest32(publication[1], field="planned summary_sha256"),
-                    require_digest32(publication[2], field="planned language_sha256"),
-                    require_int63(publication[5], field="planned modified_at"),
-                    require_digest32(
-                        publication[6], field="planned source_title_sha256"
-                    ),
+                    publication.gallery_id,
+                    publication.summary_sha256,
+                    publication.language_sha256,
+                    publication.modified_at,
+                    publication.source_title_sha256,
                 )
             )
-            rows.append(
-                _ProjectionRow(
-                    "catalog_publication_identities AS identity "
-                    "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid",
-                    ("identity.publication_key",),
-                    ("upload.upload_time",),
-                    (key, require_int63(publication[3], field="planned published_at")),
-                )
-            )
+            upload_times[key] = publication.published_at
         elif child.kind == _CATALOG_CHILD_TITLE:
             title = CatalogPublicationTitleFamily(
                 revision,
                 key,
-                require_digest32(publication[6], field="planned source_title_sha256"),
-                require_bounded_bytes(
-                    publication[7],
-                    field="planned source_gallery_name",
-                    minimum=1,
-                    maximum=255,
-                ),
+                publication.source_title_sha256,
+                publication.source_gallery_name,
             )
-            display = require_digest32(publication[8], field="planned title_sha256")
-            sort = require_digest32(publication[9], field="planned sort_title_sha256")
+            display = publication.title_sha256
+            sort = publication.sort_title_sha256
             rows.extend(
                 (
                     _ProjectionRow(
@@ -4394,6 +4467,10 @@ def _compare_projection_children(
                 )
             )
         elif child.kind == _CATALOG_CHILD_CONTENT:
+            if publication.content_sha256 is None:
+                raise PublicationCandidateConflictError(
+                    "catalog content child has no effective-content identity"
+                )
             rows.append(
                 _ProjectionRow(
                     _PUBLICATION_CONTENT_TABLE,
@@ -4402,9 +4479,7 @@ def _compare_projection_children(
                     (
                         revision,
                         key,
-                        require_digest32(
-                            publication[10], field="planned content_sha256"
-                        ),
+                        publication.content_sha256,
                     ),
                 )
             )
@@ -4449,7 +4524,7 @@ def _compare_projection_children(
                 CatalogPublicationDownloadTimeFamily(
                     revision,
                     key,
-                    require_int63(publication[4], field="planned download_time"),
+                    publication.download_time,
                 )
             )
         elif child.kind == _CATALOG_CHILD_SEARCH_POSTING:
@@ -4489,6 +4564,7 @@ def _compare_projection_children(
         raise PublicationCandidateConflictError(
             "catalog occurrence family differs from independent evaluator"
         ) from error
+    _compare_publication_upload_times(work, upload_times)
     _compare_projection_rows(work, rows)
     if search_values:
         try:
