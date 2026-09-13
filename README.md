@@ -319,6 +319,39 @@ Discovery ordering consumes fixed-size keyset pages on the same temporary
 connection before writing their positions, so its own read cursor cannot block
 rollback-journal cache spill for a large inventory.
 
+Analysis and publication calls emit `ingest_db_performance` diagnostics through
+the standard `h2hdb.ingest_performance` logger and the application's handlers.
+The default `logger.level` remains `info`. INFO records summarize each logical
+operation, including issue/prepare/commit seconds, processed rows, SQL calls and
+time, connection checkout/close time, and transaction begin/commit/rollback time.
+Summaries also appear at 60-second checkpoints when a call or SQL operation
+returns. These checkpoints are not a background heartbeat: integrations should
+retain their progress reporter to show an operation blocked inside a call.
+Stage `wall_seconds` includes time between calls; `call_seconds` sums the calls
+themselves. `other_seconds` includes Python, private scratch I/O, adapters, and
+scheduling, and must not be interpreted as CPU time alone. SQL counters measure
+connector calls, so `execute_many` counts once; connection calls are leases and
+do not imply new TCP connections. Driver-internal setup queries belong to
+connection time. These diagnostics cover the calling thread, not adapter worker
+threads or source scanning.
+
+Setting the application's core logger configuration to `{"level": "debug"}`
+adds per-call records and the five most expensive query fingerprints, each with
+its call count and elapsed seconds. A fingerprint is the first 16 hexadecimal
+characters of SHA-256 over the SQL template's UTF-8 bytes; query statistics keep
+at most 64 templates plus an overflow bucket per call. SQL text, parameters,
+credentials, and authority tokens are never logged. Configuration and handler
+thresholds both apply; diagnostic handler failures do not change commit or retry
+results.
+
+Catalog preparation validates common tag values in batches of at most 128 and
+retains their bytes in a private disk cache for that plan. BUILD and VALIDATE
+prepare separate plans and independently revalidate their source snapshots.
+Private scratch writes share one transaction, and failed preparation discards
+the entire plan. Durable catalog child writes and comparisons remain bounded to
+128 children while grouping compatible SQL operations. These optimizations do
+not change the schema or artifact format and require no data rebuild.
+
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
 call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact
 release-adapter registry. If an unpublished abandoned candidate still protects

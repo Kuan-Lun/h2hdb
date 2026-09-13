@@ -35,6 +35,7 @@ import secrets
 import sqlite3
 import unicodedata
 from collections.abc import Iterable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory, TemporaryFile
 from typing import Any, BinaryIO
@@ -49,12 +50,16 @@ from .vnext_analysis_family import (
     require_exact_analysis_state_components,
 )
 from .vnext_analysis_repository import ANALYSIS_COMPONENTS
-from .vnext_canonical_value_family import load_sealed_value_identity
+from .vnext_canonical_value_family import (
+    load_sealed_value_identities,
+    load_sealed_value_identity,
+)
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
+    load_and_validate_single_page_canonical_values,
 )
 from .vnext_catalog_registry_repository import (
     CatalogRegistryConflictError,
@@ -88,6 +93,8 @@ from .vnext_publication_family import (
     PublicationFamilyPartialError,
     PublicationIdentityFamily,
     PublicationSelectionFamily,
+    compare_catalog_publication_download_time_families,
+    compare_catalog_publication_families,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
@@ -95,10 +102,6 @@ from .vnext_publication_family import (
     ensure_publication_candidate_family,
     ensure_publication_identity_family,
     ensure_publication_selection_family,
-    load_catalog_contributor_family,
-    load_catalog_publication_download_time_family,
-    load_catalog_publication_family,
-    load_catalog_publication_title_family,
     load_publication_candidate_family,
 )
 from .vnext_state_machine_contract import require_catalog_state_mutation
@@ -1205,8 +1208,7 @@ class PublicationCandidateRepository:
             ),
             now=now,
         )
-        for child in rows:
-            _insert_projection_child(work, authority, plan, child)
+        _insert_projection_children(work, authority, plan, rows)
         next_cursor = checkpoint.cursor if not rows else rows[-1].cursor
         return _commit_candidate_batch(
             work,
@@ -1261,8 +1263,7 @@ class PublicationCandidateRepository:
             raise PublicationCandidateConflictError(
                 "catalog projection differs from its independent DB evaluator"
             )
-        for child in expected:
-            _compare_projection_child(work, authority, validation, child)
+        _compare_projection_children(work, authority, validation, expected)
         next_cursor = checkpoint.cursor if not expected else expected[-1].cursor
         return _commit_candidate_batch(
             work,
@@ -1764,17 +1765,26 @@ def _prepare_catalog_plan(
     *,
     validation: bool,
 ) -> PublicationCatalogProjectionPlan:
-    temporary_directory = TemporaryDirectory(prefix="h2hdb-catalog-projection-")
-    payload = TemporaryFile(mode="w+b")
-    database = sqlite3.connect(
-        f"{temporary_directory.name}/projection.sqlite3",
-        isolation_level=None,
-        check_same_thread=False,
-    )
-    try:
+    with ExitStack() as cleanup:
+        temporary_directory = TemporaryDirectory(prefix="h2hdb-catalog-projection-")
+        cleanup.callback(temporary_directory.cleanup)
+        payload = cleanup.enter_context(TemporaryFile(mode="w+b"))
+        database = sqlite3.connect(
+            f"{temporary_directory.name}/projection.sqlite3",
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        cleanup.callback(database.close)
         database.execute("PRAGMA temp_store = FILE")
         database.execute("PRAGMA journal_mode = OFF")
         _initialize_projection_plan_database(database)
+        # This database is disposable preparation state. One transaction avoids
+        # autocommitting every child; failures discard the complete private plan.
+        database.execute("BEGIN")
+        database.execute(
+            "CREATE TEMP TABLE source_tag_values ("
+            "value_sha256 BLOB PRIMARY KEY, tag_value BLOB NOT NULL) WITHOUT ROWID"
+        )
         after = 0
         publication_count = 0
         while True:
@@ -1810,7 +1820,9 @@ def _prepare_catalog_plan(
         _populate_projection_facets(database)
         _populate_projection_tag_orders(database)
         child_count = _populate_projection_children(database)
-        return PublicationCatalogProjectionPlan(
+        database.execute("DROP TABLE source_tag_values")
+        database.execute("COMMIT")
+        plan = PublicationCatalogProjectionPlan(
             authority=authority,
             database=database,
             payload=payload,
@@ -1824,11 +1836,8 @@ def _prepare_catalog_plan(
                 else _PROJECTION_BUILD_PLAN_TOKEN
             ),
         )
-    except BaseException:
-        database.close()
-        payload.close()
-        temporary_directory.cleanup()
-        raise
+        cleanup.pop_all()
+        return plan
 
 
 def _initialize_projection_plan_database(database: sqlite3.Connection) -> None:
@@ -2220,6 +2229,16 @@ def _prepare_projection_publication(
         )
         if not tag_rows:
             break
+        values = []
+        for tag_row in tag_rows:
+            if len(tag_row) != 4:
+                raise PublicationCandidateConflictError(
+                    "projection tag row is malformed"
+                )
+            values.append(
+                require_digest32(tag_row[3], field="projection tag value_sha256")
+            )
+        tag_values = _prepare_projection_tag_values(work, database, tuple(values))
         for tag_row in tag_rows:
             if len(tag_row) != 4:
                 raise PublicationCandidateConflictError(
@@ -2239,71 +2258,58 @@ def _prepare_projection_publication(
             tag_value = require_digest32(
                 tag_row[3], field="projection tag value_sha256"
             )
-            source, source_count = _spool_existing_canonical_value(
-                work,
-                tag_value,
-                expected_domain=b"tag_value_utf8_v1",
+            tag_value_bytes = tag_values[tag_value]
+            database.execute(
+                "INSERT INTO subjects "
+                "(publication_key, position, tag_id, namespace, "
+                "tag_value_sha256, tag_value) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    sqlite3.Binary(publication_key),
+                    subject_position,
+                    tag_id,
+                    sqlite3.Binary(namespace),
+                    sqlite3.Binary(tag_value),
+                    sqlite3.Binary(tag_value_bytes),
+                ),
             )
-            try:
-                tag_value_bytes = _read_projection_field(
-                    source,
-                    offset=0,
-                    byte_count=source_count,
-                    field="projection tag value",
-                )
-                database.execute(
-                    "INSERT INTO subjects "
-                    "(publication_key, position, tag_id, namespace, "
-                    "tag_value_sha256, tag_value) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        sqlite3.Binary(publication_key),
-                        subject_position,
-                        tag_id,
-                        sqlite3.Binary(namespace),
-                        sqlite3.Binary(tag_value),
-                        sqlite3.Binary(tag_value_bytes),
-                    ),
-                )
-                subject_position += 1
-                _register_projection_search_field(
-                    database,
-                    payload,
-                    publication_key=publication_key,
-                    parts=(tag_value_bytes,),
-                )
-                if namespace == b"language" and language is None:
-                    if source_count:
-                        language = _register_projection_canonical_value(
-                            database,
-                            payload,
-                            domain="catalog_language_utf8_v1",
-                            parts=_iter_file_range(source, 0, source_count),
-                        )
-                        language_value = tag_value_bytes
-                if namespace in _CONTRIBUTOR_NAMESPACES:
-                    if source_count:
-                        contributor_name = _register_projection_canonical_value(
-                            database,
-                            payload,
-                            domain="contributor_name_utf8_v1",
-                            parts=_iter_file_range(source, 0, source_count),
-                        )
-                        inserted = database.execute(
-                            "INSERT OR IGNORE INTO contributors "
-                            "(publication_key, position, contributor_name_sha256, "
-                            "contributor_name_value, role) VALUES (?, ?, ?, ?, ?)",
-                            (
-                                sqlite3.Binary(publication_key),
-                                contributor_position,
-                                sqlite3.Binary(contributor_name),
-                                sqlite3.Binary(tag_value_bytes),
-                                sqlite3.Binary(namespace),
-                            ),
-                        ).rowcount
-                        if inserted:
-                            contributor_position += 1
-            finally:
-                source.close()
+            subject_position += 1
+            _register_projection_search_field(
+                database,
+                payload,
+                publication_key=publication_key,
+                parts=(tag_value_bytes,),
+            )
+            if namespace == b"language" and language is None:
+                if tag_value_bytes:
+                    language = _register_projection_canonical_value(
+                        database,
+                        payload,
+                        domain="catalog_language_utf8_v1",
+                        parts=(tag_value_bytes,),
+                    )
+                    language_value = tag_value_bytes
+            if namespace in _CONTRIBUTOR_NAMESPACES:
+                if tag_value_bytes:
+                    contributor_name = _register_projection_canonical_value(
+                        database,
+                        payload,
+                        domain="contributor_name_utf8_v1",
+                        parts=(tag_value_bytes,),
+                    )
+                    inserted = database.execute(
+                        "INSERT OR IGNORE INTO contributors "
+                        "(publication_key, position, contributor_name_sha256, "
+                        "contributor_name_value, role) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            sqlite3.Binary(publication_key),
+                            contributor_position,
+                            sqlite3.Binary(contributor_name),
+                            sqlite3.Binary(tag_value_bytes),
+                            sqlite3.Binary(namespace),
+                        ),
+                    ).rowcount
+                    if inserted:
+                        contributor_position += 1
             tag_after = position
     if language is None:
         language_value = b"und"
@@ -2722,6 +2728,63 @@ def _equal_streams(left: Iterable[bytes], right: Iterable[bytes]) -> bool:
             return False
         left_carry = left_carry[amount:]
         right_carry = right_carry[amount:]
+
+
+def _prepare_projection_tag_values(
+    work: VNextUnitOfWork,
+    database: sqlite3.Connection,
+    value_sha256s: tuple[bytes, ...],
+) -> dict[bytes, bytes]:
+    """Validate bounded tag pages once per digest in this private read snapshot.
+
+    The disk cache belongs only to one BUILD or independently rebuilt VALIDATE
+    plan. It cannot outlive preparation or suppress validation after a restart.
+    """
+
+    if len(value_sha256s) > _CATALOG_BATCH_ROWS:
+        raise ValueError("projection tag value batch exceeds 128 references")
+    values = tuple(sorted(set(value_sha256s)))
+    if not values:
+        return {}
+    cached = database.execute(
+        "SELECT value_sha256, tag_value FROM source_tag_values "
+        f"WHERE value_sha256 IN ({', '.join('?' for _ in values)})",
+        values,
+    ).fetchall()
+    result = {bytes(value): bytes(payload) for value, payload in cached}
+    missing = tuple(value for value in values if value not in result)
+    if not missing:
+        return result
+    try:
+        loaded = load_and_validate_single_page_canonical_values(
+            work.connector,
+            references=tuple((value, b"tag_value_utf8_v1") for value in missing),
+        )
+    except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
+        raise PublicationCandidateConflictError(
+            "canonical source value is incomplete or corrupt"
+        ) from error
+    for value in missing:
+        payload = loaded.get((value, b"tag_value_utf8_v1"))
+        if payload is None:
+            source, byte_count = _spool_existing_canonical_value(
+                work, value, expected_domain=b"tag_value_utf8_v1"
+            )
+            try:
+                payload = _read_projection_field(
+                    source,
+                    offset=0,
+                    byte_count=byte_count,
+                    field="projection tag value",
+                )
+            finally:
+                source.close()
+        result[value] = payload
+    database.executemany(
+        "INSERT INTO source_tag_values (value_sha256, tag_value) VALUES (?, ?)",
+        ((value, result[value]) for value in missing),
+    )
+    return result
 
 
 def _spool_existing_canonical_value(
@@ -3329,6 +3392,209 @@ def _consume_projection_canonical(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ProjectionRow:
+    table: str
+    key_columns: tuple[str, ...]
+    value_columns: tuple[str, ...]
+    values: tuple[Any, ...]
+
+
+def _simple_projection_row(
+    plan: PublicationCatalogProjectionPlan,
+    child: _ProjectionChild,
+    *,
+    revision: int,
+) -> _ProjectionRow | None:
+    key = child.publication_key
+    if child.kind in {
+        _CATALOG_CHILD_SUBJECT,
+        _CATALOG_CHILD_SEARCH_DOCUMENT,
+        _CATALOG_CHILD_TITLE_SEARCH_POSTING,
+    }:
+        _plan_publication(plan, key)
+    tag_shape = _tag_order_child_shape(child)
+    if tag_shape is not None:
+        table, tag_columns, values = tag_shape
+        planned = plan._database.execute(
+            f"SELECT position FROM {table} WHERE {tag_columns[0]} = ? AND {tag_columns[1]} = ?",
+            values,
+        ).fetchone()
+        if planned is None:
+            raise PublicationCandidateConflictError("planned tag order is missing")
+        return _ProjectionRow(
+            f"catalog_{table}",
+            ("revision", *tag_columns),
+            ("position",),
+            (revision, *values, require_int63(planned[0], field="tag order position")),
+        )
+    facets = {
+        _CATALOG_CHILD_LANGUAGE_FACET: (
+            "language_facets",
+            _LANGUAGE_FACET_ORDER_TABLE,
+            ("language_sha256", "occurrence_count"),
+        ),
+        _CATALOG_CHILD_SUBJECT_FACET: (
+            "subject_facets",
+            _SUBJECT_FACET_ORDER_TABLE,
+            ("tag_id", "occurrence_count"),
+        ),
+        _CATALOG_CHILD_CONTRIBUTOR_FACET: (
+            "contributor_facets",
+            _CONTRIBUTOR_FACET_ORDER_TABLE,
+            ("contributor_name_sha256", "role", "occurrence_count"),
+        ),
+    }
+    if child.kind in facets:
+        if key != _DISCOVERY_CHILD_KEY:
+            raise PublicationCandidateConflictError("facet child has invalid sentinel")
+        position = _position_subkey(child.subkey, field="facet position")
+        local, catalog, columns = facets[child.kind]
+        planned = plan._database.execute(
+            f"SELECT {', '.join(columns)} FROM {local} WHERE position = ?", (position,)
+        ).fetchone()
+        if planned is None or len(planned) != len(columns):
+            raise PublicationCandidateConflictError("planned facet row is missing")
+        return _ProjectionRow(
+            catalog, ("revision", "position"), columns, (revision, position, *planned)
+        )
+    if child.kind == _CATALOG_CHILD_DISCOVERY_SEAL:
+        if key != _DISCOVERY_CHILD_KEY or child.subkey:
+            raise PublicationCandidateConflictError("discovery seal child is malformed")
+        return _ProjectionRow(
+            _DISCOVERY_SEAL_TABLE,
+            ("revision",),
+            ("policy_id",),
+            (revision, SEARCH_POLICY_ID),
+        )
+    if child.kind == _CATALOG_CHILD_ORDER:
+        publication = _plan_publication(plan, key)
+        position = _position_subkey(child.subkey, field="publication order position")
+        if position != require_int63(publication[11], field="planned order position"):
+            raise PublicationCandidateConflictError("catalog order differs from plan")
+        return _ProjectionRow(
+            _PUBLICATION_ORDER_TABLE,
+            ("revision", "position"),
+            ("publication_key",),
+            (revision, position, key),
+        )
+    if child.kind == _CATALOG_CHILD_SUBJECT:
+        position = _position_subkey(child.subkey, field="subject position")
+        planned = plan._database.execute(
+            "SELECT tag_id FROM subjects WHERE publication_key = ? AND position = ?",
+            (key, position),
+        ).fetchone()
+        if planned is None:
+            raise PublicationCandidateConflictError("planned subject is missing")
+        return _ProjectionRow(
+            _SUBJECT_TABLE,
+            ("revision", "publication_key", "position"),
+            ("tag_id",),
+            (
+                revision,
+                key,
+                position,
+                require_positive_int63(planned[0], field="tag_id"),
+            ),
+        )
+    if child.kind == _CATALOG_CHILD_SEARCH_DOCUMENT:
+        planned = plan._database.execute(
+            "SELECT COUNT(*) FROM search_postings WHERE publication_key = ?", (key,)
+        ).fetchone()
+        if planned is None or len(planned) != 1:
+            raise PublicationCandidateConflictError("planned search count is missing")
+        return _ProjectionRow(
+            _SEARCH_DOCUMENT_TABLE,
+            ("revision", "publication_key"),
+            ("row_count",),
+            (revision, key, require_int63(planned[0], field="search row_count")),
+        )
+    if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
+        value = require_digest32(child.subkey, field="title search value_sha256")
+        planned = plan._database.execute(
+            "SELECT 1 FROM title_search_postings WHERE publication_key = ? AND value_sha256 = ?",
+            (key, value),
+        ).fetchone()
+        if planned != (1,):
+            raise PublicationCandidateConflictError("planned title posting is missing")
+        return _ProjectionRow(
+            _TITLE_SEARCH_POSTING_TABLE,
+            ("revision", "value_sha256", "publication_key"),
+            (),
+            (revision, value, key),
+        )
+    return None
+
+
+def _projection_row_groups(
+    rows: list[_ProjectionRow],
+) -> dict[tuple[str, tuple[str, ...], tuple[str, ...]], list[tuple[Any, ...]]]:
+    groups: dict[
+        tuple[str, tuple[str, ...], tuple[str, ...]], list[tuple[Any, ...]]
+    ] = {}
+    for row in rows:
+        if len(row.values) != len(row.key_columns) + len(row.value_columns):
+            raise PublicationCandidateConflictError("projection row has invalid shape")
+        group = groups.setdefault((row.table, row.key_columns, row.value_columns), [])
+        group.append(row.values)
+        if len(group) > _CATALOG_BATCH_ROWS:
+            raise ValueError("catalog row group exceeds 128 children")
+    return groups
+
+
+def _compare_projection_rows(work: VNextUnitOfWork, rows: list[_ProjectionRow]) -> None:
+    for (table, keys, values), expected in _projection_row_groups(rows).items():
+        keyed: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        for row in expected:
+            key = row[: len(keys)]
+            if key in keyed and keyed[key] != row:
+                raise PublicationCandidateConflictError("planned determinant collides")
+            keyed[key] = row
+        key_sql = keys[0] if len(keys) == 1 else f"({', '.join(keys)})"
+        parameter_sql = "%s" if len(keys) == 1 else f"({', '.join('%s' for _ in keys)})"
+        actual = work.connector.fetch_all(
+            f"SELECT {', '.join((*keys, *values))} FROM {table} "
+            f"WHERE {key_sql} IN ({', '.join(parameter_sql for _ in keyed)}) LIMIT %s",
+            (*[item for key in keyed for item in key], len(keyed) + 1),
+        )
+        if len(actual) != len(keyed) or set(actual) != set(keyed.values()):
+            raise PublicationCandidateConflictError(
+                f"catalog {table} differs from independent evaluator"
+            )
+
+
+def _insert_projection_children(
+    work: VNextUnitOfWork,
+    authority: _MutationAuthority,
+    plan: PublicationCatalogProjectionPlan,
+    children: tuple[_ProjectionChild, ...],
+) -> None:
+    if len(children) > _CATALOG_BATCH_ROWS:
+        raise ValueError("catalog child batch exceeds 128 rows")
+    pending: list[_ProjectionRow] = []
+
+    def flush() -> None:
+        for (table, keys, values), rows in _projection_row_groups(pending).items():
+            columns = (*keys, *values)
+            work.connector.execute_many(
+                f"INSERT INTO {table} ({', '.join(columns)}) "
+                f"VALUES ({', '.join('%s' for _ in columns)})",
+                rows,
+            )
+        pending.clear()
+
+    for child in children:
+        row = _simple_projection_row(
+            plan, child, revision=authority.candidate.reserved_revision
+        )
+        if row is None:
+            flush()
+            _insert_projection_child(work, authority, plan, child)
+        else:
+            pending.append(row)
+    flush()
+
+
 def _insert_projection_child(
     work: VNextUnitOfWork,
     authority: _MutationAuthority,
@@ -3336,9 +3602,6 @@ def _insert_projection_child(
     child: _ProjectionChild,
 ) -> None:
     revision = authority.candidate.reserved_revision
-    if child.kind >= _CATALOG_CHILD_LANGUAGE_FACET:
-        _insert_discovery_projection_child(work, plan, child, revision=revision)
-        return
     publication = _plan_publication(plan, child.publication_key)
     if child.kind == _CATALOG_CHILD_PUBLICATION:
         summary = require_digest32(publication[1], field="publication summary_sha256")
@@ -3410,18 +3673,6 @@ def _insert_projection_child(
                 "catalog publication family collides with planned exact facts"
             ) from error
         return
-    if child.kind == _CATALOG_CHILD_ORDER:
-        position = _position_subkey(child.subkey, field="publication order position")
-        if position != require_int63(publication[11], field="planned order position"):
-            raise PublicationCandidateConflictError(
-                "catalog order cursor differs from its planned position"
-            )
-        work.connector.execute(
-            f"INSERT INTO {_PUBLICATION_ORDER_TABLE} "
-            "(revision, position, publication_key) VALUES (%s, %s, %s)",
-            (revision, position, child.publication_key),
-        )
-        return
     if child.kind == _CATALOG_CHILD_TITLE:
         expected = CatalogPublicationTitleFamily(
             revision,
@@ -3468,25 +3719,6 @@ def _insert_projection_child(
     if child.kind == _CATALOG_CHILD_CONTRIBUTOR:
         _insert_projection_contributor_child(work, authority, plan, child)
         return
-    if child.kind == _CATALOG_CHILD_SUBJECT:
-        position = _position_subkey(child.subkey, field="subject position")
-        row = plan._database.execute(
-            "SELECT tag_id FROM subjects WHERE publication_key = ? AND position = ?",
-            (sqlite3.Binary(child.publication_key), position),
-        ).fetchone()
-        if row is None:
-            raise PublicationCandidateConflictError("planned subject is missing")
-        work.connector.execute(
-            f"INSERT INTO {_SUBJECT_TABLE} "
-            "(revision, publication_key, position, tag_id) VALUES (%s, %s, %s, %s)",
-            (
-                revision,
-                child.publication_key,
-                position,
-                require_positive_int63(row[0], field="subject tag_id"),
-            ),
-        )
-        return
     if child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
         try:
             ensure_catalog_publication_download_time_family(
@@ -3508,25 +3740,6 @@ def _insert_projection_child(
             raise PublicationCandidateConflictError(
                 "catalog publication download time collides with planned facts"
             ) from error
-        return
-    if child.kind == _CATALOG_CHILD_SEARCH_DOCUMENT:
-        row = plan._database.execute(
-            "SELECT COUNT(*) FROM search_postings WHERE publication_key = ?",
-            (sqlite3.Binary(child.publication_key),),
-        ).fetchone()
-        if row is None or len(row) != 1:
-            raise PublicationCandidateConflictError(
-                "planned search document count is missing"
-            )
-        work.connector.execute(
-            f"INSERT INTO {_SEARCH_DOCUMENT_TABLE} "
-            "(revision, publication_key, row_count) VALUES (%s, %s, %s)",
-            (
-                revision,
-                child.publication_key,
-                require_int63(row[0], field="search document row_count"),
-            ),
-        )
         return
     if child.kind == _CATALOG_CHILD_SEARCH_POSTING:
         value_sha256 = require_digest32(
@@ -3563,26 +3776,6 @@ def _insert_projection_child(
             raise PublicationCandidateConflictError("search lexeme identity collides")
         work.connector.execute(
             f"INSERT INTO {_SEARCH_POSTING_TABLE} "
-            "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
-            (revision, value_sha256, child.publication_key),
-        )
-        return
-    if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
-        value_sha256 = require_digest32(
-            child.subkey,
-            field="title search posting value_sha256",
-        )
-        planned = plan._database.execute(
-            "SELECT 1 FROM title_search_postings "
-            "WHERE publication_key = ? AND value_sha256 = ?",
-            (sqlite3.Binary(child.publication_key), sqlite3.Binary(value_sha256)),
-        ).fetchone()
-        if planned != (1,):
-            raise PublicationCandidateConflictError(
-                "planned title search posting is missing"
-            )
-        work.connector.execute(
-            f"INSERT INTO {_TITLE_SEARCH_POSTING_TABLE} "
             "(revision, value_sha256, publication_key) VALUES (%s, %s, %s)",
             (revision, value_sha256, child.publication_key),
         )
@@ -3630,75 +3823,6 @@ def _tag_order_child_shape(
             (child.publication_key, _decode_tag_namespace_subkey(child.subkey)),
         )
     return None
-
-
-def _insert_discovery_projection_child(
-    work: VNextUnitOfWork,
-    plan: PublicationCatalogProjectionPlan,
-    child: _ProjectionChild,
-    *,
-    revision: int,
-) -> None:
-    tag_shape = _tag_order_child_shape(child)
-    if tag_shape is not None:
-        table, tag_columns, values = tag_shape
-        planned = plan._database.execute(
-            f"SELECT position FROM {table} WHERE {tag_columns[0]} = ? AND {tag_columns[1]} = ?",
-            values,
-        ).fetchone()
-        if planned is None:
-            raise PublicationCandidateConflictError("planned tag order is missing")
-        position = require_int63(planned[0], field="tag order position")
-        work.connector.execute(
-            f"INSERT INTO catalog_{table} "
-            f"(revision, {tag_columns[0]}, {tag_columns[1]}, position) "
-            "VALUES (%s, %s, %s, %s)",
-            (revision, *values, position),
-        )
-        return
-    if child.publication_key != _DISCOVERY_CHILD_KEY:
-        raise PublicationCandidateConflictError(
-            "discovery authority child has an invalid sentinel key"
-        )
-    facet_shapes = {
-        _CATALOG_CHILD_LANGUAGE_FACET: (
-            "language_facets",
-            _LANGUAGE_FACET_ORDER_TABLE,
-            ("language_sha256", "occurrence_count"),
-        ),
-        _CATALOG_CHILD_SUBJECT_FACET: (
-            "subject_facets",
-            _SUBJECT_FACET_ORDER_TABLE,
-            ("tag_id", "occurrence_count"),
-        ),
-        _CATALOG_CHILD_CONTRIBUTOR_FACET: (
-            "contributor_facets",
-            _CONTRIBUTOR_FACET_ORDER_TABLE,
-            ("contributor_name_sha256", "role", "occurrence_count"),
-        ),
-    }
-    if child.kind in facet_shapes:
-        position = _position_subkey(child.subkey, field="facet position")
-        local_table, catalog_table, columns = facet_shapes[child.kind]
-        row = plan._database.execute(
-            f"SELECT {', '.join(columns)} FROM {local_table} WHERE position = ?",
-            (position,),
-        ).fetchone()
-        if row is None or len(row) != len(columns):
-            raise PublicationCandidateConflictError("planned facet row is missing")
-        work.connector.execute(
-            f"INSERT INTO {catalog_table} "
-            f"(revision, position, {', '.join(columns)}) "
-            f"VALUES ({', '.join('%s' for _ in range(len(columns) + 2))})",
-            (revision, position, *row),
-        )
-        return
-    if child.kind != _CATALOG_CHILD_DISCOVERY_SEAL or child.subkey:
-        raise PublicationCandidateConflictError("discovery seal child is malformed")
-    work.connector.execute(
-        f"INSERT INTO {_DISCOVERY_SEAL_TABLE} (revision, policy_id) VALUES (%s, %s)",
-        (revision, SEARCH_POLICY_ID),
-    )
 
 
 def _insert_projection_title(
@@ -4167,373 +4291,221 @@ def _catalog_child_kind_rows(
     )
 
 
-def _compare_projection_child(
+def _compare_projection_children(
     work: VNextUnitOfWork,
     authority: _MutationAuthority,
     plan: PublicationCatalogProjectionPlan,
-    child: _ProjectionChild,
+    children: tuple[_ProjectionChild, ...],
 ) -> None:
+    if len(children) > _CATALOG_BATCH_ROWS:
+        raise ValueError("catalog child batch exceeds 128 rows")
     revision = authority.candidate.reserved_revision
-    if child.kind >= _CATALOG_CHILD_LANGUAGE_FACET:
-        _compare_discovery_projection_child(work, plan, child, revision=revision)
-        return
-    publication = _plan_publication(plan, child.publication_key)
-    if child.kind == _CATALOG_CHILD_PUBLICATION:
-        expected_publication = CatalogPublicationFamily(
-            revision,
-            child.publication_key,
-            require_positive_int63(publication[0], field="planned gallery_id"),
-            require_digest32(publication[1], field="planned summary_sha256"),
-            require_digest32(publication[2], field="planned language_sha256"),
-            require_int63(publication[5], field="planned modified_at"),
-            require_digest32(publication[6], field="planned source_title_sha256"),
-        )
-        try:
-            actual_publication = load_catalog_publication_family(
-                work.connector,
-                revision=revision,
-                publication_key=child.publication_key,
-                backend=work.backend,
+    rows: list[_ProjectionRow] = []
+    publications: list[CatalogPublicationFamily] = []
+    download_times: list[CatalogPublicationDownloadTimeFamily] = []
+    search_values: set[bytes] = set()
+    for child in children:
+        simple = _simple_projection_row(plan, child, revision=revision)
+        if simple is not None:
+            rows.append(simple)
+            if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
+                rows.append(
+                    _ProjectionRow(
+                        _SEARCH_POSTING_TABLE,
+                        simple.key_columns,
+                        (),
+                        simple.values,
+                    )
+                )
+            continue
+        key = child.publication_key
+        publication = _plan_publication(plan, key)
+        if child.kind == _CATALOG_CHILD_PUBLICATION:
+            publications.append(
+                CatalogPublicationFamily(
+                    revision,
+                    key,
+                    require_positive_int63(publication[0], field="planned gallery_id"),
+                    require_digest32(publication[1], field="planned summary_sha256"),
+                    require_digest32(publication[2], field="planned language_sha256"),
+                    require_int63(publication[5], field="planned modified_at"),
+                    require_digest32(
+                        publication[6], field="planned source_title_sha256"
+                    ),
+                )
             )
-        except (
-            PublicationFamilyCollisionError,
-            PublicationFamilyPartialError,
-        ) as error:
-            raise PublicationCandidateConflictError(
-                "catalog publication family is incomplete or corrupt"
-            ) from error
-        published_at = work.connector.fetch_one(
-            "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
-            "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
-            "WHERE identity.publication_key = %s",
-            (child.publication_key,),
-        )
-        if actual_publication != expected_publication or published_at != (
-            require_int63(publication[3], field="planned published_at"),
-        ):
-            raise PublicationCandidateConflictError(
-                "catalog publication differs from independent evaluator"
+            rows.append(
+                _ProjectionRow(
+                    "catalog_publication_identities AS identity "
+                    "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid",
+                    ("identity.publication_key",),
+                    ("upload.upload_time",),
+                    (key, require_int63(publication[3], field="planned published_at")),
+                )
             )
-        return
-    if child.kind == _CATALOG_CHILD_ORDER:
-        position = _position_subkey(child.subkey, field="planned order position")
-        row = work.connector.fetch_one(
-            f"SELECT publication_key FROM {_PUBLICATION_ORDER_TABLE} "
-            "WHERE revision = %s AND position = %s",
-            (revision, position),
-        )
-        if row != (child.publication_key,) or position != publication[11]:
-            raise PublicationCandidateConflictError(
-                "catalog publication order differs from independent evaluator"
+        elif child.kind == _CATALOG_CHILD_TITLE:
+            title = CatalogPublicationTitleFamily(
+                revision,
+                key,
+                require_digest32(publication[6], field="planned source_title_sha256"),
+                require_bounded_bytes(
+                    publication[7],
+                    field="planned source_gallery_name",
+                    minimum=1,
+                    maximum=255,
+                ),
             )
-        return
-    if child.kind == _CATALOG_CHILD_TITLE:
-        expected_title = CatalogPublicationTitleFamily(
-            revision,
-            child.publication_key,
-            require_digest32(publication[6], field="planned source_title_sha256"),
-            require_bounded_bytes(
-                publication[7],
-                field="planned source_gallery_name",
-                minimum=1,
-                maximum=255,
-            ),
-        )
-        try:
-            actual_title = load_catalog_publication_title_family(
-                work.connector,
-                revision=revision,
-                publication_key=child.publication_key,
-                backend=work.backend,
+            display = require_digest32(publication[8], field="planned title_sha256")
+            sort = require_digest32(publication[9], field="planned sort_title_sha256")
+            rows.extend(
+                (
+                    _ProjectionRow(
+                        _PUBLICATION_TITLE_TABLE,
+                        ("revision", "publication_key"),
+                        ("source_title_sha256", "source_gallery_name"),
+                        (
+                            revision,
+                            key,
+                            title.source_title_sha256,
+                            title.source_gallery_name,
+                        ),
+                    ),
+                    _ProjectionRow(
+                        _DISPLAY_TITLE_TABLE,
+                        (
+                            "display_title_policy_id",
+                            "source_title_sha256",
+                            "source_gallery_name",
+                        ),
+                        ("title_sha256",),
+                        (
+                            authority.candidate.display_title_policy_id,
+                            title.source_title_sha256,
+                            title.source_gallery_name,
+                            display,
+                        ),
+                    ),
+                    _ProjectionRow(
+                        _TITLE_SORT_TABLE,
+                        ("title_sort_policy_id", "title_sha256"),
+                        ("sort_title_sha256",),
+                        (authority.begin.title_sort_policy_id, display, sort),
+                    ),
+                )
             )
-        except (
-            PublicationFamilyCollisionError,
-            PublicationFamilyPartialError,
-        ) as error:
-            raise PublicationCandidateConflictError(
-                "catalog title family is incomplete or corrupt"
-            ) from error
-        if actual_title != expected_title:
-            raise PublicationCandidateConflictError(
-                "catalog publication title differs from independent evaluator"
+        elif child.kind == _CATALOG_CHILD_CONTENT:
+            rows.append(
+                _ProjectionRow(
+                    _PUBLICATION_CONTENT_TABLE,
+                    ("revision", "publication_key"),
+                    ("content_sha256",),
+                    (
+                        revision,
+                        key,
+                        require_digest32(
+                            publication[10], field="planned content_sha256"
+                        ),
+                    ),
+                )
             )
-        choice = work.connector.fetch_one(
-            f"SELECT title_sha256 FROM {_DISPLAY_TITLE_TABLE} "
-            "WHERE display_title_policy_id = %s AND source_title_sha256 = %s "
-            "AND source_gallery_name = %s",
-            (
-                authority.candidate.display_title_policy_id,
-                expected_title.source_title_sha256,
-                expected_title.source_gallery_name,
-            ),
-        )
-        if choice != (require_digest32(publication[8], field="planned title_sha256"),):
-            raise PublicationCandidateConflictError(
-                "catalog display title differs from independent evaluator"
+        elif child.kind == _CATALOG_CHILD_CONTRIBUTOR:
+            position = _position_subkey(
+                child.subkey, field="planned contributor position"
             )
-        sort_row = work.connector.fetch_one(
-            f"SELECT sort_title_sha256 FROM {_TITLE_SORT_TABLE} "
-            "WHERE title_sort_policy_id = %s AND title_sha256 = %s",
-            (authority.begin.title_sort_policy_id, publication[8]),
-        )
-        if sort_row != (
-            require_digest32(publication[9], field="planned sort_title_sha256"),
-        ):
-            raise PublicationCandidateConflictError(
-                "catalog title sort differs from independent evaluator"
+            planned = plan._database.execute(
+                "SELECT contributor_name_sha256, role FROM contributors "
+                "WHERE publication_key = ? AND position = ?",
+                (key, position),
+            ).fetchone()
+            if planned is None or len(planned) != 2:
+                raise PublicationCandidateConflictError(
+                    "planned contributor is missing"
+                )
+            contributor = CatalogContributorFamily(
+                revision,
+                key,
+                position,
+                require_digest32(planned[0], field="planned contributor name"),
+                require_bounded_bytes(
+                    planned[1], field="planned contributor role", minimum=1, maximum=64
+                ),
             )
-        return
-    if child.kind == _CATALOG_CHILD_CONTENT:
-        content = require_digest32(publication[10], field="planned content_sha256")
-        row = work.connector.fetch_one(
-            f"SELECT content_sha256 FROM {_PUBLICATION_CONTENT_TABLE} "
-            "WHERE revision = %s AND publication_key = %s",
-            (revision, child.publication_key),
-        )
-        if row != (content,):
-            raise PublicationCandidateConflictError(
-                "catalog publication content differs from independent evaluator"
+            rows.append(
+                _ProjectionRow(
+                    _CONTRIBUTOR_TABLE,
+                    ("revision", "publication_key", "position"),
+                    ("contributor_name_sha256", "role"),
+                    (
+                        revision,
+                        key,
+                        position,
+                        contributor.contributor_name_sha256,
+                        contributor.role,
+                    ),
+                )
             )
-        return
-    if child.kind == _CATALOG_CHILD_CONTRIBUTOR:
-        position = _position_subkey(child.subkey, field="planned contributor position")
-        planned = plan._database.execute(
-            "SELECT contributor_name_sha256, role "
-            "FROM contributors WHERE publication_key = ? AND position = ?",
-            (sqlite3.Binary(child.publication_key), position),
-        ).fetchone()
-        if planned is None:
-            raise PublicationCandidateConflictError("planned contributor is missing")
-        expected_contributor = CatalogContributorFamily(
-            revision,
-            child.publication_key,
-            position,
-            require_digest32(planned[0], field="planned contributor name"),
-            require_bounded_bytes(
-                planned[1],
-                field="planned contributor role",
-                minimum=1,
-                maximum=64,
-            ),
-        )
-        try:
-            actual_contributor = load_catalog_contributor_family(
-                work.connector,
-                revision=revision,
-                publication_key=child.publication_key,
-                position=position,
-                backend=work.backend,
+        elif child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
+            download_times.append(
+                CatalogPublicationDownloadTimeFamily(
+                    revision,
+                    key,
+                    require_int63(publication[4], field="planned download_time"),
+                )
             )
-        except (
-            PublicationFamilyCollisionError,
-            PublicationFamilyPartialError,
-        ) as error:
-            raise PublicationCandidateConflictError(
-                "catalog contributor family is incomplete or corrupt"
-            ) from error
-        if actual_contributor != expected_contributor:
-            raise PublicationCandidateConflictError(
-                "catalog contributor differs from independent evaluator"
+        elif child.kind == _CATALOG_CHILD_SEARCH_POSTING:
+            value = require_digest32(child.subkey, field="planned search value_sha256")
+            planned = plan._database.execute(
+                "SELECT 1 FROM search_postings WHERE publication_key = ? AND value_sha256 = ?",
+                (key, value),
+            ).fetchone()
+            if planned != (1,):
+                raise PublicationCandidateConflictError(
+                    "planned search posting is missing"
+                )
+            rows.extend(
+                (
+                    _ProjectionRow(
+                        _SEARCH_POSTING_TABLE,
+                        ("revision", "value_sha256", "publication_key"),
+                        (),
+                        (revision, value, key),
+                    ),
+                    _ProjectionRow(
+                        _SEARCH_LEXEME_TABLE, ("value_sha256",), (), (value,)
+                    ),
+                )
             )
-        return
-    if child.kind == _CATALOG_CHILD_SUBJECT:
-        position = _position_subkey(child.subkey, field="planned subject position")
-        planned = plan._database.execute(
-            "SELECT tag_id FROM subjects WHERE publication_key = ? AND position = ?",
-            (sqlite3.Binary(child.publication_key), position),
-        ).fetchone()
-        row = work.connector.fetch_one(
-            f"SELECT tag_id FROM {_SUBJECT_TABLE} "
-            "WHERE revision = %s AND publication_key = %s AND position = %s",
-            (revision, child.publication_key, position),
-        )
-        if planned is None or row != (planned[0],):
-            raise PublicationCandidateConflictError(
-                "catalog subject differs from independent evaluator"
+            search_values.add(value)
+        else:
+            raise PublicationCandidateNotReadyError(
+                "catalog artifact validation awaits the typed artifact adapter"
             )
-        return
-    if child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
-        expected_download_time = CatalogPublicationDownloadTimeFamily(
-            revision,
-            child.publication_key,
-            require_int63(publication[4], field="planned download_time"),
+    try:
+        compare_catalog_publication_families(work.connector, tuple(publications))
+        compare_catalog_publication_download_time_families(
+            work.connector, tuple(download_times)
         )
-        try:
-            actual_download_time = load_catalog_publication_download_time_family(
-                work.connector,
-                revision=revision,
-                publication_key=child.publication_key,
-                backend=work.backend,
-            )
-        except (
-            PublicationFamilyCollisionError,
-            PublicationFamilyPartialError,
-        ) as error:
-            raise PublicationCandidateConflictError(
-                "catalog publication download time is incomplete or corrupt"
-            ) from error
-        if actual_download_time != expected_download_time:
-            raise PublicationCandidateConflictError(
-                "catalog publication download time differs from independent evaluator"
-            )
-        return
-    if child.kind == _CATALOG_CHILD_SEARCH_DOCUMENT:
-        planned = plan._database.execute(
-            "SELECT COUNT(*) FROM search_postings WHERE publication_key = ?",
-            (sqlite3.Binary(child.publication_key),),
-        ).fetchone()
-        row = work.connector.fetch_one(
-            f"SELECT row_count FROM {_SEARCH_DOCUMENT_TABLE} "
-            "WHERE revision = %s AND publication_key = %s",
-            (revision, child.publication_key),
-        )
-        if planned is None or row != (
-            require_int63(planned[0], field="planned search document row_count"),
-        ):
-            raise PublicationCandidateConflictError(
-                "catalog search document differs from independent evaluator"
-            )
-        return
-    if child.kind == _CATALOG_CHILD_SEARCH_POSTING:
-        value_sha256 = require_digest32(
-            child.subkey,
-            field="planned search posting value_sha256",
-        )
-        planned = plan._database.execute(
-            "SELECT 1 FROM search_postings "
-            "WHERE publication_key = ? AND value_sha256 = ?",
-            (
-                sqlite3.Binary(child.publication_key),
-                sqlite3.Binary(value_sha256),
-            ),
-        ).fetchone()
-        row = work.connector.fetch_one(
-            f"SELECT publication_key FROM {_SEARCH_POSTING_TABLE} "
-            "WHERE revision = %s AND value_sha256 = %s AND publication_key = %s",
-            (revision, value_sha256, child.publication_key),
-        )
-        lexeme = work.connector.fetch_one(
-            f"SELECT value_sha256 FROM {_SEARCH_LEXEME_TABLE} WHERE value_sha256 = %s",
-            (value_sha256,),
-        )
-        _require_existing_canonical_domain(
-            work,
-            value_sha256,
-            expected_domain=b"search_lexeme_utf8_v1",
-        )
-        if (
-            planned != (1,)
-            or row != (child.publication_key,)
-            or lexeme != (value_sha256,)
-        ):
-            raise PublicationCandidateConflictError(
-                "catalog search posting differs from independent evaluator"
-            )
-        return
-    if child.kind == _CATALOG_CHILD_TITLE_SEARCH_POSTING:
-        value_sha256 = require_digest32(
-            child.subkey,
-            field="planned title search posting value_sha256",
-        )
-        planned = plan._database.execute(
-            "SELECT 1 FROM title_search_postings "
-            "WHERE publication_key = ? AND value_sha256 = ?",
-            (sqlite3.Binary(child.publication_key), sqlite3.Binary(value_sha256)),
-        ).fetchone()
-        row = work.connector.fetch_one(
-            f"SELECT title.publication_key FROM {_TITLE_SEARCH_POSTING_TABLE} AS title "
-            f"JOIN {_SEARCH_POSTING_TABLE} AS posting "
-            "ON posting.revision = title.revision "
-            "AND posting.value_sha256 = title.value_sha256 "
-            "AND posting.publication_key = title.publication_key "
-            "WHERE title.revision = %s AND title.value_sha256 = %s "
-            "AND title.publication_key = %s",
-            (revision, value_sha256, child.publication_key),
-        )
-        if planned != (1,) or row != (child.publication_key,):
-            raise PublicationCandidateConflictError(
-                "catalog title search posting differs from independent evaluator"
-            )
-        return
-    raise PublicationCandidateNotReadyError(
-        "catalog artifact validation awaits the typed artifact adapter"
-    )
-
-
-def _compare_discovery_projection_child(
-    work: VNextUnitOfWork,
-    plan: PublicationCatalogProjectionPlan,
-    child: _ProjectionChild,
-    *,
-    revision: int,
-) -> None:
-    tag_shape = _tag_order_child_shape(child)
-    if tag_shape is not None:
-        table, tag_columns, values = tag_shape
-        planned = plan._database.execute(
-            f"SELECT position FROM {table} WHERE {tag_columns[0]} = ? AND {tag_columns[1]} = ?",
-            values,
-        ).fetchone()
-        actual = work.connector.fetch_one(
-            f"SELECT position FROM catalog_{table} WHERE revision = %s "
-            f"AND {tag_columns[0]} = %s AND {tag_columns[1]} = %s",
-            (revision, *values),
-        )
-        if planned is None or actual != tuple(planned):
-            raise PublicationCandidateConflictError(
-                "catalog tag order differs from independent evaluator"
-            )
-        return
-    if child.publication_key != _DISCOVERY_CHILD_KEY:
+    except PublicationFamilyCollisionError as error:
         raise PublicationCandidateConflictError(
-            "discovery validation child has an invalid sentinel key"
-        )
-    facet_shapes = {
-        _CATALOG_CHILD_LANGUAGE_FACET: (
-            "language_facets",
-            _LANGUAGE_FACET_ORDER_TABLE,
-            ("language_sha256", "occurrence_count"),
-        ),
-        _CATALOG_CHILD_SUBJECT_FACET: (
-            "subject_facets",
-            _SUBJECT_FACET_ORDER_TABLE,
-            ("tag_id", "occurrence_count"),
-        ),
-        _CATALOG_CHILD_CONTRIBUTOR_FACET: (
-            "contributor_facets",
-            _CONTRIBUTOR_FACET_ORDER_TABLE,
-            ("contributor_name_sha256", "role", "occurrence_count"),
-        ),
-    }
-    if child.kind in facet_shapes:
-        position = _position_subkey(child.subkey, field="planned facet position")
-        local_table, catalog_table, columns = facet_shapes[child.kind]
-        planned = plan._database.execute(
-            f"SELECT {', '.join(columns)} FROM {local_table} WHERE position = ?",
-            (position,),
-        ).fetchone()
-        actual = work.connector.fetch_one(
-            f"SELECT {', '.join(columns)} FROM {catalog_table} "
-            "WHERE revision = %s AND position = %s",
-            (revision, position),
-        )
-        if planned is None or actual != tuple(planned):
-            raise PublicationCandidateConflictError(
-                "catalog facet row differs from independent evaluator"
+            "catalog occurrence family differs from independent evaluator"
+        ) from error
+    _compare_projection_rows(work, rows)
+    if search_values:
+        try:
+            canonical = load_sealed_value_identities(
+                work.connector, value_sha256s=tuple(sorted(search_values))
             )
-        return
-    if child.kind != _CATALOG_CHILD_DISCOVERY_SEAL or child.subkey:
-        raise PublicationCandidateConflictError(
-            "discovery validation seal child is malformed"
-        )
-    row = work.connector.fetch_one(
-        f"SELECT policy_id FROM {_DISCOVERY_SEAL_TABLE} WHERE revision = %s",
-        (revision,),
-    )
-    if row != (SEARCH_POLICY_ID,):
-        raise PublicationCandidateConflictError(
-            "catalog discovery seal differs from independent evaluator"
-        )
+        except CanonicalValueCollisionError as error:
+            raise PublicationCandidateConflictError(
+                "search canonical identity is partial or corrupt"
+            ) from error
+        if set(canonical) != search_values or any(
+            item.digest_domain != b"search_lexeme_utf8_v1"
+            for item in canonical.values()
+        ):
+            raise PublicationCandidateConflictError(
+                "search canonical identity has the wrong domain"
+            )
 
 
 def _authorize(

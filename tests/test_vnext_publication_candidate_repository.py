@@ -1635,6 +1635,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
             now=111,
         )
         original_execute = connector.execute
+        original_execute_many = connector.execute_many
         original_execute_affected = connector.execute_affected
         failures = (
             "INSERT INTO catalog_publication_occurrence_identities",
@@ -1661,8 +1662,19 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                     raise RuntimeError(f"injected {target}")
                 return original_execute_affected(query, data)
 
+            def failing_execute_many(
+                query: str,
+                data: list[tuple[Any, ...]],
+            ) -> None:
+                if target in query:
+                    raise RuntimeError(f"injected {target}")
+                original_execute_many(query, data)
+
             with (
                 patch.object(connector, "execute", side_effect=failing_execute),
+                patch.object(
+                    connector, "execute_many", side_effect=failing_execute_many
+                ),
                 patch.object(
                     connector,
                     "execute_affected",

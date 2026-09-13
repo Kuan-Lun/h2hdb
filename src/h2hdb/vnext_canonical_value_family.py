@@ -576,12 +576,18 @@ def validate_exact_page_parent_edges_batched(
         exact_pages[page.page_sha256] = page
     if not exact_pages:
         return
+    expected = {
+        digest: _expected_page_parent_rows(page) for digest, page in exact_pages.items()
+    }
+    # One extra row suffices to reject a corrupt oversized edge set. In
+    # particular, a batch of leaf pages never needs to fetch more than one edge.
+    maximum_rows = sum(len(edges) for edges in expected.values()) + 1
     digests = tuple(sorted(exact_pages))
     rows = connector.fetch_all(
         f"SELECT parent_sha256, position, child_sha256 FROM {_PAGE_PARENT} "
         f"WHERE parent_sha256 IN ({', '.join('%s' for _ in digests)}) "
-        "ORDER BY parent_sha256, position",
-        digests,
+        "ORDER BY parent_sha256, position LIMIT %s",
+        (*digests, maximum_rows),
     )
     actual: dict[bytes, list[tuple[bytes, int, bytes]]] = {}
     for row in rows:
@@ -602,8 +608,8 @@ def validate_exact_page_parent_edges_batched(
                 "canonical parent-edge batch returned an unexpected parent"
             )
         actual.setdefault(parent, []).append((parent, position, child))
-    for digest, page in exact_pages.items():
-        if tuple(actual.get(digest, ())) != _expected_page_parent_rows(page):
+    for digest, edges in expected.items():
+        if tuple(actual.get(digest, ())) != edges:
             raise CanonicalValueCollisionError(
                 "canonical page has a missing, changed, or extra parent edge"
             )

@@ -13,6 +13,8 @@ __all__ = [
     "CatalogPublicationDownloadTimeFamily",
     "CatalogPublicationFamily",
     "CatalogPublicationTitleFamily",
+    "compare_catalog_publication_families",
+    "compare_catalog_publication_download_time_families",
     "PublicationCandidateFamily",
     "PublicationFamilyCollisionError",
     "PublicationFamilyPartialError",
@@ -62,6 +64,30 @@ _PUBLICATION = "catalog_publications"
 _TITLE = "catalog_publication_titles"
 
 _CONTRIBUTOR = "catalog_contributors"
+
+_PUBLICATION_FAMILY_SELECT = (
+    "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
+    "occurrence.publication_key, stored.catalog_occurrence_sha256, "
+    "stored.gallery_id, stored.summary_sha256, stored.language_sha256, "
+    "stored.modified_at, stored.source_title_sha256, derived.publication_key "
+    f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
+    f"LEFT JOIN {_PUBLICATION_STORAGE} AS stored "
+    "ON stored.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
+    "LEFT JOIN catalog_gallery_source_name_accesses AS access "
+    "ON access.gallery_id = stored.gallery_id "
+    "LEFT JOIN catalog_source_gallery_name_gids AS name_gid "
+    "ON name_gid.source_gallery_name = access.source_gallery_name "
+    "LEFT JOIN catalog_publication_identities AS derived "
+    "ON derived.gid = name_gid.gid "
+)
+_DOWNLOAD_TIME_FAMILY_SELECT = (
+    "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
+    "occurrence.publication_key, downloaded.download_time "
+    f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
+    f"LEFT JOIN {_PUBLICATION_DOWNLOAD_TIME} AS downloaded "
+    "ON downloaded.catalog_occurrence_sha256 = "
+    "occurrence.catalog_occurrence_sha256 "
+)
 
 
 class PublicationFamilyCollisionError(RuntimeError):
@@ -601,20 +627,8 @@ def _publication_family_row(
         revision, publication_key
     )
     rows = connector.fetch_all(
-        "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
-        "occurrence.publication_key, stored.catalog_occurrence_sha256, "
-        "stored.gallery_id, stored.summary_sha256, stored.language_sha256, "
-        "stored.modified_at, stored.source_title_sha256, derived.publication_key "
-        f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
-        f"LEFT JOIN {_PUBLICATION_STORAGE} AS stored "
-        "ON stored.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
-        "LEFT JOIN catalog_gallery_source_name_accesses AS access "
-        "ON access.gallery_id = stored.gallery_id "
-        "LEFT JOIN catalog_source_gallery_name_gids AS name_gid "
-        "ON name_gid.source_gallery_name = access.source_gallery_name "
-        "LEFT JOIN catalog_publication_identities AS derived "
-        "ON derived.gid = name_gid.gid "
-        "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
+        _PUBLICATION_FAMILY_SELECT
+        + "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
         "(occurrence.revision = %s AND occurrence.publication_key = %s) LIMIT 2"
         + _locking_suffix(backend=backend, locking=locking),
         (occurrence, revision, publication_key),
@@ -685,6 +699,103 @@ def load_catalog_publication_family(
         raise PublicationFamilyCollisionError(
             "catalog publication family contains invalid facts"
         ) from error
+
+
+def _compare_occurrence_family_batch(
+    connector: Any,
+    *,
+    select: str,
+    expected: tuple[tuple[Any, ...], ...],
+) -> None:
+    if not expected:
+        return
+    if len(expected) > 128:
+        raise ValueError("catalog occurrence family batch exceeds 128 rows")
+    revision = expected[0][1]
+    if any(row[1] != revision for row in expected):
+        raise ValueError("catalog occurrence family batch mixes revisions")
+    if len({row[2] for row in expected}) != len(expected):
+        raise ValueError("catalog occurrence family batch repeats publication keys")
+    placeholders = ", ".join("%s" for _ in expected)
+    rows = connector.fetch_all(
+        select
+        + f"WHERE occurrence.catalog_occurrence_sha256 IN ({placeholders}) OR "
+        + f"(occurrence.revision = %s AND occurrence.publication_key IN ({placeholders})) "
+        + "LIMIT %s",
+        (
+            *(row[0] for row in expected),
+            revision,
+            *(row[2] for row in expected),
+            len(expected) + 1,
+        ),
+    )
+    if len(rows) != len(expected) or set(rows) != set(expected):
+        raise PublicationFamilyCollisionError(
+            "catalog occurrence family batch is partial, colliding, or different"
+        )
+
+
+def compare_catalog_publication_families(
+    connector: Any,
+    families: tuple[CatalogPublicationFamily, ...],
+) -> None:
+    """Compare at most 128 physical occurrence identities and complete payloads."""
+
+    if len(families) > 128:
+        raise ValueError("catalog publication family batch exceeds 128 rows")
+    expected = []
+    for family in families:
+        if not isinstance(family, CatalogPublicationFamily):
+            raise TypeError("family must be CatalogPublicationFamily")
+        family.__post_init__()
+        occurrence = identity.catalog_publication_occurrence_sha256(
+            family.revision, family.publication_key
+        )
+        expected.append(
+            (
+                occurrence,
+                family.revision,
+                family.publication_key,
+                occurrence,
+                family.gallery_id,
+                family.summary_sha256,
+                family.language_sha256,
+                family.modified_at,
+                family.source_title_sha256,
+                family.publication_key,
+            )
+        )
+    _compare_occurrence_family_batch(
+        connector, select=_PUBLICATION_FAMILY_SELECT, expected=tuple(expected)
+    )
+
+
+def compare_catalog_publication_download_time_families(
+    connector: Any,
+    families: tuple[CatalogPublicationDownloadTimeFamily, ...],
+) -> None:
+    """Compare bounded download facts through their exact occurrence identities."""
+
+    if len(families) > 128:
+        raise ValueError("catalog download-time family batch exceeds 128 rows")
+    expected = []
+    for family in families:
+        if not isinstance(family, CatalogPublicationDownloadTimeFamily):
+            raise TypeError("family must be CatalogPublicationDownloadTimeFamily")
+        family.__post_init__()
+        expected.append(
+            (
+                identity.catalog_publication_occurrence_sha256(
+                    family.revision, family.publication_key
+                ),
+                family.revision,
+                family.publication_key,
+                family.download_time,
+            )
+        )
+    _compare_occurrence_family_batch(
+        connector, select=_DOWNLOAD_TIME_FAMILY_SELECT, expected=tuple(expected)
+    )
 
 
 def ensure_catalog_publication_family(
@@ -770,13 +881,8 @@ def _download_time_family_row(
         revision, publication_key
     )
     rows = connector.fetch_all(
-        "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
-        "occurrence.publication_key, downloaded.download_time "
-        f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
-        f"LEFT JOIN {_PUBLICATION_DOWNLOAD_TIME} AS downloaded "
-        "ON downloaded.catalog_occurrence_sha256 = "
-        "occurrence.catalog_occurrence_sha256 "
-        "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
+        _DOWNLOAD_TIME_FAMILY_SELECT
+        + "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
         "(occurrence.revision = %s AND occurrence.publication_key = %s) LIMIT 2"
         + _locking_suffix(backend=backend, locking=locking),
         (occurrence, revision, publication_key),
