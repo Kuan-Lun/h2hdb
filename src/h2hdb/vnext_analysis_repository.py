@@ -45,6 +45,7 @@ from .vnext_analysis_decision_batch import (
     load_file_decision_tombstone_page,
     require_file_decision_page_keys,
 )
+from .vnext_analysis_decision_reader import iter_resolved_file_decisions
 from .vnext_analysis_family import (
     AnalysisExclusionDeltaFamily,
     AnalysisFamilyCollisionError,
@@ -4241,37 +4242,25 @@ def _iter_snapshot_decisions(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
 ) -> Iterator[SourceSnapshotFileHashDecision]:
-    previous: bytes | None = None
-    while True:
-        predicate = "" if previous is None else " AND file_sha256 > %s"
-        parameters: list[Any] = [authority.analysis_id]
-        if previous is not None:
-            parameters.append(previous)
-        parameters.append(_MAX_BATCH_ROWS)
-        rows = work.connector.fetch_all(
-            "SELECT file_sha256, occurrence_count, artist_count, "
-            "maximum_gallery_artist_count "
-            "FROM catalog_analysis_file_hash_decision_resolved "
-            "WHERE analysis_id = %s" + predicate + " ORDER BY file_sha256 LIMIT %s",
-            tuple(parameters),
-        )
-        if not rows:
-            return
-        for row in rows:
-            digest = require_digest32(row[0], field="snapshot decision file_sha256")
-            decision = _decision_from_row(row[1:], field="snapshot decision")
-            if decision is None:
-                raise AnalysisCorruptionError("snapshot decision row disappeared")
+    _baseline, _anchor, _depth, ancestry = _load_layout(work, authority.analysis_id)
+    try:
+        for family in iter_resolved_file_decisions(work.connector, ancestry=ancestry):
+            decision = _Decision(
+                require_positive_int63(
+                    family.occurrence_count, field="snapshot decision occurrence_count"
+                ),
+                family.artist_count,
+                family.maximum_gallery_artist_count,
+            )
             yield SourceSnapshotFileHashDecision(
-                digest,
+                family.file_sha256,
                 decision.occurrence_count,
                 decision.artist_count,
                 decision.maximum_gallery_artist_count,
                 bool(_excluded(decision, authority.policy)),
             )
-            previous = digest
-        if len(rows) < _MAX_BATCH_ROWS:
-            return
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
 
 
 def _iter_snapshot_owners(
