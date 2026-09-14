@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from threading import Event, Thread
 from typing import Literal
@@ -124,12 +125,61 @@ def test_debug_query_statistics_are_bounded_and_redacted(
         assert (
             len(sample.queries) == 65
         )  # 64 query fingerprints plus one overflow bucket.
-        assert sum(count for count, _ in sample.queries.values()) == 100
+        assert sum(statistics.calls for statistics in sample.queries.values()) == 100
+        assert (
+            sum(statistics.read_rows for statistics in sample.queries.values()) == 100
+        )
+        assert sample.queries["other"].calls == 36
+        assert sample.queries["other"].read_rows == 36
     performance.close()
     assert "query_top=" in caplog.text
     assert "secret-payload" not in caplog.text
     assert "SELECT" not in caplog.text
     assert "event=completed" in caplog.text
+
+
+def test_debug_query_top_distinguishes_repeated_work_from_one_slow_call(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(
+        performance_log, backend="mariadb", level=logging.DEBUG
+    )
+    repeated = "SELECT file_sha256 FROM private_decisions WHERE analysis_id = %s"
+    slow = "SELECT private_payload FROM private_snapshot WHERE analysis_id = %s"
+    repeated_fingerprint = sha256(repeated.encode()).hexdigest()[:16]
+    slow_fingerprint = sha256(slow.encode()).hexdigest()[:16]
+    with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
+        sample.record_sql_operation("sql", 2.0, repeated, 128)
+        sample.record_sql_operation("sql", 3.0, repeated, 2)
+        sample.record_sql_operation("sql", 4.0, slow, 1)
+        for position in range(6):
+            sample.record_sql_operation("sql", 0.5, f"SELECT {position}", 1)
+    message = next(
+        record.message for record in caplog.records if record.levelno == logging.DEBUG
+    )
+    assert "operation=PREPARE_SNAPSHOT generation=51 phase=prepare" in message
+    top = message.split(" query_top=", 1)[1].split(";")
+    assert len(top) == 5
+    assert top[:2] == [
+        f"{repeated_fingerprint}(calls=2,seconds=5.000000,"
+        "returned_rows=130,max_seconds=3.000000)",
+        f"{slow_fingerprint}(calls=1,seconds=4.000000,"
+        "returned_rows=1,max_seconds=4.000000)",
+    ]
+    assert "private" not in caplog.text
+    assert "SELECT" not in caplog.text
+    performance.close()
+
+
+def test_info_does_not_collect_query_statistics(
+    performance_log: logging.Logger,
+) -> None:
+    performance = IngestPerformance(performance_log, backend="mariadb")
+    with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
+        sample.record_sql_operation("sql", 2.0, "SELECT private_payload", 128)
+        assert not sample.queries
+        assert sample.counters.read_rows == 128
+    performance.close()
 
 
 def test_info_reports_time_based_progress_without_per_batch_messages(

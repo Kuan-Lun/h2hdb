@@ -66,6 +66,26 @@ class _Diagnostic:
 
 
 @dataclass
+class _QueryStatistics:
+    calls: int = 0
+    seconds: float = 0.0
+    read_rows: int = 0
+    max_seconds: float = 0.0
+
+    def record(self, elapsed: float, rows: int) -> None:
+        self.calls += 1
+        self.seconds += elapsed
+        self.read_rows += rows
+        self.max_seconds = max(self.max_seconds, elapsed)
+
+    def text(self, fingerprint: str) -> str:
+        return (
+            f"{fingerprint}(calls={self.calls},seconds={self.seconds:.6f},"
+            f"returned_rows={self.read_rows},max_seconds={self.max_seconds:.6f})"
+        )
+
+
+@dataclass
 class PerformanceStep:
     owner: IngestPerformance
     pipeline: str
@@ -78,7 +98,7 @@ class PerformanceStep:
     overlap_epoch: int = 0
     active: bool = True
     counters: _Counters = field(default_factory=_Counters)
-    queries: dict[str, tuple[int, float]] = field(default_factory=dict)
+    queries: dict[str, _QueryStatistics] = field(default_factory=dict)
     processed_rows: int = 0
     replayed: bool = False
     terminal: bool = False
@@ -109,8 +129,10 @@ class PerformanceStep:
                 key = sha256(query.encode()).hexdigest()[:16]
                 if key not in self.queries and len(self.queries) >= _QUERY_LIMIT:
                     key = "other"
-                count, seconds = self.queries.get(key, (0, 0.0))
-                self.queries[key] = (count + 1, seconds + elapsed)
+                statistics = self.queries.get(key)
+                if statistics is None:
+                    statistics = self.queries[key] = _QueryStatistics()
+                statistics.record(elapsed, rows)
         elif category == "connection":
             counters.connection_calls += 1
             counters.connection_seconds += elapsed
@@ -268,10 +290,10 @@ class IngestPerformance:
         )
         if debug and sample.queries:
             top = sorted(
-                sample.queries.items(), key=lambda item: item[1][1], reverse=True
+                sample.queries.items(), key=lambda item: item[1].seconds, reverse=True
             )[:5]
-            message += " query_top=" + ",".join(
-                f"{key}:{count}:{seconds:.6f}" for key, (count, seconds) in top
+            message += " query_top=" + ";".join(
+                statistics.text(key) for key, statistics in top
             )
         return _Diagnostic(self, message, debug)
 

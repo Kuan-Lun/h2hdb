@@ -373,11 +373,22 @@ an explicit omitted-record count. Expired or copied scopes cannot attribute
 another thread or task's work to a completed call.
 
 Setting the application's core logger configuration to `{"level": "debug"}`
-adds per-call completion records and the five most expensive query fingerprints, each with
-its call count and elapsed seconds. A fingerprint is the first 16 hexadecimal
-characters of SHA-256 over the SQL template's UTF-8 bytes; query statistics keep
-at most 64 templates plus an overflow bucket per call. SQL text, parameters,
-credentials, and authority tokens are never logged. Configuration and handler
+adds per-call completion records and the five query fingerprints with the highest
+total SQL time. Each `query_top` entry identifies the fingerprint and names its
+`calls`, total `seconds`, `returned_rows`, and single-call `max_seconds`; entries
+are separated by semicolons. This distinguishes repeated short queries from a
+single slow call. Returned rows are the connector's result count, not the database
+engine's examined rows; detecting an
+index scan still requires a query plan. `operation`, `generation`, and `phase`
+identify the corresponding facade call, including `PREPARE_SNAPSHOT` preparation.
+A fingerprint is the first 16 hexadecimal characters of SHA-256 over the SQL
+template's UTF-8 bytes; query statistics keep
+at most 64 templates plus an overflow bucket per call. To locate a fingerprint,
+take the assembled SQL template from the installed version's source, preserving
+whitespace and `%s` placeholders, and calculate
+`hashlib.sha256(sql.encode("utf-8")).hexdigest()[:16]`. Parameters are excluded.
+SQL text, parameters, credentials, and authority tokens are never logged.
+Configuration and handler
 thresholds both apply; ordinary diagnostic clock, recorder, or handler failures
 do not change commit or retry results. Operation labels come from the
 orchestrator's validated state, without diagnostic inspection of caller handles.
