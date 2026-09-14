@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-13T12:58:22+00:00",
+  "checked_at": "2026-09-14T01:40:23+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.37.3",
+  "project_version": "0.38.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional development and Node registry candidates, including releases outside upper bounds. The 12 Python entries and one Node entry are unchanged from the committed 0.37.2 audit; all latest candidates satisfy declarations and all Python candidates support Python 3.14, so the prior upstream release-note reviews remain applicable. No dependency declarations changed. This release replaces per-digest source aggregates with independently recomputed bounded page aggregates and bounds distinct inputs to file-hash union pagination. Full validation, receipt replay and exact overlay comparisons remain; schema, public APIs and stored formats are unchanged as a result of the selected design, not a compatibility constraint. No migration or compatibility shim is required. Focused SQLite tests (147) and six live MariaDB 10.11.11 integration cases passed. Disposable SQLite and MariaDB benchmarks compared every result with an independent seed oracle and the committed baseline. Static checks and formal coverage metadata passed. The exact-tree bounded release gate and installed-wheel cohort are separate evidence, not implied by this dependency receipt.",
+    "note": "Reviewed every direct Python build, runtime and development dependency plus Node tooling against fresh registry discovery, including candidates outside existing upper bounds. All 12 Python entries and the Node entry exactly match the previously reviewed 0.37.3 receipt; their release-note reviews remain applicable, every latest candidate satisfies its declaration, and Python candidates support 3.14. No dependency declarations changed. Core 0.38.0 intentionally changes initialize/migrate to provisioning with a typed outcome and no full READY audit; check remains the full admission audit. A bounded offline shell-administration converter is tested; schema manifest, stored catalog, canonical codecs and external artifact formats are unchanged. Canonical reuse and consumer handoff use bounded batches with exact identity, content, claim and fencing checks; focused SQLite, process-signal recovery and live MariaDB regressions passed. Exact-tree full release gate and cross-package wheel/Compose evidence remain separate validation and are not implied by this dependency receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
