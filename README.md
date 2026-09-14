@@ -146,30 +146,10 @@ previously relied on `migrate` for a full audit must explicitly follow it with
 change does not alter the epoch, schema manifest, stored data or external
 archives, so existing databases and CBZs require no rebuild.
 
-For an old **standalone full-audit admin script**, the optional one-use converter
-creates a separate file without executing commands or changing the original:
-
-```bash
-python scripts/convert-schema-admin.py --input old-admin.sh --output reviewed-admin.sh
-```
-
-It accepts exactly one literal `python[3[.VERSION]] -m h2hdb migrate --config PATH`
-command, with optional comments, blank lines and an initial `set -e`, `set -eu`
-or `set -euo pipefail`. It produces `migrate ... && check ...`, preserving
-failure status and running the audit only after successful provisioning. It
-rejects variables, shell expansions, `exec`, redirects, pipelines, conditionals,
-multiple commands and existing output paths. Review the generated file before
-using it; more complex scripts require a manual edit. The current workspace's
-`migrate` → ingest resident startup sequence already performs the resident's
-full `check` and **does not need this converter**. This is an optional script
-conversion, not a database or CBZ migration.
-
 Python callers that previously interpreted `initialize()` as a full audit must
 explicitly call `admin.initialize(); report = admin.check()` and consume that
 `SchemaEpochReport`. Callers that only provision should consume the new
-`SchemaProvisioningReport`. Arbitrary Python control flow and result consumers
-cannot be reliably transformed by the shell converter and require this manual
-API update.
+`SchemaProvisioningReport`.
 
 The generated schema is shipped as a small Python loader plus a raw, bounded
 protocol-5 pickle resource; the wheel or sdist compressor handles distribution
