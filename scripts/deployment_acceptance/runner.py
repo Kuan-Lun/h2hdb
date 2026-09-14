@@ -504,6 +504,9 @@ print(json.dumps(result))
                 images=images,
                 credentials=self.credentials,
                 docker=self.commands.docker,
+                # This diagnostic harness proves which analysis was executed.
+                # Production and prepare_deployment defaults remain INFO.
+                log_level="debug",
                 instrumented=self.args.instrumented,
                 resident={
                     "publication_batch_galleries": max(

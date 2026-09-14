@@ -101,7 +101,12 @@ def test_performance_uses_application_handler_and_preserves_default_info(
     ]
     assert records
     assert all(record.levelno == logging.INFO for record in records)
-    assert all("sql_calls=0" in record.getMessage() for record in records)
+    assert any(
+        "database work 0ms (queries 0ms, connections 0ms, transaction boundaries 0ms)"
+        in record.getMessage()
+        for record in records
+    )
+    assert all("ingest_db_performance" not in record.getMessage() for record in records)
     assert all("query_top=" not in record.getMessage() for record in records)
 
 
@@ -129,11 +134,9 @@ def test_empty_recovery_probe_finishes_before_uninstrumented_work(
             records_at_completion = tuple(caplog.records)
             assert records_at_completion
             final = records_at_completion[-1].getMessage()
-            assert "event=stage_terminal " in final
-            assert "operation=RECOVERY " in final
-            assert f"generation={session.ingest_generation} " in final
-            assert "wall_seconds=0.000000 " in final
-            assert "calls=1 " in final
+            assert "stage finished: checking for an interrupted publication" in final
+            assert f"ingest generation {session.ingest_generation};" in final
+            assert "elapsed 0ms;" in final
             # Source observation can take hours outside an instrumented call.
             # Closing later must not attribute that gap to the completed probe.
             performance_now = 3600.0

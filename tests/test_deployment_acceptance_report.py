@@ -117,6 +117,29 @@ def test_incomplete_progress_cannot_establish_completed_analysis(
     assert result["sql_calls"] == 0
 
 
+def test_work_evidence_uses_debug_snapshot_not_human_wording(
+    report: ModuleType,
+) -> None:
+    result = report.summarize_log(
+        "[INFO] Ingest work completed: catalog batches published 99; CBZs rendered this work 99\n"
+        "[DEBUG] ingest_progress event=periodic counter.publication_batches_finalized=1 counter.archives_rendered=4\n"
+        "[DEBUG] ingest_progress event=work_finished status=failed counter.publication_batches_finalized=1 counter.archives_rendered=4\n"
+        "[DEBUG] ingest_progress event=work_finished status=completed counter.archives_rendered=4\n"
+        "[DEBUG] ingest_progress event=work_finished status=completed counter.publication_batches_finalized=1 counter.archives_rendered=4\n"
+        "[DEBUG] ingest_progress event=work_finished status=completed counter.publication_batches_finalized=1\n"
+    )
+    assert result["completed_batches"] == 2
+    assert result["cbz_render_operations"] == 4
+
+
+def test_human_only_log_cannot_establish_machine_evidence(report: ModuleType) -> None:
+    result = report.summarize_log(
+        "Ingest work completed: catalog batches published 1; CBZs rendered this work 2"
+    )
+    assert result["completed_batches"] == 0
+    assert result["real_analysis_observed"] is False
+
+
 def _event(
     sequence: int, event: str, count: int, *, instance: str = "container-instance"
 ) -> dict[str, Any]:

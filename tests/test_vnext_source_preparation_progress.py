@@ -117,8 +117,9 @@ def test_progress_is_immutable() -> None:
         cast(Any, progress).completed = 1
 
 
+@pytest.mark.parametrize("fail_observer", [False, True])
 def test_public_preparation_reports_selected_cut_outside_transactions(
-    db_config: Any, monkeypatch: pytest.MonkeyPatch
+    db_config: Any, monkeypatch: pytest.MonkeyPatch, fail_observer: bool
 ) -> None:
     from contextlib import contextmanager
 
@@ -132,6 +133,7 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
 
     from h2hdb import VNextIngestFacade
     from h2hdb.sql_connector import SQLConnector
+    from h2hdb.vnext_source_observation_spool import FrozenSourceObservationSpool
 
     initialize_database(db_config)
     source = MarkerSource(tuple(gallery(2000 + index, pages=[]) for index in range(13)))
@@ -139,6 +141,8 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
     callback_reads: list[int] = []
     observations: list[Progress] = []
     original = SQLConnector.read_transaction
+    original_open = FrozenSourceObservationSpool.open_gallery
+    opened_during: list[Progress] = []
 
     @contextmanager
     def read_transaction(connector: SQLConnector) -> Any:
@@ -153,8 +157,15 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
     def observe(progress: Progress) -> None:
         callback_reads.append(active_reads)
         observations.append(progress)
+        if fail_observer:
+            raise RuntimeError("observer failed")
+
+    def open_gallery(spool: FrozenSourceObservationSpool, **kwargs: Any) -> Any:
+        opened_during.append(observations[-1])
+        return original_open(spool, **kwargs)
 
     monkeypatch.setattr(SQLConnector, "read_transaction", read_transaction)
+    monkeypatch.setattr(FrozenSourceObservationSpool, "open_gallery", open_gallery)
     with VNextIngestFacade(db_config) as facade:
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
@@ -163,15 +174,106 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
         ) as cut:
             assert cut.deferred_gallery_count == 3
     assert len(source.deep_reads) == 10
+    assert opened_during == [
+        Progress(Operation.BATCH_SELECTION, count, 10) for count in range(10)
+    ]
     assert callback_reads and not any(callback_reads)
     assert Progress(Operation.DISCOVERY_CLEANUP, 0, 13) in observations
     assert Progress(Operation.DISCOVERY_CLEANUP, 13, 13) in observations
     assert Progress(Operation.SOURCE_FREEZE, 13, 13) in observations
     assert [
+        value for value in observations if value.operation == Operation.BATCH_SELECTION
+    ] == [Progress(Operation.BATCH_SELECTION, count, 10) for count in range(11)]
+    assert observations.index(Progress(Operation.BATCH_SELECTION, 10, 10)) < (
+        observations.index(Progress(Operation.BATCH_ORDER, 0, 10))
+    )
+    assert [
         value.completed
         for value in observations
         if value.operation == Operation.SOURCE_FREEZE
     ] == list(range(14))
+
+
+@pytest.mark.parametrize("fail_observer", [False, True])
+def test_published_inventory_reconciliation_progress_preserves_source_cut(
+    db_config: Any, monkeypatch: pytest.MonkeyPatch, fail_observer: bool
+) -> None:
+    from contextlib import contextmanager
+
+    from test_vnext_source_batches import _publish_batch
+    from test_vnext_source_deferral import UpdatingSource
+    from vnext_pipeline import (
+        MemoryLibrary,
+        claim_session,
+        gallery,
+        ingest_policy,
+        initialize_database,
+    )
+
+    from h2hdb import VNextIngestFacade
+    from h2hdb.sql_connector import SQLConnector
+    from h2hdb.vnext_source_batch_repository import SourceBatchRepository
+
+    initialize_database(db_config)
+    kept, removed = (gallery(gid, pages=[]) for gid in (1001, 1002))
+    source = UpdatingSource([kept, removed])
+    _publish_batch(db_config, source, MemoryLibrary(source), limit=None)
+    source.omitted.update((kept.locator, removed.locator))
+    source.remove(removed.locator)
+    observations: list[Progress] = []
+    active_reads = 0
+    callback_reads: list[int] = []
+    original_transaction = SQLConnector.read_transaction
+    original_probe = source.gallery_exists
+    original_baseline = SourceBatchRepository.load_baseline
+
+    @contextmanager
+    def read_transaction(connector: SQLConnector) -> Any:
+        nonlocal active_reads
+        with original_transaction(connector):
+            active_reads += 1
+            try:
+                yield
+            finally:
+                active_reads -= 1
+
+    def observe(progress: Progress) -> None:
+        callback_reads.append(active_reads)
+        observations.append(progress)
+        if fail_observer:
+            raise RuntimeError("observer failed")
+
+    def gallery_exists(locator: tuple[str, ...]) -> bool:
+        assert observations[-1].operation == Operation.DISCOVERY_RECONCILIATION
+        assert observations[-1].total is None
+        return original_probe(locator)
+
+    def load_baseline(*args: Any, **kwargs: Any) -> Any:
+        assert observations[-1] == Progress(Operation.DISCOVERY_RECONCILIATION, 0)
+        return original_baseline(*args, **kwargs)
+
+    monkeypatch.setattr(SQLConnector, "read_transaction", read_transaction)
+    monkeypatch.setattr(source, "gallery_exists", gallery_exists)
+    monkeypatch.setattr(SourceBatchRepository, "load_baseline", load_baseline)
+    with VNextIngestFacade(db_config) as facade:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        with facade.prepare_source(source, policy=policy, progress=observe) as prepared:
+            assert prepared.gallery_count == 1
+            assert prepared.waiting_gallery_count == 0
+            assert prepared.deferred_gallery_count == 0
+    assert source.presence_probes == [kept.locator, removed.locator]
+    assert callback_reads and not any(callback_reads)
+    assert [
+        value
+        for value in observations
+        if value.operation == Operation.DISCOVERY_RECONCILIATION
+    ] == [
+        Progress(Operation.DISCOVERY_RECONCILIATION, 0),
+        Progress(Operation.DISCOVERY_RECONCILIATION, 1),
+        Progress(Operation.DISCOVERY_RECONCILIATION, 2),
+        Progress(Operation.DISCOVERY_RECONCILIATION, 2, 2),
+    ]
 
 
 def test_public_preparation_rejects_noncallable_observer_before_source_io() -> None:

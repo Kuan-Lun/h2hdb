@@ -533,6 +533,10 @@ class VNextIngestFacade:
                         )
                     return connector
 
+                reconciliation = (
+                    VNextSourcePreparationOperation.DISCOVERY_RECONCILIATION
+                )
+                report_source_progress(progress, reconciliation, 0)
                 with connection().read_transaction():
                     baseline = SourceBatchRepository.load_baseline(
                         connection(), source_root_components=root
@@ -541,6 +545,7 @@ class VNextIngestFacade:
                 def missing_published_locators() -> Iterator[tuple[str, ...]]:
                     assert baseline is not None
                     after_gallery_id = 0
+                    checked = 0
                     while True:
                         with connection().read_transaction():
                             page = SourceBatchRepository.list_locators(
@@ -549,22 +554,27 @@ class VNextIngestFacade:
                                 after_gallery_id=after_gallery_id,
                             )
                         if not page:
+                            report_source_progress(
+                                progress, reconciliation, checked, checked
+                            )
                             return
                         for gallery_id, locator in page:
                             after_gallery_id = gallery_id
-                            if plan._contains_locator(locator):
-                                continue
-                            try:
-                                present = adapter.gallery_exists(locator)
-                            except VNextSourceDeferredError:
-                                present = True
-                            if type(present) is not bool:
-                                raise TypeError("gallery_exists must return bool")
-                            if present:
-                                yield locator
+                            if not plan._contains_locator(locator):
+                                try:
+                                    present = adapter.gallery_exists(locator)
+                                except VNextSourceDeferredError:
+                                    present = True
+                                if type(present) is not bool:
+                                    raise TypeError("gallery_exists must return bool")
+                                if present:
+                                    yield locator
+                            checked += 1
+                            report_source_progress(progress, reconciliation, checked)
 
                 with SourceDiscoveryPlan.from_locators(
                     missing_published_locators(),
+                    progress=progress,
                     transfer_operation=None,
                 ) as missing:
                     if missing.gallery_count:
@@ -584,7 +594,19 @@ class VNextIngestFacade:
                             combined_locators(),
                             progress=progress,
                         )
+                        report_source_progress(
+                            progress,
+                            VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+                            0,
+                            inventory.gallery_count,
+                        )
                         inventory.close()
+                        report_source_progress(
+                            progress,
+                            VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+                            inventory.gallery_count,
+                            inventory.gallery_count,
+                        )
 
                 def membership(
                     locators: tuple[tuple[str, ...], ...],
@@ -642,7 +664,7 @@ class VNextIngestFacade:
                 deferred_gallery_count = snapshot.deferred_gallery_count
                 if snapshot.manifest_summary.gallery_count != plan.gallery_count:
                     selected = SourceDiscoveryPlan.from_locators(
-                        snapshot.selected_locators(),
+                        snapshot.selected_locators(progress=progress),
                         progress=progress,
                         transfer_operation=None,
                         order_operation=VNextSourcePreparationOperation.BATCH_ORDER,

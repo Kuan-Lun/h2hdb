@@ -3534,6 +3534,7 @@ class VNextSourcePreparationOperation(StrEnum):
 
     DISCOVERY_TRANSFER = "discovery_transfer"
     DISCOVERY_ORDER = "discovery_order"
+    DISCOVERY_RECONCILIATION = "discovery_reconciliation"
     BATCH_SELECTION = "batch_selection"
     BATCH_ORDER = "batch_order"
     DISCOVERY_CLEANUP = "discovery_cleanup"
@@ -3545,8 +3546,9 @@ class VNextSourcePreparationProgress:
     """Absolute gallery counts for one operation in one preparation call.
 
     ``total=None`` means inventory enumeration has not yet reached exact EOF.
-    Selection counts checked inventory entries, not the admitted batch size.
-    Freeze counts admitted galleries whose observations have been sealed locally.
+    Reconciliation counts published inventory entries checked for omissions.
+    Selection counts admitted locators copied into the selected batch plan.
+    Freeze counts checked inventory entries, including deferred galleries.
     This observation grants no authority to resume or commit database work.
     """
 

@@ -256,8 +256,9 @@ def _log(
         "ingest_db_performance event=stage_terminal pipeline=analysis "
         f"operation={operation} generation=1 processed_rows={rows} calls={calls} "
         f"replayed_calls={replayed} sql_calls=1 sql_seconds=0.1\n"
-        "Ingest work completed: catalog batches published 1; "
-        f"CBZs rendered this work {renders}\n"
+        "ingest_progress event=work_finished status=completed "
+        "counter.publication_batches_finalized=1 "
+        f"counter.archives_rendered={renders}\n"
     )
 
 

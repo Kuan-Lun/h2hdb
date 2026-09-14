@@ -42,17 +42,17 @@ def stage_totals(log: str) -> list[dict[str, Any]]:
 
 def summarize_log(log: str) -> dict[str, Any]:
     totals = stage_totals(log)
-    completions = [
-        line
-        for line in log.splitlines()
-        if "Ingest work completed:" in line and "catalog batches published" in line
-    ]
-    renders = [
-        int(value.replace(",", ""))
-        for value in re.findall(
-            r"CBZs rendered this work ([\d,]+)", "\n".join(completions)
-        )
-    ]
+    completions = []
+    for line in log.splitlines():
+        if "ingest_progress " not in line:
+            continue
+        fields = dict(re.findall(r"([\w.]+)=([^\s]+)", line))
+        if (
+            fields.get("event") == "work_finished"
+            and fields.get("status") == "completed"
+            and int(fields.get("counter.publication_batches_finalized", "0")) > 0
+        ):
+            completions.append(fields)
     analysis = [
         row
         for row in totals
@@ -72,7 +72,9 @@ def summarize_log(log: str) -> dict[str, Any]:
     ]
     return {
         "completed_batches": len(completions),
-        "cbz_render_operations": sum(renders),
+        "cbz_render_operations": sum(
+            int(row.get("counter.archives_rendered", "0")) for row in completions
+        ),
         "real_analysis_observed": bool(analysis),
         "analysis_terminal_observed": any(
             row.get("event") == "stage_terminal" for row in analysis_rows
@@ -97,6 +99,7 @@ def summarize_log(log: str) -> dict[str, Any]:
         ],
         "warnings": [line for line in log.splitlines() if "[WARNING]" in line],
         "limitations": [
+            "Completed work and detailed stage evidence require DEBUG diagnostics; human INFO wording is not a machine protocol.",
             "Only completed core stages are totaled; source/admin and incomplete interrupted stages are separate.",
             "Core SQL timing excludes adapter SQLite and native filesystem operations.",
             "Render operations are not distinct gallery identities.",

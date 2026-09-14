@@ -212,11 +212,16 @@ class FrozenSourceObservationSpool:
             spool.close()
             raise
 
-    def selected_locators(self) -> Iterator[tuple[str, ...]]:
+    def selected_locators(
+        self, *, progress: VNextSourcePreparationObserver | None = None
+    ) -> Iterator[tuple[str, ...]]:
         """Replay the admitted inventory in the original digest order."""
 
         position = 0
-        while position < self.manifest_summary.gallery_count:
+        total = self.manifest_summary.gallery_count
+        operation = VNextSourcePreparationOperation.BATCH_SELECTION
+        report_source_progress(progress, operation, position, total)
+        while position < total:
             self._require_open()
             rows = self._index.execute(
                 "SELECT position, locator_sha256 FROM galleries "
@@ -244,6 +249,7 @@ class FrozenSourceObservationSpool:
                 )
                 yield components
                 position += 1
+                report_source_progress(progress, operation, position, total)
 
     def close(self) -> None:
         if not self._closed:

@@ -349,11 +349,12 @@ Discovery ordering consumes fixed-size keyset pages on the same temporary
 connection before writing their positions, so its own read cursor cannot block
 rollback-journal cache spill for a large inventory.
 
-Analysis and publication calls emit `ingest_db_performance` diagnostics through
-the standard `h2hdb.ingest_performance` logger and the application's handlers.
-The default `logger.level` remains `info`. INFO records summarize each logical
-operation, including issue/prepare/commit seconds, processed rows, SQL calls and
-time, connection checkout/close time, and transaction begin/commit/rollback time.
+Analysis and publication calls emit progress through the standard
+`h2hdb.ingest_performance` logger and the application's handlers.
+The default `logger.level` remains `info`. INFO records describe the activity,
+elapsed time and measured database work in readable sentences. Detailed
+`ingest_db_performance` records, including issue/prepare/commit timing, processed
+records, query counts, connection time and transaction time, belong to DEBUG.
 Summaries also appear at 60-second checkpoints when a facade call returns.
 SQL measurement only updates in-memory counters; handlers run after the outer
 facade call releases its transactions and internal locks. A long-running call
@@ -373,8 +374,9 @@ an explicit omitted-record count. Expired or copied scopes cannot attribute
 another thread or task's work to a completed call.
 
 Setting the application's core logger configuration to `{"level": "debug"}`
-adds per-call completion records and the five query fingerprints with the highest
-total SQL time. Each `query_top` entry identifies the fingerprint and names its
+adds structured stage and per-call completion records and the five query
+fingerprints with the highest total SQL time. Each `query_top` entry identifies
+the fingerprint and names its
 `calls`, total `seconds`, `returned_rows`, and single-call `max_seconds`; entries
 are separated by semicolons. This distinguishes repeated short queries from a
 single slow call. Returned rows are the connector's result count, not the database
@@ -526,6 +528,11 @@ host ports. The fixture uses deterministic unique images and writes
 page identity and raster content, archive bytes, and unchanged file identity.
 Restart, append, and optional marker lifecycle scenarios require completed work
 and the expected catalog; a replayed COMPLETE receipt does not prove new analysis.
+This diagnostic harness explicitly enables DEBUG in its disposable configuration
+to verify completed work and non-replayed analysis from the measured diagnostic
+records. It does not parse human INFO sentences as a machine protocol or change
+the production INFO default. Its timings include diagnostic logging overhead;
+use a separate INFO run to assess ordinary operational output.
 `--http-artifacts` also downloads the first and last GID CBZs through OPDS after
 each scenario, checking search identity, byte size, SHA-256, and Range responses.
 Only HTTP 503 with the exact `library_activating` JSON contract, `Retry-After: 1`

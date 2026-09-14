@@ -76,12 +76,14 @@ def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
             context.close()
         clock.now = 2.0
     text = caplog.text
-    assert "sql_calls=5" in text
-    assert "read_rows=3" in text
-    assert "connection_calls=2" in text
-    assert "transaction_calls=2" in text
-    assert "processed_rows=2" in text
-    assert "commit_seconds=2.000000" in text
+    assert "building catalog metadata and indexes; ingest generation 42" in text
+    assert "elapsed 2.0s; database work" in text
+    assert "records processed" not in text
+    assert "query calls" not in text
+    assert "rows returned" not in text
+    assert "ingest_db_performance" not in text
+    assert "sql_calls=" not in text
+    assert "commit_seconds=" not in text
     assert "private_value" not in text
     assert "secret-one" not in text
     assert "query_top=" not in text
@@ -105,9 +107,9 @@ def test_failure_rolls_back_and_restores_instrumentation_context(
     assert instrument_connector(raw) is raw
     with raw:
         assert raw.fetch_all("SELECT * FROM items") == []
-    assert "event=failed" in caplog.text
-    assert "sql_calls=2" in caplog.text
-    assert "transaction_calls=2" in caplog.text
+    assert "stage failed: building catalog metadata and indexes" in caplog.text
+    assert "database work" in caplog.text
+    assert "stage finished" not in caplog.text
 
 
 def test_debug_query_statistics_are_bounded_and_redacted(
@@ -198,8 +200,8 @@ def test_info_reports_time_based_progress_without_per_batch_messages(
     with performance.step("publication", "commit", "BUILD_CATALOG", 1):
         pass
     assert len(caplog.records) == 2
-    assert "event=stage_progress" in caplog.text
-    assert "processed_rows=12800" in caplog.text
+    assert "stage in progress" in caplog.text
+    assert "elapsed 1m 03s; database work 0ms" in caplog.text
     with performance.step("publication", "prepare", "VALIDATE_CATALOG", 1):
         pass
     performance.close()
@@ -218,10 +220,14 @@ def test_long_step_defers_sql_metrics_until_the_safe_call_boundary(
         clock.now = 62.0
         sample.record_sql_operation("sql", 1.0, "SELECT private_literal", 1)
         assert not caplog.records
-    assert "event=completed" in caplog.text
-    assert "sql_seconds=56.000000" in caplog.text
-    assert "other_seconds=6.000000" in caplog.text
+    assert "stage in progress" in caplog.text
+    assert "elapsed 1m 02s" in caplog.text
+    assert (
+        "database work 56.0s (queries 56.0s, connections 0ms, transaction boundaries 0ms)"
+        in caplog.text
+    )
     assert "private_literal" not in caplog.text
+    assert "stage finished" not in caplog.text
 
 
 def test_nested_scopes_and_threads_do_not_mix_metrics(
@@ -333,7 +339,9 @@ def test_nested_calls_defer_bounded_records_and_preserve_own_time(
     caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
 ) -> None:
     clock = _Clock()
-    performance = IngestPerformance(performance_log, backend="sqlite", clock=clock)
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", clock=clock, level=logging.DEBUG
+    )
     with performance.step("publication", "prepare", "BUILD_CATALOG", 1) as outer:
         clock.now = 1.0
         for _ in range(70):
@@ -368,7 +376,9 @@ def test_overlapping_calls_do_not_share_a_sequential_stage(
 ) -> None:
     first_entered = Event()
     second_finished = Event()
-    performance = IngestPerformance(performance_log, backend="sqlite")
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", level=logging.DEBUG
+    )
 
     def first() -> None:
         with performance.step("publication", "prepare", "BUILD_CATALOG", 1) as sample:
@@ -387,11 +397,15 @@ def test_overlapping_calls_do_not_share_a_sequential_stage(
         for future in futures:
             future.result(timeout=3.0)
     performance.close()
-    assert len(caplog.records) == 2
-    assert all("scope=concurrent" in record.message for record in caplog.records)
-    assert sorted(
-        "processed_rows=7 " in record.message for record in caplog.records
-    ) == [False, True]
+    info = [record for record in caplog.records if record.levelno == logging.INFO]
+    technical = [record for record in caplog.records if record.levelno == logging.DEBUG]
+    assert len(info) == 2
+    assert all("overlapping call finished" in record.message for record in info)
+    assert all("stage completion not confirmed" in record.message for record in info)
+    assert sorted("processed_rows=7" in record.message for record in technical) == [
+        False,
+        True,
+    ]
     assert "stage_" not in caplog.text
 
 
@@ -492,7 +506,7 @@ def test_close_defers_other_owner_logs_until_the_outer_transaction_exits(
                 assert connector.connection.in_transaction
                 assert not caplog.records
             assert not caplog.records
-    assert "event=stage_closed" in caplog.text
+    assert "stage reporting closed before completion was confirmed" in caplog.text
     outer.close()
 
 
@@ -514,3 +528,190 @@ def test_child_async_task_does_not_inherit_measurement_ownership(
 
     asyncio.run(run())
     performance.close()
+
+
+def test_info_explains_slow_connections_and_debug_preserves_all_stage_measurements(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    clock = _Clock()
+    performance = IngestPerformance(
+        performance_log, backend="mariadb", level=logging.DEBUG, clock=clock
+    )
+    with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
+        sample.record_sql_operation("sql", 120.0, "SELECT secret", 128)
+        sample.record_sql_operation("connection", 1800.0, "", 0)
+        sample.record_sql_operation("transaction", 60.0, "", 0)
+        sample.processed_rows = 4
+        sample.replayed = True
+        sample.terminal = True
+        clock.now = 2000.0
+    info = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ]
+    technical = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+    ]
+    assert len(info) == 2
+    assert (
+        info[0]
+        == "Ingest analysis stage started: preparing the analysis snapshot; ingest generation 51."
+    )
+    assert info[1] == (
+        "Ingest analysis stage finished: preparing the analysis snapshot; ingest generation 51; "
+        "elapsed 33m 20s; database work 33m 00s "
+        "(queries 2m 00s, connections 30m 00s, transaction boundaries 1m 00s); "
+        "includes reused results."
+    )
+    assert all(
+        "=" not in message and "PREPARE_SNAPSHOT" not in message for message in info
+    )
+    terminal = next(
+        message for message in technical if "event=stage_terminal " in message
+    )
+    assert "pipeline=analysis operation=PREPARE_SNAPSHOT generation=51" in terminal
+    assert "wall_seconds=2000.000000 call_seconds=2000.000000" in terminal
+    assert "sql_seconds=120.000000" in terminal
+    assert (
+        "connection_seconds=1800.000000 transaction_calls=1 transaction_seconds=60.000000"
+        in terminal
+    )
+    assert "processed_rows=4 replayed_calls=1" in terminal
+    assert "sql_calls=1 sql_seconds=120.000000 read_rows=128" in terminal
+    assert "query_top=" in next(
+        message for message in technical if "event=completed " in message
+    )
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error", [KeyboardInterrupt(), SystemExit(1), asyncio.CancelledError()]
+)
+def test_interrupted_step_never_reports_stage_success(
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    error: BaseException,
+) -> None:
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", level=logging.DEBUG
+    )
+    with pytest.raises(type(error)):
+        with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 2):
+            raise error
+    performance.close()
+    info = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ]
+    assert any("stage interrupted:" in message for message in info)
+    assert not any("finished" in message or "failed" in message for message in info)
+    assert "event=interrupted " in caplog.text
+    assert "event=stage_interrupted " in caplog.text
+    assert "event=stage_terminal " not in caplog.text
+
+
+def test_failure_and_early_close_are_distinct_from_success(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", level=logging.DEBUG
+    )
+    with performance.step("analysis", "issue", "ISSUE", 3):
+        pass
+    performance.close()
+    assert "stage reporting closed before completion was confirmed" in caplog.text
+    assert "event=stage_closed" in caplog.text
+    assert "stage finished" not in caplog.text
+    assert "stage failed" not in caplog.text
+    assert "issuing an analysis work request" in caplog.text
+
+
+def test_info_nested_records_are_summarized_without_raw_per_call_dump(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(performance_log, backend="sqlite")
+    with performance.step("publication", "prepare", "BUILD_CATALOG", 1):
+        for _ in range(3):
+            with performance.step("analysis", "prepare", "content_owner", 1):
+                pass
+            assert not caplog.records
+    performance.close()
+    assert len(caplog.records) == 3
+    assert "nested work" in caplog.text
+    assert "3 calls" not in caplog.text
+    assert "scope=" not in caplog.text and "ingest_db_performance" not in caplog.text
+    assert "selecting galleries for duplicate content" not in caplog.text
+
+
+def test_unknown_operation_and_missing_clock_remain_readable_without_claimed_timing(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", clock=lambda: float("nan")
+    )
+    with performance.step(
+        "unknown", "prepare", "PRIVATE_UNKNOWN_OPERATION", 7
+    ) as sample:
+        sample.terminal = True
+    assert "processing ingest work; ingest generation 7" in caplog.text
+    assert "elapsed unavailable" in caplog.text
+    assert "PRIVATE_UNKNOWN_OPERATION" not in caplog.text
+    assert "unknown" not in caplog.text
+
+
+def test_every_actual_analysis_and_publication_stage_has_a_semantic_description() -> (
+    None
+):
+    from h2hdb.ingest_performance_format import activity
+    from h2hdb.vnext_analysis_repository import _STAGES
+    from h2hdb.vnext_ingest_analysis import _ANALYSIS_SNAPSHOT_STAGE, _AnalysisAction
+    from h2hdb.vnext_ingest_publication import _Action
+
+    analysis = {
+        *(stage.decode("ascii") for stage in _STAGES),
+        *(action.value for action in _AnalysisAction),
+        _ANALYSIS_SNAPSHOT_STAGE.decode("ascii"),
+        "ISSUE",
+        "PREPARE",
+        "COMMIT",
+    }
+    publication = {
+        *(action.value for action in _Action),
+        "RECOVERY",
+        "ISSUE",
+        "PREPARE",
+        "COMMIT",
+    }
+    for pipeline, operations in (("analysis", analysis), ("publication", publication)):
+        for operation in operations:
+            description = activity(pipeline, operation)
+            assert not description.startswith("processing "), operation
+            assert "_" not in description and "CBZ" not in description, operation
+    assert (
+        activity("analysis", "snapshot_manifest")
+        == "saving and sealing the analysis snapshot"
+    )
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (0, "0ms"),
+        (0.023, "23ms"),
+        (1.5, "1.5s"),
+        (63, "1m 03s"),
+        (4219, "1h 10m 19s"),
+        (90000, "25h 00m 00s"),
+        (None, "unavailable"),
+    ],
+)
+def test_elapsed_format_preserves_readable_units(
+    seconds: float | None, expected: str
+) -> None:
+    from h2hdb.ingest_performance_format import duration
+
+    assert duration(seconds) == expected

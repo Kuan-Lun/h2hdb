@@ -17,6 +17,13 @@ from threading import Lock
 from time import perf_counter
 from typing import Literal
 
+from .ingest_performance_format import (
+    activity,
+    duration,
+    pipeline_name,
+    stage_description,
+    workload,
+)
 from .sql_performance import execution_owner, measure_sql, read_clock
 
 _REPORT_INTERVAL_SECONDS = 60.0
@@ -62,7 +69,7 @@ class _Counters:
 class _Diagnostic:
     owner: IngestPerformance
     message: str
-    debug: bool
+    info_message: str | None
 
 
 @dataclass
@@ -241,19 +248,19 @@ class IngestPerformance:
                     self._overlap_epoch += 1
             sample.overlap_epoch = self._overlap_epoch
         token = _active_step.set(sample)
-        failed = False
+        failure: Literal["failed", "interrupted"] | None = None
         try:
             with measure_sql(sample, clock=self.clock):
                 yield sample
-        except BaseException:
-            failed = True
+        except BaseException as error:
+            failure = "failed" if isinstance(error, Exception) else "interrupted"
             raise
         finally:
             sample.active = False
             _active_step.reset(token)
             now = read_clock(self.clock)
             try:
-                records = self._complete(sample, now, failed=failed)
+                records = self._complete(sample, now, failure=failure)
                 if sample.parent is not None:
                     sample.parent.nested_seconds += sample.elapsed(now)
                     sample.parent.nested_calls += 1 + sample.nested_calls
@@ -273,7 +280,6 @@ class IngestPerformance:
         now: float | None,
         *,
         scope: str,
-        debug: bool,
     ) -> _Diagnostic:
         elapsed = sample.elapsed(now)
         own_seconds = max(0.0, elapsed - sample.nested_seconds)
@@ -288,17 +294,54 @@ class IngestPerformance:
             f"processed_rows={sample.processed_rows} replayed={int(sample.replayed)} "
             f"{sample.counters.text()}"
         )
-        if debug and sample.queries:
+        if self.debug and sample.queries:
             top = sorted(
                 sample.queries.items(), key=lambda item: item[1].seconds, reverse=True
             )[:5]
             message += " query_top=" + ";".join(
                 statistics.text(key) for key, statistics in top
             )
-        return _Diagnostic(self, message, debug)
+        info_message = None
+        if (
+            scope == "concurrent"
+            or (scope == "nested" and event in {"failed", "interrupted"})
+            or sample.nested_calls
+        ):
+            kind = (
+                "overlapping call"
+                if scope == "concurrent"
+                else "nested call"
+                if scope == "nested"
+                else "call"
+            )
+            info_message = (
+                f"Ingest {pipeline_name(sample.pipeline)} {kind} "
+                f"{'finished' if event == 'completed' else event}: "
+                f"{activity(sample.pipeline, sample.operation)}; "
+                f"ingest generation {sample.generation}; "
+                + workload(
+                    elapsed=elapsed
+                    if now is not None and sample.started is not None
+                    else None,
+                    sql_seconds=sample.counters.sql_seconds,
+                    connection_seconds=sample.counters.connection_seconds,
+                    transaction_seconds=sample.counters.transaction_seconds,
+                    includes_reused_results=sample.replayed,
+                )
+            )
+            if sample.nested_calls:
+                info_message += f"; nested work {duration(sample.nested_seconds)}"
+            if sample.omitted_records:
+                info_message += "; some nested diagnostic details omitted"
+            info_message += "; stage completion not confirmed."
+        return _Diagnostic(self, message, info_message)
 
     def _complete(
-        self, sample: PerformanceStep, now: float | None, *, failed: bool
+        self,
+        sample: PerformanceStep,
+        now: float | None,
+        *,
+        failure: Literal["failed", "interrupted"] | None,
     ) -> list[_Diagnostic]:
         records = list(sample.deferred)
         with self._lock:
@@ -312,7 +355,7 @@ class IngestPerformance:
             isolated = sample.parent is not None or concurrent
             if (
                 isolated
-                or failed
+                or failure is not None
                 or self.debug
                 or sample.nested_calls > 0
                 or sample.omitted_records > 0
@@ -321,14 +364,13 @@ class IngestPerformance:
                 records.append(
                     self._step_record(
                         sample,
-                        "failed" if failed else "completed",
+                        failure or "completed",
                         now,
                         scope="nested"
                         if sample.parent is not None
                         else "concurrent"
                         if concurrent
                         else "sequential",
-                        debug=self.debug and not failed,
                     )
                 )
             if isolated:
@@ -336,11 +378,13 @@ class IngestPerformance:
                     records.extend(self._flush("overlap", sample.started))
                 return records
             key = (sample.pipeline, sample.operation, sample.generation)
-            if self._stage is None or self._stage.key != key:
+            entered_stage = self._stage is None or self._stage.key != key
+            if entered_stage:
                 records.extend(self._flush("transition", sample.started))
                 self._stage = _Stage(key, sample.started, now, now)
                 records.append(self._report(self._stage, "started", sample.started))
             stage = self._stage
+            assert stage is not None
             stage.calls += 1
             stage.processed_rows += sample.processed_rows
             stage.replayed += int(sample.replayed)
@@ -349,12 +393,18 @@ class IngestPerformance:
             stage.phases[sample.phase] = stage.phases.get(sample.phase, 0.0) + max(
                 0.0, sample.elapsed(now) - sample.nested_seconds
             )
-            if failed or sample.terminal:
-                records.extend(self._flush("failed" if failed else "terminal", now))
+            if failure is not None or sample.terminal:
+                records.extend(self._flush(failure or "terminal", now))
             elif (
                 now is not None
                 and stage.reported is not None
-                and now - stage.reported >= _REPORT_INTERVAL_SECONDS
+                and (
+                    now - stage.reported >= _REPORT_INTERVAL_SECONDS
+                    or (
+                        entered_stage
+                        and sample.elapsed(now) >= _REPORT_INTERVAL_SECONDS
+                    )
+                )
             ):
                 records.append(self._report(stage, "progress", now))
         return records
@@ -380,7 +430,20 @@ class IngestPerformance:
             for phase, seconds in sorted(stage.phases.items())
         )
         stage.reported = now
-        return _Diagnostic(self, message, False)
+        info_message = stage_description(pipeline, operation, generation, event)
+        if event != "started":
+            info_message += "; " + workload(
+                elapsed=wall_seconds
+                if now is not None and stage.started is not None
+                else None,
+                sql_seconds=stage.counters.sql_seconds,
+                connection_seconds=stage.counters.connection_seconds,
+                transaction_seconds=stage.counters.transaction_seconds,
+                includes_reused_results=bool(stage.replayed),
+            )
+        if event == "overlap":
+            info_message += "; stage completion not confirmed"
+        return _Diagnostic(self, message, info_message + ".")
 
     def _flush(self, event: str, now: float | None) -> list[_Diagnostic]:
         stage = self._stage
@@ -406,16 +469,14 @@ class IngestPerformance:
             self._emit(record)
 
     def _emit(self, record: _Diagnostic) -> None:
-        if _emitting.get() or self.level > (
-            logging.DEBUG if record.debug else logging.INFO
-        ):
+        if _emitting.get() or self.level > logging.INFO:
             return
         token = _emitting.set(True)
         try:
-            if record.debug:
+            if record.info_message is not None:
+                self.logger.info(record.info_message)
+            if self.debug:
                 self.logger.debug(record.message)
-            else:
-                self.logger.info(record.message)
         except Exception:
             # A diagnostic handler must not change commit/retry semantics.
             pass
