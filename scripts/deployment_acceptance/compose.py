@@ -256,6 +256,19 @@ def _validate_original(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return chosen
 
 
+def _instrumented_command(command: str | list[str], role: str) -> list[str]:
+    argv = shlex.split(command) if isinstance(command, str) else command
+    assignments = [
+        "PYTHONPATH=/acceptance",
+        "H2HDB_ACCEPTANCE_PROBE_DIR=/acceptance-evidence",
+    ]
+    if role == "ingest":
+        assignments.append("H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control")
+    # Docker healthchecks inherit the service environment, independently of its
+    # main process. Scope the observer to the actual role and its descendants.
+    return ["env", *assignments, *argv]
+
+
 def derive_compose(
     model: Mapping[str, Any],
     fixture_root: Path,
@@ -314,14 +327,7 @@ def derive_compose(
             "H2HDB_DATABASE_NAME": DATABASE_NAME,
         }
         if instrumented:
-            environment.update(
-                {
-                    "PYTHONPATH": "/acceptance",
-                    "H2HDB_ACCEPTANCE_PROBE_DIR": "/acceptance-evidence",
-                }
-            )
-            if role == "ingest":
-                environment["H2HDB_ACCEPTANCE_CONTROL_DIR"] = "/acceptance-control"
+            service["command"] = _instrumented_command(service["command"], role)
         if role == "ingest":
             environment.update(
                 {
@@ -492,6 +498,20 @@ def validate_isolation(
                 "WRITER" in key or "ROOT" in key for key in environment
             ):
                 raise ValueError("Reader received writer/root credentials")
+            if {
+                "PYTHONPATH",
+                "H2HDB_ACCEPTANCE_PROBE_DIR",
+                "H2HDB_ACCEPTANCE_CONTROL_DIR",
+            } & environment.keys():
+                raise ValueError("Role instrumentation must be scoped to its command")
+            command = service.get("command")
+            argv = shlex.split(command) if isinstance(command, str) else command
+            expected_command = ["bash", "/opt/h2hdb-main.sh", role]
+            if argv not in (
+                expected_command,
+                _instrumented_command(expected_command, role),
+            ):
+                raise ValueError("Isolated role command or observer scope changed")
         volumes = service.get("volumes")
         if not isinstance(volumes, list):
             raise ValueError("Isolated mounts must be explicit")

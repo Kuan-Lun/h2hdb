@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -208,19 +209,24 @@ def test_actual_startup_contract_changes_are_not_hidden_by_fixture(
         derive(tmp_path, original)
 
 
+@pytest.mark.parametrize("instrumented", [False, True])
 def test_compose_expanded_extensions_are_inert_and_commands_can_be_strings(
     tmp_path: Path,
+    instrumented: bool,
 ) -> None:
     original = model()
     original["x-python-runtime"] = {"env_file": "/production/never-read.env"}
     for role, name in compose.SERVICES.items():
         original["services"][name]["command"] = f"bash /opt/h2hdb-main.sh {role}"
-    isolated = derive(tmp_path, original)
+    isolated = derive(tmp_path, original, instrumented=instrumented)
     assert "x-python-runtime" not in isolated
-    assert (
-        isolated["services"]["h2hdb-ingest"]["command"]
-        == "bash /opt/h2hdb-main.sh ingest"
-    )
+    for role, name in compose.SERVICES.items():
+        command = isolated["services"][name]["command"]
+        if instrumented:
+            assert command[-3:] == ["bash", "/opt/h2hdb-main.sh", role]
+            assert command[0] == "env"
+        else:
+            assert command == original["services"][name]["command"]
     original = model()
     original["services"]["h2hdb-ingest"]["command"][-1] = "bootstrap"
     with pytest.raises(ValueError, match="Unexpected deployment command"):
@@ -276,18 +282,206 @@ def test_instrumentation_is_explicit_and_reader_credentials_are_separate(
 ) -> None:
     for instrumented in (False, True):
         isolated = derive(tmp_path, instrumented=instrumented)
-        for role in compose.SERVICES.values():
-            environment = isolated["services"][role]["environment"]
-            assert ("PYTHONPATH" in environment) is instrumented
-            assert ("H2HDB_ACCEPTANCE_PROBE_DIR" in environment) is instrumented
+        for role, name in compose.SERVICES.items():
+            service = isolated["services"][name]
+            environment = service["environment"]
+            assert "PYTHONPATH" not in environment
+            assert "H2HDB_ACCEPTANCE_PROBE_DIR" not in environment
+            assert "H2HDB_ACCEPTANCE_CONTROL_DIR" not in environment
+            command = ["bash", "/opt/h2hdb-main.sh", role]
+            if instrumented:
+                assignments = [
+                    "PYTHONPATH=/acceptance",
+                    "H2HDB_ACCEPTANCE_PROBE_DIR=/acceptance-evidence",
+                ]
+                if role == "ingest":
+                    assignments.append(
+                        "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
+                    )
+                command = ["env", *assignments, *command]
+            assert service["command"] == command
+            assert service["healthcheck"] == model()["services"][name]["healthcheck"]
+            assert CREDENTIALS.writer_password not in json.dumps(command)
+            assert CREDENTIALS.root_password not in json.dumps(command)
         reader = isolated["services"]["h2hdb-opds"]["environment"]
         writer = isolated["services"]["h2hdb-ingest"]["environment"]
-        assert "H2HDB_ACCEPTANCE_CONTROL_DIR" not in reader
-        assert ("H2HDB_ACCEPTANCE_CONTROL_DIR" in writer) is instrumented
         assert "H2HDB_DATABASE_WRITER_PASSWORD" not in reader
         assert "H2HDB_DATABASE_READER_PASSWORD" not in writer
         assert CREDENTIALS.writer_password not in json.dumps(reader)
         assert CREDENTIALS.root_password not in json.dumps(reader)
+
+
+@pytest.mark.parametrize("role", ["ingest", "opds"])
+@pytest.mark.parametrize(
+    "key",
+    ["PYTHONPATH", "H2HDB_ACCEPTANCE_PROBE_DIR", "H2HDB_ACCEPTANCE_CONTROL_DIR"],
+)
+def test_executor_rejects_observer_environment_that_would_reach_healthchecks(
+    tmp_path: Path,
+    role: str,
+    key: str,
+) -> None:
+    isolated = derive(tmp_path, instrumented=True)
+    isolated["services"][compose.SERVICES[role]]["environment"][key] = "/unexpected"
+    with pytest.raises(ValueError, match="scoped to its command"):
+        compose.validate_isolation(isolated, tmp_path / "fixture", project=PROJECT)
+
+
+@pytest.mark.parametrize("role", ["ingest", "opds"])
+@pytest.mark.parametrize("change", ["credential", "control", "arguments"])
+def test_executor_rejects_role_command_or_observer_scope_drift(
+    tmp_path: Path,
+    role: str,
+    change: str,
+) -> None:
+    isolated = derive(tmp_path, instrumented=True)
+    command = isolated["services"][compose.SERVICES[role]]["command"]
+    if change == "credential":
+        command.insert(
+            1, f"H2HDB_DATABASE_WRITER_PASSWORD={CREDENTIALS.writer_password}"
+        )
+    elif change == "control":
+        assignment = "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
+        if role == "ingest":
+            command.remove(assignment)
+        else:
+            command.insert(1, assignment)
+    else:
+        command[-1] = "bootstrap"
+    with pytest.raises(ValueError, match="role command or observer scope changed"):
+        compose.validate_isolation(isolated, tmp_path / "fixture", project=PROJECT)
+
+
+def _write_process_scope_programs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    probes = tmp_path / "probes"
+    evidence = tmp_path / "probe evidence"
+    probes.mkdir()
+    evidence.mkdir()
+    (probes / "sitecustomize.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "destination = os.environ.get('H2HDB_ACCEPTANCE_PROBE_DIR')\n"
+        "if destination:\n"
+        "    (Path(destination) / str(os.getpid())).write_text('installed')\n"
+    )
+    observer = tmp_path / "process_scope.py"
+    observer.write_text(
+        "import json, os, subprocess, sys\n"
+        "keys = ('PYTHONPATH', 'H2HDB_ACCEPTANCE_PROBE_DIR', "
+        "'H2HDB_ACCEPTANCE_CONTROL_DIR')\n"
+        "result = {\n"
+        "    'kind': sys.argv[1], 'pid': os.getpid(),\n"
+        "    'observer': {key: os.environ[key] for key in keys if key in os.environ},\n"
+        "    'writer': 'H2HDB_DATABASE_WRITER_PASSWORD' in os.environ,\n"
+        "    'reader': 'H2HDB_DATABASE_READER_PASSWORD' in os.environ,\n"
+        "    'root': any('ROOT' in key for key in os.environ),\n"
+        "}\n"
+        "if sys.argv[1] in ('ingest', 'opds', 'child'):\n"
+        "    kind = 'grandchild' if sys.argv[1] == 'child' else 'child'\n"
+        "    child = subprocess.run([sys.executable, __file__, kind], "
+        "check=True, capture_output=True, text=True, timeout=5)\n"
+        "    result['child'] = json.loads(child.stdout)\n"
+        "print(json.dumps(result))\n"
+    )
+    wrapper = tmp_path / "main.sh"
+    wrapper.write_text(
+        f'exec {shlex.quote(sys.executable)} {shlex.quote(str(observer))} "$@"\n'
+    )
+    return observer, wrapper, probes, evidence
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="Compose role commands require POSIX env/bash"
+)
+@pytest.mark.parametrize("role", ["ingest", "opds"])
+@pytest.mark.parametrize("string_command", [False, True])
+@pytest.mark.parametrize("instrumented", [False, True])
+@pytest.mark.parametrize("healthcheck_kind", ["CMD", "CMD-SHELL"])
+def test_real_role_descendants_inherit_probe_but_ambient_healthcheck_does_not(
+    tmp_path: Path,
+    role: str,
+    string_command: bool,
+    instrumented: bool,
+    healthcheck_kind: str,
+) -> None:
+    observer, wrapper, probes, evidence = _write_process_scope_programs(tmp_path)
+    original = model()
+    name = compose.SERVICES[role]
+    service = original["services"][name]
+    if string_command:
+        service["command"] = f"bash '/opt/h2hdb-main.sh' {role}"
+    healthcheck_argv = [sys.executable, str(observer), "healthcheck"]
+    service["healthcheck"]["test"] = (
+        ["CMD", *healthcheck_argv]
+        if healthcheck_kind == "CMD"
+        else ["CMD-SHELL", shlex.join(healthcheck_argv)]
+    )
+    derived = derive(tmp_path, original, instrumented=instrumented)["services"][name]
+    assert derived["healthcheck"] == service["healthcheck"]
+    raw_command = derived["command"]
+    command = shlex.split(raw_command) if isinstance(raw_command, str) else raw_command
+    assert command[-3:] == ["bash", "/opt/h2hdb-main.sh", role]
+    if not instrumented:
+        assert raw_command == service["command"]
+    # Translate container bind destinations for this local POSIX process test.
+    replacements = {
+        "/opt/h2hdb-main.sh": str(wrapper),
+        "PYTHONPATH=/acceptance": f"PYTHONPATH={probes}",
+        "H2HDB_ACCEPTANCE_PROBE_DIR=/acceptance-evidence": (
+            f"H2HDB_ACCEPTANCE_PROBE_DIR={evidence}"
+        ),
+        "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control": (
+            f"H2HDB_ACCEPTANCE_CONTROL_DIR={tmp_path / 'control'}"
+        ),
+    }
+    ambient = {"PATH": os.defpath, **derived["environment"]}
+    process = subprocess.run(
+        [replacements.get(argument, argument) for argument in command],
+        env=ambient,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert process.stderr == ""
+    observed = json.loads(process.stdout)
+    expected_observer = {}
+    if instrumented:
+        expected_observer = {
+            "PYTHONPATH": str(probes),
+            "H2HDB_ACCEPTANCE_PROBE_DIR": str(evidence),
+        }
+        if role == "ingest":
+            expected_observer["H2HDB_ACCEPTANCE_CONTROL_DIR"] = str(
+                tmp_path / "control"
+            )
+    descendants = (observed, observed["child"], observed["child"]["child"])
+    assert [item["kind"] for item in descendants] == [role, "child", "grandchild"]
+    for item in descendants:
+        assert item["observer"] == expected_observer
+        assert item["writer"] is (role == "ingest")
+        assert item["reader"] is (role == "opds")
+        assert item["root"] is False
+    assert {path.name for path in evidence.iterdir()} == (
+        {str(item["pid"]) for item in descendants} if instrumented else set()
+    )
+    healthcheck = derived["healthcheck"]["test"]
+    health = subprocess.run(
+        healthcheck[1:]
+        if healthcheck[0] == "CMD"
+        else ["/bin/sh", "-c", healthcheck[1]],
+        env=ambient,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert health.stderr == ""
+    health_observation = json.loads(health.stdout)
+    assert health_observation["observer"] == {}
+    assert health_observation["writer"] is (role == "ingest")
+    assert health_observation["reader"] is (role == "opds")
+    assert not (evidence / str(health_observation["pid"])).exists()
 
 
 @pytest.mark.parametrize(
