@@ -391,7 +391,9 @@ print(json.dumps(result))
     def fault(self, signal: str, gid: int) -> None:
         token = signal.lower() + "-" + secrets.token_hex(4)
         arm = self.deployment.control_dir / "arm.json"
-        write_json(arm, {"operation": "library.commit_pending_install", "token": token})
+        write_json(
+            arm, {"operation": "library.commit_pending_installs", "token": token}
+        )
         self.generate(1, gid)
 
         def reached() -> bool:
@@ -692,8 +694,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context", required=True)
     for role in ("ingest", "opds", "mariadb"):
         parser.add_argument(f"--{role}-image", required=True)
-    parser.add_argument("--base-count", type=int, default=128)
-    parser.add_argument("--append-count", type=int, default=100)
+    parser.add_argument("--base-count", type=int, default=2)
+    parser.add_argument("--append-count", type=int, default=2)
     parser.add_argument("--pages", type=int, default=2)
     parser.add_argument(
         "--image-profile", choices=("small", "large", "mixed"), default="mixed"

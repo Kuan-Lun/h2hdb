@@ -506,7 +506,7 @@ def test_fault_gate_runs_original_first_and_hits_each_token_only_once(
     control = tmp_path / "control"
     evidence.mkdir()
     control.mkdir()
-    operation = "library.commit_pending_install"
+    operation = "library.commit_pending_installs"
     (control / "arm.json").write_text(
         json.dumps({"operation": operation, "token": "once"})
     )
@@ -550,7 +550,7 @@ def test_fault_gate_timeout_is_bounded_and_invalidates_measurement(
     control = tmp_path / "control"
     evidence.mkdir()
     control.mkdir()
-    operation = "library.commit_pending_install"
+    operation = "library.commit_pending_installs"
     (control / "arm.json").write_text(
         json.dumps({"operation": operation, "token": "timeout"})
     )
@@ -572,8 +572,8 @@ def test_fault_gate_timeout_is_bounded_and_invalidates_measurement(
     "arm",
     [
         {"operation": "unknown", "token": "one"},
-        {"operation": "library.commit_pending_install", "token": "../escape"},
-        {"operation": "library.commit_pending_install", "token": "one", "extra": True},
+        {"operation": "library.commit_pending_installs", "token": "../escape"},
+        {"operation": "library.commit_pending_installs", "token": "one", "extra": True},
     ],
 )
 def test_fault_gate_rejects_unknown_target_or_unsafe_token(
@@ -587,7 +587,7 @@ def test_fault_gate_rejects_unknown_target_or_unsafe_token(
     state = probe._Probe(tmp_path, "invalid-fault", control)
     try:
         with pytest.raises(ValueError, match="invalid"):
-            state.fault_gate("library.commit_pending_install")
+            state.fault_gate("library.commit_pending_installs")
     finally:
         state.close()
 
@@ -606,7 +606,7 @@ def test_fault_wait_does_not_replace_application_sigterm_handler(
     (control / "arm.json").write_text(
         json.dumps(
             {
-                "operation": "library.commit_pending_install",
+                "operation": "library.commit_pending_installs",
                 "token": "term",
             }
         )
@@ -632,7 +632,7 @@ signal.signal(signal.SIGTERM, handler)
 def original():
     Path('original-completed').touch()
     return 42
-observed = probe._observe(state, 'library.commit_pending_install', original, boundary=False, fault_gate=True)
+observed = probe._observe(state, 'library.commit_pending_installs', original, boundary=False, fault_gate=True)
 assert observed() == 42
 assert received == [signal.SIGTERM]
 assert signal.getsignal(signal.SIGTERM) is handler

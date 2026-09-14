@@ -32,7 +32,7 @@ _INTERVAL_SECONDS = 5.0
 _STATE: _Probe | None = None
 _LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
-_FAULT_OPERATION = "library.commit_pending_install"
+_FAULT_OPERATION = "library.commit_pending_installs"
 _FAULT_TIMEOUT_SECONDS = 60.0
 _CORE_SQL_METHODS = (
     "execute",
@@ -568,7 +568,7 @@ def _install_ingest(state: _Probe) -> bool:
     _hook(
         state,
         library.ManagedFilesystemLibraryAdapter,
-        "_commit_pending_install",
+        "_commit_pending_installs",
         _FAULT_OPERATION,
         boundary=False,
         fault_gate=True,
