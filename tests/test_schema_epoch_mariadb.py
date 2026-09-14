@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from h2hdb import CoreConfig, DatabaseAccessMode
+from h2hdb.domain import SchemaProvisioningOutcome
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import (
@@ -392,10 +393,34 @@ def test_fake_mariadb_empty_database_builds_ready_and_releases_gate() -> None:
     )
 
     assert report.state == "READY"
-    assert report.resumed_build is False
-    assert report.transitioned_to_ready is True
+    assert report.outcome is SchemaProvisioningOutcome.CREATED
+    assert report.activation_audit is not None
     assert connector.lock_held is False
-    assert connector.commit_count == 6
+    assert connector.commit_count == 7  # Read probe plus the six durable build steps.
+
+
+def test_fake_mariadb_ready_provisioning_acquires_no_gate_or_full_inventory() -> None:
+    connector = FakeMariaDBConnector()
+    provider = MariaDBTestProvider(_definition())
+    run_mariadb_schema_epoch(connector, provider, clock=lambda: NOW)
+    connector.query_log.clear()
+    before = (dict(connector.objects), connector.control_row, connector.parent_seed)
+    connector.get_lock_result = 0  # A read-only READY probe must not request it.
+
+    report = run_mariadb_schema_epoch(connector, provider)
+
+    assert report.outcome is SchemaProvisioningOutcome.ALREADY_READY
+    assert report.activation_audit is None
+    assert (connector.objects, connector.control_row, connector.parent_seed) == before
+    assert not any("GET_LOCK" in query for query in connector.query_log)
+    assert not any(
+        "INFORMATION_SCHEMA.TRIGGERS" in query for query in connector.query_log
+    )
+    assert not any(
+        query.lstrip().startswith(("CREATE", "INSERT", "UPDATE"))
+        for query in connector.query_log
+    )
+    assert len(connector.query_log) <= 10
 
 
 def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
@@ -411,8 +436,8 @@ def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
         lock_timeout_seconds=0,
     )
 
-    assert report.resumed_build is True
-    assert report.transitioned_to_ready is True
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
+    assert report.activation_audit is not None
     assert {PARENT.name, CHILD.name} <= set(connector.objects)
 
 
@@ -449,7 +474,7 @@ def test_fake_mariadb_exact_empty_control_residue_is_resumable() -> None:
         lock_timeout_seconds=0,
     )
 
-    assert report.resumed_build is True
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
     assert report.state == "READY"
 
 
@@ -468,8 +493,9 @@ def test_fake_mariadb_committed_bootstrap_seed_resumes_idempotently() -> None:
         lock_timeout_seconds=0,
     )
 
-    assert report.resumed_build is True
-    assert report.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
+    assert report.activation_audit is not None
+    assert report.activation_audit.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
     assert connector.parent_seed == (0, b"\x00" * 32)
 
 
@@ -606,7 +632,10 @@ def test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock(
         )
 
     assert report.state == "READY"
-    assert report.transitioned_to_ready is True
+    assert report.outcome in {
+        SchemaProvisioningOutcome.CREATED,
+        SchemaProvisioningOutcome.RESUMED,
+    }
     assert objects == provider.definition.expected_objects | {
         SchemaObject(SchemaObjectKind.TABLE, SCHEMA_EPOCH_CONTROL_TABLE)
     }
@@ -675,8 +704,8 @@ def test_mariadb_epoch_resumes_committed_partial_ddl(
         )
         child_count = connector.fetch_one("SELECT COUNT(*) FROM vnext_mariadb_children")
 
-    assert report.resumed_build is True
-    assert report.transitioned_to_ready is True
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
+    assert report.activation_audit is not None
     assert state == ("READY",)
     assert child_count == (0,)
 
@@ -714,8 +743,9 @@ def test_mariadb_epoch_resumes_after_committed_bootstrap_seed(
             "SELECT parent_id, payload FROM vnext_mariadb_parents"
         )
 
-    assert report.resumed_build is True
-    assert report.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
+    assert report.activation_audit is not None
+    assert report.activation_audit.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
     assert rows == [(0, b"\x00" * 32)]
 
 

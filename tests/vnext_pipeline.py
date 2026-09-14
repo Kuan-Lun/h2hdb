@@ -43,6 +43,7 @@ from h2hdb import (
     LibraryActivationCheckpoint,
     LibraryActivationStatus,
     SchemaEpochReport,
+    SchemaProvisioningReport,
     StorageObjectDescriptor,
     StorageObjectKey,
     TagObservation,
@@ -969,7 +970,7 @@ def drain_maintenance(
     raise RuntimeError("maintenance did not reach DONE within its attempt budget")
 
 
-def initialize_database(config: CoreConfig) -> SchemaEpochReport:
+def initialize_database(config: CoreConfig) -> SchemaProvisioningReport:
     report = VNextDatabaseAdminFacade(config).initialize()
     if report.state != "READY":
         raise RuntimeError("epoch initialization did not reach READY")

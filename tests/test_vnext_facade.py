@@ -122,12 +122,13 @@ def test_database_admin_facade_initializes_retries_and_fully_checks_fresh_epoch(
     checked = facade.check()
 
     assert initialized.state == "READY"
-    assert initialized.transitioned_to_ready
-    assert not initialized.resumed_build
-    assert initialized.bootstrap_seed_ids
+    assert initialized.outcome.value == "created"
+    assert initialized.activation_audit is not None
+    assert initialized.activation_audit.transitioned_to_ready
+    assert initialized.activation_audit.bootstrap_seed_ids
     assert retried.state == "READY"
-    assert retried.resumed_build
-    assert not retried.transitioned_to_ready
+    assert retried.outcome.value == "already_ready"
+    assert retried.activation_audit is None
     assert checked.state == "READY"
     assert not checked.transitioned_to_ready
 

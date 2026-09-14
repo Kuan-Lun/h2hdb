@@ -358,8 +358,15 @@ Schema變更依序進行：
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為
   `READY`。
 - Interrupted run只可恢復相同 manifest-bound `BUILDING` epoch；`READY`重跑
-  只驗證，不修改 data-plane schema。
-- Previous、foreign或 drifted database必須拒絕；重建從新的空 database開始。
+  `migrate`/`initialize()`只做固定成本、read-only control shape與
+  epoch/version/manifest marker admission，回報 `already_ready`，不得宣稱
+  完整 audit。只有 created/resumed結果含本次完整 activation audit。
+- BUILDING初始化保留每個 generated slice的 exact object/shape驗證與最終
+  semantic驗證前後的 fresh closed-world inventory；不得信任跨次執行快取。
+- Previous、foreign或 malformed control必須拒絕，database error不得視為
+  empty；READY marker admission不證明 data-plane完整，schema/data drift由
+  明確 `check`完整拒絕。Consumers啟動仍須獨立完整 audit，不能信任另一程序
+  的成功結果。重建從新的空 database開始。
 - 每個 production SQL relation identifier都必須由 `physical.toml`、
   `operational_physical.toml`或唯一 epoch-control relation接納。Formal BCNF通過
   不代表可以發布第二套未 manifest的 SQL schema。

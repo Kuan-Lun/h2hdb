@@ -13,6 +13,7 @@ from h2hdb import (
     open_database,
 )
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.domain import SchemaProvisioningOutcome
 from h2hdb.repository import RepositoryContext
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 
@@ -145,11 +146,13 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     assert initialized.epoch == ARTIFACT["epoch"] == 3
     assert initialized.schema_version == ARTIFACT["schema_version"] == 6
     assert initialized.state == "READY"
-    assert initialized.transitioned_to_ready
+    assert initialized.outcome is SchemaProvisioningOutcome.CREATED
+    assert initialized.activation_audit is not None
 
     replayed = admin.initialize()
     assert replayed.state == "READY"
-    assert not replayed.transitioned_to_ready
+    assert replayed.outcome is SchemaProvisioningOutcome.ALREADY_READY
+    assert replayed.activation_audit is None
     assert replayed.manifest_sha256 == initialized.manifest_sha256
 
     read_only_config = _read_only(config)

@@ -7,18 +7,20 @@ construction and validation own one connector and delegate serialization to
 
 from __future__ import annotations
 
-__all__ = ["SchemaEpochReadiness", "VNextSchemaAdmin"]
+__all__ = ["VNextSchemaAdmin"]
 
-from dataclasses import dataclass
-
-from .domain import StorageInstanceBinding
+from .domain import (
+    SchemaEpochReadiness,
+    SchemaEpochReport,
+    SchemaProvisioningReport,
+    StorageInstanceBinding,
+)
 from .repository import RepositoryContext
 from .schema_epoch import (
     SCHEMA_EPOCH_CONTROL_TABLE,
     SchemaEpochAdmissionError,
     SchemaEpochDefinition,
     SchemaEpochProvider,
-    SchemaEpochReport,
     SchemaEpochValidationError,
     run_mariadb_schema_epoch,
     run_sqlite_schema_epoch,
@@ -34,26 +36,14 @@ from .vnext_storage_instance_repository import (
 from .vnext_transaction import VNextUnitOfWork
 
 
-@dataclass(frozen=True, slots=True)
-class SchemaEpochReadiness:
-    """Exact durable READY marker for the injected v3 schema manifest."""
-
-    epoch: int
-    schema_version: int
-    state: str
-    manifest_sha256: str
-    started_at: int
-    ready_at: int
-
-
 class VNextSchemaAdmin:
     """Administer the sole epoch-3 production schema."""
 
     def __init__(self, context: RepositoryContext) -> None:
         self._context = context
 
-    def initialize(self) -> SchemaEpochReport:
-        """Create/resume epoch v3, or fully validate an existing READY epoch."""
+    def initialize(self) -> SchemaProvisioningReport:
+        """Provision epoch v3; an existing READY marker does not imply a full audit."""
 
         resolved, _ = self._resolve_provider()
         with self._context.SQLConnector() as connector:
@@ -139,7 +129,7 @@ class VNextSchemaAdmin:
 
     def _run(
         self, connector: SQLConnector, provider: SchemaEpochProvider
-    ) -> SchemaEpochReport:
+    ) -> SchemaProvisioningReport:
         if self._context.sql_type == "sqlite":
             return run_sqlite_schema_epoch(connector, provider)
         if self._context.sql_type == "mariadb":

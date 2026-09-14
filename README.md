@@ -111,7 +111,7 @@ Choose the operation from database state:
 | --- | --- |
 | Truly empty database | Run `migrate` to construct epoch 3/schema v6 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
-| Matching `READY` epoch | Run read-only `check` for the full audit |
+| Matching `READY` epoch | `migrate` reports `already_ready` using marker admission; `check` performs the full audit |
 | Consumer startup | Run `check`; never initialize schema |
 | Frequent readiness probe | Run the O(1) read-only `ready` check |
 | Previous, foreign, or drifted schema | Create a new empty database and rebuild |
@@ -121,6 +121,55 @@ validator and recurring writer binding before it opens or mutates a database;
 the public administration API does not accept a substitute provider. `check`
 holds a read transaction while validating the complete `READY` schema;
 `ready` validates only the exact epoch/version/manifest marker.
+
+`migrate` is provisioning, not an implicit audit of an existing database. A
+matching `READY` control has a read-only, fixed-cost admission path and reports
+`outcome=already_ready`, `audit=not_performed`. Empty databases and matching
+interrupted `BUILDING` epochs execute all generated DDL/bootstrap slices and
+complete the structural, bootstrap and activation semantic checks before
+transitioning to `READY`. Each slice still validates its exact objects; fresh
+closed-world inventories bracket final validation instead of scanning the
+entire namespace after every DDL statement. Recovery never reuses an inventory
+from a previous attempt. Invalid controls, foreign manifests, unreadable state
+and database errors fail closed; a failed probe is never treated as empty.
+
+This changes the public `initialize()` result to `SchemaProvisioningReport`.
+Its `outcome` is `SchemaProvisioningOutcome.CREATED`, `.RESUMED` or
+`.ALREADY_READY`. Only the first two outcomes carry a `SchemaEpochReport` in
+`activation_audit`; the last carries `None`. Consumers must still perform
+`check()` or use `open_database()` before accepting work. An exact marker does
+not detect later data-plane/schema drift or transfer a full audit between
+processes. The existing deployment sequence `migrate` followed by the resident's
+`check()` therefore performs one full consumer audit on restart. Scripts that
+previously relied on `migrate` for a full audit must explicitly follow it with
+`check`; no flag silently preserves the old behavior. This API/CLI semantic
+change does not alter the epoch, schema manifest, stored data or external
+archives, so existing databases and CBZs require no rebuild.
+
+For an old **standalone full-audit admin script**, the optional one-use converter
+creates a separate file without executing commands or changing the original:
+
+```bash
+python scripts/convert-schema-admin.py --input old-admin.sh --output reviewed-admin.sh
+```
+
+It accepts exactly one literal `python[3[.VERSION]] -m h2hdb migrate --config PATH`
+command, with optional comments, blank lines and an initial `set -e`, `set -eu`
+or `set -euo pipefail`. It produces `migrate ... && check ...`, preserving
+failure status and running the audit only after successful provisioning. It
+rejects variables, shell expansions, `exec`, redirects, pipelines, conditionals,
+multiple commands and existing output paths. Review the generated file before
+using it; more complex scripts require a manual edit. The current workspace's
+`migrate` → ingest resident startup sequence already performs the resident's
+full `check` and **does not need this converter**. This is an optional script
+conversion, not a database or CBZ migration.
+
+Python callers that previously interpreted `initialize()` as a full audit must
+explicitly call `admin.initialize(); report = admin.check()` and consume that
+`SchemaEpochReport`. Callers that only provision should consume the new
+`SchemaProvisioningReport`. Arbitrary Python control flow and result consumers
+cannot be reliably transformed by the shell converter and require this manual
+API update.
 
 The generated schema is shipped as a small Python loader plus a raw, bounded
 protocol-5 pickle resource; the wheel or sdist compressor handles distribution
@@ -150,7 +199,8 @@ from h2hdb import VNextDatabaseAdminFacade, load_config
 
 config = load_config("config.json")
 admin = VNextDatabaseAdminFacade(config)
-admin.initialize()  # deployment init job only
+provisioned = admin.initialize()  # deployment provisioning only
+print(provisioned.outcome, provisioned.activation_audit)
 admin.check()  # full read-only audit
 admin.check_readiness()  # lightweight probe
 # A storage-owning integration supplies its durable filesystem/object-store UUID.
@@ -474,8 +524,8 @@ reject symbolic links and special files before exporting container-written data:
   --ingest-image local/acceptance-ingest:tested \
   --opds-image local/acceptance-opds:tested \
   --mariadb-image mariadb:10.11.11 \
-  --output /tmp/h2hdb-acceptance-128 \
-  --base-count 128 --append-count 100 --pages 2 --lifecycle --http-artifacts
+  --output /tmp/h2hdb-acceptance-small \
+  --base-count 2 --append-count 2 --pages 2 --http-artifacts
 ```
 
 The script pins local image identities, replaces production resources with
@@ -488,8 +538,12 @@ and the expected catalog; a replayed COMPLETE receipt does not prove new analysi
 `--http-artifacts` also downloads the first and last GID CBZs through OPDS after
 each scenario, checking search identity, byte size, SHA-256, and Range responses.
 
-Run increasing `--base-count` values sequentially with the same page profile to
-measure growth. `--instrumented` adds test-only startup, SQL, render, and explicit
+The default 2+2 galleries provide a short development loop for repeated startup
+audits and per-record SQL/journal work. Dedicated fixtures test shared-image
+selection and 16/17-value, 128/129-row and byte-budget boundaries. After a group
+of optimizations, run increasing `--base-count` values sequentially with the same
+page profile to measure growth; small-run timings alone do not establish scaling.
+`--instrumented` adds test-only startup, SQL, render, and explicit
 Python fsync observations. Run it separately from the uninstrumented baseline;
 its observer cost is not free. `--faults --instrumented` additionally interrupts
 a real durable library installation with SIGTERM and SIGKILL, checks OPDS fencing,

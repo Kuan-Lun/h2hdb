@@ -30,7 +30,6 @@ __all__ = [
     "SchemaEpochGate",
     "SchemaEpochGateError",
     "SchemaEpochProvider",
-    "SchemaEpochReport",
     "SchemaEpochRunner",
     "SchemaSeedStatement",
     "SchemaEpochValidationError",
@@ -55,6 +54,11 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, NoReturn, Protocol
 
+from .domain import (
+    SchemaEpochReport,
+    SchemaProvisioningOutcome,
+    SchemaProvisioningReport,
+)
 from .sql_connector import SQLConnector
 
 V_NEXT_SCHEMA_EPOCH = 3
@@ -1002,18 +1006,6 @@ class SQLiteSchemaEpochCatalog:
             )
 
 
-@dataclass(frozen=True, slots=True)
-class SchemaEpochReport:
-    epoch: int
-    schema_version: int
-    state: str
-    manifest_sha256: str
-    bootstrap_seed_ids: tuple[str, ...]
-    semantic_obligation_ids: tuple[str, ...]
-    resumed_build: bool
-    transitioned_to_ready: bool
-
-
 class SchemaEpochRunner:
     def __init__(
         self,
@@ -1028,12 +1020,26 @@ class SchemaEpochRunner:
 
     def run(
         self, connector: SQLConnector, provider: SchemaEpochProvider
-    ) -> SchemaEpochReport:
+    ) -> SchemaProvisioningReport:
         definition = provider.definition
         # Accessing the computed property also ensures all identity inputs were
         # validated by SchemaEpochDefinition before touching the database.
         manifest_sha256 = definition.manifest_sha256
         allowed_objects = definition.expected_objects | {self._catalog.control_object}
+
+        # READY provisioning is a read-only marker admission, not a full
+        # audit. An absent or valid BUILDING marker only selects construction;
+        # unreadable, foreign or malformed controls never become "empty".
+        with connector.read_transaction():
+            if connector.check_table_exists(SCHEMA_EPOCH_CONTROL_TABLE):
+                self._catalog.validate_control_table(connector)
+                state = self._read_and_validate_control(
+                    connector, definition, manifest_sha256, allow_empty=True
+                )
+                if state == "READY":
+                    return self._provisioning_report(
+                        definition, SchemaProvisioningOutcome.ALREADY_READY
+                    )
 
         if self._gate is None:
             raise SchemaEpochGateError(
@@ -1072,43 +1078,22 @@ class SchemaEpochRunner:
                         connector, definition, manifest_sha256
                     )
 
-            self._assert_admissible_objects(connector, allowed_objects)
             state = self._read_and_validate_control(
                 connector, definition, manifest_sha256
             )
             if state == "READY":
-                obligation_ids = self._validate_ready_schema(
-                    connector,
-                    provider,
-                    definition,
-                    validate_genesis=False,
-                    semantic_phase=SchemaSemanticValidationPhase.READY,
-                )
-                return SchemaEpochReport(
-                    epoch=definition.epoch,
-                    schema_version=definition.schema_version,
-                    state="READY",
-                    manifest_sha256=manifest_sha256,
-                    bootstrap_seed_ids=tuple(
-                        seed.seed_id for seed in definition.bootstrap_seeds
-                    ),
-                    semantic_obligation_ids=obligation_ids,
-                    resumed_build=resumed_build,
-                    transitioned_to_ready=False,
+                # Another provisioner may have completed after the initial
+                # read transaction. Re-admit its marker under the construction gate.
+                return self._provisioning_report(
+                    definition, SchemaProvisioningOutcome.ALREADY_READY
                 )
 
+            self._reject_unexpected_objects(existing_objects, allowed_objects)
             for schema_slice in definition.slices:
                 for statement in schema_slice.statements:
                     connector.execute(statement.sql)
-                    actual_objects = self._assert_admissible_objects(
-                        connector, allowed_objects
-                    )
-                    if statement.creates not in actual_objects:
-                        raise SchemaEpochValidationError(
-                            f"Statement {statement.statement_id!r} did not create "
-                            f"its declared {statement.creates.kind.value} "
-                            f"{statement.creates.name!r}"
-                        )
+                # The provider checks every declared object and exact shape in
+                # this slice. Do not rescan the whole database after each DDL.
                 provider.validate_slice(connector, schema_slice)
 
             _execute_bootstrap_seeds(connector, definition.bootstrap_seeds)
@@ -1144,7 +1129,7 @@ class SchemaEpochRunner:
                 raise SchemaEpochValidationError(
                     "The compare-and-set transition to READY did not succeed"
                 )
-            return SchemaEpochReport(
+            audit = SchemaEpochReport(
                 epoch=definition.epoch,
                 schema_version=definition.schema_version,
                 state="READY",
@@ -1156,6 +1141,29 @@ class SchemaEpochRunner:
                 resumed_build=resumed_build,
                 transitioned_to_ready=True,
             )
+
+            return self._provisioning_report(
+                definition,
+                SchemaProvisioningOutcome.RESUMED
+                if resumed_build
+                else SchemaProvisioningOutcome.CREATED,
+                audit,
+            )
+
+    @staticmethod
+    def _provisioning_report(
+        definition: SchemaEpochDefinition,
+        outcome: SchemaProvisioningOutcome,
+        audit: SchemaEpochReport | None = None,
+    ) -> SchemaProvisioningReport:
+        return SchemaProvisioningReport(
+            epoch=definition.epoch,
+            schema_version=definition.schema_version,
+            state="READY",
+            manifest_sha256=definition.manifest_sha256,
+            outcome=outcome,
+            activation_audit=audit,
+        )
 
     def validate_ready(
         self,
@@ -1241,53 +1249,77 @@ class SchemaEpochRunner:
         allowed_objects: frozenset[SchemaObject],
     ) -> frozenset[SchemaObject]:
         actual_objects = self._catalog.list_objects(connector)
+        self._reject_unexpected_objects(actual_objects, allowed_objects)
+        return actual_objects
+
+    @staticmethod
+    def _reject_unexpected_objects(
+        actual_objects: frozenset[SchemaObject],
+        allowed_objects: frozenset[SchemaObject],
+    ) -> None:
         unexpected = actual_objects - allowed_objects
         if unexpected:
             raise SchemaEpochAdmissionError(
                 "The database contains objects outside this epoch manifest: "
                 f"{_format_objects(unexpected)}"
             )
-        return actual_objects
 
     def _read_and_validate_control(
         self,
         connector: SQLConnector,
         definition: SchemaEpochDefinition,
         manifest_sha256: str,
-    ) -> str:
+        *,
+        allow_empty: bool = False,
+    ) -> str | None:
         rows = connector.fetch_all("""
             SELECT epoch, schema_version, state, manifest_sha256,
                    started_at, ready_at
             FROM h2hdb_schema_epoch
             WHERE singleton_id = 1
+            LIMIT 2
             """)
-        if len(rows) != 1:
+        if not rows and allow_empty:
+            return None
+        if len(rows) != 1 or len(rows[0]) != 6:
             raise SchemaEpochAdmissionError(
                 "The schema epoch control relation must contain exactly one row"
             )
         epoch, schema_version, state, stored_manifest, started_at, ready_at = rows[0]
-        if int(epoch) != definition.epoch:
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise SchemaEpochValidationError("Schema epoch identity is invalid")
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+            raise SchemaEpochValidationError("Schema epoch version is invalid")
+        if epoch != definition.epoch:
             raise SchemaEpochDriftError(
                 f"Database schema epoch is {epoch}, expected {definition.epoch}"
             )
-        if int(schema_version) != definition.schema_version:
+        if schema_version != definition.schema_version:
             raise SchemaEpochDriftError(
                 "Database schema version is "
                 f"{schema_version}, expected {definition.schema_version}"
             )
         if stored_manifest != bytes.fromhex(manifest_sha256):
             raise SchemaEpochDriftError(
-                "Database schema manifest differs from the injected provider"
+                "Database schema manifest differs from the expected provider"
             )
         if state not in {"BUILDING", "READY"}:
             raise SchemaEpochValidationError(
                 f"Unsupported schema epoch state: {state!r}"
             )
-        if not isinstance(started_at, int) or started_at < 0:
+        if (
+            not isinstance(started_at, int)
+            or isinstance(started_at, bool)
+            or started_at < 0
+        ):
             raise SchemaEpochValidationError("Schema epoch started_at is invalid")
         if (state == "BUILDING" and ready_at is not None) or (
             state == "READY"
-            and (not isinstance(ready_at, int) or ready_at < started_at)
+            and (
+                not isinstance(ready_at, int)
+                or isinstance(ready_at, bool)
+                or ready_at < started_at
+            )
         ):
             raise SchemaEpochValidationError(
                 "Schema epoch state and ready_at are inconsistent"
@@ -1394,7 +1426,7 @@ def run_sqlite_schema_epoch(
     provider: SchemaEpochProvider,
     *,
     clock: Callable[[], datetime] | None = None,
-) -> SchemaEpochReport:
+) -> SchemaProvisioningReport:
     runner = SchemaEpochRunner(
         gate=SQLiteImmediateSchemaEpochGate(),
         catalog=SQLiteSchemaEpochCatalog(),
@@ -1423,8 +1455,8 @@ def run_mariadb_schema_epoch(
     clock: Callable[[], datetime] | None = None,
     lock_timeout_seconds: int = 60,
     gate_name: str | None = None,
-) -> SchemaEpochReport:
-    """Build or validate vNext while one connection-scoped MariaDB lock is held."""
+) -> SchemaProvisioningReport:
+    """Provision vNext, acquiring a connection-scoped lock only for construction."""
 
     if gate_name is None:
         database_row = connector.fetch_one("SELECT DATABASE()")

@@ -81,6 +81,8 @@ __all__ = [
     "PreparedThumbnailResource",
     "SchemaEpochReadiness",
     "SchemaEpochReport",
+    "SchemaProvisioningOutcome",
+    "SchemaProvisioningReport",
     "TagObservation",
     "StorageObjectDescriptor",
     "StorageObjectKey",
@@ -198,6 +200,10 @@ from .domain import (
     PreparedPageResource,
     PreparedPublicationPresentation,
     PreparedThumbnailResource,
+    SchemaEpochReadiness,
+    SchemaEpochReport,
+    SchemaProvisioningOutcome,
+    SchemaProvisioningReport,
     StorageInstanceBinding,
     StorageObjectDescriptor,
     StorageObjectKey,
@@ -231,8 +237,6 @@ from .ports import (
     VNextIngestSourceAdapter,
     VNextSourcePreparationObserver,
 )
-from .schema_admin import SchemaEpochReadiness
-from .schema_epoch import SchemaEpochReport
 from .source_errors import VNextSourceChangedError, VNextSourceDeferredError
 from .vnext_download_ingest_repository import (
     DownloadHandoff,

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from h2hdb.domain import SchemaProvisioningOutcome
 from h2hdb.schema_epoch import (
     SCHEMA_EPOCH_CONTROL_TABLE,
     SchemaCreateStatement,
@@ -23,6 +24,7 @@ from h2hdb.schema_epoch import (
     SchemaSlice,
     SQLiteSchemaEpochCatalog,
     run_sqlite_schema_epoch,
+    validate_sqlite_schema_epoch,
 )
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -289,7 +291,7 @@ class NoOpReadyCASConnector(SQLiteConnector):
         super().execute(query, data)
 
 
-def test_empty_database_builds_ready_and_ready_rerun_only_validates(
+def test_empty_database_builds_and_ready_rerun_only_probes_marker(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "epoch.sqlite3"
@@ -302,12 +304,15 @@ def test_empty_database_builds_ready_and_ready_rerun_only_validates(
         connector.close()
 
     assert first.state == "READY"
-    assert first.resumed_build is False
-    assert first.transitioned_to_ready is True
-    assert first.semantic_obligation_ids == provider.definition.semantic_obligation_ids
+    assert first.outcome is SchemaProvisioningOutcome.CREATED
+    assert first.activation_audit is not None
+    assert (
+        first.activation_audit.semantic_obligation_ids
+        == provider.definition.semantic_obligation_ids
+    )
     assert second.state == "READY"
-    assert second.resumed_build is True
-    assert second.transitioned_to_ready is False
+    assert second.outcome is SchemaProvisioningOutcome.ALREADY_READY
+    assert second.activation_audit is None
 
 
 @pytest.mark.parametrize(
@@ -374,8 +379,8 @@ def test_committed_partial_build_resumes_from_slice_one(
         connector.close()
 
     assert visited_slices == ["identity", "membership"]
-    assert report.resumed_build is True
-    assert report.transitioned_to_ready is True
+    assert report.outcome is SchemaProvisioningOutcome.RESUMED
+    assert report.activation_audit is not None
 
 
 @pytest.mark.parametrize("fail_at", [1, 2, 3, 4])
@@ -504,15 +509,23 @@ def test_ready_missing_or_extra_object_is_rejected(tmp_path: Path) -> None:
     try:
         run_sqlite_schema_epoch(connector, provider)
         connector.execute("DROP INDEX vnext_epoch_children_parent_idx")
-        with pytest.raises(SchemaEpochValidationError, match="missing"):
-            run_sqlite_schema_epoch(connector, provider)
+        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        with (
+            connector.read_transaction(),
+            pytest.raises(SchemaEpochValidationError, match="missing"),
+        ):
+            validate_sqlite_schema_epoch(connector, provider)
 
         connector.execute(INDEX_STATEMENT.sql)
         connector.execute(
             "CREATE INDEX unexpected_idx ON vnext_epoch_parents (payload)"
         )
-        with pytest.raises(SchemaEpochAdmissionError, match="outside"):
-            run_sqlite_schema_epoch(connector, provider)
+        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        with (
+            connector.read_transaction(),
+            pytest.raises(SchemaEpochAdmissionError, match="outside"),
+        ):
+            validate_sqlite_schema_epoch(connector, provider)
     finally:
         connector.close()
 
@@ -605,8 +618,12 @@ def test_committed_bootstrap_seed_replays_exactly_once(tmp_path: Path) -> None:
     finally:
         connector.close()
 
-    assert report.transitioned_to_ready is True
-    assert report.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
+    assert report.outcome in {
+        SchemaProvisioningOutcome.CREATED,
+        SchemaProvisioningOutcome.RESUMED,
+    }
+    assert report.activation_audit is not None
+    assert report.activation_audit.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
     assert rows == [(0, b"\x00" * 32, 1)]
 
 
@@ -621,30 +638,34 @@ def test_ready_validation_does_not_require_mutable_seed_row_to_stay_at_genesis(
             "UPDATE vnext_epoch_parents SET payload = %s WHERE parent_id = 0",
             (b"m" * 32,),
         )
-        report = run_sqlite_schema_epoch(connector, provider)
+        with connector.read_transaction():
+            report = validate_sqlite_schema_epoch(connector, provider)
         current = connector.fetch_one(
             "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
         )
     finally:
         connector.close()
 
-    assert report.transitioned_to_ready is False
+    assert not report.transitioned_to_ready
     assert report.bootstrap_seed_ids == (PARENT_SEED.seed_id,)
     assert current == (b"m" * 32,)
 
 
-def test_ready_rerun_uses_only_recurring_semantic_obligations(
+def test_explicit_ready_audit_uses_only_recurring_semantic_obligations(
     tmp_path: Path,
 ) -> None:
     connector = _connected(tmp_path / "semantic-validation-lifecycle.sqlite3")
     provider = FakeProvider(_definition())
     try:
         first = run_sqlite_schema_epoch(connector, provider)
-        second = run_sqlite_schema_epoch(connector, provider)
+        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        with connector.read_transaction():
+            second = validate_sqlite_schema_epoch(connector, provider)
     finally:
         connector.close()
 
-    assert first.semantic_obligation_ids == (
+    assert first.activation_audit is not None
+    assert first.activation_audit.semantic_obligation_ids == (
         "canonical-digest-integrity",
         "versioned-leaf-byte-bounds",
         "singleton-seeds",
@@ -886,9 +907,9 @@ def test_two_sqlite_runners_serialize_and_second_revalidates_ready(
     assert errors == []
     first_report = reports["first"]
     second_report = reports["second"]
-    assert getattr(first_report, "transitioned_to_ready") is True
-    assert getattr(second_report, "transitioned_to_ready") is False
-    assert getattr(second_report, "resumed_build") is True
+    assert getattr(first_report, "outcome") is SchemaProvisioningOutcome.CREATED
+    assert getattr(second_report, "outcome") is SchemaProvisioningOutcome.ALREADY_READY
+    assert getattr(second_report, "activation_audit") is None
 
 
 @pytest.mark.parametrize(
@@ -977,3 +998,41 @@ def test_epoch_requires_at_least_one_semantic_obligation() -> None:
             activation_semantic_obligation_ids=(),
             ready_semantic_obligation_ids=("ready",),
         )
+
+
+@pytest.mark.parametrize("injection_phase", ["slice", "global"])
+def test_build_final_inventories_reject_new_objects_and_retry_is_fresh(
+    tmp_path: Path, injection_phase: str
+) -> None:
+    connector = _connected(tmp_path / "fresh-inventory.sqlite3")
+    definition = _definition()
+    _initialize_building(connector, definition, completed_statement_count=1)
+
+    class InjectingProvider(FakeProvider):
+        def validate_slice(
+            self, connector: SQLConnector, schema_slice: SchemaSlice
+        ) -> None:
+            super().validate_slice(connector, schema_slice)
+            if injection_phase == "slice" and schema_slice.slice_id == "identity":
+                connector.execute("CREATE TABLE unexpected_during_build (value INT)")
+
+        def validate_global(self, connector: SQLConnector) -> None:
+            super().validate_global(connector)
+            if injection_phase == "global":
+                connector.execute("CREATE TABLE unexpected_during_build (value INT)")
+
+    try:
+        with pytest.raises(
+            (SchemaEpochAdmissionError, SchemaEpochValidationError),
+            match="outside|closed-world",
+        ):
+            run_sqlite_schema_epoch(connector, InjectingProvider(definition))
+        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+            "BUILDING",
+        )
+        assert not connector.check_table_exists("unexpected_during_build")
+        report = run_sqlite_schema_epoch(connector, FakeProvider(definition))
+        assert report.outcome is SchemaProvisioningOutcome.RESUMED
+        assert report.activation_audit is not None
+    finally:
+        connector.close()

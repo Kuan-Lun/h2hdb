@@ -43,11 +43,13 @@ from .domain import (
     CatalogTagFilter,
     CatalogTagPage,
     DownloadCandidateState,
+    SchemaEpochReadiness,
+    SchemaEpochReport,
+    SchemaProvisioningReport,
     StorageInstanceBinding,
 )
 from .repository import RepositoryContext
-from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
-from .schema_epoch import SchemaEpochReport
+from .schema_admin import VNextSchemaAdmin
 from .sql_connector import SQLConnector
 from .vnext_catalog_reader_repository import (
     VNextCatalogReaderRepository,
@@ -93,7 +95,7 @@ class VNextDatabaseAdminFacade:
         """Release idle sessions and reject later administration calls."""
         self.__context.close()
 
-    def initialize(self) -> SchemaEpochReport:
+    def initialize(self) -> SchemaProvisioningReport:
         return self.__admin.initialize()
 
     def check(self) -> SchemaEpochReport:

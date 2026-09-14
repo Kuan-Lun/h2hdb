@@ -2170,6 +2170,9 @@ symbol = "test_each_provider_statement_fault_rolls_back_and_rerun_converges"
 path = "tests/test_schema_epoch.py"
 symbol = "test_validator_failure_never_publishes_ready"
 [[evidence.location]]
+path = "tests/test_schema_epoch.py"
+symbol = "test_build_final_inventories_reject_new_objects_and_retry_is_fresh"
+[[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
 symbol = "test_mariadb_epoch_resumes_committed_partial_ddl"
 
@@ -2178,11 +2181,11 @@ id = "integration.sqlite.schema-epoch"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates every generated SQLite seed and resolved writer binding."
+claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, explicit read-only READY audits, marker-only provisioning replay, and committed retry convergence; the default generated provider additionally initializes, replays and validates every generated SQLite seed and resolved writer binding."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
-symbol = "test_empty_database_builds_ready_and_ready_rerun_only_validates"
+symbol = "test_empty_database_builds_and_ready_rerun_only_probes_marker"
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
 symbol = "test_committed_partial_build_resumes_from_slice_one"
@@ -3304,17 +3307,23 @@ id = "runtime.production.canonical-atomic-batch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "Publication preparation retains bounded disk-backed lookahead plans without advancing uncommitted authority. Multi-value single-leaf batches validate row/byte caps, common owner and candidate/generation/stage fences, authorize once, lock the candidate checkpoint, then allocate, validate each exact page and seal in sorted digest order within one managed transaction. Fresh preparation verifies retained seals before advancing its local cursor."
-assumptions = ["Large or singleton values retain the bounded individual page protocol. The connector provides atomic transaction semantics and unchanged canonical validators supply byte/family integrity."]
+claim = "Publication preparation retains bounded disk-backed lookahead plans without advancing uncommitted authority. Single-leaf batches independently validate sealed bytes or prepare new pages, enforce row/byte caps and common candidate/generation/stage fences, authorize once and lock the candidate checkpoint. Sealed claims freshly compare allocation and root authority before grouped insertion; new values allocate, validate and seal in sorted digest order in the same managed transaction. Fresh preparation revalidates retained sealed bytes before advancing its local cursor."
+assumptions = ["Multi-page values retain the bounded individual page protocol. The connector provides atomic transaction semantics and canonical validators supply byte/family integrity."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_ingest_publication.py"
 symbol = "_PublicationPlanCache.lookahead_canonical_plan"
 [[evidence.location]]
 path = "src/h2hdb/vnext_ingest_publication.py"
-symbol = "_prepare_small_canonical_batch"
+symbol = "_prepare_canonical_window"
 [[evidence.location]]
 path = "src/h2hdb/vnext_ingest_publication.py"
 symbol = "_commit_canonical_batch"
+[[evidence.location]]
+path = "src/h2hdb/vnext_canonical_value_repository.py"
+symbol = "_claim_sealed_values_authorized"
+[[evidence.location]]
+path = "src/h2hdb/vnext_canonical_value_family.py"
+symbol = "load_allocation_families"
 
 [[evidence]]
 id = "fault.production.canonical-atomic-batch"
@@ -3344,6 +3353,18 @@ symbol = "test_batch_claim_lock_order_follows_candidate_checkpoint_and_sorted_di
 [[evidence.location]]
 path = "tests/test_vnext_publication_canonical_batch.py"
 symbol = "test_prepare_bounds_lookahead_and_keeps_uncommitted_cursor_and_borrowers"
+[[evidence.location]]
+path = "tests/test_vnext_publication_sealed_batch.py"
+symbol = "test_existing_window_and_claim_sql_calls_are_per_batch_not_per_value"
+[[evidence.location]]
+path = "tests/test_vnext_publication_sealed_batch.py"
+symbol = "test_seventeen_existing_values_are_claimed_in_two_bounded_windows"
+[[evidence.location]]
+path = "tests/test_vnext_publication_sealed_batch.py"
+symbol = "test_existing_window_rejects_corrupt_durable_values"
+[[evidence.location]]
+path = "tests/test_vnext_publication_sealed_batch.py"
+symbol = "test_existing_claims_reject_a_stale_fence_before_insertion"
 
 [[evidence]]
 id = "integration.production.canonical-atomic-batch"
@@ -3361,6 +3382,9 @@ symbol = "test_committed_response_loss_replays_from_fresh_plans_without_changing
 [[evidence.location]]
 path = "tests/test_vnext_publication_canonical_batch.py"
 symbol = "test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries"
+[[evidence.location]]
+path = "tests/test_vnext_publication_sealed_batch.py"
+symbol = "test_existing_claim_batch_recovers_atomically_without_rewriting_values"
 
 [[evidence]]
 id = "lean.operational.directory-batch-matching"

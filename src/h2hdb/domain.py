@@ -128,6 +128,10 @@ __all__ = [
     "FileHashCacheEntry",
     "FileHashCacheKey",
     "SchemaCompatibility",
+    "SchemaEpochReadiness",
+    "SchemaEpochReport",
+    "SchemaProvisioningOutcome",
+    "SchemaProvisioningReport",
     "TagObservation",
     "VNextArtifactAdapterPolicy",
     "VNextLibraryActivationItem",
@@ -244,6 +248,50 @@ def _validate_build_id(value: str) -> None:
         raise ValueError("Catalog build ID must be a UUID") from error
     if parsed.hex != value:
         raise ValueError("Catalog build ID must be a normalized 32-character UUID")
+
+
+class SchemaProvisioningOutcome(StrEnum):
+    CREATED = "created"
+    RESUMED = "resumed"
+    ALREADY_READY = "already_ready"
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaEpochReadiness:
+    """Exact durable READY marker for the wheel-owned schema manifest."""
+
+    epoch: int
+    schema_version: int
+    state: str
+    manifest_sha256: str
+    started_at: int
+    ready_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaEpochReport:
+    """Completed structural and semantic schema audit."""
+
+    epoch: int
+    schema_version: int
+    state: str
+    manifest_sha256: str
+    bootstrap_seed_ids: tuple[str, ...]
+    semantic_obligation_ids: tuple[str, ...]
+    resumed_build: bool
+    transitioned_to_ready: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaProvisioningReport:
+    """Provisioning outcome; an existing READY marker carries no audit claim."""
+
+    epoch: int
+    schema_version: int
+    state: str
+    manifest_sha256: str
+    outcome: SchemaProvisioningOutcome
+    activation_audit: SchemaEpochReport | None
 
 
 @dataclass(frozen=True, slots=True)

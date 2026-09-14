@@ -529,12 +529,10 @@ def test_sqlite_committed_seed_prefix_resumes_to_the_exact_ready_seed_set(
     finally:
         connector.close()
     report = VNextDatabaseAdminFacade(config).initialize()
-    assert (
-        report.state == "READY"
-        and report.resumed_build
-        and report.transitioned_to_ready
-    )
-    assert report.bootstrap_seed_ids == tuple(
+    assert report.state == "READY" and report.outcome.value == "resumed"
+    assert report.activation_audit is not None
+    assert report.activation_audit.transitioned_to_ready
+    assert report.activation_audit.bootstrap_seed_ids == tuple(
         seed.seed_id for seed in sqlite_definition.bootstrap_seeds
     )
     provider = GeneratedVNextSchemaProvider("sqlite")
@@ -543,7 +541,7 @@ def test_sqlite_committed_seed_prefix_resumes_to_the_exact_ready_seed_set(
         with connector.read_transaction():
             assert (
                 tuple(provider.validate_bootstrap_seeds(connector))
-                == report.bootstrap_seed_ids
+                == report.activation_audit.bootstrap_seed_ids
             )
     finally:
         connector.close()
@@ -612,9 +610,10 @@ def test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set
     finally:
         connector.close()
     resumed = VNextDatabaseAdminFacade(mariadb_config).initialize()
-    assert resumed.state == "READY" and resumed.resumed_build
-    assert resumed.transitioned_to_ready
-    assert resumed.bootstrap_seed_ids == tuple(
+    assert resumed.state == "READY" and resumed.outcome.value == "resumed"
+    assert resumed.activation_audit is not None
+    assert resumed.activation_audit.transitioned_to_ready
+    assert resumed.activation_audit.bootstrap_seed_ids == tuple(
         seed.seed_id for seed in _MARIADB_DEFINITION.bootstrap_seeds
     )
     assert full_check(mariadb_config).state == "READY"
