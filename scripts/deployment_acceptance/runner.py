@@ -289,6 +289,10 @@ print(json.dumps(result))
                     row["sha256"],
                     "--size",
                     str(row["byte_length"]),
+                    # Reserve time to report exhaustion before the outer
+                    # command hard timeout, which also bounds blocking I/O.
+                    "--deadline-seconds",
+                    "45",
                 ]
             )
             reports.append(json.loads(result))

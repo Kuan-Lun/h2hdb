@@ -434,3 +434,23 @@ def test_http_download_failure_prevents_scenario_pass(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="download checksum differs"):
         acceptance.phase("fresh", lambda: None)
     assert acceptance.report["scenarios"][0]["status"] == "running"
+
+
+def test_http_probe_budget_finishes_before_outer_command_timeout(
+    tmp_path: Path,
+) -> None:
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=lambda _name: _oracle())
+    commands: list[list[str]] = []
+
+    def compose(command: list[str]) -> str:
+        commands.append(command)
+        return '{"status":"passed"}'
+
+    acceptance.compose = compose
+    reports = runner.Acceptance.verify_http_artifacts(acceptance, _oracle())
+    assert reports == [{"status": "passed"}, {"status": "passed"}]
+    assert len(commands) == 2
+    for command in commands:
+        assert command[command.index("--deadline-seconds") + 1] == "45"
+        assert "--no-range" not in command
+        assert "/acceptance/http_probe.py" in command

@@ -1,8 +1,10 @@
 """Verify actual OPDS acquisition bytes on an explicitly supplied loopback server.
 
 This opt-in tool never uses environment proxies, follows redirects, or writes
-downloaded content. The caller should also bound the process lifetime; timeout
-is the HTTP socket timeout, not an aggregate wall-clock deadline.
+downloaded content. Only the documented library-activation HTTP 503 contract
+permits another request, with every wait sharing one probe budget. The caller
+must also bound the process lifetime: the budget checks I/O boundaries and
+cannot interrupt a socket read kept alive by a continuously trickling peer.
 """
 
 from __future__ import annotations
@@ -15,10 +17,12 @@ import re
 import sys
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import dataclass, field
 from email.message import Message
 from hashlib import sha256 as sha256_digest
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import IO, Any, Protocol, cast
+from urllib.error import HTTPError
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import (
     HTTPRedirectHandler,
@@ -30,12 +34,53 @@ from urllib.request import (
 
 _JSON_LIMIT = 1024 * 1024
 _CHUNK_BYTES = 64 * 1024
+_MAINTENANCE_BODY_LIMIT = 4096
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ACQUISITION = re.compile(r"(?:^|/)acquisition(?:/open-access)?\Z")
 
 
 class ProbeError(ValueError):
     """The HTTP response did not satisfy the expected publication contract."""
+
+    def __init__(
+        self, message: str, *, maintenance_events: list[dict[str, object]] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.maintenance_events = maintenance_events or []
+
+
+@dataclass
+class _ProbeBudget:
+    socket_timeout: float
+    duration: float
+    started: float
+    maintenance_events: list[dict[str, object]] = field(default_factory=list)
+
+    def remaining(self) -> float:
+        remaining = self.duration - (perf_counter() - self.started)
+        if remaining <= 0:
+            raise ProbeError("HTTP probe deadline reached")
+        return remaining
+
+    def timeout(self) -> float:
+        return min(self.socket_timeout, self.remaining())
+
+    def wait_for_maintenance(self, phase: str) -> None:
+        event: dict[str, object] = {
+            "phase": phase,
+            "status": 503,
+            "code": "library_activating",
+            "retry_after_seconds": 1,
+            "elapsed_seconds": perf_counter() - self.started,
+            "waited_seconds": 0.0,
+        }
+        self.maintenance_events.append(event)
+        if self.remaining() <= 1:
+            raise ProbeError("HTTP probe deadline cannot accommodate Retry-After")
+        started = perf_counter()
+        sleep(1)
+        event["waited_seconds"] = perf_counter() - started
+        self.remaining()
 
 
 class _Response(Protocol):
@@ -123,26 +168,71 @@ def _request(
     opener: OpenerDirector,
     url: str,
     *,
-    timeout: float,
+    budget: _ProbeBudget,
+    phase: str,
     byte_range: str | None = None,
 ) -> _Response:
     headers = {"Accept-Encoding": "identity"}
     if byte_range is not None:
         headers["Range"] = byte_range
-    response = cast(
-        _Response, opener.open(Request(url, headers=headers), timeout=timeout)
-    )
-    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-        response.close()
-        raise ProbeError("Encoded transfer would hide the advertised CBZ bytes")
-    return response
+    while True:
+        try:
+            response = cast(
+                _Response,
+                opener.open(Request(url, headers=headers), timeout=budget.timeout()),
+            )
+        except HTTPError as error:
+            with closing(error):
+                if error.code != 503:
+                    raise
+                _require_maintenance_response(error, budget)
+            budget.wait_for_maintenance(phase)
+            continue
+        try:
+            budget.remaining()
+            if (
+                response.headers.get("Content-Encoding", "identity").lower()
+                != "identity"
+            ):
+                raise ProbeError("Encoded transfer would hide the advertised CBZ bytes")
+        except BaseException:
+            response.close()
+            raise
+        return response
 
 
-def _bounded_read(response: _Response, limit: int) -> bytes:
+def _require_maintenance_response(error: HTTPError, budget: _ProbeBudget) -> None:
+    if (
+        error.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        != "application/json"
+        or error.headers.get("Retry-After") != "1"
+        or error.headers.get("Cache-Control") != "no-store"
+        or error.headers.get("Content-Encoding", "identity").lower() != "identity"
+    ):
+        raise ProbeError("HTTP 503 does not satisfy the library-activation headers")
+    try:
+        document = json.loads(
+            _bounded_read(cast(_Response, error), _MAINTENANCE_BODY_LIMIT, budget)
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as invalid:
+        raise ProbeError("HTTP 503 has an invalid library-activation body") from invalid
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"code", "detail"}
+        or document["code"] != "library_activating"
+        or not isinstance(document["detail"], str)
+        or not document["detail"].strip()
+    ):
+        raise ProbeError("HTTP 503 is not the documented library-activation response")
+
+
+def _bounded_read(response: _Response, limit: int, budget: _ProbeBudget) -> bytes:
     chunks: list[bytes] = []
     count = 0
     while count <= limit:
+        budget.remaining()
         value = response.read(min(_CHUNK_BYTES, limit + 1 - count))
+        budget.remaining()
         if not value:
             return b"".join(chunks)
         count += len(value)
@@ -189,6 +279,7 @@ def probe(
     *,
     check_range: bool = True,
     timeout: float = 60.0,
+    deadline_seconds: float = 60.0,
 ) -> dict[str, object]:
     """Search, stream-verify one CBZ, and optionally verify its initial range."""
     base = _base(base_url)
@@ -200,15 +291,40 @@ def probe(
         raise ProbeError("Expected CBZ size must be a positive int63")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ProbeError("HTTP socket timeout must be finite and positive")
+    if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+        raise ProbeError("HTTP probe deadline must be finite and positive")
+    budget = _ProbeBudget(timeout, deadline_seconds, perf_counter())
+    try:
+        return _verify(base, gid, sha256, size, check_range=check_range, budget=budget)
+    except Exception as error:
+        if not budget.maintenance_events:
+            raise
+        raise ProbeError(
+            f"{type(error).__name__}: {error}",
+            maintenance_events=budget.maintenance_events,
+        ) from error
+
+
+def _verify(
+    base: SplitResult,
+    gid: int,
+    sha256: str,
+    size: int,
+    *,
+    check_range: bool,
+    budget: _ProbeBudget,
+) -> dict[str, object]:
     opener = build_opener(ProxyHandler({}), _NoRedirect())
-    started = perf_counter()
+    started = budget.started
     search_url = (
         urlunsplit(base) + "/opds/v2/search?" + urlencode({"query": gid, "limit": 2})
     )
-    with closing(_request(opener, search_url, timeout=timeout)) as response:
+    with closing(
+        _request(opener, search_url, budget=budget, phase="search")
+    ) as response:
         if response.status != 200:
             raise ProbeError("OPDS search did not return HTTP 200")
-        document = json.loads(_bounded_read(response, _JSON_LIMIT))
+        document = json.loads(_bounded_read(response, _JSON_LIMIT, budget))
     acquisition = _link(document, gid, size)
     acquisition_url = _acquisition_url(base, acquisition.get("href"))
     search_seconds = perf_counter() - started
@@ -217,13 +333,17 @@ def probe(
     digest = sha256_digest()
     count = 0
     prefix = bytearray()
-    with closing(_request(opener, acquisition_url, timeout=timeout)) as response:
+    with closing(
+        _request(opener, acquisition_url, budget=budget, phase="download")
+    ) as response:
         if response.status != 200:
             raise ProbeError("CBZ acquisition did not return HTTP 200")
         if response.headers.get("Content-Length") != str(size):
             raise ProbeError("CBZ Content-Length differs from its expected size")
         while count <= size:
+            budget.remaining()
             value = response.read(min(_CHUNK_BYTES, size + 1 - count))
+            budget.remaining()
             if not value:
                 break
             count += len(value)
@@ -244,7 +364,11 @@ def probe(
         end = min(31, size - 1)
         with closing(
             _request(
-                opener, acquisition_url, timeout=timeout, byte_range=f"bytes=0-{end}"
+                opener,
+                acquisition_url,
+                budget=budget,
+                phase="range",
+                byte_range=f"bytes=0-{end}",
             )
         ) as response:
             if (
@@ -255,7 +379,7 @@ def probe(
                 raise ProbeError(
                     "CBZ range response has incorrect status or extent headers"
                 )
-            selected = _bounded_read(response, end + 1)
+            selected = _bounded_read(response, end + 1, budget)
             if selected != bytes(prefix):
                 raise ProbeError(
                     "CBZ range response differs from the complete download prefix"
@@ -275,6 +399,8 @@ def probe(
         "download_seconds": download_seconds,
         "range_seconds": range_seconds,
         "total_seconds": perf_counter() - started,
+        "deadline_seconds": budget.duration,
+        "maintenance_events": budget.maintenance_events,
     }
 
 
@@ -286,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--size", required=True, type=int)
     parser.add_argument("--no-range", action="store_true")
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--deadline-seconds", type=float, default=60.0)
     args = parser.parse_args(argv)
     try:
         result = probe(
@@ -295,11 +422,20 @@ def main(argv: list[str] | None = None) -> int:
             args.size,
             check_range=not args.no_range,
             timeout=args.timeout,
+            deadline_seconds=args.deadline_seconds,
         )
     except Exception as error:
         print(
             json.dumps(
-                {"status": "failed", "error": f"{type(error).__name__}: {error}"}
+                {
+                    "status": "failed",
+                    "error": f"{type(error).__name__}: {error}",
+                    "maintenance_events": (
+                        error.maintenance_events
+                        if isinstance(error, ProbeError)
+                        else []
+                    ),
+                }
             ),
             file=sys.stderr,
         )

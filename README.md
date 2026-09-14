@@ -528,6 +528,14 @@ Restart, append, and optional marker lifecycle scenarios require completed work
 and the expected catalog; a replayed COMPLETE receipt does not prove new analysis.
 `--http-artifacts` also downloads the first and last GID CBZs through OPDS after
 each scenario, checking search identity, byte size, SHA-256, and Range responses.
+Only HTTP 503 with the exact `library_activating` JSON contract, `Retry-After: 1`
+and `Cache-Control: no-store` permits a repeated request. Every such response and
+wait remains in the result, including deadline failures; the request retains its
+original revision and Range. Search, full download, Range verification and waits
+share a 45-second probe budget inside the existing 60-second command timeout.
+The command timeout bounds blocking I/O; the probe checks its budget at I/O
+boundaries. Unknown 503 responses, other errors and incorrect bytes fail without
+retrying the scenario.
 
 The default 2+2 galleries provide a short development loop for repeated startup
 audits and per-record SQL/journal work. Dedicated fixtures test shared-image
