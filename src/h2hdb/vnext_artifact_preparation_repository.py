@@ -83,9 +83,7 @@ from .vnext_artifact_render import (
     render_artifact,
     verify_artifact_sources,
 )
-from .vnext_canonical_value_family import (
-    load_sealed_value_identities,
-)
+from .vnext_canonical_consumer import CanonicalConsumerBatch, CanonicalConsumerValue
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
@@ -907,9 +905,13 @@ class ArtifactPreparationRepository:
             return replay
         _require_input_plan(work, mutation, plan, validation=False)
         rows = plan._page_after(checkpoint.cursor)
-        _lock_input_upload_claims(work, plan, rows)
+        canonical = _prepare_input_canonical_batch(work, plan, rows)
         for row in rows:
-            _persist_artifact_input(work, mutation, plan, row)
+            _persist_artifact_input(work, mutation, row, canonical)
+        try:
+            canonical.finish()
+        except CanonicalValueCollisionError as error:
+            raise ArtifactPreparationConflictError(str(error)) from error
         next_cursor = checkpoint.cursor if not rows else bytes(rows[-1][0])
         return _commit_candidate_batch(
             work,
@@ -2747,41 +2749,57 @@ def _require_input_plan(
         )
 
 
-def _lock_input_upload_claims(
+def _prepare_input_canonical_batch(
     work: VNextUnitOfWork,
     plan: ArtifactInputProjectionPlan,
     rows: tuple[tuple[Any, ...], ...],
-) -> None:
-    publications = tuple(bytes(row[0]) for row in rows)
-    if not publications:
-        return
-    values: set[bytes] = set()
-    for publication in publications:
-        canonical = plan._database.execute(
-            "SELECT value_sha256 FROM canonical_values WHERE consumer_key = ? "
-            "ORDER BY value_sha256",
-            (sqlite3.Binary(publication),),
-        ).fetchall()
-        values.update(bytes(row[0]) for row in canonical)
-    generation = plan.authority.projection.generation
-    for value in sorted(values):
-        claim = work.connector.fetch_one(
-            "SELECT generation, value_sha256 "
-            "FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, value),
+) -> CanonicalConsumerBatch:
+    if len(rows) > _MAX_SOURCE_PAGE or any(len(row) != 8 for row in rows):
+        raise ArtifactPreparationConflictError("artifact input batch is malformed")
+    values = tuple(
+        sorted(
+            {
+                require_digest32(value, field="artifact canonical digest")
+                for row in rows
+                for value in row[1:]
+            }
         )
-        if claim != (generation, value):
-            raise ArtifactPreparationNotReadyError(
-                "artifact input first consumer lacks its exact upload claim"
+    )
+    planned: list[CanonicalConsumerValue] = []
+    for offset in range(0, len(values), 128):
+        page = values[offset : offset + 128]
+        canonical_rows = plan._database.execute(
+            "SELECT value_sha256, digest_domain, byte_count, consumer_key "
+            f"FROM canonical_values WHERE value_sha256 IN ({', '.join('?' for _ in page)}) "
+            "ORDER BY value_sha256",
+            page,
+        ).fetchall()
+        if len(canonical_rows) != len(page):
+            raise ArtifactPreparationConflictError(
+                "artifact input plan lacks one of its canonical components"
             )
+        planned.extend(
+            CanonicalConsumerValue(bytes(row[0]), bytes(row[1]), row[2], bytes(row[3]))
+            for row in canonical_rows
+        )
+    try:
+        return CanonicalConsumerBatch(
+            work,
+            generation=plan.authority.projection.generation,
+            values=planned,
+            consumers=tuple(bytes(row[0]) for row in rows),
+        )
+    except CanonicalValueCollisionError as error:
+        raise ArtifactPreparationConflictError(str(error)) from error
+    except CanonicalValueNotReadyError as error:
+        raise ArtifactPreparationNotReadyError(str(error)) from error
 
 
 def _persist_artifact_input(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
-    plan: ArtifactInputProjectionPlan,
     row: tuple[Any, ...],
+    canonical_batch: CanonicalConsumerBatch,
 ) -> None:
     if len(row) != 8:
         raise ArtifactPreparationConflictError("artifact input plan row is malformed")
@@ -2821,50 +2839,20 @@ def _persist_artifact_input(
         key_parameters=(mutation.candidate.candidate_id, publication),
         conflict_label="candidate artifact input",
     )
-    generation = plan.authority.projection.generation
-    canonical_rows = plan._database.execute(
-        "SELECT value_sha256, digest_domain, byte_count, consumer_key "
-        "FROM canonical_values WHERE value_sha256 IN (?, ?, ?, ?, ?, ?, ?) "
-        "ORDER BY value_sha256",
-        tuple(sqlite3.Binary(value) for value in digests),
-    ).fetchall()
-    if len(canonical_rows) != len(set(digests)):
-        raise ArtifactPreparationConflictError(
-            "artifact input plan lacks one of its canonical components"
-        )
-    sealed_values = load_sealed_value_identities(
-        work.connector,
-        value_sha256s=tuple(
-            require_digest32(row[0], field="artifact canonical digest")
-            for row in canonical_rows
-        ),
+    domains = (
+        b"artifact_semantics_v1",
+        b"artifact_source_manifest_v1",
+        b"artifact_member_plan_v2",
+        b"artifact_effective_content_v1",
+        b"artifact_selected_v1",
+        b"artifact_owner_v1",
+        b"artifact_policy_v3",
     )
-    for canonical in canonical_rows:
-        value = require_digest32(canonical[0], field="artifact canonical digest")
-        persisted = sealed_values.get(value)
-        if (
-            persisted is None
-            or persisted.digest_domain != bytes(canonical[1])
-            or persisted.byte_count != canonical[2]
-        ):
-            raise ArtifactPreparationNotReadyError(
-                "artifact input canonical component is not exactly sealed"
-            )
-        require_digest32(
-            persisted.root_page_sha256,
-            field="artifact canonical root",
-        )
-        if bytes(canonical[3]) != publication:
-            continue
-        deleted = work.connector.execute_affected(
-            "DELETE FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, value),
-        )
-        if deleted != 1:
-            raise ArtifactPreparationConflictError(
-                "artifact canonical upload claim changed during handoff"
-            )
+    for value, domain in zip(digests, domains, strict=True):
+        try:
+            canonical_batch.require(value, expected_domain=domain, consumer=publication)
+        except CanonicalValueCollisionError as error:
+            raise ArtifactPreparationConflictError(str(error)) from error
 
 
 def _insert_or_compare(

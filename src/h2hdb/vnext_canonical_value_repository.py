@@ -46,6 +46,7 @@ from .vnext_canonical_value_family import (
     ensure_canonical_value_identity,
     ensure_exact_page_parent_edges,
     ensure_page_family,
+    load_allocation_families,
     load_allocation_family,
     load_page_families,
     load_page_family,
@@ -1008,6 +1009,98 @@ def _allocate_authorized(
             (exact_generation, exact_plan.value_sha256),
         )
     return allocation
+
+
+def _claim_sealed_values_authorized(
+    work: VNextUnitOfWork,
+    *,
+    generation: int,
+    values: Sequence[tuple[CanonicalValueUploadPlan, CanonicalValueReadReceipt]],
+) -> tuple[bytes, ...]:
+    """Claim an exact sealed batch after the publication fence was locked.
+
+    Prepared observations are comparison inputs, never durable authority. Read
+    allocation families, sealed roots, registered domains and generation again
+    in the caller's write transaction before inserting any missing claim.
+    """
+
+    if not 1 <= len(values) <= _CANONICAL_READ_BATCH_LIMIT:
+        raise ValueError("sealed canonical claim batch is limited to 128 values")
+    exact_generation = require_int63(generation, field="generation")
+    expected: dict[bytes, CanonicalValueReadReceipt] = {}
+    for proposed, observed in values:
+        plan = _require_upload_plan(proposed)
+        if not isinstance(observed, CanonicalValueReadReceipt):
+            raise TypeError("sealed claim requires a canonical read receipt")
+        observed.__post_init__()
+        _require_exact(
+            "sealed canonical claim preimage",
+            (observed.value_sha256, observed.digest_domain, observed.byte_count),
+            (plan.value_sha256, plan.digest_domain, plan.byte_count),
+        )
+        if plan.digest_domain == b"source_root_v1":
+            raise CanonicalValueCollisionError("publication cannot claim a source root")
+        if plan.value_sha256 in expected:
+            raise ValueError("sealed canonical claim batch contains duplicate values")
+        expected[plan.value_sha256] = observed
+    digests = tuple(sorted(expected))
+    connector = work.connector
+    domains = tuple(sorted({receipt.digest_domain for receipt in expected.values()}))
+    domain_placeholders = ", ".join("%s" for _ in domains)
+    registered = connector.fetch_all(
+        "SELECT digest_domain FROM catalog_canonical_digest_policies "
+        f"WHERE digest_domain IN ({domain_placeholders}) ORDER BY digest_domain",
+        domains,
+    )
+    if tuple(registered) != tuple((domain,) for domain in domains):
+        raise CanonicalValueNotReadyError("canonical digest domain is not registered")
+    if not connector.fetch_one(
+        "SELECT build_id FROM operational_source_build_generations WHERE generation = %s",
+        (exact_generation,),
+    ):
+        raise CanonicalValueNotReadyError(
+            "sealed canonical claim requires a durable build generation"
+        )
+    allocations = load_allocation_families(connector, value_sha256s=digests)
+    sealed = load_sealed_value_identities(connector, value_sha256s=digests)
+    if set(allocations) != set(expected) or sealed != expected:
+        raise CanonicalValueCollisionError(
+            "sealed canonical claim authority changed after preparation"
+        )
+    for digest, allocation in allocations.items():
+        receipt = expected[digest]
+        _require_exact(
+            "sealed canonical claim allocation",
+            (allocation.digest_domain, allocation.byte_count),
+            (receipt.digest_domain, receipt.byte_count),
+        )
+    placeholders = ", ".join("%s" for _ in digests)
+    rows = connector.fetch_all(
+        "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
+        f"WHERE generation = %s AND value_sha256 IN ({placeholders}) ORDER BY value_sha256",
+        (exact_generation, *digests),
+    )
+    claims: set[bytes] = set()
+    for row in rows:
+        if (
+            len(row) != 2
+            or row[0] != exact_generation
+            or row[1] not in expected
+            or row[1] in claims
+        ):
+            raise CanonicalValueCollisionError(
+                "sealed canonical upload claim differs from its exact key"
+            )
+        claims.add(row[1])
+    missing = tuple(
+        (exact_generation, digest) for digest in digests if digest not in claims
+    )
+    if missing:
+        connector.execute_many(
+            "INSERT INTO operational_canonical_value_uploads (generation, value_sha256) VALUES (%s, %s)",
+            list(missing),
+        )
+    return digests
 
 
 def _lock_claim(work: VNextUnitOfWork, generation: int, value_sha256: bytes) -> None:

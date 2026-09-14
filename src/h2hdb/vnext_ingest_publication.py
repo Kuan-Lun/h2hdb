@@ -61,6 +61,7 @@ from .vnext_artifact_preparation_repository import (
 )
 from .vnext_canonical_value_family import (
     load_page_family,
+    load_sealed_value_identities,
     load_sealed_value_identity,
 )
 from .vnext_canonical_value_repository import (
@@ -72,8 +73,11 @@ from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
     _allocate_authorized,
+    _claim_sealed_values_authorized,
     _put_page_authorized,
+    _require_prepared_page,
     _seal_authorized,
+    load_and_validate_single_page_canonical_values,
 )
 from .vnext_canonical_value_repository import (
     _authorize as _authorize_canonical_write,
@@ -445,6 +449,7 @@ class _CanonicalWork:
     owner: object
     page: PreparedCanonicalPage | None = None
     stage_fence: _CanonicalStageFence | None = None
+    sealed: CanonicalValueReadReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -524,7 +529,7 @@ class _PublicationPlanCache:
             plan.iter_canonical_value_plans()
         )
         self.__lock = Lock()
-        self.__observed_sealed: CanonicalValueReadReceipt | None = None
+        self.__observed_sealed: dict[bytes, CanonicalValueReadReceipt] = {}
         self.__page_iterator: Iterator[PreparedCanonicalPage] | None = None
         self.__pending_page: PreparedCanonicalPage | None = None
         self.__pending_plans: deque[CanonicalValueUploadPlan] = deque()
@@ -606,16 +611,15 @@ class _PublicationPlanCache:
         self.__close_page_iterator()
         plan.close()
         self.__active = None
-        self.__observed_sealed = None
+        self.__observed_sealed.pop(plan.value_sha256, None)
 
     def require_stable_sealed_observation(
         self,
         plan: CanonicalValueUploadPlan,
         sealed: CanonicalValueReadReceipt | None,
     ) -> None:
-        if self.__active is not plan:
-            raise RuntimeError("sealed observation lacks its active upload plan")
-        observed = self.__observed_sealed
+        self.canonical_consumer_cursor(plan)
+        observed = self.__observed_sealed.get(plan.value_sha256)
         if observed is not None and sealed != observed:
             raise RuntimeError("sealed canonical identity changed after observation")
 
@@ -624,12 +628,11 @@ class _PublicationPlanCache:
         plan: CanonicalValueUploadPlan,
         sealed: CanonicalValueReadReceipt,
     ) -> None:
-        if self.__active is not plan:
-            raise RuntimeError("sealed canonical observation cursor is inconsistent")
-        observed = self.__observed_sealed
+        self.canonical_consumer_cursor(plan)
+        observed = self.__observed_sealed.get(plan.value_sha256)
         if observed is not None and observed != sealed:
             raise RuntimeError("sealed canonical identity changed after observation")
-        self.__observed_sealed = sealed
+        self.__observed_sealed[plan.value_sha256] = sealed
 
     def current_canonical_page(
         self,
@@ -707,7 +710,7 @@ class _PublicationPlanCache:
             finally:
                 active = self.__active
                 self.__active = None
-                self.__observed_sealed = None
+                self.__observed_sealed.clear()
                 try:
                     if active is not None:
                         active.close()
@@ -2242,6 +2245,12 @@ def _commit_canonical_batch(
     pages = tuple(cast(PreparedCanonicalPage, item.page) for item in items)
     if sum(len(page.page_bytes) for page in pages) > _MAX_CANONICAL_BATCH_BYTES:
         raise ValueError("canonical batch exceeds its encoded byte bound")
+    for item, page in zip(items, pages, strict=True):
+        _require_prepared_page(page, plan=item.plan)
+        if item.sealed is not None and item.sealed.root_page_sha256 != page.page_sha256:
+            raise CanonicalValueCollisionError(
+                "sealed canonical root differs from its exact prepared page"
+            )
     generation = _authorize_canonical_write(work, gate, turn, now=now)
     if generation != first.ingest_generation:
         raise RuntimeError("canonical batch ingest generation changed")
@@ -2254,7 +2263,18 @@ def _commit_canonical_batch(
         ),
     )
     result: list[bytes] = []
+    existing = tuple(
+        (item.plan, item.sealed) for item in items if item.sealed is not None
+    )
+    if existing:
+        result.extend(
+            _claim_sealed_values_authorized(
+                work, generation=generation, values=existing
+            )
+        )
     for item in sorted(items, key=lambda item: item.plan.value_sha256):
+        if item.sealed is not None:
+            continue
         _allocate_authorized(work, generation=generation, plan=item.plan, now=now)
         _put_page_authorized(
             work,
@@ -2263,7 +2283,7 @@ def _commit_canonical_batch(
             prepared_page=cast(PreparedCanonicalPage, item.page),
         )
         result.append(_seal_authorized(work, generation=generation, plan=item.plan))
-    return tuple(result)
+    return tuple(sorted(result))
 
 
 def _commit_canonical_work(
@@ -2607,6 +2627,19 @@ def _next_cached_canonical_work(
         field="canonical upload generation",
     )
     while (plan := cached.current_canonical_plan()) is not None:
+        if plan.byte_count <= CANONICAL_VALUE_CHUNK_BYTES:
+            batch = _prepare_canonical_window(
+                connector,
+                cached=cached,
+                owner=owner,
+                candidate_id=candidate_id,
+                generation=generation,
+                checkpoint_cursor=checkpoint_cursor,
+                checkpoint_state=checkpoint_state,
+            )
+            if batch is not None:
+                return batch, _Action.CANONICAL_BATCH
+            continue
         consumer_cursor = cached.canonical_consumer_cursor(plan)
         required = cached.claim_required(
             consumer_cursor=consumer_cursor,
@@ -2642,17 +2675,6 @@ def _next_cached_canonical_work(
             continue
         if not required:
             raise RuntimeError("consumed canonical value is no longer exactly sealed")
-        batch = _prepare_small_canonical_batch(
-            connector,
-            cached=cached,
-            owner=owner,
-            candidate_id=candidate_id,
-            generation=generation,
-            checkpoint_cursor=checkpoint_cursor,
-            checkpoint_state=checkpoint_state,
-        )
-        if batch is not None:
-            return batch, _Action.CANONICAL_BATCH
         if claim is None:
             return (
                 _CanonicalWork(plan, owner, stage_fence=fence),
@@ -2672,7 +2694,7 @@ def _next_cached_canonical_work(
     return None
 
 
-def _prepare_small_canonical_batch(
+def _prepare_canonical_window(
     connector: SQLConnector,
     *,
     cached: _PublicationPlanCache,
@@ -2682,26 +2704,16 @@ def _prepare_small_canonical_batch(
     checkpoint_cursor: bytes,
     checkpoint_state: str,
 ) -> _CanonicalBatchWork | None:
-    """Prepare bounded single-leaf pages without advancing a durable cursor."""
-    items: list[_CanonicalWork] = []
+    """Validate one bounded window, grouping both sealed claims and new leaves.
+
+    A window never becomes persisted validation authority. On a later prepare
+    its retained values are read and verified again under a fresh snapshot.
+    """
+    retained: list[tuple[CanonicalValueUploadPlan, PreparedCanonicalPage]] = []
     encoded_bytes = 0
     for offset in range(_MAX_CANONICAL_BATCH_VALUES):
         plan = cached.lookahead_canonical_plan(offset)
         if plan is None or plan.byte_count > CANONICAL_VALUE_CHUNK_BYTES:
-            break
-        consumer = cached.canonical_consumer_cursor(plan)
-        if not cached.claim_required(
-            consumer_cursor=consumer,
-            checkpoint_cursor=checkpoint_cursor,
-            checkpoint_state=checkpoint_state,
-        ):
-            break
-        sealed, _claim = _load_canonical_plan_state(
-            connector,
-            generation=generation,
-            plan=plan,
-        )
-        if sealed is not None:
             break
         pages = tuple(plan.iter_pages())
         if len(pages) != 1:
@@ -2711,21 +2723,96 @@ def _prepare_small_canonical_batch(
         page = pages[0]
         if encoded_bytes + len(page.page_bytes) > _MAX_CANONICAL_BATCH_BYTES:
             break
-        # Detect existing corrupt families before issuing any write, just like
-        # the individual-page path. Commit revalidates the family independently.
-        _canonical_page_is_exact(connector, page)
+        retained.append((plan, page))
         encoded_bytes += len(page.page_bytes)
+    if not retained:
+        raise RuntimeError(
+            "canonical window failed to retain its first single-page value"
+        )
+    values = tuple(plan.value_sha256 for plan, _page in retained)
+    if len(set(values)) != len(values):
+        raise RuntimeError("canonical plan contains duplicate values")
+    try:
+        sealed = load_sealed_value_identities(connector, value_sha256s=values)
+    except (CanonicalValueCollisionError, CanonicalValuePartialFamilyError) as error:
+        raise RuntimeError("canonical sealed identity is partial or corrupt") from error
+    for plan, _page in retained:
+        cached.require_stable_sealed_observation(plan, sealed.get(plan.value_sha256))
+    placeholders = ", ".join("%s" for _ in values)
+    claims = connector.fetch_all(
+        "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
+        f"WHERE generation = %s AND value_sha256 IN ({placeholders}) ORDER BY value_sha256",
+        (generation, *values),
+    )
+    claimed: set[bytes] = set()
+    for row in claims:
+        if len(row) != 2 or row[1] not in values or row[1] in claimed:
+            raise RuntimeError("canonical upload claim is malformed")
+        claim = _require_canonical_claim(
+            row, generation=generation, value_sha256=row[1]
+        )
+        if claim is None:
+            raise RuntimeError("canonical upload claim is missing")
+        claimed.add(claim[1])
+    references = tuple(
+        (plan.value_sha256, plan.digest_domain)
+        for plan, _page in retained
+        if plan.value_sha256 in sealed
+    )
+    try:
+        payloads = load_and_validate_single_page_canonical_values(
+            connector, references=references
+        )
+    except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
+        raise RuntimeError(
+            "sealed canonical identity failed full tree validation"
+        ) from error
+    items: list[_CanonicalWork] = []
+    for plan, page in retained:
+        consumer = cached.canonical_consumer_cursor(plan)
+        required = cached.claim_required(
+            consumer_cursor=consumer,
+            checkpoint_cursor=checkpoint_cursor,
+            checkpoint_state=checkpoint_state,
+        )
+        receipt = sealed.get(plan.value_sha256)
+        if receipt is not None:
+            expected = CanonicalValueReadReceipt(
+                plan.value_sha256, plan.digest_domain, plan.byte_count, page.page_sha256
+            )
+            if receipt != expected:
+                raise RuntimeError(
+                    "sealed canonical identity differs from the plan's exact preimage"
+                )
+            payload = payloads.get((plan.value_sha256, plan.digest_domain))
+            if payload is None:
+                raise RuntimeError("sealed canonical single-page payload is missing")
+            comparator = _CanonicalPreimageComparator(plan.iter_payload_parts())
+            comparator.consume(payload)
+            comparator.finish()
+            cached.record_sealed_observation(plan, receipt)
+            if not required or plan.value_sha256 in claimed:
+                if not items:
+                    if cached.current_canonical_plan() is not plan:
+                        raise RuntimeError("canonical window lost its monotone cursor")
+                    cached.advance_canonical_plan(plan)
+                continue
+        else:
+            if not required:
+                raise RuntimeError(
+                    "consumed canonical value is no longer exactly sealed"
+                )
+            _canonical_page_is_exact(connector, page)
         items.append(
             _CanonicalWork(
                 plan,
                 owner,
                 page,
                 _CanonicalStageFence(candidate_id, cached.action, consumer, generation),
+                receipt,
             )
         )
-    # A singleton retains the bounded page protocol. Grouping starts only when
-    # two or more values can share the common fence and transaction overhead.
-    return _CanonicalBatchWork(tuple(items), owner) if len(items) > 1 else None
+    return _CanonicalBatchWork(tuple(items), owner) if items else None
 
 
 def _next_canonical_plan_work(

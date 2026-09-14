@@ -50,6 +50,7 @@ from .vnext_analysis_family import (
     require_exact_analysis_state_components,
 )
 from .vnext_analysis_repository import ANALYSIS_COMPONENTS
+from .vnext_canonical_consumer import CanonicalConsumerBatch, CanonicalConsumerValue
 from .vnext_canonical_value_family import (
     load_sealed_value_identities,
     load_sealed_value_identity,
@@ -1198,7 +1199,7 @@ class PublicationCandidateRepository:
             return replay
         _require_projection_plan(work, authority, plan, validation=False)
         rows = plan._page_after(checkpoint.cursor)
-        _lock_projection_upload_claims(work, plan, rows)
+        canonical = _prepare_projection_canonical_batch(work, plan, rows)
         _ensure_reserved_catalog_revision(
             work,
             authority,
@@ -1208,7 +1209,11 @@ class PublicationCandidateRepository:
             ),
             now=now,
         )
-        _insert_projection_children(work, authority, plan, rows)
+        _insert_projection_children(work, authority, plan, rows, canonical)
+        try:
+            canonical.finish()
+        except CanonicalValueCollisionError as error:
+            raise PublicationCandidateConflictError(str(error)) from error
         next_cursor = checkpoint.cursor if not rows else rows[-1].cursor
         return _commit_candidate_batch(
             work,
@@ -3308,36 +3313,51 @@ def _ensure_reserved_catalog_revision(
     )
 
 
-def _lock_projection_upload_claims(
+def _prepare_projection_canonical_batch(
     work: VNextUnitOfWork,
     plan: PublicationCatalogProjectionPlan,
     children: tuple[_ProjectionChild, ...],
-) -> None:
+) -> CanonicalConsumerBatch:
     values: set[bytes] = set()
     for child in children:
-        rows = plan._database.execute(
-            "SELECT value_sha256 FROM canonical_values WHERE consumer_cursor = ? "
-            "ORDER BY value_sha256",
-            (sqlite3.Binary(child.cursor),),
-        ).fetchall()
-        values.update(bytes(row[0]) for row in rows)
-    for value in sorted(values):
-        claim = work.lock_row(
-            LockRank.CHILD,
-            encode_lock_key(
-                "publication-canonical-consumer",
-                plan.authority.generation,
-                value,
-            ),
-            "SELECT generation, value_sha256 "
-            "FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (plan.authority.generation, value),
-        )
-        if claim != (plan.authority.generation, value):
-            raise PublicationCandidateNotReadyError(
-                "first catalog consumer requires its exact generation upload claim"
+        if child.kind == _CATALOG_CHILD_PUBLICATION:
+            publication = _plan_publication(plan, child.publication_key)
+            values.update(
+                (
+                    publication.summary_sha256,
+                    publication.language_sha256,
+                    publication.source_title_sha256,
+                    publication.title_sha256,
+                    publication.sort_title_sha256,
+                )
             )
+        elif child.kind == _CATALOG_CHILD_SEARCH_POSTING:
+            values.add(require_digest32(child.subkey, field="search posting value"))
+        elif child.kind == _CATALOG_CHILD_CONTRIBUTOR:
+            row = plan._database.execute(
+                "SELECT contributor_name_sha256 FROM contributors "
+                "WHERE publication_key = ? AND position = ?",
+                (
+                    child.publication_key,
+                    _position_subkey(child.subkey, field="contributor position"),
+                ),
+            ).fetchone()
+            if row is None or len(row) != 1:
+                raise PublicationCandidateConflictError(
+                    "planned contributor is missing"
+                )
+            values.add(require_digest32(row[0], field="contributor name"))
+    try:
+        return CanonicalConsumerBatch(
+            work,
+            generation=plan.authority.generation,
+            values=_plan_canonical_values(plan, tuple(sorted(values))),
+            consumers=tuple(child.cursor for child in children),
+        )
+    except CanonicalValueCollisionError as error:
+        raise PublicationCandidateConflictError(str(error)) from error
+    except CanonicalValueNotReadyError as error:
+        raise PublicationCandidateNotReadyError(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -3395,85 +3415,53 @@ def _plan_publication(
     )
 
 
-def _plan_canonical(
+def _plan_canonical_values(
     plan: PublicationCatalogProjectionPlan,
-    value_sha256: bytes,
-) -> tuple[bytes, int, bytes]:
-    row = plan._database.execute(
-        "SELECT digest_domain, byte_count, consumer_cursor FROM canonical_values "
-        "WHERE value_sha256 = ?",
-        (sqlite3.Binary(value_sha256),),
-    ).fetchone()
-    if row is None or len(row) != 3 or row[2] is None:
-        raise PublicationCandidateConflictError(
-            "catalog projection canonical plan is missing"
+    values: tuple[bytes, ...],
+) -> tuple[CanonicalConsumerValue, ...]:
+    planned: list[CanonicalConsumerValue] = []
+    for offset in range(0, len(values), 128):
+        page = values[offset : offset + 128]
+        rows = plan._database.execute(
+            "SELECT value_sha256, digest_domain, byte_count, consumer_cursor "
+            f"FROM canonical_values WHERE value_sha256 IN ({', '.join('?' for _ in page)}) "
+            "ORDER BY value_sha256",
+            page,
+        ).fetchall()
+        if len(rows) != len(page):
+            raise PublicationCandidateConflictError(
+                "catalog projection canonical plan is missing"
+            )
+        planned.extend(
+            CanonicalConsumerValue(
+                bytes(row[0]),
+                bytes(row[1]),
+                row[2],
+                require_bounded_bytes(
+                    row[3],
+                    field="projection canonical consumer_cursor",
+                    minimum=36,
+                    maximum=2048,
+                ),
+            )
+            for row in rows
         )
-    return (
-        require_bounded_bytes(
-            row[0], field="projection canonical domain", minimum=1, maximum=64
-        ),
-        require_int63(row[1], field="projection canonical byte_count"),
-        require_bounded_bytes(
-            row[2],
-            field="projection canonical consumer_cursor",
-            minimum=36,
-            maximum=2048,
-        ),
-    )
+    return tuple(planned)
 
 
 def _consume_projection_canonical(
-    work: VNextUnitOfWork,
-    plan: PublicationCatalogProjectionPlan,
+    canonical: CanonicalConsumerBatch,
     value_sha256: bytes,
     *,
     expected_domain: bytes,
     child_cursor: bytes,
 ) -> None:
-    value = require_digest32(value_sha256, field="projection canonical value_sha256")
-    plan_domain, plan_count, first_consumer = _plan_canonical(plan, value)
-    if plan_domain != expected_domain:
-        raise PublicationCandidateConflictError(
-            "catalog projection canonical plan has the wrong domain"
-        )
     try:
-        canonical = load_sealed_value_identity(
-            work.connector,
-            value_sha256=value,
+        canonical.require(
+            value_sha256, expected_domain=expected_domain, consumer=child_cursor
         )
     except CanonicalValueCollisionError as error:
-        raise PublicationCandidateConflictError(
-            "catalog projection canonical value is partial or corrupt"
-        ) from error
-    if canonical is None:
-        raise PublicationCandidateNotReadyError(
-            "catalog projection canonical value is not exactly sealed"
-        )
-    if canonical.digest_domain != expected_domain or canonical.byte_count != plan_count:
-        raise PublicationCandidateNotReadyError(
-            "catalog projection canonical value is not exactly sealed"
-        )
-    if child_cursor != first_consumer:
-        return
-    claim = work.connector.fetch_one(
-        "SELECT generation, value_sha256 "
-        "FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (plan.authority.generation, value),
-    )
-    if claim != (plan.authority.generation, value):
-        raise PublicationCandidateNotReadyError(
-            "first catalog consumer requires its exact generation upload claim"
-        )
-    deleted = work.connector.execute_affected(
-        "DELETE FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (plan.authority.generation, value),
-    )
-    if deleted != 1:
-        raise PublicationCandidateConflictError(
-            "catalog canonical upload claim changed during consumer handoff"
-        )
+        raise PublicationCandidateConflictError(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -3654,6 +3642,7 @@ def _insert_projection_children(
     authority: _MutationAuthority,
     plan: PublicationCatalogProjectionPlan,
     children: tuple[_ProjectionChild, ...],
+    canonical: CanonicalConsumerBatch,
 ) -> None:
     if len(children) > _CATALOG_BATCH_ROWS:
         raise ValueError("catalog child batch exceeds 128 rows")
@@ -3675,7 +3664,7 @@ def _insert_projection_children(
         )
         if row is None:
             flush()
-            _insert_projection_child(work, authority, plan, child)
+            _insert_projection_child(work, authority, plan, child, canonical)
         else:
             pending.append(row)
     flush()
@@ -3686,6 +3675,7 @@ def _insert_projection_child(
     authority: _MutationAuthority,
     plan: PublicationCatalogProjectionPlan,
     child: _ProjectionChild,
+    canonical: CanonicalConsumerBatch,
 ) -> None:
     revision = authority.candidate.reserved_revision
     publication = _plan_publication(plan, child.publication_key)
@@ -3694,15 +3684,13 @@ def _insert_projection_child(
         language = publication.language_sha256
         source_title = publication.source_title_sha256
         _consume_projection_canonical(
-            work,
-            plan,
+            canonical,
             summary,
             expected_domain=b"catalog_summary_utf8_v1",
             child_cursor=child.cursor,
         )
         _consume_projection_canonical(
-            work,
-            plan,
+            canonical,
             language,
             expected_domain=b"catalog_language_utf8_v1",
             child_cursor=child.cursor,
@@ -3724,6 +3712,7 @@ def _insert_projection_child(
             plan,
             child.publication_key,
             publication,
+            canonical,
             child_cursor=child.cursor,
         )
         try:
@@ -3787,7 +3776,7 @@ def _insert_projection_child(
         )
         return
     if child.kind == _CATALOG_CHILD_CONTRIBUTOR:
-        _insert_projection_contributor_child(work, authority, plan, child)
+        _insert_projection_contributor_child(work, authority, plan, child, canonical)
         return
     if child.kind == _CATALOG_CHILD_DOWNLOAD_TIME:
         try:
@@ -3824,8 +3813,7 @@ def _insert_projection_child(
         if planned != (1,):
             raise PublicationCandidateConflictError("planned search posting is missing")
         _consume_projection_canonical(
-            work,
-            plan,
+            canonical,
             value_sha256,
             expected_domain=b"search_lexeme_utf8_v1",
             child_cursor=child.cursor,
@@ -3898,6 +3886,7 @@ def _insert_projection_title(
     plan: PublicationCatalogProjectionPlan,
     publication_key: bytes,
     publication: _PlannedPublication,
+    canonical: CanonicalConsumerBatch,
     *,
     child_cursor: bytes,
 ) -> None:
@@ -3906,22 +3895,19 @@ def _insert_projection_title(
     title = publication.title_sha256
     sort_title = publication.sort_title_sha256
     _consume_projection_canonical(
-        work,
-        plan,
+        canonical,
         source_title,
         expected_domain=b"source_title_utf8_v1",
         child_cursor=child_cursor,
     )
     _consume_projection_canonical(
-        work,
-        plan,
+        canonical,
         title,
         expected_domain=b"display_title_utf8_v1",
         child_cursor=child_cursor,
     )
     _consume_projection_canonical(
-        work,
-        plan,
+        canonical,
         sort_title,
         expected_domain=b"title_sort_utf8_v1",
         child_cursor=child_cursor,
@@ -3970,6 +3956,7 @@ def _insert_projection_contributor_child(
     authority: _MutationAuthority,
     plan: PublicationCatalogProjectionPlan,
     child: _ProjectionChild,
+    canonical: CanonicalConsumerBatch,
 ) -> None:
     position = _position_subkey(child.subkey, field="contributor position")
     row = plan._database.execute(
@@ -3984,8 +3971,7 @@ def _insert_projection_contributor_child(
         row[1], field="contributor role", minimum=1, maximum=64
     )
     _consume_projection_canonical(
-        work,
-        plan,
+        canonical,
         name,
         expected_domain=b"contributor_name_utf8_v1",
         child_cursor=child.cursor,

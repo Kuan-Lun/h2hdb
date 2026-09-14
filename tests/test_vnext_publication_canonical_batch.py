@@ -419,8 +419,10 @@ import json
 import os
 import signal
 import sys
+from dataclasses import replace
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import CanonicalValueUploadPlan
+from h2hdb.vnext_canonical_value_family import load_sealed_value_identities
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import GateLease, GateMode
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -438,7 +440,16 @@ for row in state["items"]:
     items.append(publication._CanonicalWork(plan, owner, pages[0],
         publication._CanonicalStageFence(bytes.fromhex(row[2]), publication._Action.BUILD_CATALOG, bytes.fromhex(row[3]), turn.generation)))
 with SQLiteConnector(state["database"]) as connector:
-    if state["phase"] == "before_commit":
+    if state["existing"]:
+        identities = load_sealed_value_identities(connector, value_sha256s=tuple(item.plan.value_sha256 for item in items))
+        items = [replace(item, sealed=identities[item.plan.value_sha256]) for item in items]
+    if state["phase"] == "before_commit" and state["existing"]:
+        original = connector.execute_many
+        def interrupted(*args, **kwargs):
+            original(*args, **kwargs)
+            os.kill(os.getpid(), state["signal"])
+        connector.execute_many = interrupted
+    elif state["phase"] == "before_commit":
         original = publication._seal_authorized
         sealed = 0
         def interrupted(*args, **kwargs):
@@ -467,18 +478,32 @@ print(json.dumps([value.hex() for value in result]))
 )
 @pytest.mark.parametrize("termination", [signal.SIGTERM, signal.SIGKILL])
 @pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
+@pytest.mark.parametrize("existing", [False, True])
 def test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries(
     tmp_path: Path,
     termination: signal.Signals,
     phase: str,
+    existing: bool,
 ) -> None:
     database = tmp_path / "restart.sqlite3"
     with (
         fixtures._generated_catalog_plan(database) as (connector, gate, turn, plan),
         _batch(plan, turn) as batch,
     ):
+        if existing:
+            _commit(connector, "sqlite", gate, turn, batch)
+            with connector.transaction():
+                connector.execute(
+                    "DELETE FROM operational_canonical_value_uploads "
+                    "WHERE generation = %s AND value_sha256 IN (%s, %s, %s)",
+                    (
+                        turn.generation,
+                        *(item.plan.value_sha256 for item in batch.items),
+                    ),
+                )
         manifest = {
             "database": str(database),
+            "existing": existing,
             "phase": phase,
             "signal": int(termination),
             "gate": [

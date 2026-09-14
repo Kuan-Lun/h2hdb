@@ -177,10 +177,13 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
                 "DELETE FROM catalog_tag_publication_order WHERE revision = 1"
             )
             connector.execute("DELETE FROM catalog_subjects WHERE revision = 1")
+            canonical = module._prepare_projection_canonical_batch(work, plan, subjects)
             with patch.object(
                 connector, "execute_many", wraps=connector.execute_many
             ) as writes:
-                module._insert_projection_children(work, authority, plan, subjects)
+                module._insert_projection_children(
+                    work, authority, plan, subjects, canonical
+                )
             assert writes.call_count == 1
             assert len(writes.call_args.args[1]) == 128
             module._compare_projection_children(work, authority, validation, subjects)
@@ -190,7 +193,7 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
                 )
             with pytest.raises(ValueError, match="exceeds 128"):
                 module._insert_projection_children(
-                    work, authority, plan, (*subjects, subjects[0])
+                    work, authority, plan, (*subjects, subjects[0]), canonical
                 )
 
 

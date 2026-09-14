@@ -22,6 +22,7 @@ __all__ = [
     "ensure_canonical_value_identity",
     "ensure_exact_page_parent_edges",
     "ensure_page_family",
+    "load_allocation_families",
     "load_allocation_family",
     "load_page_families",
     "load_page_family",
@@ -224,17 +225,37 @@ def load_allocation_family(
     """Load one complete allocation or reject any persisted partial family."""
 
     value = require_digest32(value_sha256, field="value_sha256")
-    row = connector.fetch_one(
+    return load_allocation_families(connector, value_sha256s=(value,)).get(value)
+
+
+def load_allocation_families(
+    connector: Any,
+    *,
+    value_sha256s: Sequence[bytes],
+) -> dict[bytes, CanonicalValueAllocation]:
+    """Load bounded allocations without hiding orphan facts behind their anchor."""
+
+    if len(value_sha256s) > _READ_BATCH_LIMIT:
+        raise ValueError("canonical allocation batch is limited to 128 values")
+    values = tuple(
+        sorted(
+            {require_digest32(value, field="value_sha256") for value in value_sha256s}
+        )
+    )
+    if not values:
+        return {}
+    placeholders = ", ".join("%s" for _ in values)
+    rows = connector.fetch_all(
         f"WITH family_keys(value_sha256) AS ("
-        f"SELECT value_sha256 FROM {_ALLOCATION_ANCHOR} WHERE value_sha256 = %s "
+        f"SELECT value_sha256 FROM {_ALLOCATION_ANCHOR} WHERE value_sha256 IN ({placeholders}) "
         "UNION "
-        f"SELECT value_sha256 FROM {_ALLOCATION_DOMAIN} WHERE value_sha256 = %s "
+        f"SELECT value_sha256 FROM {_ALLOCATION_DOMAIN} WHERE value_sha256 IN ({placeholders}) "
         "UNION "
-        f"SELECT value_sha256 FROM {_ALLOCATION_COUNT} WHERE value_sha256 = %s "
+        f"SELECT value_sha256 FROM {_ALLOCATION_COUNT} WHERE value_sha256 IN ({placeholders}) "
         "UNION "
-        f"SELECT value_sha256 FROM {_ALLOCATION_TIME} WHERE value_sha256 = %s "
+        f"SELECT value_sha256 FROM {_ALLOCATION_TIME} WHERE value_sha256 IN ({placeholders}) "
         "UNION "
-        f"SELECT value_sha256 FROM {_ALLOCATION_SEAL} WHERE value_sha256 = %s) "
+        f"SELECT value_sha256 FROM {_ALLOCATION_SEAL} WHERE value_sha256 IN ({placeholders})) "
         "SELECT k.value_sha256, a.value_sha256, d.value_sha256, d.digest_domain, "
         "c.value_sha256, c.byte_count, t.value_sha256, t.allocated_at, "
         "s.value_sha256 FROM family_keys k "
@@ -242,21 +263,32 @@ def load_allocation_family(
         f"LEFT JOIN {_ALLOCATION_DOMAIN} d ON d.value_sha256 = k.value_sha256 "
         f"LEFT JOIN {_ALLOCATION_COUNT} c ON c.value_sha256 = k.value_sha256 "
         f"LEFT JOIN {_ALLOCATION_TIME} t ON t.value_sha256 = k.value_sha256 "
-        f"LEFT JOIN {_ALLOCATION_SEAL} s ON s.value_sha256 = k.value_sha256",
-        (value, value, value, value, value),
+        f"LEFT JOIN {_ALLOCATION_SEAL} s ON s.value_sha256 = k.value_sha256 "
+        "ORDER BY k.value_sha256",
+        values * 5,
     )
-    if not row:
-        return None
-    if len(row) != 9 or any(row[index] != value for index in (0, 1, 2, 4, 6, 8)):
-        raise CanonicalValuePartialFamilyError(
-            "canonical allocation has an existing incomplete sealed family"
-        )
-    try:
-        return CanonicalValueAllocation(value, row[3], row[5], row[7])
-    except (TypeError, ValueError) as error:
-        raise CanonicalValueCollisionError(
-            "canonical allocation contains an invalid immutable fact"
-        ) from error
+    result: dict[bytes, CanonicalValueAllocation] = {}
+    for row in rows:
+        if len(row) != 9:
+            raise CanonicalValuePartialFamilyError(
+                "canonical allocation has an invalid physical shape"
+            )
+        value = require_digest32(row[0], field="value_sha256")
+        if (
+            value not in values
+            or value in result
+            or any(row[index] != value for index in (1, 2, 4, 6, 8))
+        ):
+            raise CanonicalValuePartialFamilyError(
+                "canonical allocation has an existing incomplete sealed family"
+            )
+        try:
+            result[value] = CanonicalValueAllocation(value, row[3], row[5], row[7])
+        except (TypeError, ValueError) as error:
+            raise CanonicalValueCollisionError(
+                "canonical allocation contains an invalid immutable fact"
+            ) from error
+    return result
 
 
 def ensure_allocation_family(

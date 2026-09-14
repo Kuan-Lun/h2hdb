@@ -306,6 +306,19 @@ class _FakeConnector:
     def close(self) -> None:
         return None
 
+    def fetch_all(
+        self,
+        query: str,
+        parameters: Sequence[object] = (),
+    ) -> list[tuple[object, ...]]:
+        assert "operational_canonical_value_uploads" in query
+        generation = parameters[0]
+        return [
+            (generation, value)
+            for value in sorted(cast(Sequence[bytes], parameters[1:]))
+            if value in self._state.claims
+        ]
+
 
 class _ProjectionPlan:
     def __init__(
@@ -486,7 +499,40 @@ class _OptimizedHarness:
             )
 
         monkeypatch.setattr(publication, "load_sealed_value_identity", load_sealed)
+
+        def load_sealed_batch(
+            connector: object,
+            *,
+            value_sha256s: Sequence[bytes],
+        ) -> dict[bytes, CanonicalValueReadReceipt]:
+            result = {}
+            for value in value_sha256s:
+                receipt = load_sealed(connector, value_sha256=value)
+                if receipt is not None:
+                    result[value] = receipt
+            return result
+
+        monkeypatch.setattr(
+            publication, "load_sealed_value_identities", load_sealed_batch
+        )
         monkeypatch.setattr(publication, "load_page_family", load_page)
+
+        def load_payloads(
+            _connector: object,
+            *,
+            references: Sequence[tuple[bytes, bytes]],
+        ) -> dict[tuple[bytes, bytes], bytes]:
+            result = {}
+            for value, domain in references:
+                self.validated.append(value)
+                result[(value, domain)] = self.state.sealed_payload_overrides.get(
+                    value, self.state.payloads[value]
+                )
+            return result
+
+        monkeypatch.setattr(
+            publication, "load_and_validate_single_page_canonical_values", load_payloads
+        )
 
         def stream_and_validate(
             _work: object,
@@ -573,7 +619,7 @@ class _OptimizedHarness:
         payload = kwargs["payload"]
         if action is publication._Action.CANONICAL_BATCH:
             batch = cast(publication._CanonicalBatchWork, payload)
-            assert 2 <= len(batch.items) <= publication._MAX_CANONICAL_BATCH_VALUES
+            assert 1 <= len(batch.items) <= publication._MAX_CANONICAL_BATCH_VALUES
             assert (
                 sum(
                     len(cast(PreparedCanonicalPage, item.page).page_bytes)
@@ -600,12 +646,13 @@ class _OptimizedHarness:
                     operations.append(
                         (publication._Action.CANONICAL_ALLOCATE.value, None)
                     )
-                batch_page = cast(PreparedCanonicalPage, item.page)
-                if batch_page.page_sha256 not in self.state.pages:
-                    operations.append(
-                        (publication._Action.CANONICAL_PAGE.value, batch_page)
-                    )
-                operations.append((publication._Action.CANONICAL_SEAL.value, None))
+                if item.sealed is None:
+                    batch_page = cast(PreparedCanonicalPage, item.page)
+                    if batch_page.page_sha256 not in self.state.pages:
+                        operations.append(
+                            (publication._Action.CANONICAL_PAGE.value, batch_page)
+                        )
+                    operations.append((publication._Action.CANONICAL_SEAL.value, None))
                 for operation, prepared_page in operations:
                     self.trace.append(
                         _canonical_trace(operation, fixture, prepared_page)
@@ -1045,8 +1092,8 @@ def test_committed_response_loss_restarts_from_durable_state_without_trace_drift
     with pytest.MonkeyPatch.context() as monkeypatch:
         harness.install(monkeypatch)
         first = harness.machine(tmp_path / "canonical-response-loss.sqlite3")
-        harness.step(first, authority=authority)
-        harness.step(first, authority=authority)
+        # The first bounded batch now allocates and seals the singleton in one
+        # transaction; lose that response, before any consumer has advanced.
         actual_state.lose_next_commit_response = True
         with pytest.raises(ConnectionError, match="committed response loss"):
             harness.step(first, authority=authority)
@@ -1084,8 +1131,6 @@ def test_committed_response_loss_reuses_cache_after_fresh_durable_observation(
     with pytest.MonkeyPatch.context() as monkeypatch:
         harness.install(monkeypatch)
         machine = harness.machine(tmp_path / "canonical-same-process-loss.sqlite3")
-        harness.step(machine, authority=authority)
-        harness.step(machine, authority=authority)
         actual_state.lose_next_commit_response = True
         with pytest.raises(ConnectionError, match="committed response loss"):
             harness.step(machine, authority=authority)
