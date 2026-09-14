@@ -1804,7 +1804,12 @@ def run_scalability_benchmark(
     schema_started = time.perf_counter_ns()
     initialized = VNextDatabaseAdminFacade(_config(database_path)).initialize()
     schema_elapsed_ns = time.perf_counter_ns() - schema_started
-    if initialized.state != "READY" or not initialized.transitioned_to_ready:
+    if (
+        initialized.state != "READY"
+        or initialized.outcome.value != "created"
+        or initialized.activation_audit is None
+        or not initialized.activation_audit.transitioned_to_ready
+    ):
         raise RuntimeError("fresh benchmark database did not transition to READY")
 
     seed_started = time.perf_counter_ns()
