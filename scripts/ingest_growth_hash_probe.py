@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Generator, Iterator
 from contextlib import closing, contextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -64,6 +64,7 @@ class Shape:
     hashes_per_gallery: int
     history_builds: int = 0
     galleries: int = 2
+    disjoint_history: bool = False
 
     def __post_init__(self) -> None:
         if not 1 <= self.hashes_per_gallery <= 4096:
@@ -76,7 +77,7 @@ class Shape:
     @property
     def keys(self) -> tuple[bytes, ...]:
         return tuple(
-            value.to_bytes(32, "big")
+            ((1 << 255 if self.disjoint_history else 0) + value).to_bytes(32, "big")
             for value in range(1, self.galleries * self.hashes_per_gallery + 1)
         )
 
@@ -113,14 +114,28 @@ class Recorder:
 
 
 def query_kind(sql: str) -> str | None:
+    if sql.startswith("WITH requested_analyses(analysis_id) AS ("):
+        if "LEFT JOIN catalog_analysis_file_hash_decision_tombstone " in sql:
+            return "tombstone_points"
+        if "LEFT JOIN catalog_a_file_decision_shadow_anchors " in sql:
+            return "shadow_family_points"
+        raise AssertionError("unknown requested-key validation query")
     if sql.startswith("SELECT keyset.file_sha256"):
-        return "validation_union"
-    if "SUM(occurrence.occurrence_count)" in sql:
-        return "occurrences"
-    if "COUNT(DISTINCT artist.artist_tag_id)" in sql:
-        return "distinct_artists"
-    if "MAX(per_gallery.artist_count)" in sql:
-        return "maximum_gallery_artists"
+        return "validation_actual_union"
+    if sql.startswith("SELECT member.gallery_id, member.observation_id FROM "):
+        return "source_memberships"
+    if sql.startswith("SELECT artist_tag_id FROM catalog_gallery_observation_artists "):
+        return "source_artists"
+    if sql.startswith(
+        "SELECT file_sha256, occurrence_count FROM catalog_gallery_observation_file_hash_occurrences "
+    ):
+        return "source_occurrences"
+    if (
+        "SUM(occurrence.occurrence_count)" in sql
+        or "COUNT(DISTINCT artist.artist_tag_id)" in sql
+        or "MAX(per_gallery.artist_count)" in sql
+    ):
+        raise AssertionError("validation performed a repeated source aggregate")
     return None
 
 
@@ -209,7 +224,19 @@ def seed(
                     observation_id=generation + 1,
                     occurrences=tuple(
                         (
-                            (page * shape.galleries + gallery).to_bytes(32, "big"),
+                            (
+                                (
+                                    0
+                                    if not shape.disjoint_history
+                                    else (
+                                        1 << 255
+                                        if generation == 0
+                                        else generation << 64
+                                    )
+                                )
+                                + page * shape.galleries
+                                + gallery
+                            ).to_bytes(32, "big"),
                             1,
                         )
                         for page in range(shape.hashes_per_gallery)
@@ -260,6 +287,58 @@ def run_stage(
     raise RuntimeError("bounded hash stage did not finish")
 
 
+def run_validation(
+    connector: SQLConnector,
+    backend: str,
+    run: tuple[bytes, GateLease, IngestTurn],
+) -> list[dict[str, Any]]:
+    analysis_id, gate, turn = run
+    plan = None
+    pages = []
+    try:
+        for index in range(164):
+            now = 700 + index
+            with connector.transaction():
+                issue = analysis.AnalysisRepository.issue_next_batch(
+                    VNextUnitOfWork(connector, backend=backend),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=analysis_id,
+                    batch_key=f"3-{index}".encode(),
+                    max_rows=128,
+                    now=now,
+                )
+            if plan is None:
+                plan = (
+                    analysis.AnalysisRepository.prepare_file_decision_validation_plan(
+                        connector,
+                        backend=backend,
+                        authority=issue.preparation_authority,
+                    )
+                )
+            page = analysis.AnalysisRepository.prepare_file_decision_validation_page(
+                issue=issue,
+                plan=plan,
+            )
+            with connector.transaction():
+                result = analysis.AnalysisRepository.process_issued_batch(
+                    VNextUnitOfWork(connector, backend=backend),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    issue=issue,
+                    preparations=(),
+                    file_decision_validation=page,
+                    now=now,
+                )
+            pages.append({"row_count": result.row_count, "terminal": result.terminal})
+            if result.terminal:
+                return pages
+        raise RuntimeError("bounded hash validation did not finish")
+    finally:
+        if plan is not None:
+            plan.close()
+
+
 def profile_mariadb(connector: MariaDBConnector, query: Query) -> dict[str, Any]:
     def counters() -> dict[str, int]:
         return {
@@ -292,12 +371,26 @@ def profile_mariadb(connector: MariaDBConnector, query: Query) -> dict[str, Any]
     }
 
 
+def require_point_work_bound(query: Query) -> None:
+    """Reject the observed full-prefix/full-index regressions on MariaDB 10.11."""
+    if query.kind not in {"shadow_family_points", "tombstone_points"}:
+        return
+    families = 5 if query.kind == "shadow_family_points" else 1
+    counters = query.plan["handler_read_delta"]
+    if (
+        counters["Handler_read_next"] != 0
+        or counters["Handler_read_prev"] != 0
+        or counters["Handler_read_key"] > families * query.rows
+    ):
+        raise RuntimeError(
+            f"file-decision point work exceeded {families} lookups per requested key: {counters}"
+        )
+
+
 def measure_case(
     connector: SQLConnector,
     backend: str,
     shape: Shape,
-    *,
-    force_index_experiment: bool = False,
 ) -> dict[str, Any]:
     run = seed(connector, backend, shape)
     for index, stage in enumerate(
@@ -310,19 +403,15 @@ def measure_case(
         run_stage(connector, backend, run, stage, index)
     with record(connector) as recorder:
         started = time.perf_counter()
-        pages = run_stage(
-            instrument_connector(connector),
-            backend,
-            run,
-            "validate_file_hash_decision_batch",
-            3,
-        )
+        pages = run_validation(instrument_connector(connector), backend, run)
         seconds = time.perf_counter() - started
     expected_queries = {
-        "validation_union": len(pages),
-        "occurrences": len(pages) - 1,
-        "distinct_artists": len(pages) - 1,
-        "maximum_gallery_artists": len(pages) - 1,
+        "validation_actual_union": 2 * len(pages),
+        "shadow_family_points": len(pages) - 1,
+        "tombstone_points": len(pages) - 1,
+        "source_memberships": 1,
+        "source_artists": shape.galleries,
+        "source_occurrences": shape.galleries * (shape.hashes_per_gallery // 128 + 1),
     }
     actual_queries = dict(Counter(query.kind for query in recorder.queries))
     if actual_queries != expected_queries:
@@ -342,38 +431,15 @@ def measure_case(
             "production decisions differ from independent fixture oracle"
         )
     measured = []
-    experiments = []
-    experimented_kinds: set[str] = set()
     for query in recorder.queries:
         if backend == "mariadb":
             query.plan = profile_mariadb(cast(MariaDBConnector, connector), query)
+            require_point_work_bound(query)
         else:
             query.plan = connector.fetch_all(
                 "EXPLAIN QUERY PLAN " + query.sql, query.parameters
             )
         measured.append(asdict(query))
-        if (
-            force_index_experiment
-            and backend == "mariadb"
-            and query.kind != "validation_union"
-            and query.kind not in experimented_kinds
-        ):
-            forced = replace(
-                query,
-                sql=query.sql.replace(
-                    "AS occurrence ",
-                    "AS occurrence FORCE INDEX (ix_observation_hash_occurrence_group) ",
-                ),
-            )
-            expected_rows = connector.fetch_all(query.sql, query.parameters)
-            started = time.perf_counter()
-            actual_rows = connector.fetch_all(forced.sql, forced.parameters)
-            forced.seconds = time.perf_counter() - started
-            if actual_rows != expected_rows:
-                raise AssertionError("forced-index experiment changed query results")
-            forced.plan = profile_mariadb(cast(MariaDBConnector, connector), forced)
-            experiments.append(asdict(forced) | {"same_results": True})
-            experimented_kinds.add(query.kind)
     return {
         "shape": asdict(shape),
         "active_hashes": len(shape.keys),
@@ -385,7 +451,15 @@ def measure_case(
         "sql_seconds": recorder.sql_seconds,
         "returned_rows": recorder.returned_rows,
         "queries": measured,
-        "experimental_force_hash_index": experiments,
+        "source_rows_read": sum(
+            query.rows
+            for query in recorder.queries
+            if query.kind == "source_occurrences"
+        ),
+        "validation_source_aggregates": 0,
+        "point_work_bound": "passed"
+        if backend == "mariadb"
+        else "not measured on SQLite",
     }
 
 
@@ -511,23 +585,29 @@ def main() -> None:
     parser.add_argument("--history", type=int, nargs="+", default=[0])
     parser.add_argument("--galleries", type=int, default=2)
     parser.add_argument(
+        "--disjoint-history",
+        action="store_true",
+        help="retained history has distinct keys in a long gap before current keys",
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=int,
         default=240,
         help="POSIX cooperative alarm; driver/Docker teardown is not a hard deadline",
     )
-    parser.add_argument("--force-index-experiment", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not all(hasattr(signal, name) for name in ("SIGALRM", "setitimer")):
         parser.error("this manual probe requires POSIX SIGALRM support")
-    if args.force_index_experiment and args.backend != "mariadb":
-        parser.error("force-index-experiment requires the MariaDB backend")
     if not 1 <= args.timeout_seconds <= 900:
         parser.error("timeout-seconds must be between 1 and 900")
     if args.output.exists():
         parser.error("output must be a new file")
-    shapes = [Shape(n, h, args.galleries) for n in args.hashes for h in args.history]
+    shapes = [
+        Shape(n, h, args.galleries, args.disjoint_history)
+        for n in args.hashes
+        for h in args.history
+    ]
     if len(shapes) > 16:
         parser.error("at most 16 cases per invocation")
 
@@ -536,7 +616,7 @@ def main() -> None:
 
     results: dict[str, Any] = {
         "status": "incomplete",
-        "performance_verdict": "measurement only; no performance budget passes or fixes",
+        "performance_verdict": "structural contract: selected source occurrences read exactly once; no validation source aggregates; actual backend work reported separately",
         "backend": args.backend,
         "fixture": "repository-seeded accepted facts; no CBZ or full READY audit",
         "history": "unselected source builds/observations, not analysis overlay lineage",
@@ -554,7 +634,6 @@ def main() -> None:
                     connector,
                     args.backend,
                     shape,
-                    force_index_experiment=args.force_index_experiment,
                 )
                 results["cases"].append(case)
                 write_report(args.output, results)
