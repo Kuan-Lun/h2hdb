@@ -30,6 +30,7 @@ from .evidence import (
     require_evidence_support,
 )
 from .execution import Commands
+from .growth import growth_evidence
 from .report import (
     assess_probe_measurement,
     read_probe_events,
@@ -186,6 +187,42 @@ class Acceptance:
             timeout=60,
         )
 
+    def growth_rounds(self, next_gid: int) -> int:
+        """Keep the existing scenarios, then add separately measured equal inputs."""
+        for ordinal in range(1, self.args.growth_batches + 1):
+            name = f"growth-append-{ordinal}"
+
+            def append() -> None:
+                self.commands.run(
+                    [
+                        str(self.args.fixture_python),
+                        str(Path(__file__).with_name("fixture.py")),
+                        "append-collection",
+                        "--root",
+                        str(self.deployment.source_dir),
+                        "--count",
+                        str(self.args.append_count),
+                        "--start-gid",
+                        str(next_gid),
+                        "--pages",
+                        str(self.args.pages),
+                        "--profile",
+                        self.args.image_profile,
+                        "--collection",
+                        name,
+                    ],
+                    timeout=600,
+                )
+
+            self.phase(
+                name,
+                append,
+                require_analysis=True,
+                growth_galleries=next_gid - 1_000_001 + self.args.append_count,
+            )
+            next_gid += self.args.append_count
+        return next_gid
+
     def logs(self, since: str) -> str:
         return self.compose(
             ["logs", "--no-color", "--timestamps", "--since", since, SERVICES["ingest"]]
@@ -305,6 +342,7 @@ print(json.dumps(result))
         *,
         require_analysis: bool = False,
         before: dict[str, Any] | None = None,
+        growth_galleries: int | None = None,
     ) -> dict[str, Any]:
         since = datetime.now(UTC).isoformat()
         started = time.monotonic()
@@ -345,6 +383,14 @@ print(json.dumps(result))
             record["work_wall_seconds"] = measured
             record["log"] = summarize_log(log)
             (self.commands.output / f"ingest-{name}.log").write_text(log)
+            if growth_galleries is not None:
+                record["growth"] = growth_evidence(
+                    log,
+                    record["log"],
+                    oracle,
+                    expected_galleries=growth_galleries,
+                    pages_per_gallery=self.args.pages,
+                )
             return True
 
         self.wait(
@@ -593,6 +639,7 @@ print(json.dumps(result))
                 require_analysis=True,
             )
             next_gid += self.args.append_count
+            next_gid = self.growth_rounds(next_gid)
             if self.args.lifecycle:
 
                 def pending() -> None:
@@ -703,6 +750,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(f"--{role}-image", required=True)
     parser.add_argument("--base-count", type=int, default=2)
     parser.add_argument("--append-count", type=int, default=2)
+    parser.add_argument(
+        "--growth-batches",
+        type=int,
+        choices=range(4),
+        default=0,
+        help="Additional equal append rounds (0..3); requires >128 new image pages per round",
+    )
     parser.add_argument("--pages", type=int, default=2)
     parser.add_argument(
         "--image-profile", choices=("small", "large", "mixed"), default="mixed"
@@ -737,6 +791,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Timeouts must be finite and deadline must exceed 60 seconds")
     if args.faults and not args.instrumented:
         parser.error("Fault scenarios require explicit instrumentation")
+    if args.growth_batches and args.append_count * args.pages <= 128:
+        parser.error("Growth rounds require append-count * pages greater than 128")
     try:
         require_evidence_support()
     except EvidenceError as error:

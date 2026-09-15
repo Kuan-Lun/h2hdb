@@ -12,8 +12,11 @@ import argparse
 import importlib
 import json
 import os
+import re
+import shutil
+import tempfile
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from hashlib import file_digest, sha256, shake_256
@@ -100,12 +103,13 @@ class GalleryFixture:
     marker_state: MarkerState
     current: GalleryVersion
     expected: GalleryVersion | None
+    collection: str | None = None
 
 
 @dataclass(frozen=True)
 class FixtureManifest:
     galleries: tuple[GalleryFixture, ...]
-    schema: int = 1
+    schema: int = 2
 
     def write(self, path: Path) -> None:
         _write_json(path, asdict(self))
@@ -151,13 +155,14 @@ def _version(raw: dict[str, Any]) -> GalleryVersion:
 
 def read_manifest(path: Path) -> FixtureManifest:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    _require(raw["schema"] == 1, "unsupported acceptance manifest schema")
+    _require(raw["schema"] == 2, "unsupported acceptance manifest schema")
     galleries = tuple(
         GalleryFixture(
             gid=item["gid"],
             marker_state=item["marker_state"],
             current=_version(item["current"]),
             expected=None if item["expected"] is None else _version(item["expected"]),
+            collection=item["collection"],
         )
         for item in raw["galleries"]
     )
@@ -170,6 +175,12 @@ def read_manifest(path: Path) -> FixtureManifest:
         "duplicate GID in acceptance manifest",
     )
     for gallery in galleries:
+        _require(
+            gallery.collection is None
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", gallery.collection)
+            is not None,
+            "invalid fixture collection name",
+        )
         _require(
             gallery.marker_state in {"complete", "pending", "missing"},
             "invalid completion marker state",
@@ -385,7 +396,7 @@ def change(
     _require(old is not None, f"GID {gid} is not owned by this fixture manifest")
     assert old is not None
     replacement = _write_gallery(
-        root,
+        root if old.collection is None else root / old.collection,
         gid=gid,
         generation=generation,
         pages=len(old.current.pages) if pages is None else pages,
@@ -393,6 +404,7 @@ def change(
         marker=marker,
         previous=old,
     )
+    replacement = replace(replacement, collection=old.collection)
     result = FixtureManifest(
         tuple(
             replacement if gallery.gid == gid else gallery
@@ -401,6 +413,66 @@ def change(
     )
     result.write(manifest_path)
     return result
+
+
+def append_collection(
+    root: Path,
+    *,
+    count: int,
+    start_gid: int,
+    pages: int,
+    profile: Profile,
+    collection: str,
+) -> FixtureManifest:
+    """Expose a fully generated group with one same-filesystem directory rename."""
+    _require(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", collection) is not None,
+        "invalid fixture collection name",
+    )
+    manifest_path = root / MANIFEST_NAME
+    existing = read_manifest(manifest_path)
+    requested = set(range(start_gid, start_gid + count))
+    _require(
+        not requested.intersection(gallery.gid for gallery in existing.galleries),
+        "collection append would replace an existing GID",
+    )
+    target = root / collection
+    _require(not target.exists() and not target.is_symlink(), "collection exists")
+    staging = Path(tempfile.mkdtemp(prefix=".acceptance-collection-", dir=root.parent))
+    try:
+        added = generate(
+            staging,
+            count=count,
+            start_gid=start_gid,
+            pages=pages,
+            profile=profile,
+        )
+        (staging / MANIFEST_NAME).unlink()
+        result = FixtureManifest(
+            tuple(
+                sorted(
+                    (
+                        *existing.galleries,
+                        *(
+                            replace(row, collection=collection)
+                            for row in added.galleries
+                        ),
+                    ),
+                    key=lambda row: row.gid,
+                )
+            )
+        )
+        # The oracle must already expect the new group when ingest can see it.
+        result.write(manifest_path)
+        try:
+            staging.rename(target)
+        except OSError:
+            existing.write(manifest_path)
+            raise
+        return result
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def _sha256_file(path: Path) -> str:
@@ -488,11 +560,25 @@ def _check_sources(source: Path, manifest: FixtureManifest) -> int:
     seen: set[str] = set()
     _require(
         {path.name for path in source.iterdir() if path.is_dir()}
-        == {str(gallery.gid) for gallery in manifest.galleries},
+        == {gallery.collection or str(gallery.gid) for gallery in manifest.galleries},
         "source gallery directories differ from the fixture manifest",
     )
+    for collection in {row.collection for row in manifest.galleries} - {None}:
+        assert collection is not None
+        folder = source / collection
+        _require(not folder.is_symlink(), "fixture collection must not be a symlink")
+        _require(
+            {path.name for path in folder.iterdir()}
+            == {
+                str(row.gid)
+                for row in manifest.galleries
+                if row.collection == collection
+            },
+            "collection gallery directories differ from the fixture manifest",
+        )
     for gallery in manifest.galleries:
-        folder = source / str(gallery.gid)
+        parent = source if gallery.collection is None else source / gallery.collection
+        folder = parent / str(gallery.gid)
         actual_names = {
             path.name for path in folder.iterdir() if path.name != "galleryinfo.txt"
         }
@@ -826,6 +912,15 @@ def main(argv: list[str] | None = None) -> int:
         "--marker", choices=("complete", "pending", "missing"), default="complete"
     )
     generator.add_argument("--manifest", type=Path)
+    appender = commands.add_parser("append-collection")
+    appender.add_argument("--root", type=Path, required=True)
+    appender.add_argument("--count", type=int, required=True)
+    appender.add_argument("--start-gid", type=int, required=True)
+    appender.add_argument("--pages", type=int, required=True)
+    appender.add_argument(
+        "--profile", choices=("small", "large", "mixed"), required=True
+    )
+    appender.add_argument("--collection", required=True)
     changer = commands.add_parser("change")
     changer.add_argument("--root", type=Path, required=True)
     changer.add_argument("--gid", type=int, required=True)
@@ -862,6 +957,16 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
         )
+    elif args.command == "append-collection":
+        result = append_collection(
+            args.root,
+            count=args.count,
+            start_gid=args.start_gid,
+            pages=args.pages,
+            profile=args.profile,
+            collection=args.collection,
+        )
+        print(json.dumps({"actual_source_galleries": len(result.galleries)}))
     elif args.command == "change":
         change(
             args.root,

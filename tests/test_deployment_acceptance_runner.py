@@ -129,6 +129,9 @@ def _argv(tmp_path: Path) -> list[str]:
         ["--append-count", "1000001"],
         ["--pages", "0"],
         ["--pages", "4097"],
+        ["--growth-batches", "-1"],
+        ["--growth-batches", "4"],
+        ["--growth-batches", "1"],
         ["--phase-seconds", "0"],
         ["--phase-seconds", "nan"],
         ["--phase-seconds", "inf"],
@@ -172,6 +175,7 @@ def test_cli_requires_verified_cleanup_even_after_successful_run(
     result = runner.main([*_argv(tmp_path), "--faults", "--instrumented"])
     assert result == (0 if cleanup else 1)
     assert len(seen) == 1 and seen[0].faults and seen[0].instrumented
+    assert seen[0].growth_batches == 0
 
 
 @pytest.mark.parametrize(
@@ -312,6 +316,64 @@ def test_phase_requires_completion_and_independent_oracle(tmp_path: Path) -> Non
     assert calls == ["fresh"]
     assert acceptance.report["scenarios"][0]["status"] == "passed"
     assert (tmp_path / "report.json").is_file()
+
+
+def test_growth_rounds_add_equal_inputs_and_keep_actual_generation_evidence(
+    tmp_path: Path,
+) -> None:
+    acceptance = _acceptance(tmp_path, logs=[], verify=lambda _name: _oracle())
+    acceptance.args = SimpleNamespace(
+        growth_batches=3,
+        append_count=2,
+        pages=129,
+        image_profile="small",
+        fixture_python=Path("/cohort/python"),
+    )
+    acceptance.prepared = SimpleNamespace(source_dir=tmp_path / "source")
+    commands: list[list[str]] = []
+    acceptance.commands.run = lambda argv, **_kwargs: commands.append(argv)
+    phases = []
+
+    def phase(name: str, action: Callable[[], None], **kwargs: Any) -> None:
+        action()
+        phases.append((name, kwargs))
+
+    acceptance.phase = phase
+    assert acceptance.growth_rounds(1_000_005) == 1_000_011
+    assert [name for name, _ in phases] == [
+        "growth-append-1",
+        "growth-append-2",
+        "growth-append-3",
+    ]
+    assert [values["growth_galleries"] for _, values in phases] == [6, 8, 10]
+    assert all(values["require_analysis"] for _, values in phases)
+    assert [row[row.index("--start-gid") + 1] for row in commands] == [
+        "1000005",
+        "1000007",
+        "1000009",
+    ]
+    assert all("append-collection" in row for row in commands)
+    assert all(row[row.index("--count") + 1] == "2" for row in commands)
+
+
+def test_growth_phase_cannot_pass_without_complete_phase_evidence(
+    tmp_path: Path,
+) -> None:
+    oracle = {
+        **_oracle(),
+        "actual_source_galleries": 2,
+        "actual_source_pages": 258,
+        "verified_pages": 258,
+    }
+    acceptance = _acceptance(
+        tmp_path, logs=[_log(rows=258)], verify=lambda _name: oracle
+    )
+    acceptance.args.pages = 129
+    with pytest.raises(AssertionError, match="completed analysis/publication"):
+        acceptance.phase(
+            "growth-append-1", lambda: None, require_analysis=True, growth_galleries=2
+        )
+    assert acceptance.report["scenarios"][0]["status"] != "passed"
 
 
 @pytest.mark.parametrize(

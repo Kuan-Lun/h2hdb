@@ -549,6 +549,22 @@ audits and per-record SQL/journal work. Dedicated fixtures test shared-image
 selection and 16/17-value, 128/129-row and byte-budget boundaries. After a group
 of optimizations, run increasing `--base-count` values sequentially with the same
 page profile to measure growth; small-run timings alone do not establish scaling.
+For three additional equal append rounds in the same resident, add
+`--growth-batches 3 --base-count 2 --append-count 2 --pages 129 --image-profile small`.
+The original fresh, restart and append scenarios still run first; the growth
+rounds then reach 6, 8 and 10 galleries. Each round prepares its complete source
+collection outside the visible source and exposes it with one directory rename.
+Reports retain actual resident generation counts, completed phase durations,
+core stage SQL costs and independent source/catalog/CBZ verification. They require
+non-replayed validation beyond 128 keys and complete source, analysis and
+publication evidence; they do not require validation to revisit every current
+hash. An input round with multiple publications is reported as multiple batches.
+`--growth-batches` defaults to zero, accepts at most three and requires more than
+128 new image pages per round. It adds no work to ordinary pytest or merge runs.
+The dev-only fixture manifest is now schema 2 to record collection paths; old
+synthetic fixtures must be regenerated. Production data and CBZ formats are
+unaffected. Phase totals contain core stages and must not be added to their
+nested stage totals; process-wide probe counters remain separately cumulative.
 `--instrumented` adds test-only startup, SQL, render, and explicit
 Python fsync observations. Run it separately from the uninstrumented baseline;
 its observer cost is not free. `--faults --instrumented` additionally interrupts
