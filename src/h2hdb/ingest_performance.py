@@ -113,6 +113,8 @@ class PerformanceStep:
     nested_calls: int = 0
     deferred: list[_Diagnostic] = field(default_factory=list)
     omitted_records: int = 0
+    announced_preparation: bool = False
+    unannounced_nested_work: bool = False
 
     def elapsed(self, now: float | None) -> float:
         if self.started is None or now is None:
@@ -192,6 +194,92 @@ def describe_ingest_step(*, operation: str | bytes, generation: int) -> None:
 
 
 @dataclass
+class _PreparationProgress:
+    sample: PerformanceStep
+    reported: float | None
+    galleries: int = 0
+
+    def __call__(self, galleries: int) -> None:
+        """Called only after a preparation's bounded read transaction ends."""
+        if (
+            _current_step() is not self.sample
+            or type(galleries) is not int
+            or galleries < self.galleries
+        ):
+            return
+        self.galleries = galleries
+        now = read_clock(self.sample.owner.clock)
+        if now is not None and (
+            self.reported is None or now - self.reported >= _REPORT_INTERVAL_SECONDS
+        ):
+            self.emit("progress", now)
+
+    def emit(self, event: str, now: float | None) -> None:
+        sample = self.sample
+        description = {
+            "started": "started",
+            "progress": "in progress",
+            "completed": "finished",
+            "failed": "failed",
+            "interrupted": "interrupted",
+        }[event]
+        message = (
+            f"Ingest {pipeline_name(sample.pipeline)} preparation {description}: "
+            f"{activity(sample.pipeline, sample.operation)}; "
+            f"ingest generation {sample.generation}"
+        )
+        if event != "started":
+            message += f"; read {self.galleries} galleries; " + workload(
+                elapsed=sample.elapsed(now)
+                if now is not None and sample.started is not None
+                else None,
+                sql_seconds=sample.counters.sql_seconds,
+                connection_seconds=sample.counters.connection_seconds,
+                transaction_seconds=sample.counters.transaction_seconds,
+                includes_reused_results=False,
+            )
+        sample.owner._emit(
+            _Diagnostic(
+                sample.owner,
+                "ingest_preparation "
+                f"event={event} operation={sample.operation} "
+                f"generation={sample.generation} galleries_read={self.galleries} "
+                f"elapsed_seconds={sample.elapsed(now):.6f}",
+                message + ".",
+            )
+        )
+        self.reported = now
+
+
+@contextmanager
+def prepare_ingest_operation(
+    *, operation: str, generation: int
+) -> Iterator[Callable[[int], None]]:
+    """Measure local preparation separately and report only at safe boundaries.
+
+    Enter outside all database transactions. Its callback is likewise invoked
+    only after each bounded preparation read has released its transaction. SQL
+    observers continue to accumulate counters without invoking any logger.
+    """
+    parent = _current_step()
+    if parent is None:
+        yield lambda _galleries: None
+        return
+    with parent.owner.step(parent.pipeline, "prepare", operation, generation) as sample:
+        sample.announced_preparation = True
+        progress = _PreparationProgress(sample, sample.started)
+        progress.emit("started", sample.started)
+        event = "completed"
+        try:
+            yield progress
+        except BaseException as error:
+            event = "failed" if isinstance(error, Exception) else "interrupted"
+            raise
+        finally:
+            progress.emit(event, read_clock(parent.owner.clock))
+
+
+@dataclass
 class _Stage:
     key: tuple[str, str, int]
     started: float | None
@@ -264,6 +352,10 @@ class IngestPerformance:
                 if sample.parent is not None:
                     sample.parent.nested_seconds += sample.elapsed(now)
                     sample.parent.nested_calls += 1 + sample.nested_calls
+                    sample.parent.unannounced_nested_work |= (
+                        not sample.announced_preparation
+                        or sample.unannounced_nested_work
+                    )
                     sample.parent.omitted_records += sample.omitted_records
                     sample.parent.defer(records)
                 else:
@@ -304,8 +396,12 @@ class IngestPerformance:
         info_message = None
         if (
             scope == "concurrent"
-            or (scope == "nested" and event in {"failed", "interrupted"})
-            or sample.nested_calls
+            or (
+                scope == "nested"
+                and event in {"failed", "interrupted"}
+                and not sample.announced_preparation
+            )
+            or (sample.nested_calls and sample.unannounced_nested_work)
         ):
             kind = (
                 "overlapping call"
