@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -120,6 +121,116 @@ def test_observer_preserves_return_identity_arguments_and_original_exception(
     assert "private-password" not in json.dumps(events)
     assert events[-1]["counters_complete"] is True
     assert events[-1]["counter_tail_status"] == "complete"
+
+
+def test_lifecycle_observer_preserves_real_results_and_records_only_committed_facts(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = probe._Probe(tmp_path, "lifecycle")
+    calls: list[str] = []
+    faults: list[str] = []
+    session = SimpleNamespace(ingest_generation=3, ingest_owner_token=b"private")
+    publication = SimpleNamespace(terminal=True, replayed=False)
+    completion = SimpleNamespace(ingest_generation=3, completed_at=123, replayed=False)
+    outcome = SimpleNamespace(value="DONE")
+    rows = [
+        SimpleNamespace(
+            row_count=2, deleted_count=90, replayed=False, cycle_complete=False
+        )
+    ]
+
+    class Facade:
+        def try_claim_ingest(self, periodic: bool, duration: int) -> Any:
+            assert periodic and duration == 10
+            calls.append("claim")
+            return session
+
+        def commit_publication_step(self, received: Any, prepared: object) -> Any:
+            assert received is session and prepared is publication
+            calls.append("publication")
+            return publication
+
+        def complete_ingest(self, received: Any) -> Any:
+            assert received is session
+            calls.append("complete")
+            return completion
+
+        def drain_current_only_maintenance(self, duration: int, **kwargs: Any) -> Any:
+            assert duration == 10 and kwargs == {"artifact_release_adapters": {}}
+            calls.append("drain")
+            return outcome
+
+    def advance(_self: object, *args: Any, **kwargs: Any) -> Any:
+        assert args == ("connector", "lease") and kwargs == {"cycle": "private-cycle"}
+        calls.append("advance")
+        return rows
+
+    name = "_VNextIngestFacade__advance_current_only_shard"
+    setattr(Facade, name, advance)
+    monkeypatch.setattr(
+        probe.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(VNextIngestFacade=Facade),
+    )
+
+    def record_fault(operation: str, **details: Any) -> None:
+        faults.append(operation)
+        assert details["completed_ingest_generation"] == 3
+        assert details["committed_shard_sequence"] > 0
+        acquired: list[bool] = []
+
+        def inspect_lock() -> None:
+            available = state.lock.acquire(blocking=False)
+            acquired.append(available)
+            if available:
+                state.lock.release()
+
+        other_thread = threading.Thread(target=inspect_lock)
+        other_thread.start()
+        other_thread.join(timeout=1)
+        assert acquired == [True]  # Heartbeat/evidence must remain live at the gate.
+
+    monkeypatch.setattr(state, "fault_gate", record_fault)
+    probe._install_ingest_lifecycle(state)
+    facade = Facade()
+    assert (
+        facade.drain_current_only_maintenance(10, artifact_release_adapters={})
+        is outcome
+    )
+    assert facade.try_claim_ingest(True, 10) is session
+    assert facade.commit_publication_step(session, publication) is publication
+    assert facade.complete_ingest(session) is completion
+    assert getattr(facade, name)("connector", "lease", cycle="private-cycle") is rows
+    assert (
+        facade.drain_current_only_maintenance(10, artifact_release_adapters={})
+        is outcome
+    )
+    rows[0].row_count = 0  # A cumulative deleted_count must not fake fresh work.
+    getattr(facade, name)("connector", "lease", cycle="private-cycle")
+    rows[0].row_count = 2
+    rows[0].replayed = True
+    getattr(facade, name)("connector", "lease", cycle="private-cycle")
+    state.close()
+    events = _events(tmp_path)
+    assert calls == [
+        "drain",
+        "claim",
+        "publication",
+        "complete",
+        "advance",
+        "drain",
+        "advance",
+        "advance",
+    ]
+    assert faults == [probe._CLEANUP_FAULT_OPERATION]
+    maintenance = [row for row in events if row["event"] == "maintenance_result"]
+    assert [row["after_ingest_generation"] for row in maintenance] == [None, 3]
+    assert [row["outcome"] for row in maintenance] == ["DONE", "DONE"]
+    completed = next(row for row in events if row["event"] == "ingest_completed")
+    assert completed["publication_terminal"] is True and completed["replayed"] is False
+    assert "private" not in json.dumps(events)
 
 
 def test_evidence_failure_preserves_active_application_exception_and_marks_invalid(
@@ -609,6 +720,101 @@ def test_fault_gate_runs_original_first_and_hits_each_token_only_once(
     assert reached[0]["counters"][operation]["completed"] == 1
 
 
+def test_cleanup_gate_ignores_startup_and_old_shards_without_consuming_its_token(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "arm.json").write_text(
+        json.dumps(
+            {
+                "operation": probe._CLEANUP_FAULT_OPERATION,
+                "token": "next-publication",
+                "after_ingest_generation": 13,
+            }
+        )
+    )
+    # Any accidental early pause returns promptly, so the test fails on the
+    # consumed token instead of spending the real fault deadline waiting.
+    (control / "release-next-publication").touch()
+    state = probe._Probe(tmp_path, "cleanup-targeting", control)
+    facade = SimpleNamespace(
+        **{
+            name: lambda *args, **kwargs: None
+            for name in (
+                "try_claim_ingest",
+                "commit_publication_step",
+                "complete_ingest",
+                "drain_current_only_maintenance",
+            )
+        }
+    )
+    shard = (SimpleNamespace(row_count=1, replayed=False, cycle_complete=False),)
+    advance = "_VNextIngestFacade__advance_current_only_shard"
+    setattr(facade, advance, lambda *args, **kwargs: shard)
+    monkeypatch.setattr(
+        probe.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(VNextIngestFacade=facade),
+    )
+    probe._install_ingest_lifecycle(state)
+    try:
+        for generation in (None, 12, 13):
+            state.completed_ingest_generation = generation
+            assert getattr(facade, advance)() is shard
+            assert state.fault_tokens == set()
+            assert not any(row["event"] == "fault_reached" for row in _events(tmp_path))
+        state.completed_ingest_generation = 14
+        assert getattr(facade, advance)() is shard
+        events = _events(tmp_path)
+        committed = [row for row in events if row["event"] == "cleanup_shard_committed"]
+        assert [row["after_ingest_generation"] for row in committed] == [
+            None,
+            12,
+            13,
+            14,
+        ]
+        reached = next(row for row in events if row["event"] == "fault_reached")
+        assert reached["committed_shard_sequence"] == committed[-1]["sequence"]
+        assert reached["completed_ingest_generation"] == 14
+        assert reached["required_after_ingest_generation"] == 13
+        assert state.fault_tokens == {"next-publication"}
+        getattr(facade, advance)()
+        assert sum(row["event"] == "fault_reached" for row in _events(tmp_path)) == 1
+    finally:
+        state.close()
+
+
+@pytest.mark.parametrize(
+    "threshold", [None, True, False, -1, 1 << 63, "13", 1.5, [], {}]
+)
+def test_cleanup_gate_strictly_rejects_invalid_generation_thresholds(
+    probe: ModuleType,
+    tmp_path: Path,
+    threshold: object,
+) -> None:
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "arm.json").write_text(
+        json.dumps(
+            {
+                "operation": probe._CLEANUP_FAULT_OPERATION,
+                "token": "strict",
+                "after_ingest_generation": threshold,
+            }
+        )
+    )
+    state = probe._Probe(tmp_path, "invalid-cleanup-arm", control)
+    try:
+        with pytest.raises(ValueError, match="threshold is invalid"):
+            state.fault_gate(probe._CLEANUP_FAULT_OPERATION)
+        assert not state.fault_tokens
+    finally:
+        state.close()
+
+
 def test_fault_gate_timeout_is_bounded_and_invalidates_measurement(
     probe: ModuleType,
     tmp_path: Path,
@@ -642,6 +848,18 @@ def test_fault_gate_timeout_is_bounded_and_invalidates_measurement(
         {"operation": "unknown", "token": "one"},
         {"operation": "library.commit_pending_installs", "token": "../escape"},
         {"operation": "library.commit_pending_installs", "token": "one", "extra": True},
+        {
+            "operation": "library.commit_pending_installs",
+            "token": "one",
+            "after_ingest_generation": 13,
+        },
+        {"operation": "core.cleanup.committed_nonempty_shard", "token": "one"},
+        {
+            "operation": "core.cleanup.committed_nonempty_shard",
+            "token": "one",
+            "after_ingest_generation": 13,
+            "extra": True,
+        },
     ],
 )
 def test_fault_gate_rejects_unknown_target_or_unsafe_token(

@@ -33,6 +33,8 @@ _STATE: _Probe | None = None
 _LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _FAULT_OPERATION = "library.commit_pending_installs"
+_CLEANUP_FAULT_OPERATION = "core.cleanup.committed_nonempty_shard"
+_FAULT_OPERATIONS = frozenset({_FAULT_OPERATION, _CLEANUP_FAULT_OPERATION})
 _FAULT_TIMEOUT_SECONDS = 60.0
 _CORE_SQL_METHODS = (
     "execute",
@@ -86,6 +88,8 @@ class _Probe:
         self.scenario = scenario
         self.control = control
         self.fault_tokens: set[str] = set()
+        self.publication_generations: set[int] = set()
+        self.completed_ingest_generation: int | None = None
         self.pid = os.getpid()
         self.lock = threading.RLock()
         self.counters: dict[str, _Counter] = {}
@@ -120,7 +124,13 @@ class _Probe:
             os.close(self.descriptor)
             raise
 
-    def fault_gate(self, operation: str) -> None:
+    def fault_gate(
+        self,
+        operation: str,
+        *,
+        completed_ingest_generation: int | None = None,
+        committed_shard_sequence: int | None = None,
+    ) -> None:
         """Pause only after an original operation returns, in fault runs alone."""
         if self.control is None:
             return
@@ -133,25 +143,60 @@ class _Probe:
         if len(raw) > 4096:
             raise ValueError("acceptance fault arm is too large")
         declaration = json.loads(raw)
-        if not isinstance(declaration, dict) or set(declaration) != {
-            "operation",
-            "token",
-        }:
+        if not isinstance(declaration, dict):
             raise ValueError("acceptance fault arm has an invalid shape")
-        token = declaration["token"]
+        target = declaration.get("operation")
+        token = declaration.get("token")
         if (
-            declaration["operation"] != _FAULT_OPERATION
+            not isinstance(target, str)
+            or target not in _FAULT_OPERATIONS
             or not isinstance(token, str)
             or _TOKEN.fullmatch(token) is None
         ):
             raise ValueError("acceptance fault arm target or token is invalid")
-        if operation != declaration["operation"]:
+        fields = {"operation", "token"}
+        if target == _CLEANUP_FAULT_OPERATION:
+            fields.add("after_ingest_generation")
+        if set(declaration) != fields:
+            raise ValueError("acceptance fault arm has an invalid shape")
+        threshold = declaration.get("after_ingest_generation")
+        if target == _CLEANUP_FAULT_OPERATION and (
+            type(threshold) is not int or not 0 <= threshold < (1 << 63)
+        ):
+            raise ValueError("acceptance cleanup fault generation threshold is invalid")
+        if operation != target:
             return
+        details: dict[str, object] = {}
+        if target == _CLEANUP_FAULT_OPERATION:
+            # Startup and old-generation cleanup remain real observations; they
+            # must not consume the token or pause before the new input publishes.
+            if completed_ingest_generation is None:
+                return
+            if type(
+                completed_ingest_generation
+            ) is not int or not 0 < completed_ingest_generation < (1 << 63):
+                raise ValueError("acceptance cleanup completed generation is invalid")
+            if completed_ingest_generation <= cast(int, threshold):
+                return
+            if (
+                type(committed_shard_sequence) is not int
+                or committed_shard_sequence <= 0
+            ):
+                raise ValueError(
+                    "acceptance cleanup fault requires a committed shard event"
+                )
+            details = {
+                "completed_ingest_generation": completed_ingest_generation,
+                "required_after_ingest_generation": threshold,
+                "committed_shard_sequence": committed_shard_sequence,
+            }
         with self.lock:
             if token in self.fault_tokens:
                 return
             self.fault_tokens.add(token)
-        self.emit("fault_reached", operation, token=token, fault_injection=True)
+        self.emit(
+            "fault_reached", operation, token=token, fault_injection=True, **details
+        )
         started = time.monotonic()
         release = self.control / f"release-{token}"
         while not release.is_file():
@@ -555,6 +600,111 @@ def _install_core_source(state: _Probe) -> None:
         _hook(state, facade, method, f"core.source.{method}", boundary=False)
 
 
+def _install_ingest_lifecycle(state: _Probe) -> None:
+    """Observe committed public results without issuing additional DB work."""
+    facade = importlib.import_module("h2hdb").VNextIngestFacade
+    original_claim = facade.try_claim_ingest
+    original_publication = facade.commit_publication_step
+    original_complete = facade.complete_ingest
+    original_drain = facade.drain_current_only_maintenance
+    advance_name = "_VNextIngestFacade__advance_current_only_shard"
+    original_advance = getattr(facade, advance_name)
+
+    @functools.wraps(original_claim)
+    def claim(*args: Any, **kwargs: Any) -> Any:
+        result = original_claim(*args, **kwargs)
+        if result is not None:
+            state.emit(
+                "ingest_claimed",
+                "core.ingest.try_claim_ingest",
+                ingest_generation=result.ingest_generation,
+            )
+        return result
+
+    @functools.wraps(original_publication)
+    def publication(*args: Any, **kwargs: Any) -> Any:
+        result = original_publication(*args, **kwargs)
+        if result.terminal:
+            session = args[1] if len(args) > 1 else kwargs["session"]
+            state.publication_generations.add(session.ingest_generation)
+            state.emit(
+                "publication_terminal",
+                "core.ingest.commit_publication_step",
+                ingest_generation=session.ingest_generation,
+                replayed=result.replayed,
+            )
+        return result
+
+    @functools.wraps(original_complete)
+    def complete(*args: Any, **kwargs: Any) -> Any:
+        result = original_complete(*args, **kwargs)
+        published = result.ingest_generation in state.publication_generations
+        state.emit(
+            "ingest_completed",
+            "core.ingest.complete_ingest",
+            ingest_generation=result.ingest_generation,
+            completed_at=result.completed_at,
+            replayed=result.replayed,
+            publication_terminal=published,
+        )
+        if published:
+            state.completed_ingest_generation = result.ingest_generation
+        state.publication_generations.discard(result.ingest_generation)
+        return result
+
+    @functools.wraps(original_drain)
+    def drain(*args: Any, **kwargs: Any) -> Any:
+        started = time.monotonic_ns()
+        result = original_drain(*args, **kwargs)
+        state.emit(
+            "maintenance_result",
+            "core.ingest.drain_current_only_maintenance",
+            outcome=result.value,
+            after_ingest_generation=state.completed_ingest_generation,
+            started_monotonic_ns=started,
+        )
+        return result
+
+    @functools.wraps(original_advance)
+    def advance(*args: Any, **kwargs: Any) -> Any:
+        result = original_advance(*args, **kwargs)
+        # This facade method has exited its managed transaction. row_count is
+        # this shard's work; deleted_count is cumulative and cannot prove work.
+        if (
+            result
+            and not result[-1].cycle_complete
+            and any(item.row_count > 0 and not item.replayed for item in result)
+        ):
+            with state.lock:
+                completed_generation = state.completed_ingest_generation
+                state.emit(
+                    "cleanup_shard_committed",
+                    _CLEANUP_FAULT_OPERATION,
+                    row_count=sum(
+                        item.row_count for item in result if not item.replayed
+                    ),
+                    cycle_complete=False,
+                    after_ingest_generation=completed_generation,
+                )
+                shard_sequence = state.sequence
+            try:
+                state.fault_gate(
+                    _CLEANUP_FAULT_OPERATION,
+                    completed_ingest_generation=completed_generation,
+                    committed_shard_sequence=shard_sequence,
+                )
+            except Exception as error:
+                state.report_failure(error)
+                raise
+        return result
+
+    facade.try_claim_ingest = claim
+    facade.commit_publication_step = publication
+    facade.complete_ingest = complete
+    facade.drain_current_only_maintenance = drain
+    setattr(facade, advance_name, advance)
+
+
 def _expected_source_size(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int:
     member = args[0] if args else kwargs["member"]
     return cast(int, member.expected_size_bytes)
@@ -679,7 +829,10 @@ def install() -> bool:
         core_sql = _install_core_sql(state)
         _install_core_source(state)
         has_ingest = _install_ingest(state)
-        if control is not None and not has_ingest:
+        if has_ingest:
+            _install_ingest_lifecycle(state)
+        has_stream = importlib.import_module("probe_stream").install(state)
+        if control is not None and not (has_ingest or has_stream):
             raise RuntimeError(
                 "acceptance fault target requires installed ingest hooks"
             )
@@ -705,6 +858,8 @@ def install() -> bool:
                 "core_sqlite_connector": core_sql["sqlite"],
                 "core_mariadb_connector": core_sql["mariadb"],
                 "ingest": has_ingest,
+                "ingest_lifecycle": has_ingest,
+                "opds_stream": has_stream,
                 "sqlite": True,
                 "python_explicit_fsync": True,
                 "fault_injection": control is not None,

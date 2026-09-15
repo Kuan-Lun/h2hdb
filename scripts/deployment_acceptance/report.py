@@ -167,6 +167,36 @@ def _valid_probe_event(value: Any) -> bool:
             return False
     if "capabilities" in value and not isinstance(value["capabilities"], dict):
         return False
+    if value["event"] in {"ingest_claimed", "ingest_completed", "publication_terminal"}:
+        if (
+            type(value.get("ingest_generation")) is not int
+            or value["ingest_generation"] <= 0
+        ):
+            return False
+    if value["event"] == "ingest_completed" and (
+        type(value.get("completed_at")) is not int
+        or value["completed_at"] < 0
+        or type(value.get("replayed")) is not bool
+        or type(value.get("publication_terminal")) is not bool
+    ):
+        return False
+    if (
+        value["event"] == "publication_terminal"
+        and type(value.get("replayed")) is not bool
+    ):
+        return False
+    if value["event"] == "maintenance_result":
+        generation = value.get("after_ingest_generation")
+        if (
+            value.get("outcome") not in {"DONE", "PROGRESSED", "BLOCKED", "CONTENDED"}
+            or (
+                generation is not None
+                and (type(generation) is not int or generation <= 0)
+            )
+            or type(value.get("started_monotonic_ns")) is not int
+            or not 0 < value["started_monotonic_ns"] <= value["monotonic_ns"]
+        ):
+            return False
     if value["event"] == "audit_result":
         elapsed = value.get("elapsed_seconds")
         if (
@@ -180,6 +210,174 @@ def _valid_probe_event(value: Any) -> bool:
         ):
             return False
     return True
+
+
+def probe_cursor(events: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Capture a host-observed event boundary before mutating test inputs."""
+    result: dict[str, int] = {}
+    for event in events:
+        process = event["process_instance"]
+        result[process] = max(result.get(process, 0), event["sequence"])
+    return result
+
+
+def cleanup_completion(
+    events: Iterable[Mapping[str, Any]],
+    before: Mapping[str, int],
+    *,
+    verified_after: Mapping[str, int] | None = None,
+) -> dict[str, Any] | None:
+    """Require a fresh claimed/published/completed session and its later DONE.
+
+    The independent source/catalog/byte oracle is a separate runner condition.
+    Startup DONE, completion replay, an earlier process, and an earlier batch
+    cannot satisfy this causal chain. No comparison of clocks across processes
+    is used. A live file's incomplete final write is retried by the caller.
+    """
+    processes: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for event in events:
+        processes[event["process_instance"]].append(event)
+    candidates: list[tuple[Mapping[str, Any], list[Mapping[str, Any]]]] = []
+    for process, rows in processes.items():
+        if any(row.get("evidence_file_damaged") for row in rows):
+            continue
+        if [row["sequence"] for row in rows] != list(range(1, len(rows) + 1)):
+            raise AssertionError(
+                "Cleanup evidence has missing or reordered process events"
+            )
+        if any(a["monotonic_ns"] > b["monotonic_ns"] for a, b in zip(rows, rows[1:])):
+            raise AssertionError("Cleanup evidence has a reversed process clock")
+        fresh = [row for row in rows if row["sequence"] > before.get(process, 0)]
+        candidates.extend(
+            (row, fresh)
+            for row in fresh
+            if row["event"] == "ingest_completed"
+            and row["publication_terminal"]
+            and not row["replayed"]
+        )
+    if not candidates:
+        return None
+    completed, rows = max(candidates, key=lambda pair: pair[0]["ingest_generation"])
+    generation = completed["ingest_generation"]
+    claims = [
+        row
+        for row in rows
+        if row["event"] == "ingest_claimed"
+        and row["ingest_generation"] == generation
+        and row["sequence"] < completed["sequence"]
+    ]
+    publications = [
+        row
+        for row in rows
+        if row["event"] == "publication_terminal"
+        and row["ingest_generation"] == generation
+        and row["sequence"] < completed["sequence"]
+    ]
+    if not claims or not publications:
+        return None
+    claimed = claims[-1]
+    if publications[-1]["sequence"] <= claimed["sequence"]:
+        raise AssertionError("Publication evidence predates its claimed ingest session")
+    maintenance = [
+        row
+        for row in rows
+        if row["event"] == "maintenance_result"
+        and row["after_ingest_generation"] == generation
+        and row["sequence"] > completed["sequence"]
+        and row["started_monotonic_ns"] >= completed["monotonic_ns"]
+    ]
+    done = next((row for row in maintenance if row["outcome"] == "DONE"), None)
+    if done is None:
+        return None
+    if any(
+        row["event"] == "ingest_claimed"
+        and completed["sequence"] < row["sequence"] < done["sequence"]
+        for row in rows
+    ):
+        raise AssertionError("New ingest was claimed before observed cleanup DONE")
+    verified_done = next(
+        (
+            row
+            for row in maintenance
+            if row["outcome"] == "DONE"
+            and (
+                verified_after is None
+                or row["sequence"] > verified_after.get(row["process_instance"], 0)
+            )
+        ),
+        None,
+    )
+    if verified_done is None:
+        return None
+    # A newer idle session may complete without publishing; its completion is
+    # sufficient. A still-active newer session can create retirement work and
+    # cannot be hidden behind an older batch's DONE.
+    if any(
+        claimed_row["event"] == "ingest_claimed"
+        and claimed_row["ingest_generation"] > generation
+        and claimed_row["sequence"] < verified_done["sequence"]
+        and not any(
+            finished["event"] == "ingest_completed"
+            and finished["ingest_generation"] == claimed_row["ingest_generation"]
+            and claimed_row["sequence"]
+            < finished["sequence"]
+            < verified_done["sequence"]
+            for finished in rows
+        )
+        for claimed_row in rows
+    ):
+        return None
+    maintenance = [row for row in maintenance if row["sequence"] <= done["sequence"]]
+    return {
+        "status": "passed",
+        "process_instance": completed["process_instance"],
+        "ingest_generation": generation,
+        "claim_sequence": claimed["sequence"],
+        "completion_sequence": completed["sequence"],
+        "first_done_sequence": done["sequence"],
+        "done_sequence": verified_done["sequence"],
+        "claim_monotonic_ns": claimed["monotonic_ns"],
+        "done_monotonic_ns": verified_done["monotonic_ns"],
+        "post_oracle_done_required": verified_after is not None,
+        "publication_session_seconds": (
+            completed["monotonic_ns"] - claimed["monotonic_ns"]
+        )
+        / 1e9,
+        "post_completion_cleanup_seconds": (
+            done["monotonic_ns"] - completed["monotonic_ns"]
+        )
+        / 1e9,
+        "cleanup_call_seconds": sum(
+            (row["monotonic_ns"] - row["started_monotonic_ns"]) / 1e9
+            for row in maintenance
+        ),
+        "cleanup_outcomes": [row["outcome"] for row in maintenance],
+    }
+
+
+def claim_handoff(
+    previous: Mapping[str, Any], current: Mapping[str, Any]
+) -> dict[str, Any]:
+    """A later scenario must actually obtain a newer durable ingest generation."""
+    if current["ingest_generation"] <= previous["ingest_generation"]:
+        raise AssertionError("Next scenario did not claim a newer ingest generation")
+    same_process = previous["process_instance"] == current["process_instance"]
+    if same_process and current["claim_sequence"] <= previous["done_sequence"]:
+        raise AssertionError("Next scenario claim predates the previous cleanup DONE")
+    return {
+        "status": "passed",
+        "previous_ingest_generation": previous["ingest_generation"],
+        "next_ingest_generation": current["ingest_generation"],
+        "same_process": same_process,
+        "same_process_handoff_seconds": (
+            (current["claim_monotonic_ns"] - previous["done_monotonic_ns"]) / 1e9
+            if same_process
+            else None
+        ),
+        "limitations": [
+            "Handoff includes waiting for the next scenario input; cross-process clocks are not subtracted."
+        ],
+    }
 
 
 def summarize_probe(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

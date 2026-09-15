@@ -372,6 +372,7 @@ import importlib.util
 import json
 import os
 import sys
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
@@ -410,17 +411,20 @@ def inspect(runtime):
     return module.verify_catalog(runtime.catalog, source=source, library=library, manifest=module.read_manifest(source / module.MANIFEST_NAME))
 
 def run(initialize=False):
-    with DiskScratch(library) as scratch, build_runtime(config, temporary_cleanup=scratch.cleanup_page) as runtime:
-        if initialize:
-            runtime.database_admin.initialize()
-        runtime.resident.initialize()
-        expected = {g.gid: (g.expected.title, len(g.expected.pages)) for g in module.read_manifest(source / module.MANIFEST_NAME).galleries if g.expected is not None}
-        for attempt in range(32):
-            assert runtime.resident.process_available(periodic_scan=True)
-            actual = {p.gid: (p.source_title, p.page_count) for p in runtime.catalog.discover_publications().publications}
-            if actual == expected:
-                return inspect(runtime)
-        raise AssertionError(f"bounded source drain did not reach expected versions: {actual!r}, {expected!r}")
+    with ExitStack() as resources:
+        scratch = resources.enter_context(DiskScratch(library))
+        with build_runtime(config, temporary_cleanup=scratch.cleanup_page,
+                owned_resources=resources.pop_all()) as runtime:
+            if initialize:
+                runtime.database_admin.initialize()
+            runtime.resident.initialize()
+            expected = {g.gid: (g.expected.title, len(g.expected.pages)) for g in module.read_manifest(source / module.MANIFEST_NAME).galleries if g.expected is not None}
+            for attempt in range(32):
+                assert runtime.resident.process_available(periodic_scan=True)
+                actual = {p.gid: (p.source_title, p.page_count) for p in runtime.catalog.discover_publications().publications}
+                if actual == expected:
+                    return inspect(runtime)
+            raise AssertionError(f"bounded source drain did not reach expected versions: {actual!r}, {expected!r}")
 
 first = run(initialize=True)
 assert first["verified_publications"] == 2 and first["verified_pages"] == 4
@@ -527,6 +531,7 @@ def test_real_ingest_resizes_mixed_large_pages_against_independent_raster(
 import importlib.util
 import json
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 from h2hdb import CoreConfig, DatabaseConfig
@@ -554,12 +559,15 @@ contract = module.resolve_render_contract(config.paths.model_dump(mode="json"))
 assert contract.max_image_short_side == short_side
 assert contract.page_jpeg_quality == (90 if preset == "canonical" else 70)
 assert contract.resampler == ("lanczos" if preset == "canonical" else "bilinear")
-with DiskScratch(library) as scratch, build_runtime(config, temporary_cleanup=scratch.cleanup_page) as runtime:
-    runtime.database_admin.initialize()
-    runtime.resident.initialize()
-    assert runtime.resident.process_available(periodic_scan=True)
-    report = module.verify_catalog(runtime.catalog, source=source, library=library,
-        manifest=manifest, render_contract=contract)
+with ExitStack() as resources:
+    scratch = resources.enter_context(DiskScratch(library))
+    with build_runtime(config, temporary_cleanup=scratch.cleanup_page,
+            owned_resources=resources.pop_all()) as runtime:
+        runtime.database_admin.initialize()
+        runtime.resident.initialize()
+        assert runtime.resident.process_available(periodic_scan=True)
+        report = module.verify_catalog(runtime.catalog, source=source, library=library,
+            manifest=manifest, render_contract=contract)
 assert report["verified_publications"] == 2 and report["verified_pages"] == 6
 dimensions = [d for artifact in report["artifacts"] for d in artifact["page_dimensions"]]
 assert dimensions.count([128, 192]) == 4

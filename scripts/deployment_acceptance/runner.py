@@ -31,12 +31,60 @@ from .evidence import (
 )
 from .execution import Commands
 from .growth import growth_evidence
+from .probe_stream import stream_lifetime_evidence
 from .report import (
     assess_probe_measurement,
+    claim_handoff,
+    cleanup_completion,
+    probe_cursor,
     read_probe_events,
     summarize_log,
     summarize_probe,
 )
+
+_OBSERVER_BOOTSTRAP = """import json, os, pathlib, runpy, sys, tempfile
+result_path = pathlib.Path(sys.argv[1])
+sys.argv = ['deployment_acceptance.http_observer', *sys.argv[2:]]
+try:
+    runpy.run_module('deployment_acceptance.http_observer', run_name='__main__')
+except BaseException as error:
+    if isinstance(error, SystemExit) and error.code in (None, 0):
+        raise
+    if not result_path.exists():
+        value = {'status': 'failed', 'stage': 'observer-launch',
+                 'failure': 'Observer bootstrap failed: ' + type(error).__name__}
+        with tempfile.NamedTemporaryFile(mode='w', dir=result_path.parent, delete=False) as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.write('\\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            temporary = stream.name
+        os.replace(temporary, result_path)
+    raise
+"""
+
+
+def http_observer_command(
+    arguments: Sequence[str],
+    *,
+    result_path: Path,
+    package_root: Path = Path("/acceptance"),
+    python: str = "python",
+) -> list[str]:
+    """A detached Docker exec has no environment from the role's main command."""
+    return [
+        "env",
+        "-u",
+        "H2HDB_ACCEPTANCE_PROBE_DIR",
+        "-u",
+        "H2HDB_ACCEPTANCE_CONTROL_DIR",
+        f"PYTHONPATH={package_root}",
+        python,
+        "-c",
+        _OBSERVER_BOOTSTRAP,
+        str(result_path),
+        *arguments,
+    ]
 
 
 def write_json(path: Path, value: object) -> None:
@@ -70,6 +118,74 @@ def compare_reuse(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise AssertionError(f"Unchanged restart rewrote artifact for GID {gid}")
 
 
+def cleanup_fault_evidence(
+    events: Sequence[dict[str, Any]],
+    reached: dict[str, Any],
+    *,
+    prior_generation: int,
+) -> dict[str, Any]:
+    """Validate the exact committed shard that caused this process to pause."""
+    generation = reached.get("completed_ingest_generation")
+    cause = reached.get("committed_shard_sequence")
+    if (
+        reached.get("operation") != "core.cleanup.committed_nonempty_shard"
+        or reached.get("fault_injection") is not True
+        or type(generation) is not int
+        or generation <= prior_generation
+        or reached.get("required_after_ingest_generation") != prior_generation
+        or type(cause) is not int
+        or not 0 < cause < reached["sequence"]
+    ):
+        raise AssertionError(
+            "Cleanup fault lacks its fresh generation and exact committed cause"
+        )
+    shards = [
+        event
+        for event in events
+        if event["process_instance"] == reached["process_instance"]
+        and event["sequence"] == cause
+    ]
+    if len(shards) != 1:
+        raise AssertionError("Cleanup fault must identify exactly one committed shard")
+    shard = shards[0]
+    if (
+        shard.get("event") != "cleanup_shard_committed"
+        or shard.get("operation") != "core.cleanup.committed_nonempty_shard"
+        or type(shard.get("row_count")) is not int
+        or shard["row_count"] <= 0
+        or shard.get("cycle_complete") is not False
+        or type(shard.get("after_ingest_generation")) is not int
+        or shard["after_ingest_generation"] != generation
+    ):
+        raise AssertionError(
+            "Cleanup fault cause is not fresh nonempty committed work with work remaining"
+        )
+    completions = [
+        event
+        for event in events
+        if event["process_instance"] == reached["process_instance"]
+        and event["sequence"] < cause
+        and event.get("event") == "ingest_completed"
+        and event.get("ingest_generation") == generation
+        and event.get("publication_terminal") is True
+        and event.get("replayed") is False
+    ]
+    if len(completions) != 1:
+        raise AssertionError(
+            "Cleanup fault cause has no exact fresh published-ingest completion"
+        )
+    return {
+        "process_instance": reached["process_instance"],
+        "ingest_generation": generation,
+        "required_after_ingest_generation": prior_generation,
+        "completion_sequence": completions[0]["sequence"],
+        "committed_shard_sequence": cause,
+        "fault_sequence": reached["sequence"],
+        "row_count": shard["row_count"],
+        "cycle_complete": False,
+    }
+
+
 class Acceptance:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -81,6 +197,9 @@ class Acceptance:
         )
         self.root = Path(tempfile.mkdtemp(prefix=self.project + "-"))
         self.prepared: PreparedDeployment | None = None
+        self._last_oracle: dict[str, Any] | None = None
+        self._http_observer_token: str | None = None
+        self._http_observer_reached: dict[str, Any] | None = None
         self.credentials = DatabaseCredentials(
             *(secrets.token_hex(16) for _ in range(3))
         )
@@ -91,6 +210,11 @@ class Acceptance:
             "started_utc": datetime.now(UTC).isoformat(),
             "scenarios": [],
             "mode": "instrumented" if args.instrumented else "baseline",
+            "completion_contract": (
+                "publication-and-current-only-cleanup"
+                if args.instrumented
+                else "publication-only-functional-baseline"
+            ),
             "limitations": [
                 "Synthetic local files and Docker storage do not reproduce NAS latency or its full data distribution.",
                 "Only ingest and OPDS roles are exercised; downloader and Komga are outside this run.",
@@ -228,6 +352,38 @@ class Acceptance:
             ["logs", "--no-color", "--timestamps", "--since", since, SERVICES["ingest"]]
         )
 
+    def probe_events(self) -> list[dict[str, Any]]:
+        events, _damaged = read_probe_events(
+            self.deployment.evidence_dir.glob("probe-*.jsonl")
+        )
+        return events
+
+    def await_cleanup(self, record: dict[str, Any], boundary: dict[str, int]) -> None:
+        def completed() -> bool:
+            evidence = cleanup_completion(
+                self.probe_events(),
+                boundary,
+                verified_after=record["verification_probe_cursor"],
+            )
+            if evidence is None:
+                return False
+            record["catalog_cleanup"] = evidence
+            return True
+
+        self.wait(
+            completed,
+            f"{record['name']}: fresh published ingest followed by current-only cleanup DONE",
+            seconds=self.args.phase_seconds,
+        )
+        previous = self.report["scenarios"][:-1]
+        if previous:
+            prior = previous[-1].get("catalog_cleanup")
+            if prior is not None and prior.get("status") == "passed":
+                record["previous_cleanup_to_claim"] = claim_handoff(
+                    prior, record["catalog_cleanup"]
+                )
+                previous[-1]["next_ingest_claim"] = record["previous_cleanup_to_claim"]
+
     def statuses(self) -> list[dict[str, Any]]:
         result = self.compose(["ps", "--all", "--format", "json"])
         return [
@@ -335,6 +491,154 @@ print(json.dumps(result))
             reports.append(json.loads(result))
         return reports
 
+    def start_http_observer(self, oracle: dict[str, Any]) -> str:
+        artifact = min(oracle["artifacts"], key=lambda row: row["gid"])
+        token = "stream-" + secrets.token_hex(8)
+        seconds = self.args.phase_seconds + 120
+        self._http_observer_token = token
+        write_json(
+            self.deployment.control_dir / "stream-arm.json",
+            {
+                "token": token,
+                "byte_length": artifact["byte_length"],
+                "deadline_seconds": seconds,
+            },
+        )
+        self.compose(
+            [
+                "exec",
+                "-d",
+                SERVICES["opds"],
+                *http_observer_command(
+                    [
+                        "--base-url",
+                        "http://127.0.0.1:8000",
+                        "--gid",
+                        str(artifact["gid"]),
+                        "--sha256",
+                        artifact["sha256"],
+                        "--size",
+                        str(artifact["byte_length"]),
+                        "--revision",
+                        str(oracle["revision"]),
+                        "--control-directory",
+                        "/acceptance-control",
+                        "--evidence-directory",
+                        "/acceptance-evidence",
+                        "--token",
+                        token,
+                        "--deadline-seconds",
+                        str(seconds),
+                    ],
+                    result_path=Path("/acceptance-evidence")
+                    / f"http-result-{token}.json",
+                ),
+            ]
+        )
+
+        def ready() -> bool:
+            failed = self.deployment.evidence_dir / f"http-result-{token}.json"
+            if failed.exists():
+                result = read_evidence_json(failed.parent, failed.name)
+                if result.get("status") != "passed":
+                    raise AssertionError(
+                        f"Concurrent HTTP observer failed before ready: {result}"
+                    )
+            path = self.deployment.evidence_dir / f"http-ready-{token}.json"
+            if not path.exists():
+                return False
+            result = read_evidence_json(path.parent, path.name)
+            if result.get("status") != "ready":
+                raise AssertionError(
+                    "Concurrent HTTP observer did not acquire its held stream"
+                )
+            gates = [
+                event
+                for event in self.probe_events()
+                if event.get("token") == token
+                and str(event.get("event", "")).startswith("stream_gate_")
+            ]
+            if not gates:
+                return False
+            if len(gates) != 1 or gates[0]["event"] != "stream_gate_reached":
+                raise AssertionError(
+                    "Archive descriptor was not held before source mutation"
+                )
+            self._http_observer_reached = gates[0]
+            return True
+
+        self.wait(ready, "OPDS observer holds a real archive descriptor", seconds=60)
+        return token
+
+    def release_http_observer(self) -> None:
+        token = getattr(self, "_http_observer_token", None)
+        if token is not None:
+            (self.deployment.control_dir / "stream-arm.json").unlink(missing_ok=True)
+            (self.deployment.control_dir / f"stream-release-{token}").touch()
+
+    def finish_http_observer(
+        self, token: str, oracle: dict[str, Any]
+    ) -> dict[str, Any]:
+        artifact = min(oracle["artifacts"], key=lambda row: row["gid"])
+        self.release_http_observer()
+        write_json(
+            self.deployment.control_dir / f"finish-{token}.json",
+            {
+                "gid": artifact["gid"],
+                "revision": oracle["revision"],
+                "sha256": artifact["sha256"],
+                "byte_length": artifact["byte_length"],
+            },
+        )
+        result: dict[str, Any] = {}
+
+        def completed() -> bool:
+            nonlocal result
+            path = self.deployment.evidence_dir / f"http-result-{token}.json"
+            if not path.exists():
+                return False
+            result = read_evidence_json(path.parent, path.name)
+            if result.get("status") != "passed":
+                raise AssertionError(f"Concurrent HTTP observer failed: {result}")
+            return True
+
+        self.wait(
+            completed, "OPDS held stream and new revision verification", seconds=60
+        )
+        lifetime = stream_lifetime_evidence(self.probe_events(), token)
+        reached = self._http_observer_reached
+        if reached is None or any(
+            lifetime["reached"][field] != reached[field]
+            for field in ("process_instance", "sequence")
+        ):
+            raise AssertionError(
+                "Completed stream differs from the pre-mutation descriptor gate"
+            )
+        cleanup = self.report["scenarios"][-1]["catalog_cleanup"]
+        lifetime["cleanup_done_before_release"] = {
+            key: cleanup[key]
+            for key in ("process_instance", "ingest_generation", "done_sequence")
+        }
+        lifetime["ordering_evidence"] = (
+            "Host observed the held descriptor before input mutation, then observed cleanup DONE before creating the release file. Cross-process clocks are not compared."
+        )
+        result["descriptor_lifetime"] = lifetime
+        replaced = result["held_download_sha256"] != result["new_download_sha256"]
+        result["archive_replaced"] = replaced
+        scenario = self.report["scenarios"][-1]["name"]
+        if scenario == "complete-existing" and (
+            not replaced or lifetime["released"]["links"] != 0
+        ):
+            raise AssertionError(
+                "Changed-archive scenario must keep reading its unlinked old inode while publishing different bytes"
+            )
+        result["unlinked_old_archive_verified"] = (
+            replaced and lifetime["released"]["links"] == 0
+        )
+        self._http_observer_token = None
+        self._http_observer_reached = None
+        return result
+
     def phase(
         self,
         name: str,
@@ -346,12 +650,22 @@ print(json.dumps(result))
     ) -> dict[str, Any]:
         since = datetime.now(UTC).isoformat()
         started = time.monotonic()
+        instrumented = self.args.instrumented
+        boundary = probe_cursor(self.probe_events()) if instrumented else {}
         record: dict[str, Any] = {
             "name": name,
             "started_utc": since,
             "status": "running",
         }
         self.report["scenarios"].append(record)
+        previous_oracle = getattr(self, "_last_oracle", None)
+        observer = (
+            self.start_http_observer(previous_oracle)
+            if self.args.concurrent_http
+            and previous_oracle is not None
+            and before is None
+            else None
+        )
         action()
         last_completion = 0
         oracle: dict[str, Any] | None = None
@@ -381,6 +695,7 @@ print(json.dumps(result))
                 )
                 return False
             record["work_wall_seconds"] = measured
+            record["publication_observed_wall_seconds"] = measured
             record["log"] = summarize_log(log)
             (self.commands.output / f"ingest-{name}.log").write_text(log)
             if growth_galleries is not None:
@@ -408,6 +723,28 @@ print(json.dumps(result))
             compare_reuse(before, oracle)
             if record["log"]["cbz_render_operations"]:
                 raise AssertionError("Unchanged restart rendered CBZs")
+        if instrumented:
+            record["verification_probe_cursor"] = probe_cursor(self.probe_events())
+            self.await_cleanup(record, boundary)
+            record["work_wall_seconds"] = time.monotonic() - started
+            verification_started = time.monotonic()
+            after_cleanup = self.verify(name + "-after-cleanup")
+            record["post_cleanup_oracle_seconds"] = (
+                time.monotonic() - verification_started
+            )
+            compare_reuse(oracle, after_cleanup)
+            if oracle["revision"] != after_cleanup["revision"]:
+                raise AssertionError(
+                    "Cleanup changed the verified current catalog revision"
+                )
+            oracle = after_cleanup
+        else:
+            record["catalog_cleanup"] = {
+                "status": "not_observed",
+                "reason": "Functional baseline has no lifecycle instrumentation; it is not cleanup acceptance.",
+            }
+        if observer is not None:
+            record["concurrent_http"] = self.finish_http_observer(observer, oracle)
         self.wait(
             lambda: all(
                 any(
@@ -426,6 +763,7 @@ print(json.dumps(result))
         if self.args.http_artifacts:
             record["http_artifacts"] = self.verify_http_artifacts(oracle)
         record["status"] = "passed"
+        self._last_oracle = oracle
         write_json(self.commands.output / "report.json", self.report)
         print(
             json.dumps(
@@ -438,38 +776,78 @@ print(json.dumps(result))
         )
         return oracle
 
-    def fault(self, signal: str, gid: int) -> None:
-        token = signal.lower() + "-" + secrets.token_hex(4)
-        arm = self.deployment.control_dir / "arm.json"
-        write_json(
-            arm, {"operation": "library.commit_pending_installs", "token": token}
+    def fault(self, signal: str, gid: int, *, cleanup: bool = False) -> None:
+        token = (
+            ("cleanup-" if cleanup else "activation-")
+            + signal.lower()
+            + "-"
+            + secrets.token_hex(4)
         )
+        arm = self.deployment.control_dir / "arm.json"
+        operation = (
+            "core.cleanup.committed_nonempty_shard"
+            if cleanup
+            else "library.commit_pending_installs"
+        )
+        prior_generation = max(
+            (
+                row.get("catalog_cleanup", {}).get("ingest_generation", 0)
+                for row in self.report["scenarios"]
+            ),
+            default=0,
+        )
+        declaration: dict[str, object] = {"operation": operation, "token": token}
+        if cleanup:
+            declaration["after_ingest_generation"] = prior_generation
+        write_json(arm, declaration)
         self.generate(1, gid)
+        committed_cleanup: dict[str, Any] | None = None
 
         def reached() -> bool:
+            nonlocal committed_cleanup
             events, _ = read_probe_events(
                 self.deployment.evidence_dir.glob("probe-*.jsonl")
             )
-            return any(
-                event.get("event") == "fault_reached" and event.get("token") == token
-                for event in events
+            reached_event = next(
+                (
+                    event
+                    for event in events
+                    if event.get("event") == "fault_reached"
+                    and event.get("token") == token
+                ),
+                None,
             )
+            if reached_event is None:
+                return False
+            if cleanup:
+                committed_cleanup = cleanup_fault_evidence(
+                    events,
+                    reached_event,
+                    prior_generation=prior_generation,
+                )
+            return True
 
         self.wait(
             reached,
-            f"durable activation fault gate before {signal}",
+            f"durable {operation} fault gate before {signal}",
             seconds=self.args.phase_seconds,
         )
         arm.unlink()
-        if not (
-            self.deployment.library_dir / ".h2hdb-coordination" / "ACTIVATING"
-        ).exists():
+        if (
+            not cleanup
+            and not (
+                self.deployment.library_dir / ".h2hdb-coordination" / "ACTIVATING"
+            ).exists()
+        ):
             raise AssertionError("Fault did not reach a fenced activation")
         evidence: dict[str, Any] = {
             "signal": signal,
             "token": token,
-            "fenced_http": self.http(fenced=True),
+            "operation": operation,
+            "http_at_fault": self.http(fenced=not cleanup),
         }
+        if cleanup:
+            evidence["committed_cleanup"] = committed_cleanup
         container = next(
             row for row in self.statuses() if row.get("Service") == SERVICES["ingest"]
         )
@@ -593,7 +971,14 @@ print(json.dumps(result))
             }
             package = self.deployment.probe_dir / "deployment_acceptance"
             package.mkdir()
-            for filename in ("__init__.py", "fixture.py", "probe.py"):
+            for filename in (
+                "__init__.py",
+                "fixture.py",
+                "probe.py",
+                "http_observer.py",
+                "http_probe.py",
+                "probe_stream.py",
+            ):
                 shutil.copy2(Path(__file__).with_name(filename), package / filename)
             shutil.copy2(
                 Path(__file__).with_name("sitecustomize.py"),
@@ -602,6 +987,10 @@ print(json.dumps(result))
             shutil.copy2(
                 Path(__file__).with_name("probe.py"),
                 self.deployment.probe_dir / "probe.py",
+            )
+            shutil.copy2(
+                Path(__file__).with_name("probe_stream.py"),
+                self.deployment.probe_dir / "probe_stream.py",
             )
             shutil.copy2(
                 Path(__file__).with_name("http_probe.py"),
@@ -677,6 +1066,27 @@ print(json.dumps(result))
                         require_analysis=True,
                     )
                     next_gid += 1
+            if self.args.cleanup_faults:
+                for signal in ("SIGTERM", "SIGKILL"):
+                    self.phase(
+                        "recover-cleanup-" + signal.lower(),
+                        lambda: self.fault(signal, next_gid, cleanup=True),
+                        require_analysis=True,
+                    )
+                    next_gid += 1
+                self.phase(
+                    "post-cleanup-fault-handoff",
+                    lambda: self.generate(1, next_gid),
+                    require_analysis=True,
+                )
+                sentinel = self.report["scenarios"][-1]
+                sentinel["purpose"] = (
+                    "Verify that the last cleanup-fault recovery permits the next real ingest claim."
+                )
+                sentinel["next_ingest_claim"] = {
+                    "status": "not_requested",
+                    "reason": "This final sentinel proves the preceding scenario handoff; no later input was requested.",
+                }
             self.report["correctness_status"] = "passed"
             return 0
         except (Exception, KeyboardInterrupt) as error:
@@ -690,6 +1100,10 @@ print(json.dumps(result))
             return 1
         finally:
             if self.prepared is not None:
+                try:
+                    self.release_http_observer()
+                except Exception as error:
+                    self.report["observer_release_error"] = str(error)
                 try:
                     self.report["cleanup"] = self.commands.cleanup(
                         self.project, self.deployment.compose_path
@@ -767,6 +1181,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lifecycle", action="store_true")
     parser.add_argument("--faults", action="store_true")
     parser.add_argument(
+        "--concurrent-http",
+        action="store_true",
+        help="Hold an OPDS archive descriptor and read throughout publication and cleanup; requires instrumentation",
+    )
+    parser.add_argument(
+        "--cleanup-faults",
+        action="store_true",
+        help="Kill real ingest after a nonempty cleanup shard commits with work remaining; requires instrumentation",
+    )
+    parser.add_argument(
         "--http-artifacts",
         action="store_true",
         help="After each scenario, verify first and last GID CBZ downloads and Range through OPDS",
@@ -789,10 +1213,16 @@ def main(argv: list[str] | None = None) -> int:
         or args.deadline_seconds <= 60
     ):
         parser.error("Timeouts must be finite and deadline must exceed 60 seconds")
-    if args.faults and not args.instrumented:
+    if (
+        args.faults or args.cleanup_faults or args.concurrent_http
+    ) and not args.instrumented:
         parser.error("Fault scenarios require explicit instrumentation")
     if args.growth_batches and args.append_count * args.pages <= 128:
         parser.error("Growth rounds require append-count * pages greater than 128")
+    if args.concurrent_http and args.phase_seconds > 3480:
+        parser.error(
+            "Concurrent HTTP requires phase-seconds <= 3480 for its bounded observer lifetime"
+        )
     try:
         require_evidence_support()
     except EvidenceError as error:
@@ -809,6 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
             and result.report.get("measurement", {}).get("status") != "passed"
         )
         or result.report.get("fixture_cleanup_error")
+        or result.report.get("observer_release_error")
     ):
         return 1
     return code
