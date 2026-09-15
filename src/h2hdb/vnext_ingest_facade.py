@@ -65,7 +65,6 @@ from .vnext_canonical_value_repository import (
 )
 from .vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
-    CleanupBatchCommand,
     CleanupBatchResult,
     CleanupCycle,
     VNextCleanupRepository,
@@ -1541,12 +1540,14 @@ class VNextIngestFacade:
         Each durable cleanup transaction selects at most 256 logical cleanup
         keys/families; a key can execute a schema-fixed bounded compound delete
         across its vertical family.  One public attempt advances at most 16
-        such transactions.  ``PROGRESSED``
+        such transactions. Consecutive empty phases share one transaction while
+        retaining their durable receipts; the first nonempty phase ends it.
+        ``PROGRESSED``
         means at least one advance committed *and work remains*, so callers
         should retry promptly; ``BLOCKED`` and ``CONTENDED`` should use the
         ordinary poll cadence.  Callers retain no capability, and interrupted
         shard jobs resume before new work.  Every completed cycle restarts the
-        21-target dependency-priority scan from its head.
+        fixed dependency-priority scan from its head.
 
         File-derived hash-cache expiration is intentionally separate from this
         publication/resource fixed point.  It requires an explicit nonzero age policy;
@@ -1624,32 +1625,17 @@ class VNextIngestFacade:
                         )
                         if cycle is None:
                             break
-                        lease = self.__renew_current_only_lease(
-                            connector, lease, duration=duration
-                        )
-                        result = self.__resume_current_only_cycle(
-                            connector, lease, cycle=cycle
-                        )
-                        while (
-                            not result.cycle_complete
-                            and advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT
-                        ):
-                            generation = result.generation
-                            if generation is None:
-                                raise RuntimeError(
-                                    "open catalog cleanup lacks a generation"
-                                )
+                        while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
                             lease = self.__renew_current_only_lease(
                                 connector, lease, duration=duration
                             )
-                            result = self.__advance_current_only_shard(
-                                connector,
-                                lease,
-                                cycle=cycle,
-                                generation=generation,
+                            results = self.__advance_current_only_shard(
+                                connector, lease, cycle=cycle
                             )
                             advanced_batches += 1
-                        if not result.cycle_complete:
+                            if results[-1].cycle_complete:
+                                break
+                        if not results[-1].cycle_complete:
                             break
                         # A later target can release a foreign-key blocker for
                         # an earlier one, so every completed cycle restarts the
@@ -1766,45 +1752,22 @@ class VNextIngestFacade:
             )
         return cycle
 
-    def __resume_current_only_cycle(
-        self,
-        connector: SQLConnector,
-        lease: GateLease,
-        *,
-        cycle: CleanupCycle,
-    ) -> CleanupBatchResult:
-        now = require_int63(self.__clock(), field="current-only maintenance resume now")
-        with connector.transaction():
-            work = VNextUnitOfWork(connector, backend=self.__backend)
-            result = VNextCleanupRepository.resume_cycle(
-                work,
-                gate_lease=lease,
-                cycle=cycle,
-                now=now,
-            )
-        return result
-
     def __advance_current_only_shard(
         self,
         connector: SQLConnector,
         lease: GateLease,
         *,
         cycle: CleanupCycle,
-        generation: int,
-    ) -> CleanupBatchResult:
+    ) -> tuple[CleanupBatchResult, ...]:
         now = require_int63(
             self.__clock(), field="current-only maintenance advance now"
         )
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=self.__backend)
-            result = VNextCleanupRepository.advance(
+            result = VNextCleanupRepository.advance_current_only_cycle(
                 work,
                 gate_lease=lease,
                 cycle=cycle,
-                command=CleanupBatchCommand(
-                    secrets.token_bytes(32),
-                    generation,
-                ),
                 now=now,
             )
         return result
@@ -1816,12 +1779,19 @@ class VNextIngestFacade:
         *,
         duration: int,
     ) -> GateLease:
-        """Renew in its own transaction before cleanup reacquires gate locks."""
+        """Renew near half-life; each following transaction rechecks live authority.
+
+        This is only renewal scheduling, never an authorization cache. An expired
+        lease cannot be revived, and each bounded operation must still acquire
+        the gate with its own fresh timestamp before accessing cleanup state.
+        """
 
         now = require_int63(
             self.__clock(),
             field="current-only maintenance renewal now",
         )
+        if lease.lease_expires_at - now > duration // 2:
+            return lease
         with connector.transaction():
             return MaintenanceGateRepository.renew(
                 VNextUnitOfWork(connector, backend=self.__backend),

@@ -732,7 +732,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         clock=lambda: 100,
     )
     advance_calls = 0
-    original_advance = VNextCleanupRepository.advance
+    original_advance = VNextCleanupRepository.advance_current_only_cycle
 
     def counted_advance(*args: Any, **kwargs: Any) -> Any:
         nonlocal advance_calls
@@ -742,7 +742,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
 
     monkeypatch.setattr(
         VNextCleanupRepository,
-        "advance",
+        "advance_current_only_cycle",
         staticmethod(counted_advance),
     )
     assert facade.try_claim_ingest(True, 100_000) is None

@@ -133,10 +133,23 @@ def _drain(
     cycle: CleanupCycle,
     *,
     now: int = 3,
+    current_only: bool = False,
 ) -> list[CleanupBatchResult]:
     generation = 1
     results: list[CleanupBatchResult] = []
     for attempt in range(512):
+        if current_only:
+            with connector.transaction():
+                batch = VNextCleanupRepository.advance_current_only_cycle(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    cycle=cycle,
+                    now=now + attempt,
+                )
+            results.extend(batch)
+            if batch[-1].cycle_complete:
+                return results
+            continue
         result = _advance(
             connector,
             gate,
@@ -5300,9 +5313,11 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
 
 
 @pytest.mark.parametrize("state", ("PENDING", "PREPARED"))
+@pytest.mark.parametrize("current_only", [False, True])
 def test_candidate_cleanup_retains_unresolved_protection_families(
     tmp_path: Path,
     state: str,
+    current_only: bool,
 ) -> None:
     connector = _database(tmp_path / f"candidate-{state.lower()}-cleanup.sqlite3")
     try:
@@ -5337,7 +5352,7 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
             20,
             max_rows=32,
         )
-        results = _drain(connector, gate, cycle)
+        results = _drain(connector, gate, cycle, current_only=current_only)
         assert results[-1].deleted_count == 0
         assert connector.fetch_one(
             "SELECT candidate_id FROM catalog_publication_candidates "
@@ -5373,7 +5388,7 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
             max_rows=32,
             now=100,
         )
-        _drain(connector, gate, released, now=101)
+        _drain(connector, gate, released, now=101, current_only=current_only)
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
     finally:
         connector.close()
@@ -8110,11 +8125,13 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
         ),
     ),
 )
+@pytest.mark.parametrize("current_only", [False, True])
 def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
     tmp_path: Path,
     blocker_table: str,
     blocker_sql: str,
     blocker_parameters: tuple[object, ...],
+    current_only: bool,
 ) -> None:
     connector = _database(tmp_path / f"semantic-retained-{blocker_table}.sqlite3")
     try:
@@ -8145,7 +8162,7 @@ def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
             26,
             max_rows=32,
         )
-        results = _drain(connector, gate, cycle)
+        results = _drain(connector, gate, cycle, current_only=current_only)
         assert results[-1].deleted_count == 0
         assert (
             _artifact_semantic_input_family_rows(
@@ -8860,8 +8877,10 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
         connector.close()
 
 
+@pytest.mark.parametrize("current_only", [False, True])
 def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
     tmp_path: Path,
+    current_only: bool,
 ) -> None:
     connector = _database(tmp_path / "retention-race.sqlite3")
     try:
@@ -8886,6 +8905,19 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
             ],
         )
         cycle = _begin(connector, gate, CleanupTargetKind.CONTENT_BLOB, 48, max_rows=1)
+
+        def advance(*, now: int) -> None:
+            if current_only:
+                with connector.transaction():
+                    VNextCleanupRepository.advance_current_only_cycle(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        cycle=cycle,
+                        now=now,
+                    )
+            else:
+                _advance(connector, gate, cycle, 1, b"r" * 32, now=now)
+
         original = connector.fetch_all
         injected = False
 
@@ -8913,7 +8945,7 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
             patch.object(connector, "fetch_all", side_effect=race_retention_root),
             pytest.raises(CleanupRetentionBlockedError, match="retention root"),
         ):
-            _advance(connector, gate, cycle, 1, b"r" * 32, now=3)
+            advance(now=3)
         assert connector.fetch_one(
             "SELECT 1 FROM catalog_content_blobs WHERE file_sha256 = %s",
             (file_sha256,),
@@ -8928,7 +8960,7 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
         )
 
         with pytest.raises(RuntimeError, match="stale or expired"):
-            _advance(connector, gate, cycle, 1, b"e" * 32, now=100_002)
+            advance(now=100_002)
         assert connector.fetch_one(
             "SELECT 1 FROM catalog_content_blobs WHERE file_sha256 = %s",
             (file_sha256,),
