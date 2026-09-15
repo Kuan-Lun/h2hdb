@@ -20,10 +20,12 @@ from h2hdb.vnext_analysis_overlay_family import (
     ensure_analysis_file_hash_decision_shadow_family,
 )
 from h2hdb.vnext_analysis_repository import (
+    AnalysisCorruptionError,
     _iter_snapshot_decisions,
     _Policy,
     _RunAuthority,
 )
+from h2hdb.vnext_domains import DomainValidationError
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -175,13 +177,22 @@ def test_snapshot_still_rejects_zero_occurrences_when_schema_checks_are_bypassed
         )
         with (
             connector.read_transaction(),
-            pytest.raises(ValueError, match="occurrence_count must be in 1"),
+            pytest.raises(
+                AnalysisCorruptionError,
+                match="file-decision shadow contains invalid facts",
+            ) as rejected,
         ):
             list(
                 _iter_snapshot_decisions(
                     VNextUnitOfWork(connector, backend="sqlite"), authority
                 )
             )
+        family_error = rejected.value.__cause__
+        assert isinstance(family_error, AnalysisFamilyCollisionError)
+        assert isinstance(family_error.__cause__, DomainValidationError)
+        assert "stored shadow occurrence count must be in 1.." in str(
+            family_error.__cause__
+        )
 
 
 def test_seventeen_layers_preserve_revival_and_reject_masked_orphans(
