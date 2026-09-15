@@ -33,6 +33,7 @@ from types import MappingProxyType
 from typing import Any
 
 from ._generated_vnext_schema import ARTIFACT
+from .database_audit import DatabaseAuditStateRepository
 from .schema_epoch import SchemaEpochRunner
 from .vnext_allocator_repository import VNextAllocatorRepository
 from .vnext_analysis_repository import AnalysisRepository
@@ -126,6 +127,10 @@ _SPECS: tuple[tuple[str, str], ...] = (
     ("catalog.physical-domains.v1", "catalog_writer.validate_physical_domain"),
     ("catalog.bootstrap.v1", "schema_epoch.write_catalog_bootstrap"),
     ("catalog.retention.v2", "catalog_writer.validate_retention_transition"),
+    (
+        "h2hdb.operational.database-audit-schedule.v1",
+        "operational_writer.schedule_database_audit",
+    ),
     (
         "h2hdb.operational.physical-domains.v1",
         "operational_writer.validate_physical_domains",
@@ -275,6 +280,7 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_queue_repository": frozenset({"VNextQueueRepository"}),
         "h2hdb.vnext_source_build_repository": frozenset({"SourceBuildRepository"}),
         "h2hdb.vnext_source_marker_repository": frozenset({"SourceMarkerRepository"}),
+        "h2hdb.database_audit": frozenset({"DatabaseAuditStateRepository"}),
         "h2hdb.vnext_storage_instance_repository": frozenset(
             {"VNextStorageInstanceRepository"}
         ),
@@ -1030,6 +1036,11 @@ _BOUND_BINDINGS = (
         (SchemaEpochRunner.run,),
         frozenset({"schema_epoch_control"}),
         transaction_owner=WriterTransactionOwner.SCHEMA_EPOCH_RUNNER,
+    ),
+    _binding(
+        "h2hdb.operational.database-audit-schedule.v1",
+        (DatabaseAuditStateRepository.save,),
+        _contract_relations("h2hdb.operational.database-audit-schedule.v1"),
     ),
     _binding(
         "h2hdb.operational.storage-instance-binding.v1",

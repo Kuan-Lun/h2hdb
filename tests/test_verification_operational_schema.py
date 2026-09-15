@@ -221,8 +221,8 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert contract.scope == "operational_control_plane"
     assert contract.excluded_data_plane_components
     assert not contract.excluded_operational_components
-    assert len(contract.relations) == 68
-    assert len(report.relations) == 68
+    assert len(contract.relations) == 69
+    assert len(report.relations) == 69
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
@@ -1162,7 +1162,7 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     assert completed.returncode == 0, completed.stderr
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
-    assert len(provider_relations) == 66
+    assert len(provider_relations) == 67
     _logical, _local_names, physical, _stubs = _schemas()
     assert provider_relations == tuple(
         name for name in physical.source_slice if name != "schema_epoch_control"
@@ -1198,8 +1198,8 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         LOGICAL_PATH, PHYSICAL_PATH
     )
 
-    assert len(machine.obligations) == 18
-    assert len({value.obligation_id for value in machine.obligations}) == 18
+    assert len(machine.obligations) == 19
+    assert len({value.obligation_id for value in machine.obligations}) == 19
     assert all(value.version == 1 for value in machine.obligations)
     assert all(value.scope.startswith("operational.") for value in machine.obligations)
     assert all(
@@ -1243,7 +1243,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "cleanup_sweep_target",
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
-    assert len(machine.absent_relations) == 58
+    assert len(machine.absent_relations) == 59
     with PHYSICAL_PATH.open("rb") as stream:
         physical_document = tomllib.load(stream)
     assert len(machine.seeds) == len(physical_document.get("bootstrap_seed", ()))
@@ -1299,6 +1299,35 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "operational_preparation",
         "operational_deletion_consumption_event",
     )
+
+
+def test_database_audit_contract_and_success_constraints_fail_closed() -> None:
+    with LOGICAL_PATH.open("rb") as stream:
+        logical = tomllib.load(stream)
+    with PHYSICAL_PATH.open("rb") as stream:
+        physical = tomllib.load(stream)
+    operational_refinement.check_database_audit_schedule_v1(logical, physical)
+    wrong_policy = deepcopy(logical)
+    wrong_policy["database_audit_schedule_contract"]["schedule_rule"] += " or restart"
+    with pytest.raises(ValueError, match="executable v1 contract"):
+        operational_refinement.check_database_audit_schedule_v1(wrong_policy, physical)
+    for backend in ("sqlite", "mariadb"):
+        missing_null_group = deepcopy(physical)
+        relation = next(
+            item
+            for item in missing_null_group["relation"]
+            if item["name"] == "database_audit_state"
+        )
+        check = next(
+            item
+            for item in relation["check"]
+            if item["name"] == "ck_database_audit_state_success_fields"
+        )
+        check[f"{backend}_expression"] = "next_audit_at >= last_audit_at"
+        with pytest.raises(ValueError, match="constraints drift"):
+            operational_refinement.check_database_audit_schedule_v1(
+                logical, missing_null_group
+            )
 
 
 def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
@@ -3379,7 +3408,7 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert len(report.checked_relations) == 67
+    assert len(report.checked_relations) == 68
     assert report.pending_relations == ()
     assert database.table("h2hdb_schema_epoch") is not None
     assert database.table("operational_cleanup_batch_receipts") is None

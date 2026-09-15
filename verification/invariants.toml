@@ -4013,3 +4013,92 @@ tla = { status = "not_applicable", rationale = "CatalogCore has no source qualif
 runtime_refinement = { status = "covered", evidence = ["runtime.production.source-qualification", "runtime.production.writer-bindings"] }
 fault = { status = "covered", evidence = ["fault.production.source-qualification"] }
 integration = { status = "covered", evidence = ["integration.production.source-qualification"] }
+
+[[evidence]]
+id = "runtime.production.database-audit-schedule"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The core audit manager selects quick or independent full verification from one bounded mutable schedule, serializes changes under the epoch row lock, rejects stale generations and tokens, records success only after a real read-only full audit and fresh fence, and preserves one-time initial-catchup scheduling separately from the last audit fact. The READY check independently validates the singleton and complete nullable groups."
+assumptions = ["Clean finish is requested only after the ingest integration has stopped work and successfully closed all its resources. Initial catch-up is an adapter-owned one-time scheduling hint, not database-health evidence."]
+[[evidence.location]]
+path = "src/h2hdb/database_audit.py"
+symbol = "DatabaseAuditManager"
+[[evidence.location]]
+path = "src/h2hdb/database_audit.py"
+symbol = "DatabaseAuditStateRepository.save"
+[[evidence.location]]
+path = "src/h2hdb/operational_refinement.py"
+symbol = "check_database_audit_schedule_v1"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_database_audit_schedule_v1"
+
+[[evidence]]
+id = "fault.production.database-audit-schedule"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "SQLite regressions reject partial success state, retain pending state on audit failure, fence stale run renewal and closure, and prove a delayed full audit cannot replace the result of a newer owner. A backwards database clock triggers an actual full check without looping forever."
+assumptions = ["These are finite fault injections; they do not claim unbounded proof or real power-loss coverage."]
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_competing_takeover_prevents_old_audit_recording_success"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_failed_full_audit_retains_dirty_pending_state_without_success"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_corrupt_partial_success_cannot_select_quick"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_clock_regression_requires_full_check"
+[[evidence.location]]
+path = "tests/test_verification_operational_schema.py"
+symbol = "test_database_audit_contract_and_success_constraints_fail_closed"
+
+[[evidence]]
+id = "integration.production.database-audit-schedule"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated-schema SQLite workflows run a real first full audit, prove clean quick startup uses only bounded control queries, resume after dirty ownership expiry, preserve exact clean-finish replay, defer long initial catch-up once without inventing audit success, schedule from measured completion and duration, and renew read-only while a full SQLite read snapshot exists. The one-time schema converter preserves populated facts and seeds its real successful full audit as a clean baseline."
+assumptions = ["These named cases establish SQLite behavior; live MariaDB converter coverage is a separate explicitly enabled run."]
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_first_full_clean_restart_and_exact_finish_replay"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_clean_quick_path_uses_only_bounded_control_queries"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_initial_long_catchup_gets_one_grace_without_fabricated_audit"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_periodic_full_check_uses_measured_duration_budget"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_renew_during_sqlite_full_read_snapshot_is_read_only"
+[[evidence.location]]
+path = "tests/test_upgrade_audit_schema.py"
+symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
+
+[[evidence]]
+id = "integration.live-mariadb.database-audit-schedule"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "Live MariaDB 10.11.11 executes the generated schema and real first full audit, clean quick restart, exact-token renewal, live-owner contention, expired dirty-owner full audit, and stale closure rejection."
+assumptions = ["This explicitly enabled live integration case is separate from SQLite evidence; release receipts attest it only if the reviewed merge profile selects it."]
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_mariadb_full_clean_quick_and_interrupted_runtime_fencing"
+
+[[invariant]]
+id = "h2hdb.operational.database-audit-schedule.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no audit timing, process-clean state, duration-sensitive schedule, or initial catch-up grace; bounded SQL fault and integration cases verify this concrete protocol." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.database-audit-schedule", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.database-audit-schedule"] }
+integration = { status = "covered", evidence = ["integration.production.database-audit-schedule", "integration.live-mariadb.database-audit-schedule"] }

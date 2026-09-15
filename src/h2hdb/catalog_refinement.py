@@ -171,6 +171,11 @@ _SPECS = (
         "catalog_refinement.check_retention_contract_v2",
     ),
     (
+        "h2hdb.operational.database-audit-schedule.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_database_audit_schedule_v1",
+    ),
+    (
         "h2hdb.operational.physical-domains.v1",
         "ready_validation",
         "operational_refinement.check_physical_domains_v1",

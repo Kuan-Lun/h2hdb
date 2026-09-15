@@ -60,6 +60,9 @@ DIGEST32 = {
     "value_sha256",
 }
 TIMESTAMPS = {
+    "last_audit_at",
+    "next_audit_at",
+    "initial_catchup_at",
     "acked_at",
     "activated_at",
     "allocated_at",
@@ -87,6 +90,11 @@ TIMESTAMPS = {
     "updated_at",
 }
 COUNTERS = {
+    "lease_duration_microseconds",
+    "minimum_interval_microseconds",
+    "duration_multiplier",
+    "audit_duration_microseconds",
+    "audit_pending",
     "accumulated_work",
     "algorithm_version",
     "allocator_generation",
@@ -191,9 +199,14 @@ ENUMS = {
     "stream",
     "target_kind",
 }
-NAMES: set[str] = set()
+NAMES: set[str] = {"validator_version"}
 
 SEMANTIC_OBLIGATION_CHECKS = {
+    "h2hdb.operational.database-audit-schedule.v1": (
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_database_audit_schedule_v1",
+    ),
     "h2hdb.operational.physical-domains.v1": (
         "ready_validation",
         "physical_domain",
@@ -289,6 +302,10 @@ SEMANTIC_VALIDATOR_HOOK = (
     "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 )
 GENERATION_OBLIGATION_BINDINGS = {
+    "h2hdb.operational.database-audit-schedule.v1": (
+        ("database_audit_state",),
+        "Validate one mutable ingest scheduling singleton with complete audit-success fields, exact generation/token ownership, clean lease release, independently executed full checks, and one-time initial-catchup grace.",
+    ),
     "h2hdb.operational.storage-instance-binding.v1": (
         ("storage_instance_binding",),
         "Validate an initially absent, one-time immutable non-nil storage-instance UUID binding whose exact replay is write-free and whose mismatch fails closed without replacing the retained identity.",
@@ -434,7 +451,17 @@ GENERATION_OBLIGATION_BINDINGS = {
 
 def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
     nullable = (
-        attribute
+        relation == "database_audit_state"
+        and attribute
+        in {
+            "lease_expires_at",
+            "last_audit_at",
+            "audit_duration_microseconds",
+            "validator_version",
+            "next_audit_at",
+            "initial_catchup_at",
+        }
+        or attribute
         in {
             "completed_at",
             "last_page_sha256",
@@ -1348,6 +1375,31 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
             " AND ".join(mariadb_storage),
         )
     )
+    if name == "database_audit_state":
+        checks.extend(
+            [
+                (
+                    "ck_database_audit_state_positive",
+                    "generation > 0 AND lease_duration_microseconds > 0 AND minimum_interval_microseconds > 0 AND duration_multiplier > 0",
+                    "generation > 0 AND lease_duration_microseconds > 0 AND minimum_interval_microseconds > 0 AND duration_multiplier > 0",
+                ),
+                (
+                    "ck_database_audit_state_pending",
+                    "audit_pending IN (0, 1) AND (audit_pending = 0 OR lease_expires_at IS NOT NULL)",
+                    "audit_pending IN (0, 1) AND (audit_pending = 0 OR lease_expires_at IS NOT NULL)",
+                ),
+                (
+                    "ck_database_audit_state_success_fields",
+                    "(last_audit_at IS NULL AND audit_duration_microseconds IS NULL AND validator_version IS NULL AND next_audit_at IS NULL AND audit_pending = 1) OR (last_audit_at IS NOT NULL AND audit_duration_microseconds IS NOT NULL AND validator_version IS NOT NULL AND next_audit_at IS NOT NULL AND next_audit_at >= last_audit_at)",
+                    "last_audit_at IS NULL AND audit_duration_microseconds IS NULL AND validator_version IS NULL AND next_audit_at IS NULL AND audit_pending = 1 OR last_audit_at IS NOT NULL AND audit_duration_microseconds IS NOT NULL AND validator_version IS NOT NULL AND next_audit_at IS NOT NULL AND next_audit_at >= last_audit_at",
+                ),
+                (
+                    "ck_database_audit_state_validator_bounded",
+                    "validator_version IS NULL OR (length(validator_version) >= 1 AND length(validator_version) <= 191)",
+                    "validator_version IS NULL OR octet_length(validator_version) >= 1 AND octet_length(validator_version) <= 191",
+                ),
+            ]
+        )
     if "singleton_id" in attributes:
         checks.append(
             (

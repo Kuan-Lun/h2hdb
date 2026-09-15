@@ -356,7 +356,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 6只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 7只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為
@@ -369,8 +369,18 @@ Schema變更依序進行：
   semantic驗證前後的 fresh closed-world inventory；不得信任跨次執行快取。
 - Previous、foreign或 malformed control必須拒絕，database error不得視為
   empty；READY marker admission不證明 data-plane完整，schema/data drift由
-  明確 `check`完整拒絕。Consumers啟動仍須獨立完整 audit，不能信任另一程序
-  的成功結果。重建從新的空 database開始。
+  明確 `check`完整拒絕。Ingest啟動使用core持久化的稽核排程，依正常結束、
+  最近完整稽核、validator版本與到期狀態選擇快速或完整檢查；排程紀錄不是
+  後續資料完整性的證明。其他caller須明確選擇check或readiness，不得將
+  quick結果宣稱為full audit；公開open_database仍保留完整check契約。
+- Ingest runtime稽核排程是明確mutable operational state；core執行完整
+  check成功且fresh generation/token重驗後才能更新完整稽核時間。Caller
+  不得傳入成功旗標作為依據。首次source catch-up提示只能延後一次排程，
+  不得更改last audit事實；正常結束只在工作與所有資源清理成功後記錄。
+- Exact schema6可使用一次性離線upgrade-audit-schema工具轉為schema7，僅新增
+  排程relation並在完整READY語意驗證成功後切換marker。轉換期間使用獨立
+  checksum，runtime不得接納或自動恢復；不新增numbered migration ledger、
+  compatibility view或runtime fallback。其他previous或foreign schema仍拒絕。
 - 每個 production SQL relation identifier都必須由 `physical.toml`、
   `operational_physical.toml`或唯一 epoch-control relation接納。Formal BCNF通過
   不代表可以發布第二套未 manifest的 SQL schema。

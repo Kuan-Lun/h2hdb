@@ -62,7 +62,7 @@ from .domain import (
 from .sql_connector import SQLConnector
 
 V_NEXT_SCHEMA_EPOCH = 3
-V_NEXT_SCHEMA_VERSION = 6
+V_NEXT_SCHEMA_VERSION = 7
 SCHEMA_EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
 MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:3"
 

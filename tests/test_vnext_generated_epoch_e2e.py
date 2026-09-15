@@ -144,7 +144,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
 
     initialized = admin.initialize()
     assert initialized.epoch == ARTIFACT["epoch"] == 3
-    assert initialized.schema_version == ARTIFACT["schema_version"] == 6
+    assert initialized.schema_version == ARTIFACT["schema_version"] == 7
     assert initialized.state == "READY"
     assert initialized.outcome is SchemaProvisioningOutcome.CREATED
     assert initialized.activation_audit is not None

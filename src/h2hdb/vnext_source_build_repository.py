@@ -43,6 +43,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from .database_clock import database_unix_microseconds
 from .domain import SourceBatchBaseline, VNextSourcePreparationOperation
 from .ports import VNextSourcePreparationObserver
 from .source_errors import VNextSourceChangedError
@@ -98,7 +99,6 @@ from .vnext_maintenance_gate_repository import GateLease
 from .vnext_manifest_family import (
     ManifestFamilyCollisionError,
     SourceBuildFamily,
-    database_unix_microseconds,
     ensure_build_manifest_family,
     ensure_source_build_family,
     load_build_manifest_family,

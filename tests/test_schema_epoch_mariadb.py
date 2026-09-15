@@ -108,7 +108,7 @@ CONTROL_CHECK_ROWS = [
 def _definition() -> SchemaEpochDefinition:
     return SchemaEpochDefinition(
         epoch=3,
-        schema_version=6,
+        schema_version=7,
         ddl_manifest_sha256=DDL_MANIFEST,
         seed_manifest_sha256=SEED_MANIFEST,
         obligation_manifest_sha256=OBLIGATION_MANIFEST,
@@ -441,7 +441,7 @@ def test_fake_mariadb_committed_partial_ddl_resumes_idempotently() -> None:
     assert {PARENT.name, CHILD.name} <= set(connector.objects)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6])
 def test_fake_mariadb_prior_schema_control_is_rejected(version: int) -> None:
     connector = FakeMariaDBConnector()
     definition = _definition()
