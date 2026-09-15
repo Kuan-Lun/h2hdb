@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 __all__ = [
+    "DatabaseAuditPolicy",
+    "DatabaseAuditReason",
+    "DatabaseAuditReport",
+    "DatabaseAuditSession",
+    "DatabaseAuditSessionLostError",
+    "DatabaseAuditSessionUnavailableError",
+    "DatabaseAuditStateError",
     "ArtifactArchiveRenderEvidence",
     "ArtifactFailureContext",
     "ArtifactPagePresentationEvidence",
@@ -153,6 +160,11 @@ from .config_loader import (
     LoggerConfig,
     load_config,
 )
+from .database_audit import (
+    DatabaseAuditSessionLostError,
+    DatabaseAuditSessionUnavailableError,
+    DatabaseAuditStateError,
+)
 from .domain import (
     DEFAULT_CATALOG_DISCOVERY_QUERY,
     ArtifactArchiveRenderEvidence,
@@ -193,6 +205,10 @@ from .domain import (
     CatalogTagPage,
     CatalogTagValue,
     CatalogTimestampRange,
+    DatabaseAuditPolicy,
+    DatabaseAuditReason,
+    DatabaseAuditReport,
+    DatabaseAuditSession,
     DirectoryObservation,
     DownloadCandidateState,
     FileContentReceipt,

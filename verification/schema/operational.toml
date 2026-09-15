@@ -9,6 +9,17 @@ excluded_data_plane_components = [
   "catalog publications, artifacts, catalog revision history, and publication head",
 ]
 
+[database_audit_schedule_contract]
+version = 1
+relation = "database_audit_state"
+initial_rule = "absence requires a core-executed full audit before quick admission"
+owner_rule = "one ingest runtime owns the current generation and repository-issued token; a live lease blocks takeover, expiry permits a strictly newer generation, and exact unchanged token permits renewal or full-audit completion after expiry"
+audit_rule = "core executes the full check in a separate stable read transaction, then fresh exact-token finalization records database time and measured duration; failure or superseded ownership cannot record success or clean closure"
+schedule_rule = "next audit is scheduled from successful finish by max(minimum interval, measured duration times multiplier); initial catch-up defers periodic work and its first completion extends the deadline once, without changing the last full audit time"
+clock_rule = "a backwards database clock forces a full audit; successful completion rebases a future catch-up scheduling anchor without granting a new one-time grace"
+close_rule = "only the owning token with no pending audit may clear the lease; the retained last token permits exact response-loss replay, and the next runtime replaces generation and token"
+scope_rule = "mutable ingest-only scheduling state, not immutable audit receipts or proof that later database writes are healthy; reader and downloader startup readiness does not infer their process health"
+
 [storage_instance_binding_contract]
 version = 1
 relation = "storage_instance_binding"
@@ -896,6 +907,20 @@ rule = "every staged leaf branch and root page commit atomically inserts its all
 # `hook` names the exact runtime validator registry which must discharge the
 # same ID before a schema epoch may become READY.
 [[semantic_obligation]]
+id = "h2hdb.operational.database-audit-schedule.v1"
+ready_check = "operational_refinement.check_database_audit_schedule_v1"
+writer_hook = "operational_writer.schedule_database_audit"
+writer_hook_version = 1
+version = 1
+scope = "operational.database-audit-schedule"
+class = "transaction_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_database_audit_schedule_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["database_audit_state"]
+description = "Validate one mutable ingest scheduling singleton with complete audit-success fields, exact generation/token ownership, clean lease release, independently executed full checks, and one-time initial-catchup grace."
+
+[[semantic_obligation]]
 id = "h2hdb.operational.physical-domains.v1"
 ready_check = "operational_refinement.check_physical_domains_v1"
 writer_hook = "operational_writer.validate_physical_domains"
@@ -1154,6 +1179,7 @@ absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
 absent_relations = [
+  "database_audit_state",
   "storage_instance_binding",
   "download_generation",
   "download_coordination_head",
@@ -4416,3 +4442,13 @@ foreign_keys = [
   { attributes = ["phase"], relation = "cleanup_phase", referenced_attributes = ["phase"] },
 ]
 rationale = "One globally bounded checkpoint row per started phase stores both current poststate and the immediately preceding transition prestate. Receipt fields are either all NULL at generation one or all present after a page commit; generation, cursor_bytes, chain_sha256, and updated_at are the corresponding committed generation, next cursor, output chain, and commit time. This atomic BCNF row preserves exact latest retry and phase-transition replay without a separately orphanable receipt."
+
+[[relation]]
+name = "database_audit_state"
+kind = "source_of_truth"
+attributes = ["singleton_id", "generation", "owner_token", "lease_expires_at", "lease_duration_microseconds", "minimum_interval_microseconds", "duration_multiplier", "last_audit_at", "audit_duration_microseconds", "validator_version", "next_audit_at", "initial_catchup_at", "audit_pending"]
+declared_keys = [["singleton_id"]]
+fds = [
+  { determinant = ["singleton_id"], dependent = ["generation", "owner_token", "lease_expires_at", "lease_duration_microseconds", "minimum_interval_microseconds", "duration_multiplier", "last_audit_at", "audit_duration_microseconds", "validator_version", "next_audit_at", "initial_catchup_at", "audit_pending"] },
+]
+rationale = "One explicitly mutable scheduling head has only the singleton candidate key. It owns the latest ingest run, lease, policy and completed-check timing; these are scheduling state rather than immutable history or current database-health authority. All fields transition together under the epoch row lock and exact generation/token CAS, so no partial success or owner-without-policy state is observable."

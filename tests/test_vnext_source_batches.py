@@ -37,7 +37,7 @@ from h2hdb import (
     VNextResolvedIngestPolicy,
     VNextSourceChangedError,
 )
-from h2hdb.vnext_manifest_family import database_unix_microseconds
+from h2hdb.database_clock import database_unix_microseconds
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 

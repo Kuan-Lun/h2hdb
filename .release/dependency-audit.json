@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-15T06:14:53+00:00",
+  "checked_at": "2026-09-15T12:07:13+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.38.3",
+  "project_version": "0.39.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Quality-first file-decision preparation and bounded cleanup task: refreshed all Python build/runtime/development and Node registry candidates. Every candidate remains identical to the previously reviewed 0.38.2 audit; direct dependency declarations and supported Python bounds are unchanged, so there are no new upstream releases requiring an additional compatibility review. Targeted SQLite, MariaDB, lifecycle, rollback and process-resource checks validate the affected contracts; exact-tree release gate and Compose candidate results are separate evidence and are not asserted by this dependency receipt.",
+    "note": "Code-quality-first schema 7 release with durable ingest audit scheduling and offline exact-schema-6 conversion. Reviewed all 12 Python and 1 Node direct dependency entries against the prior 0.38.3 audit: registry latest versions are unchanged, so their previous upstream compatibility review remains applicable. SQLite scheduler/conversion and real MariaDB 10.11.11 lifecycle/conversion including process kill passed; schema, schema-surface, Lean and strict tooling passed. Core 0.39 requires a coherent consumer release wave; candidate wheel resolution and Compose acceptance are separate integration evidence, not claims made by this inventory receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

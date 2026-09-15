@@ -462,6 +462,7 @@ def _install_sqlite(state: _Probe) -> None:
 
 def _install_core(state: _Probe) -> None:
     admin = importlib.import_module("h2hdb.schema_admin")
+    facade = importlib.import_module("h2hdb.vnext_facade")
     provider = importlib.import_module("h2hdb.vnext_schema_provider")
     for method in ("initialize", "check", "check_readiness"):
         _hook(state, admin.VNextSchemaAdmin, method, f"core.admin.{method}")
@@ -487,6 +488,33 @@ def _install_core(state: _Probe) -> None:
         )
 
     setattr(provider, "_load_builtin_semantic_validators", load_validators)  # noqa: B010 - Dynamically loaded module exposes this private hook at runtime.
+    original_start = facade.VNextDatabaseAdminFacade.start_ingest_runtime
+
+    @functools.wraps(original_start)
+    def start_ingest_runtime(*args: Any, **kwargs: Any) -> Any:
+        elapsed = 0.0
+
+        def invoke() -> Any:
+            nonlocal elapsed
+            started = time.perf_counter()
+            result = original_start(*args, **kwargs)
+            elapsed = time.perf_counter() - started
+            return result
+
+        operation = "core.admin.start_ingest_runtime"
+        result = state.call(operation, invoke, boundary=True)
+        # Report only neutral result scalars. The paired start/end counters
+        # independently reveal whether real check/validator calls occurred.
+        state.emit(
+            "audit_result",
+            operation,
+            mode="quick" if result.full_audit is None else "full",
+            reason=result.reason.value,
+            elapsed_seconds=elapsed,
+        )
+        return result
+
+    facade.VNextDatabaseAdminFacade.start_ingest_runtime = start_ingest_runtime
 
 
 def _install_core_sql(state: _Probe) -> dict[str, bool]:

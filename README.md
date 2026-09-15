@@ -13,8 +13,9 @@ sibling packages.
 
 ## What this package provides
 
-- One generated epoch-3/schema-v6 schema for SQLite and MariaDB.
+- One generated epoch-3/schema-v7 schema for SQLite and MariaDB.
 - Safe initialization, full schema auditing, and lightweight readiness probes.
+- Durable ingest startup and periodic audit scheduling, including crash recovery.
 - Current-catalog discovery with Unicode-normalized search, exact facets,
   keyset pagination, and fixed recently uploaded/downloaded windows.
 - Single-publication, acquisition, cover, thumbnail, and ordered-page metadata
@@ -28,11 +29,12 @@ closed if the catalog advances or the value was forged.
 
 ## Compatibility model
 
-The active database identity is `epoch=3`, `schema_version=6`. This is a
-greenfield contract: schema v6 does not upgrade or adopt schema v5 or any older
-database, provide compatibility views, retain old list APIs, or dual-write old
-and new shapes. Replace an earlier database with a truly empty database and
-rebuild it from source through the current ingest integration.
+The active database identity is `epoch=3`, `schema_version=7`. Runtime accepts
+only this exact generated schema. It provides no compatibility views, old list
+APIs, dual writes, or automatic migration of earlier databases. The exact
+schema-6 database has a one-use offline conversion path described below; it
+preserves source, catalog, queue and artifact facts and all external CBZs.
+Schema 5 and earlier still require a fresh database rebuilt through ingest.
 
 `migrate` constructs or resumes only this checksum-bound schema. An interrupted
 matching `BUILDING` run can resume; a previous, foreign, drifted, or otherwise
@@ -109,12 +111,14 @@ Choose the operation from database state:
 
 | Database state or caller | Operation |
 | --- | --- |
-| Truly empty database | Run `migrate` to construct epoch 3/schema v6 |
+| Truly empty database | Run `migrate` to construct epoch 3/schema v7 |
 | Matching interrupted `BUILDING` epoch | Rerun `migrate` to resume |
 | Matching `READY` epoch | `migrate` reports `already_ready` using marker admission; `check` performs the full audit |
-| Consumer startup | Run `check`; never initialize schema |
+| Ingest process startup | Use the managed audit session to select quick or full validation |
+| Explicit complete audit | Run `check`; `open_database()` also retains this full-audit contract |
 | Frequent readiness probe | Run the O(1) read-only `ready` check |
-| Previous, foreign, or drifted schema | Create a new empty database and rebuild |
+| Exact READY schema 6 | Stop consumers and run the one-use offline converter |
+| Other previous, foreign, or drifted schema | Create a new empty database and rebuild |
 
 The wheel-resident generated provider must resolve every required runtime
 validator and recurring writer binding before it opens or mutates a database;
@@ -133,23 +137,97 @@ entire namespace after every DDL statement. Recovery never reuses an inventory
 from a previous attempt. Invalid controls, foreign manifests, unreadable state
 and database errors fail closed; a failed probe is never treated as empty.
 
-This changes the public `initialize()` result to `SchemaProvisioningReport`.
+The public `initialize()` result is `SchemaProvisioningReport`.
 Its `outcome` is `SchemaProvisioningOutcome.CREATED`, `.RESUMED` or
 `.ALREADY_READY`. Only the first two outcomes carry a `SchemaEpochReport` in
-`activation_audit`; the last carries `None`. Consumers must still perform
-`check()` or use `open_database()` before accepting work. An exact marker does
-not detect later data-plane/schema drift or transfer a full audit between
-processes. The existing deployment sequence `migrate` followed by the resident's
-`check()` therefore performs one full consumer audit on restart. Scripts that
-previously relied on `migrate` for a full audit must explicitly follow it with
-`check`; no flag silently preserves the old behavior. This API/CLI semantic
-change does not alter the epoch, schema manifest, stored data or external
-archives, so existing databases and CBZs require no rebuild.
+`activation_audit`; the last carries `None`. An exact marker does not detect
+later data-plane/schema drift. Explicit `check()` and `open_database()` still
+perform complete audits; quick admission never returns a fabricated full-audit
+report. An administration script requiring a complete audit must call `check`.
 
 Python callers that previously interpreted `initialize()` as a full audit must
 explicitly call `admin.initialize(); report = admin.check()` and consume that
 `SchemaEpochReport`. Callers that only provision should consume the new
 `SchemaProvisioningReport`.
+
+### Managed ingest audit scheduling
+
+`VNextDatabaseAdminFacade.start_ingest_runtime()` reserves a generation/token
+and selects the startup check using core-owned mutable scheduling state. It
+performs a full audit when no successful baseline exists, after an unclean
+ingest termination, when the validator version changes, when the schedule is
+due, or when explicitly forced. A clean restart within the interval uses the
+fixed-cost readiness probe. An active predecessor lease blocks a new runtime;
+expired ownership may be replaced, and the superseded process cannot record a
+successful audit or a clean exit.
+
+`check_ingest_runtime_if_due()` belongs between ingest sessions, including idle
+polls. The interval is the larger of the configured minimum (default seven
+days) and the last complete audit's measured duration multiplied by the
+configured factor (default 100). The interval starts at successful completion,
+not at the start of a possibly long audit. Ordinary batch completion does not
+pretend to be a complete database audit or reset this deadline.
+
+The first source catch-up has a separate, persistent scheduling grace period.
+`mark_initial_catchup_complete()` accepts a one-time scheduling hint from the
+source adapter after its last deferred batch. Galleries still downloading do
+not postpone it indefinitely. Until then, periodic audits are deferred; crash,
+validator-change and forced audits still run. The first catch-up completion
+starts a full waiting interval without changing the real last-audit timestamp.
+Later batches and restarts cannot renew that grace period.
+The completion condition is the first empty deferred backlog, not a frozen
+inventory of the initially present folders. If completed downloads keep arriving
+faster than ingest can process them, this initial exemption can remain active;
+manual `check`, crash recovery and validator-change audits remain available.
+
+`renew_ingest_runtime()` maintains the process lease. During a full SQLite
+read audit it does not require a competing write heartbeat; completion uses a
+fresh exact-token check and discards a result if another runtime took over.
+`finish_ingest_runtime()` is a clean-exit acknowledgement, to be called only
+after work, heartbeats and resource cleanup succeed. SIGKILL or an unhandled
+failure leaves an unclean session. This detects ingest process termination;
+it is not a claim to detect every downloader, operating-system or database-server
+failure. The scheduling row is not a permanent assertion that later database
+contents are healthy; transaction, publication and reader validation remain
+independent responsibilities.
+An in-progress synchronous full audit is not immediately cancellable. A graceful
+stop waits for it to return; a forced termination leaves the session unclean and
+requires another full audit after its lease expires.
+
+### One-use schema-6 conversion
+
+Use the new core environment and this release's
+[`scripts/upgrade-audit-schema.py`](scripts/upgrade-audit-schema.py):
+
+```bash
+python scripts/upgrade-audit-schema.py --config /path/to/core-config.json --consumers-stopped
+```
+
+Before running it, stop ingest, downloader, OPDS, Komga synchronization and all
+other database clients, and take a verifiable database backup. The flag records
+the operator's acknowledgement; an advisory schema lock alone cannot prove
+that application clients are stopped. Keep the same environment variables
+required by the database configuration. The tool only supports the exact
+schema-6 manifests and the additive schema-7 provider shipped with this release.
+
+It validates the retained schema, adds the generated scheduling relation,
+performs all READY semantic checks on the existing data, and commits the new
+READY marker together with the real audit completion time and duration. The
+first ingest startup can therefore use that completed baseline instead of
+immediately repeating the converter's full audit. This is an offline full audit
+and can take as long as a manual `check`; it does not re-render or read CBZ bytes.
+A conversion-only checksum
+makes ordinary `migrate`, `ready` and consumers reject partial conversions.
+On interruption, rerun the same tool. It checks the existing prefix instead
+of dropping tables. SQLite conversion is atomic; MariaDB DDL can commit before
+the final transaction, so the converter explicitly supports that retained
+prefix. Repeating the tool on the converted schema performs a full audit and
+reports `already_converted`.
+
+Do not delete the existing database, library, CBZs or source folders for this
+conversion. To return to old software after conversion, restore the pre-upgrade
+database backup before restarting old consumers; runtime does not downgrade the
+schema. The converter itself never changes external media.
 
 The generated schema is shipped as a small Python loader plus a raw, bounded
 protocol-5 pickle resource; the wheel or sdist compressor handles distribution

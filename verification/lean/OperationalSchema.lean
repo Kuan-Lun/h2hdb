@@ -2100,21 +2100,21 @@ theorem ready_validation_accepts_a_legitimately_advanced_allocator :
   decide
 
 def operationalSemanticObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1"]
+  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1"]
 
 theorem operational_semantic_obligation_ids_are_unique :
     operationalSemanticObligationIds.Nodup := by
   native_decide
 
 theorem operational_semantic_obligation_count :
-    operationalSemanticObligationIds.length = 18 := by
+    operationalSemanticObligationIds.length = 19 := by
   native_decide
 
 def operationalBuildingOnlyObligationIds : List String :=
   ["h2hdb.operational.bootstrap-genesis.v1"]
 
 def operationalReadyObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1"]
+  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1"]
 
 theorem bootstrap_genesis_is_the_only_building_only_obligation :
     operationalBuildingOnlyObligationIds =
@@ -2127,7 +2127,7 @@ theorem building_only_and_ready_obligations_are_disjoint :
   native_decide
 
 def operationalBootstrapAbsentRelations : List String :=
-  ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+  ["database_audit_state", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 
 theorem operational_bootstrap_has_no_invented_active_control_facts :
     ∀ relation ∈ ["storage_instance_binding", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
@@ -2149,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "1d1d3526635c7fbbd429923a876e5058b0d2cbb45195ec26a292054c658de976"
+def operationalManifestSha256 : String := "eab90b47f36240c742b08779414c8ed71f38ea353585c8ea9931e174b454a62e"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -5300,6 +5300,52 @@ theorem cleanup_checkpoint_bcnf_check :
 theorem cleanup_checkpoint_bcnf : BCNF cleanup_checkpoint_contract :=
   bcnfCheck_sound cleanup_checkpoint_contract cleanup_checkpoint_bcnf_check
 
+def database_audit_state_contract : RelationContract where
+  name := "database_audit_state"
+  attributes := ["singleton_id", "generation", "owner_token", "lease_expires_at", "lease_duration_microseconds", "minimum_interval_microseconds", "duration_multiplier", "last_audit_at", "audit_duration_microseconds", "validator_version", "next_audit_at", "initial_catchup_at", "audit_pending"]
+  declaredKeys := [["singleton_id"]]
+  declaredFDs := [
+    { determinant := ["singleton_id"], dependent := ["generation", "owner_token", "lease_expires_at", "lease_duration_microseconds", "minimum_interval_microseconds", "duration_multiplier", "last_audit_at", "audit_duration_microseconds", "validator_version", "next_audit_at", "initial_catchup_at", "audit_pending"] }
+  ]
+
+theorem database_audit_state_schema_well_formed :
+    schemaWellFormedCheck database_audit_state_contract = true := by
+  native_decide
+
+theorem database_audit_state_candidate_keys_check :
+    keysDetermineAllCheck database_audit_state_contract = true := by
+  native_decide
+
+theorem database_audit_state_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes database_audit_state_contract :=
+  keysDetermineAllCheck_sound database_audit_state_contract
+    database_audit_state_candidate_keys_check
+
+theorem database_audit_state_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck database_audit_state_contract = true := by
+  native_decide
+
+theorem database_audit_state_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal database_audit_state_contract :=
+  declaredKeysMinimalCheck_sound database_audit_state_contract
+    database_audit_state_candidate_keys_minimal_check
+
+theorem database_audit_state_closure_fixed_check :
+    closureFixedPointCheck database_audit_state_contract = true := by
+  native_decide
+
+theorem database_audit_state_closure_reached_fixed_point :
+    ClosureReachedFixedPoint database_audit_state_contract :=
+  closureFixedPointCheck_sound database_audit_state_contract
+    database_audit_state_closure_fixed_check
+
+theorem database_audit_state_bcnf_check :
+    bcnfCheck database_audit_state_contract = true := by
+  native_decide
+
+theorem database_audit_state_bcnf : BCNF database_audit_state_contract :=
+  bcnfCheck_sound database_audit_state_contract database_audit_state_bcnf_check
+
 def manifestContracts : List RelationContract := [
   schema_epoch_control_contract,
   storage_instance_binding_contract,
@@ -5368,11 +5414,12 @@ def manifestContracts : List RelationContract := [
   cleanup_phase_contract,
   cleanup_job_contract,
   cleanup_cycle_root_contract,
-  cleanup_checkpoint_contract
+  cleanup_checkpoint_contract,
+  database_audit_state_contract
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 68 := by
+    manifestContracts.length = 69 := by
   native_decide
 
 set_option maxRecDepth 10000 in
@@ -5443,7 +5490,8 @@ theorem all_manifest_base_relations_bcnf :
     BCNF cleanup_phase_contract ∧
     BCNF cleanup_job_contract ∧
     BCNF cleanup_cycle_root_contract ∧
-    BCNF cleanup_checkpoint_contract := by
+    BCNF cleanup_checkpoint_contract ∧
+    BCNF database_audit_state_contract := by
   exact ⟨schema_epoch_control_bcnf,
     storage_instance_binding_bcnf,
     download_generation_bcnf,
@@ -5510,7 +5558,8 @@ theorem all_manifest_base_relations_bcnf :
     cleanup_phase_bcnf,
     cleanup_job_bcnf,
     cleanup_cycle_root_bcnf,
-    cleanup_checkpoint_bcnf⟩
+    cleanup_checkpoint_bcnf,
+    database_audit_state_bcnf⟩
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
@@ -5581,7 +5630,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes cleanup_phase_contract ∧
     KeysDetermineAllAttributes cleanup_job_contract ∧
     KeysDetermineAllAttributes cleanup_cycle_root_contract ∧
-    KeysDetermineAllAttributes cleanup_checkpoint_contract := by
+    KeysDetermineAllAttributes cleanup_checkpoint_contract ∧
+    KeysDetermineAllAttributes database_audit_state_contract := by
   exact ⟨schema_epoch_control_candidate_keys_determine_all_attributes,
     storage_instance_binding_candidate_keys_determine_all_attributes,
     download_generation_candidate_keys_determine_all_attributes,
@@ -5649,7 +5699,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     cleanup_phase_candidate_keys_determine_all_attributes,
     cleanup_job_candidate_keys_determine_all_attributes,
     cleanup_cycle_root_candidate_keys_determine_all_attributes,
-    cleanup_checkpoint_candidate_keys_determine_all_attributes⟩
+    cleanup_checkpoint_candidate_keys_determine_all_attributes,
+    database_audit_state_candidate_keys_determine_all_attributes⟩
 
 /- END GENERATED OPERATIONAL CONTRACTS -/
 

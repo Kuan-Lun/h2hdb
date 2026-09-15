@@ -43,6 +43,7 @@ __all__ = [
     "check_queue_history_contract_v1",
     "check_revision_allocator_contract_v1",
     "check_storage_instance_binding_contract_v1",
+    "check_database_audit_schedule_v1",
     "validate_builtin_operational_manifest",
 ]
 
@@ -116,6 +117,12 @@ class OperationalSemanticValidationError(SchemaEpochValidationError):
 
 # id, lifecycle, READY check, writer hook
 _SPECS = (
+    (
+        "h2hdb.operational.database-audit-schedule.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_database_audit_schedule_v1",
+        "operational_writer.schedule_database_audit",
+    ),
     (
         "h2hdb.operational.physical-domains.v1",
         "ready_validation",
@@ -3292,3 +3299,11 @@ def check_bootstrap_contract_v1(connector: SQLConnector) -> None:
             raise OperationalSemanticValidationError(
                 f"operational bootstrap relation {relation_name!r} is not empty"
             )
+
+
+def check_database_audit_schedule_v1(connector: SQLConnector) -> None:
+    """Audit the bounded scheduling singleton without claiming current health."""
+    from .database_audit import read_database_audit_state
+
+    _ready_context(connector, "h2hdb.operational.database-audit-schedule.v1")
+    read_database_audit_state(connector)

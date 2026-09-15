@@ -15,7 +15,6 @@ __all__ = [
     "ManifestFamilyPartialError",
     "SnapshotManifestFamily",
     "SourceBuildFamily",
-    "database_unix_microseconds",
     "ensure_build_manifest_family",
     "ensure_gallery_manifest_family",
     "ensure_snapshot_manifest_family",
@@ -29,6 +28,7 @@ __all__ = [
 from dataclasses import dataclass
 from typing import Any
 
+from .database_clock import database_unix_microseconds
 from .vnext_domains import (
     require_digest32,
     require_int63,
@@ -133,30 +133,6 @@ class SnapshotManifestFamily:
         require_int63(self.gallery_count, field="snapshot gallery_count")
         require_int63(self.file_count, field="snapshot file_count")
         require_int63(self.byte_count, field="snapshot byte_count")
-
-
-def database_unix_microseconds(work: VNextUnitOfWork) -> int:
-    """Read one database-owned UTC Unix timestamp inside the current tx."""
-
-    if not isinstance(work, VNextUnitOfWork):
-        raise TypeError("work must be a VNextUnitOfWork")
-    if work.backend == "sqlite":
-        # Do not use strftime('%s', ...): SQLiteConnector translates the
-        # repository's ``%s`` parameter markers to qmark markers and would
-        # therefore rewrite the format literal itself.  ``unixepoch`` keeps
-        # the SQL placeholder-free while the fractional expression supplies
-        # the millisecond precision supported by the SQLite clock.
-        row = work.connector.fetch_one(
-            "SELECT CAST(unixepoch('now') AS INTEGER) * 1000000 + "
-            "CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000"
-        )
-    else:
-        row = work.connector.fetch_one(
-            "SELECT TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', UTC_TIMESTAMP(6))"
-        )
-    if len(row) != 1:
-        raise ManifestFamilyCollisionError("database clock returned no exact scalar")
-    return require_int63(row[0], field="database unix microseconds")
 
 
 def load_source_build_family(

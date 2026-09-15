@@ -22,6 +22,7 @@ from time import time_ns
 from typing import TypeVar
 
 from .config_loader import CoreConfig
+from .database_audit import DatabaseAuditManager
 from .domain import (
     DEFAULT_CATALOG_DISCOVERY_QUERY,
     CatalogArtifact,
@@ -42,6 +43,10 @@ from .domain import (
     CatalogTagCursor,
     CatalogTagFilter,
     CatalogTagPage,
+    DatabaseAuditPolicy,
+    DatabaseAuditReason,
+    DatabaseAuditReport,
+    DatabaseAuditSession,
     DownloadCandidateState,
     SchemaEpochReadiness,
     SchemaEpochReport,
@@ -71,6 +76,7 @@ from .vnext_queue_repository import (
 from .vnext_transaction import VNextUnitOfWork
 
 _ResultT = TypeVar("_ResultT")
+_DEFAULT_AUDIT_POLICY = DatabaseAuditPolicy()
 
 
 def _now_microseconds() -> int:
@@ -80,9 +86,9 @@ def _now_microseconds() -> int:
 
 
 class VNextDatabaseAdminFacade:
-    """Expose greenfield schema and immutable storage administration."""
+    """Expose schema, storage binding, and durable ingest audit administration."""
 
-    __slots__ = ("__admin", "__context")
+    __slots__ = ("__admin", "__context", "__audit")
 
     def __init__(self, config: CoreConfig) -> None:
         if not isinstance(config, CoreConfig):
@@ -90,6 +96,7 @@ class VNextDatabaseAdminFacade:
         context = RepositoryContext.from_config(config)
         self.__context = context
         self.__admin = VNextSchemaAdmin(context)
+        self.__audit: DatabaseAuditManager | None = None
 
     def close(self) -> None:
         """Release idle sessions and reject later administration calls."""
@@ -103,6 +110,52 @@ class VNextDatabaseAdminFacade:
 
     def check_readiness(self) -> SchemaEpochReadiness:
         return self.__admin.check_readiness()
+
+    def start_ingest_runtime(
+        self,
+        *,
+        policy: DatabaseAuditPolicy = _DEFAULT_AUDIT_POLICY,
+        lease_duration_microseconds: int,
+        force_full: bool = False,
+        on_check: Callable[[DatabaseAuditReason], None] | None = None,
+    ) -> DatabaseAuditReport:
+        """Admit one ingest process, executing any required full audit ourselves."""
+        return self.__audit_manager().start(
+            policy=policy,
+            lease_duration_microseconds=lease_duration_microseconds,
+            force_full=force_full,
+            on_check=on_check,
+        )
+
+    def renew_ingest_runtime(
+        self, session: DatabaseAuditSession, lease_duration_microseconds: int
+    ) -> None:
+        """Renew the exact process token; a pending full audit renews on completion."""
+        self.__audit_manager().renew(session, lease_duration_microseconds)
+
+    def check_ingest_runtime_if_due(
+        self,
+        session: DatabaseAuditSession,
+        *,
+        on_check: Callable[[DatabaseAuditReason], None] | None = None,
+    ) -> DatabaseAuditReport:
+        """Check between ingest work units; initial catch-up defers periodic work."""
+        return self.__audit_manager().check_if_due(session, on_check=on_check)
+
+    def mark_initial_catchup_complete(
+        self, session: DatabaseAuditSession
+    ) -> DatabaseAuditReport:
+        """Apply the one-time scheduling grace, without claiming a full audit."""
+        return self.__audit_manager().mark_caught_up(session)
+
+    def finish_ingest_runtime(self, session: DatabaseAuditSession) -> None:
+        """Record clean closure only after the caller drained all owned resources."""
+        self.__audit_manager().finish(session)
+
+    def __audit_manager(self) -> DatabaseAuditManager:
+        if self.__audit is None:
+            self.__audit = DatabaseAuditManager(self.__context, self.__admin)
+        return self.__audit
 
     def bind_storage_instance(
         self,

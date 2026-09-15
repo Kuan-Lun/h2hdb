@@ -167,6 +167,18 @@ def _valid_probe_event(value: Any) -> bool:
             return False
     if "capabilities" in value and not isinstance(value["capabilities"], dict):
         return False
+    if value["event"] == "audit_result":
+        elapsed = value.get("elapsed_seconds")
+        if (
+            value.get("mode") not in {"quick", "full"}
+            or not isinstance(value.get("reason"), str)
+            or not value["reason"]
+            or not isinstance(elapsed, int | float)
+            or isinstance(elapsed, bool)
+            or not math.isfinite(elapsed)
+            or elapsed < 0
+        ):
+            return False
     return True
 
 
@@ -211,6 +223,20 @@ def summarize_probe(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
                 "pid": latest.get("pid"),
                 "scenario": latest.get("scenario"),
                 "events": len(values),
+                "audit_results": [
+                    {
+                        field: row[field]
+                        for field in (
+                            "sequence",
+                            "operation",
+                            "mode",
+                            "reason",
+                            "elapsed_seconds",
+                        )
+                    }
+                    for row in values
+                    if row.get("event") == "audit_result"
+                ],
                 "clean_exit_recorded": bool(exits),
                 "measurement_valid": final.get("measurement_valid")
                 if not issues

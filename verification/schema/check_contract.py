@@ -1820,9 +1820,9 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             "gallery_observation_validation_source",
         ),
         "operational_physical_table_count_before": 75,
-        "operational_physical_table_count_after": 67,
+        "operational_physical_table_count_after": 68,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 245,
+        "total_physical_table_count_after": 246,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (

@@ -408,6 +408,12 @@ _SEMANTIC_VALIDATOR_HOOK = (
     "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 )
 _OBLIGATION_BINDINGS = {
+    "h2hdb.operational.database-audit-schedule.v1": (
+        "operational.database-audit-schedule",
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_database_audit_schedule_v1",
+    ),
     "h2hdb.operational.physical-domains.v1": (
         "operational.physical-domains",
         "ready_validation",
@@ -782,6 +788,7 @@ def validate_operational_machine_contract_documents(
         _validate_bootstrap(logical, physical, physical_logical_relations)
     )
     checks: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], None]] = {
+        "operational_refinement.check_database_audit_schedule_v1": check_database_audit_schedule_v1,
         "operational_refinement.check_physical_domains_v1": check_physical_domains_v1,
         "operational_refinement.check_epoch_manifest_v1": check_epoch_manifest_v1,
         "operational_refinement.check_storage_instance_binding_contract_v1": check_storage_instance_binding_contract_v1,
@@ -816,6 +823,82 @@ def validate_operational_machine_contract_documents(
         absent_relations,
         epoch_owned,
     )
+
+
+def check_database_audit_schedule_v1(
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
+) -> None:
+    """Pin the complete single-row scheduling contract and atomic state shape."""
+    _require_exact_table(
+        logical,
+        "database_audit_schedule_contract",
+        {
+            "version": 1,
+            "relation": "database_audit_state",
+            "initial_rule": "absence requires a core-executed full audit before quick admission",
+            "owner_rule": "one ingest runtime owns the current generation and repository-issued token; a live lease blocks takeover, expiry permits a strictly newer generation, and exact unchanged token permits renewal or full-audit completion after expiry",
+            "audit_rule": "core executes the full check in a separate stable read transaction, then fresh exact-token finalization records database time and measured duration; failure or superseded ownership cannot record success or clean closure",
+            "schedule_rule": "next audit is scheduled from successful finish by max(minimum interval, measured duration times multiplier); initial catch-up defers periodic work and its first completion extends the deadline once, without changing the last full audit time",
+            "clock_rule": "a backwards database clock forces a full audit; successful completion rebases a future catch-up scheduling anchor without granting a new one-time grace",
+            "close_rule": "only the owning token with no pending audit may clear the lease; the retained last token permits exact response-loss replay, and the next runtime replaces generation and token",
+            "scope_rule": "mutable ingest-only scheduling state, not immutable audit receipts or proof that later database writes are healthy; reader and downloader startup readiness does not infer their process health",
+        },
+    )
+    attributes = [
+        "singleton_id",
+        "generation",
+        "owner_token",
+        "lease_expires_at",
+        "lease_duration_microseconds",
+        "minimum_interval_microseconds",
+        "duration_multiplier",
+        "last_audit_at",
+        "audit_duration_microseconds",
+        "validator_version",
+        "next_audit_at",
+        "initial_catchup_at",
+        "audit_pending",
+    ]
+    relation = _raw_relation_map(logical).get("database_audit_state")
+    if (
+        relation is None
+        or relation.get("attributes") != attributes
+        or relation.get("declared_keys") != [["singleton_id"]]
+        or relation.get("fds")
+        != [{"determinant": ["singleton_id"], "dependent": attributes[1:]}]
+    ):
+        raise ValueError("database audit scheduling logical shape drifts")
+    concrete = _raw_relation_map(physical).get("database_audit_state")
+    if (
+        concrete is None
+        or concrete.get("table") != "operational_database_audit_states"
+        or concrete.get("primary_key") != ["singleton_id"]
+    ):
+        raise ValueError("database audit scheduling physical shape drifts")
+    checks = {item["name"]: item for item in concrete.get("check", [])}
+    pending = "audit_pending IN (0, 1) AND (audit_pending = 0 OR lease_expires_at IS NOT NULL)"
+    positive = "generation > 0 AND lease_duration_microseconds > 0 AND minimum_interval_microseconds > 0 AND duration_multiplier > 0"
+    absent = "last_audit_at IS NULL AND audit_duration_microseconds IS NULL AND validator_version IS NULL AND next_audit_at IS NULL AND audit_pending = 1"
+    complete = "last_audit_at IS NOT NULL AND audit_duration_microseconds IS NOT NULL AND validator_version IS NOT NULL AND next_audit_at IS NOT NULL AND next_audit_at >= last_audit_at"
+    expected = {
+        "ck_database_audit_state_positive": (positive, positive),
+        "ck_database_audit_state_pending": (pending, pending),
+        "ck_database_audit_state_success_fields": (
+            f"({absent}) OR ({complete})",
+            f"{absent} OR {complete}",
+        ),
+        "ck_database_audit_state_validator_bounded": (
+            "validator_version IS NULL OR (length(validator_version) >= 1 AND length(validator_version) <= 191)",
+            "validator_version IS NULL OR octet_length(validator_version) >= 1 AND octet_length(validator_version) <= 191",
+        ),
+    }
+    for name, (sqlite_expression, mariadb_expression) in expected.items():
+        if checks.get(name) != {
+            "name": name,
+            "sqlite_expression": sqlite_expression,
+            "mariadb_expression": mariadb_expression,
+        }:
+            raise ValueError("database audit scheduling constraints drift")
 
 
 def check_storage_instance_binding_contract_v1(

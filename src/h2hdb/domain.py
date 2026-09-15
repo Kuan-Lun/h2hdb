@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 __all__ = [
+    "DatabaseAuditPolicy",
+    "DatabaseAuditReason",
+    "DatabaseAuditReport",
+    "DatabaseAuditSession",
     "CANONICAL_SOURCE_MANIFEST_VERSION",
     "CatalogAnalysisPhase",
     "CatalogAnalysisPhaseCheckpoint",
@@ -257,6 +261,45 @@ class SchemaProvisioningOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseAuditPolicy:
+    """Periodic full-audit scheduling; this never certifies current data health."""
+
+    minimum_interval_microseconds: int = 604_800_000_000
+    duration_multiplier: int = 100
+
+    def __post_init__(self) -> None:
+        require_positive_int63(
+            self.minimum_interval_microseconds, field="audit minimum interval"
+        )
+        require_positive_int63(
+            self.duration_multiplier, field="audit duration multiplier"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseAuditSession:
+    """Database-issued ingest-process scheduling capability."""
+
+    generation: int
+    run_token: bytes
+
+    def __post_init__(self) -> None:
+        require_positive_int63(self.generation, field="audit run generation")
+        require_uuid16(self.run_token, field="audit run token")
+
+
+class DatabaseAuditReason(StrEnum):
+    FIRST_RUN = "first_run"
+    PREVIOUS_INTERRUPTION = "previous_interruption"
+    VALIDATOR_CHANGED = "validator_changed"
+    CLOCK_CHANGED = "clock_changed"
+    SCHEDULE_DUE = "schedule_due"
+    FORCED = "forced"
+    RECENT_AUDIT = "recent_audit"
+    INITIAL_CATCHUP = "initial_catchup"
+
+
+@dataclass(frozen=True, slots=True)
 class SchemaEpochReadiness:
     """Exact durable READY marker for the wheel-owned schema manifest."""
 
@@ -280,6 +323,20 @@ class SchemaEpochReport:
     semantic_obligation_ids: tuple[str, ...]
     resumed_build: bool
     transitioned_to_ready: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseAuditReport:
+    """Distinguish marker admission from a full audit executed by this call."""
+
+    session: DatabaseAuditSession
+    readiness: SchemaEpochReadiness
+    full_audit: SchemaEpochReport | None
+    reason: DatabaseAuditReason
+    last_full_audit_at: int
+    last_full_audit_duration_microseconds: int
+    next_full_audit_at: int
+    initial_catchup_pending: bool
 
 
 @dataclass(frozen=True, slots=True)

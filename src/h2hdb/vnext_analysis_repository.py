@@ -40,6 +40,7 @@ from hashlib import sha256
 from tempfile import TemporaryFile
 from typing import Any
 
+from .database_clock import database_unix_microseconds
 from .sql_connector import SQLConnector
 from .vnext_analysis_decision_batch import (
     ensure_file_decision_materialization_page,
@@ -129,7 +130,6 @@ from .vnext_maintenance_gate_repository import (
 )
 from .vnext_manifest_family import (
     ManifestFamilyCollisionError,
-    database_unix_microseconds,
     ensure_snapshot_manifest_family,
     load_build_manifest_family,
     load_snapshot_manifest_family,
