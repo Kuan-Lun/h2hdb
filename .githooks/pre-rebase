@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel)"
+cd "$repository_root"
+
+primary="$(scripts/detect-primary-branch.sh)"
+branch="${2:-$(git symbolic-ref --quiet HEAD || true)}"
+branch="${branch#refs/heads/}"
+
+if [[ "$branch" == "$primary" ]]; then
+    printf 'Rebasing primary is not allowed: %s; preserve its merge commits.\n' \
+        "$primary" >&2
+    exit 1
+fi
