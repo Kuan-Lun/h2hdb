@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from vnext_generated_database import open_generated_sqlite_database
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sqlite_connector import SQLiteConnector, SQLiteDuplicateKeyError
 from h2hdb.vnext_domains import INT63_MAX, DomainValidationError
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
@@ -19,20 +19,6 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateUnavailableError,
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
-
-
-class _FailingHolderConnector(SQLiteConnector):
-    fail_holder_number: int | None = None
-    holder_inserts = 0
-
-    def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
-        if query.lstrip().startswith(
-            "INSERT INTO operational_maintenance_gate_holders"
-        ):
-            self.holder_inserts += 1
-            if self.holder_inserts == self.fail_holder_number:
-                raise RuntimeError("injected partial EXCLUSIVE holder failure")
-        super().execute(query, data)
 
 
 def _generated_database(
@@ -410,13 +396,16 @@ def test_renewal_fences_old_snapshot_and_release_requires_new_snapshot(
 def test_partial_exclusive_insert_rolls_back_generation_owner_and_holders(
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(
-        tmp_path / "partial.sqlite3", connector_type=_FailingHolderConnector
+    connector = _generated_database(tmp_path / "partial.sqlite3")
+    # Fail inside a real multi-row statement after its first 32 holder rows.
+    # The surrounding transaction must also roll back earlier owner/head writes.
+    connector.execute(
+        "CREATE TRIGGER fail_holder_insert BEFORE INSERT "
+        "ON operational_maintenance_gate_holders WHEN NEW.slot = 32 "
+        "BEGIN SELECT RAISE(ABORT, 'injected partial EXCLUSIVE holder failure'); END"
     )
-    assert isinstance(connector, _FailingHolderConnector)
-    connector.fail_holder_number = 33
     try:
-        with pytest.raises(RuntimeError, match="partial EXCLUSIVE"):
+        with pytest.raises(SQLiteDuplicateKeyError, match="partial EXCLUSIVE"):
             _claim_exclusive(connector, b"x" * 16, now=1, duration=100)
         assert _gate_snapshot(connector) == ([], [], [], [])
     finally:
