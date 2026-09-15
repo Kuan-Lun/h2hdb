@@ -85,6 +85,12 @@ def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
 
 def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
     expected = {
+        # One lifecycle covers full admission, clean quick startup, lease
+        # contention, dirty recovery and stale-token rejection on MariaDB.
+        (
+            "test_database_audit_schedule.py",
+            "test_mariadb_full_clean_quick_and_interrupted_runtime_fencing",
+        ),
         # A two-hash production page checks FK-backed batch rollback, committed
         # receipt replay and independent validation without the large matrix.
         (
