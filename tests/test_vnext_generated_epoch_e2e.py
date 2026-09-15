@@ -58,7 +58,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_TYPE = 'BASE TABLE'
-            """) == (245,)
+            """) == (246,)
         mariadb_foreign_keys = connector.fetch_all(
             """
             SELECT CONSTRAINT_NAME, COLUMN_NAME,
@@ -111,7 +111,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         FROM sqlite_master
         WHERE type = 'table'
           AND name NOT LIKE 'sqlite_%'
-    """) == (245,)
+    """) == (246,)
     sqlite_foreign_keys = {
         (str(row[2]), str(row[3]), str(row[4]))
         for row in connector.fetch_all(

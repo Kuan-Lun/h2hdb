@@ -452,7 +452,9 @@ def test_fake_mariadb_prior_schema_control_is_rejected(version: int) -> None:
 
     with pytest.raises(
         SchemaEpochDriftError,
-        match=f"Database schema version is {version}, expected 6",
+        match=(
+            f"Database schema version is {version}, expected {definition.schema_version}"
+        ),
     ):
         run_mariadb_schema_epoch(
             connector,
