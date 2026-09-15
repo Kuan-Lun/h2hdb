@@ -317,7 +317,9 @@ def _verify(
     opener = build_opener(ProxyHandler({}), _NoRedirect())
     started = budget.started
     search_url = (
-        urlunsplit(base) + "/opds/v2/search?" + urlencode({"query": gid, "limit": 2})
+        urlunsplit(base)
+        + "/opds/v2/search?"
+        + urlencode({"query": f"gid:{gid}", "limit": 2})
     )
     with closing(
         _request(opener, search_url, budget=budget, phase="search")

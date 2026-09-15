@@ -139,7 +139,7 @@ def test_search_download_and_range_verify_actual_bytes(
     assert "content" not in result and "prefix" not in result
     assert all(result[name] >= 0 for name in result if name.endswith("_seconds"))
     assert [request.full_url for request in opener.requests] == [
-        BASE + f"/opds/v2/search?query={GID}&limit=2",
+        BASE + f"/opds/v2/search?query=gid%3A{GID}&limit=2",
         BASE + "/opds/v2/acquisitions/a?revision=7",
         BASE + "/opds/v2/acquisitions/a?revision=7",
     ]
