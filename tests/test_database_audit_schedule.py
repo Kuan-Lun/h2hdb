@@ -156,6 +156,7 @@ def test_periodic_full_check_uses_measured_duration_budget(
     assert audit_clock.full_checks == 2
 
 
+@pytest.mark.cleanup_acceptance
 def test_live_runtime_contends_expired_runtime_requires_full_and_fences_old_owner(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
@@ -221,6 +222,7 @@ def test_competing_takeover_prevents_old_audit_recording_success(
     assert state.audit_pending == 0
 
 
+@pytest.mark.cleanup_acceptance
 def test_failed_full_audit_retains_dirty_pending_state_without_success(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
@@ -394,6 +396,7 @@ def test_invalid_audit_policy_is_rejected(minimum: int, multiplier: int) -> None
 
 @pytest.mark.mariadb
 @pytest.mark.mariadb_smoke
+@pytest.mark.cleanup_acceptance
 def test_mariadb_full_clean_quick_and_interrupted_runtime_fencing(
     mariadb_config: CoreConfig,
     audit_clock: _Clock,

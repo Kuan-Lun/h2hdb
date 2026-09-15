@@ -146,6 +146,14 @@
 - `scripts/check-pytest-deep.sh`是明確的手動 deep pytest入口；它預設不限時，
   依序執行完整 non-MariaDB與完整 live MariaDB suite。deep pytest與 deep TLC
   都不進入自動 merge gate。
+- 清理、compaction或其交易快取的修改，另執行手動
+  `scripts/run-pytest.py cleanup-acceptance`，涵蓋兩個 backend的小型真實
+  compaction、正式深度邊界與清理／稽核恢復契約；它不是完整 deep suite。
+  跨 ingest／OPDS的發布與清理修改，另以實際部署 Compose衍生的隔離環境執行
+  `scripts/check-deployment-acceptance.py --instrumented --cleanup-faults`；
+  發布、後續清理 DONE與下一次工作取得須分開驗證。只完成 publication的
+  baseline不得宣稱通過完整清理驗收。這些手動結果須另行回報，不屬於
+  bounded merge receipt。
 - `.githooks/pre-merge-commit` 透過 `scripts/release-gate.py run --index`
   驗證 staged candidate；不得另建競爭的第二套 merge gate。
 - release gate先驗證 task-level version與 dependency audit，再呼叫

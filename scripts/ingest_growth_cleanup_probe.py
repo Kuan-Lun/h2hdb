@@ -29,6 +29,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
+from compaction_contracts import (  # noqa: E402 - checkout evidence helper.
+    current_compaction_layout,
+    retained_compaction_roots,
+)
 from vnext_fault_harness import (  # noqa: E402 - checkout fixture paths are set above.
     backend_of,
     open_connector,
@@ -38,6 +42,7 @@ from vnext_pipeline import (  # noqa: E402 - checkout fixture paths are set abov
     LEASE_MICROSECONDS,
     MemoryLibrary,
     MemorySource,
+    full_check,
     gallery,
     ingest_policy,
     initialize_database,
@@ -188,7 +193,10 @@ def new_report(backend: str, gallery_count: int) -> dict[str, Any]:
         "gallery_count": gallery_count,
         "pages_per_gallery": 1,
         "artifacts_required": False,
-        "history_policy": "one changed gallery per revision; drain after every publication",
+        "history_policy": (
+            "one changed gallery per source revision; optional policy-only compaction; "
+            "drain after every publication"
+        ),
         "measurement_notes": (
             "SQL timings exclude evidence COUNT scans, but those scans warm the cache. "
             "returned_rows count connector results, not database rows examined. "
@@ -257,6 +265,7 @@ def source_provenance() -> dict[str, Any]:
         Path(__file__).relative_to(ROOT),
         Path("tests/vnext_pipeline.py"),
         Path("tests/vnext_fault_harness.py"),
+        Path("tests/compaction_contracts.py"),
         Path("src/h2hdb/vnext_ingest_facade.py"),
         Path("src/h2hdb/vnext_cleanup_repository.py"),
         Path("src/h2hdb/vnext_maintenance_gate_repository.py"),
@@ -312,7 +321,14 @@ def run_case(
     revisions: int,
     output: Path,
     report: dict[str, Any] | None = None,
+    policy_change_at: int | None = None,
 ) -> dict[str, Any]:
+    if not 1 <= revisions <= 20:
+        raise ValueError("revisions must be between 1 and 20")
+    if policy_change_at is not None and not 3 <= policy_change_at <= revisions:
+        raise ValueError(
+            "policy change requires genesis and an incremental predecessor"
+        )
     owns_report = report is None
     report = (
         report
@@ -321,6 +337,7 @@ def run_case(
     )
     write_report(output, report)
     try:
+        report["policy_change_at"] = policy_change_at
         report["stage"] = "source_provenance"
         report["source_provenance"] = source_provenance()
         _collect_case(
@@ -329,6 +346,7 @@ def run_case(
             revisions=revisions,
             output=output,
             report=report,
+            policy_change_at=policy_change_at,
         )
     except BaseException as error:
         record_failure(output, report, error)
@@ -346,6 +364,7 @@ def _collect_case(
     revisions: int,
     output: Path,
     report: dict[str, Any],
+    policy_change_at: int | None,
 ) -> None:
     report["stage"] = "database_initialize"
     initialize_database(config)
@@ -359,8 +378,11 @@ def _collect_case(
     ):
         for revision in range(1, revisions + 1):
             report["stage"] = f"revision_{revision}_source"
-            expected_title = f"Gallery 1 revision {revision}"
-            expected_page = f"page 1 revision {revision}".encode()
+            # A real public policy change reaches the same full materialization
+            # path without overriding the production overlay-depth contract.
+            source_revision = revision - 1 if revision == policy_change_at else revision
+            expected_title = f"Gallery 1 revision {source_revision}"
+            expected_page = f"page 1 revision {source_revision}".encode()
             source.put(
                 gallery(
                     1,
@@ -379,7 +401,14 @@ def _collect_case(
                 facade,
                 source=source,
                 library=library,
-                policy=ingest_policy(artifacts_required=False),
+                policy=ingest_policy(
+                    artifacts_required=False,
+                    spam_occurrence_threshold=(
+                        7
+                        if policy_change_at is not None and revision >= policy_change_at
+                        else 3
+                    ),
+                ),
                 session=session,
             )
             report["stage"] = f"revision_{revision}_publication_oracle"
@@ -393,10 +422,16 @@ def _collect_case(
                 expected_page=expected_page,
             )
             previous_revision = current.revision
+            layout = current_compaction_layout(config)
             case: dict[str, Any] = {
                 "revision_ordinal": revision,
                 **oracle,
                 "published_count": current.publication_count,
+                "overlay_depth": layout.depth,
+                "policy_id": layout.policy_id,
+                "trigger": "policy_change"
+                if revision == policy_change_at
+                else "source_change",
                 "claim_after_prior_cleanup": claim,
                 "before_cleanup": counts(config),
                 "steps": [],
@@ -437,6 +472,24 @@ def _collect_case(
             else:
                 raise RuntimeError("cleanup exceeded its 256-attempt budget")
             case["after_cleanup"] = counts(config)
+            # A pre-cleanup publication check alone cannot detect deletion of
+            # current authority. Re-read after DONE, and record exact retained
+            # roots independently of physical row counts.
+            verify_publication(
+                catalog,
+                catalog.get_catalog_revision(),
+                previous_revision=current.revision - 1,
+                gallery_count=gallery_count,
+                expected_title=expected_title,
+                expected_page=expected_page,
+            )
+            analyses, builds = retained_compaction_roots(config)
+            case["retained_analysis_count"] = len(analyses)
+            case["retained_source_build_count"] = len(builds)
+            if layout.depth == 0 and (
+                analyses != {layout.analysis_id} or builds != {layout.build_id}
+            ):
+                raise RuntimeError("full compaction did not reclaim obsolete history")
             report["stage"] = f"revision_{revision}_empty_drain"
             empty, case["empty_drain"] = measure(
                 lambda: facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
@@ -455,6 +508,7 @@ def _collect_case(
                     {
                         "revision": revision,
                         "actual_revision": current.revision,
+                        "overlay_depth": layout.depth,
                         "published": current.publication_count,
                         "attempts": len(case["steps"]),
                         "cleanup_seconds": sum(s["seconds"] for s in case["steps"]),
@@ -470,6 +524,10 @@ def _collect_case(
             )
     if library.render_calls:
         raise RuntimeError("metadata-only probe unexpectedly rendered artifacts")
+    report["stage"] = "final_full_ready_audit"
+    if full_check(config).state != "READY":
+        raise RuntimeError("final full READY audit failed")
+    report["full_ready_audit"] = "passed"
 
 
 @contextmanager
@@ -529,7 +587,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("sqlite", "mariadb"), default="sqlite")
     parser.add_argument("--galleries", type=int, choices=range(2, 6), default=2)
-    parser.add_argument("--revisions", type=int, choices=range(1, 11), default=3)
+    parser.add_argument("--revisions", type=int, choices=range(1, 21), default=3)
+    parser.add_argument(
+        "--policy-change-at",
+        type=int,
+        choices=range(3, 21),
+        help="trigger real policy compaction after a genesis and incremental revision",
+    )
     parser.add_argument(
         "--timeout",
         type=int,
@@ -539,6 +603,8 @@ def main() -> None:
     )
     parser.add_argument("--output-directory", type=Path, required=True)
     args = parser.parse_args()
+    if args.policy_change_at is not None and args.policy_change_at > args.revisions:
+        parser.error("--policy-change-at must not exceed --revisions")
     if not hasattr(signal, "SIGALRM"):
         parser.error(
             "this local probe requires POSIX SIGALRM; no hard deadline is provided"
@@ -563,6 +629,7 @@ def main() -> None:
                 revisions=args.revisions,
                 output=output,
                 report=report,
+                policy_change_at=args.policy_change_at,
             )
             report["status"] = "incomplete"
             report["stage"] = "database_teardown"
