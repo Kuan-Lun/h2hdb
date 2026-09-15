@@ -1,8 +1,8 @@
 """Bounded scalar storage for one independently evaluated file-decision page.
 
 Only fixed-width facts are batched here. Source aggregation and its independent
-validation remain owned by the analysis repository. Every key union is restricted
-inside each branch, so orphan children remain visible without a corpus scan.
+validation remain owned by the analysis repository. Every family is joined against a
+bounded requested-key grid, so orphan children remain visible without a corpus scan.
 The caller owns the fenced transaction, including the subsequent checkpoint.
 """
 
@@ -16,7 +16,7 @@ from .vnext_analysis_family import (
     load_analysis_exclusion_delta_families,
 )
 from .vnext_analysis_overlay_family import AnalysisFileHashDecisionShadowFamily
-from .vnext_domains import require_digest32, require_uuid16
+from .vnext_domains import require_digest32, require_positive_int63, require_uuid16
 
 _SHADOW_TABLES = (
     "catalog_a_file_decision_shadow_anchors",
@@ -41,62 +41,124 @@ def require_file_decision_page_keys(digests: Sequence[bytes]) -> tuple[bytes, ..
     return tuple(sorted(exact))
 
 
-def load_file_decision_shadow_page(
+def _require_analysis_layers(analysis_ids: Sequence[bytes]) -> tuple[bytes, ...]:
+    if len(analysis_ids) > 17:
+        raise ValueError("file-decision layers exceed 17 analyses")
+    analyses = tuple(
+        require_uuid16(analysis, field="decision layer analysis")
+        for analysis in analysis_ids
+    )
+    if len(set(analyses)) != len(analyses):
+        raise ValueError("file-decision layers contain duplicate analyses")
+    return tuple(sorted(analyses))
+
+
+def _require_layer_result_key(
+    analysis_id: object,
+    digest: object,
+    *,
+    analyses: tuple[bytes, ...],
+    keys: tuple[bytes, ...],
+) -> tuple[bytes, bytes]:
+    try:
+        analysis = require_uuid16(analysis_id, field="decision result analysis")
+        key = require_digest32(digest, field="decision result key")
+    except (TypeError, ValueError) as error:
+        raise AnalysisFamilyCollisionError(
+            "file-decision layers returned an invalid key"
+        ) from error
+    if analysis not in analyses or key not in keys:
+        raise AnalysisFamilyCollisionError(
+            "file-decision layers returned an unexpected key"
+        )
+    return analysis, key
+
+
+def _requested_layer_grid(
+    connector: SQLConnector, analyses: tuple[bytes, ...], keys: tuple[bytes, ...]
+) -> str:
+    analysis_selects = " UNION ALL ".join(
+        f"SELECT {connector.binary_parameter_expression(16)}" for _analysis in analyses
+    )
+    key_selects = " UNION ALL ".join(
+        f"SELECT {connector.binary_parameter_expression(32)}" for _key in keys
+    )
+    return (
+        f"WITH requested_analyses(analysis_id) AS ({analysis_selects}), "
+        f"requested_hashes(file_sha256) AS ({key_selects}) "
+    )
+
+
+def load_file_decision_shadow_layers(
     connector: SQLConnector,
     *,
-    analysis_id: bytes,
+    analysis_ids: Sequence[bytes],
     digests: Sequence[bytes],
-) -> dict[bytes, AnalysisFileHashDecisionShadowFamily]:
-    analysis = require_uuid16(analysis_id, field="decision page analysis")
+) -> dict[tuple[bytes, bytes], AnalysisFileHashDecisionShadowFamily]:
+    """Read at most 17 layers of 128 keys with one exact-family query.
+
+    A bounded requested-key grid drives physical primary-key point joins, avoiding
+    scans of unrelated history even when a backend would scan an IN predicate.
+    The grid retains absent rows: an orphan child is distinguishable from a wholly
+    absent family. Nearest-layer selection and shadow/tombstone conflicts remain
+    the caller's responsibility in the same fenced transaction.
+    """
+
+    analyses = _require_analysis_layers(analysis_ids)
     keys = require_file_decision_page_keys(digests)
-    if not keys:
+    if not analyses or not keys:
         return {}
-    placeholders = ", ".join("%s" for _key in keys)
-    branches = [
-        f"SELECT analysis_id, file_sha256 FROM {table} "
-        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders})"
-        for table in _SHADOW_TABLES
-    ]
     anchor, occurrence, artist, maximum, seal = _SHADOW_TABLES
-    rows = connector.fetch_all(
-        "WITH family_keys(analysis_id, file_sha256) AS ("
-        + " UNION ".join(branches)
-        + ") SELECT k.analysis_id, k.file_sha256, a.analysis_id, "
-        "o.analysis_id, o.occurrence_count, t.analysis_id, t.artist_count, "
-        "m.analysis_id, m.maximum_gallery_artist_count, s.analysis_id "
-        "FROM family_keys AS k "
-        f"LEFT JOIN {anchor} AS a ON a.analysis_id = k.analysis_id "
-        "AND a.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {occurrence} AS o ON o.analysis_id = k.analysis_id "
-        "AND o.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {artist} AS t ON t.analysis_id = k.analysis_id "
-        "AND t.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {maximum} AS m ON m.analysis_id = k.analysis_id "
-        "AND m.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {seal} AS s ON s.analysis_id = k.analysis_id "
-        "AND s.file_sha256 = k.file_sha256 ORDER BY k.file_sha256 LIMIT %s",
-        (analysis, *keys) * len(_SHADOW_TABLES) + (129,),
+    maximum_rows = len(analyses) * len(keys)
+    joins = " ".join(
+        f"LEFT JOIN {connector.primary_key_table_reference(table)} "
+        f"ON {table}.analysis_id = g.analysis_id "
+        f"AND {table}.file_sha256 = h.file_sha256"
+        for table in _SHADOW_TABLES
     )
-    result: dict[bytes, AnalysisFileHashDecisionShadowFamily] = {}
-    if len(rows) > len(keys):
+    rows = connector.fetch_all(
+        _requested_layer_grid(connector, analyses, keys)
+        + f"SELECT g.analysis_id, h.file_sha256, {anchor}.analysis_id, "
+        f"{occurrence}.analysis_id, {occurrence}.occurrence_count, "
+        f"{artist}.analysis_id, {artist}.artist_count, "
+        f"{maximum}.analysis_id, {maximum}.maximum_gallery_artist_count, "
+        f"{seal}.analysis_id "
+        "FROM requested_analyses AS g CROSS JOIN requested_hashes AS h "
+        + joins
+        + " ORDER BY g.analysis_id, h.file_sha256 LIMIT %s",
+        (*analyses, *keys, maximum_rows + 1),
+    )
+    result: dict[tuple[bytes, bytes], AnalysisFileHashDecisionShadowFamily] = {}
+    if len(rows) != maximum_rows:
         raise AnalysisFamilyCollisionError(
-            "file-decision shadow page exceeds its key set"
+            "file-decision shadow layers disagree with their requested grid"
         )
+    seen: set[tuple[bytes, bytes]] = set()
     for row in rows:
-        if (
-            len(row) != 10
-            or row[0] != analysis
-            or row[1] not in keys
-            or row[1] in result
-        ):
+        if len(row) != 10:
             raise AnalysisFamilyCollisionError(
-                "file-decision shadow page returned an unexpected key"
+                "file-decision shadow layers returned an invalid row"
             )
+        identity = _require_layer_result_key(
+            row[0], row[1], analyses=analyses, keys=keys
+        )
+        if identity in seen:
+            raise AnalysisFamilyCollisionError(
+                "file-decision shadow layers returned a duplicate key"
+            )
+        seen.add(identity)
+        if all(value is None for value in row[2:]):
+            continue
+        analysis, key = identity
         if any(row[index] != analysis for index in (2, 3, 5, 7, 9)):
             raise AnalysisFamilyPartialError("file-decision shadow family is partial")
         try:
-            result[row[1]] = AnalysisFileHashDecisionShadowFamily(
-                analysis, row[1], row[4], row[6], row[8]
+            result[identity] = AnalysisFileHashDecisionShadowFamily(
+                analysis,
+                key,
+                require_positive_int63(row[4], field="stored shadow occurrence count"),
+                row[6],
+                row[8],
             )
         except (TypeError, ValueError) as error:
             raise AnalysisFamilyCollisionError(
@@ -105,36 +167,84 @@ def load_file_decision_shadow_page(
     return result
 
 
+def load_file_decision_tombstone_layers(
+    connector: SQLConnector,
+    *,
+    analysis_ids: Sequence[bytes],
+    digests: Sequence[bytes],
+) -> frozenset[tuple[bytes, bytes]]:
+    """Read tombstones through the same bounded grid and complete physical PK."""
+
+    analyses = _require_analysis_layers(analysis_ids)
+    keys = require_file_decision_page_keys(digests)
+    if not analyses or not keys:
+        return frozenset()
+    maximum_rows = len(analyses) * len(keys)
+    rows = connector.fetch_all(
+        _requested_layer_grid(connector, analyses, keys)
+        + f"SELECT g.analysis_id, h.file_sha256, {_TOMBSTONE}.analysis_id "
+        "FROM requested_analyses AS g CROSS JOIN requested_hashes AS h "
+        f"LEFT JOIN {connector.primary_key_table_reference(_TOMBSTONE)} "
+        f"ON {_TOMBSTONE}.analysis_id = g.analysis_id "
+        f"AND {_TOMBSTONE}.file_sha256 = h.file_sha256 "
+        "ORDER BY g.analysis_id, h.file_sha256 LIMIT %s",
+        (*analyses, *keys, maximum_rows + 1),
+    )
+    result: set[tuple[bytes, bytes]] = set()
+    if len(rows) != maximum_rows:
+        raise AnalysisFamilyCollisionError(
+            "file-decision tombstone layers disagree with their requested grid"
+        )
+    seen: set[tuple[bytes, bytes]] = set()
+    for row in rows:
+        if len(row) != 3:
+            raise AnalysisFamilyCollisionError(
+                "file-decision tombstone layers returned an invalid row"
+            )
+        identity = _require_layer_result_key(
+            row[0], row[1], analyses=analyses, keys=keys
+        )
+        if identity in seen:
+            raise AnalysisFamilyCollisionError(
+                "file-decision tombstone layers returned a duplicate key"
+            )
+        seen.add(identity)
+        if row[2] is None:
+            continue
+        if row[2] != identity[0]:
+            raise AnalysisFamilyCollisionError(
+                "file-decision tombstone layers returned a mismatched identity"
+            )
+        result.add(identity)
+    return frozenset(result)
+
+
+def load_file_decision_shadow_page(
+    connector: SQLConnector,
+    *,
+    analysis_id: bytes,
+    digests: Sequence[bytes],
+) -> dict[bytes, AnalysisFileHashDecisionShadowFamily]:
+    return {
+        key: family
+        for (_analysis, key), family in load_file_decision_shadow_layers(
+            connector, analysis_ids=(analysis_id,), digests=digests
+        ).items()
+    }
+
+
 def load_file_decision_tombstone_page(
     connector: SQLConnector,
     *,
     analysis_id: bytes,
     digests: Sequence[bytes],
 ) -> frozenset[bytes]:
-    analysis = require_uuid16(analysis_id, field="decision tombstone analysis")
-    keys = require_file_decision_page_keys(digests)
-    if not keys:
-        return frozenset()
-    placeholders = ", ".join("%s" for _key in keys)
-    rows = connector.fetch_all(
-        f"SELECT analysis_id, file_sha256 FROM {_TOMBSTONE} "
-        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders}) "
-        "ORDER BY file_sha256 LIMIT %s",
-        (analysis, *keys, 129),
+    return frozenset(
+        key
+        for _analysis, key in load_file_decision_tombstone_layers(
+            connector, analysis_ids=(analysis_id,), digests=digests
+        )
     )
-    result: set[bytes] = set()
-    for row in rows:
-        if (
-            len(row) != 2
-            or row[0] != analysis
-            or row[1] not in keys
-            or row[1] in result
-        ):
-            raise AnalysisFamilyCollisionError(
-                "file-decision tombstone page returned an unexpected key"
-            )
-        result.add(row[1])
-    return frozenset(result)
 
 
 def ensure_file_decision_materialization_page(

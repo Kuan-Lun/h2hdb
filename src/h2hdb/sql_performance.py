@@ -81,6 +81,12 @@ class _MeasuredConnector(SQLConnector):
     def __init__(self, connector: SQLConnector) -> None:
         self._connector = connector
 
+    def primary_key_table_reference(self, relation: str) -> str:
+        return self._connector.primary_key_table_reference(relation)
+
+    def binary_parameter_expression(self, byte_count: int) -> str:
+        return self._connector.binary_parameter_expression(byte_count)
+
     def _call[T](
         self,
         category: Literal["sql", "connection", "transaction"],

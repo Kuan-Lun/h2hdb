@@ -314,8 +314,9 @@ def test_shadow_page_uses_bounded_index_searches(tmp_path: Path) -> None:
             )
         assert len(loaded) == 2 and fetched.call_count == 1
         sql, parameters = fetched.call_args.args
-        assert sql.count("file_sha256 IN (%s, %s)") == 5
-        assert parameters[-1] == 129
+        assert sql.count("LEFT JOIN ") == 5
+        assert len(parameters) == 4
+        assert parameters[-1] == 3
         plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
         descriptions = [str(row[3]) for row in plan]
         for table in _SHADOWS:
