@@ -3509,11 +3509,17 @@ id = "runtime.production.analysis-scalar-batch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "At most 128 file hashes share bounded exact scalar lookups and per-table multi-row inserts. Key-restricted union queries expose partial and orphan family members; all proposed facts are compared before seal-last writes. Independent validation and replay recompute source decisions and reload durable scalar authority; the existing fenced transaction owns the final receipt and checkpoint."
-assumptions = ["Three source aggregate queries independently recompute every hash in a page; source fanout is not bounded by the number of batch keys. Key pagination bounds each distinct union input, not the rows a planner may scan inside source or ancestor-resolution branches. SQL planners and transaction isolation are backend obligations validated by actual query plans and integration tests."]
+claim = "At most 128 file hashes share bounded exact scalar lookups and per-table multi-row inserts. Key-restricted union queries expose partial and orphan family members; all proposed facts are compared before seal-last writes. Validation prepares independent expected decisions once from selected immutable source observations using bounded reads and a disposable disk sort. Authenticated plan pages merge expected keys with fresh bounded physical ancestor and actual prefixes issued by the repository; validation and replay freshly compare durable scalar families, candidate prefixes and exact authority/checkpoint coordinates before committing their receipt. Ancestral keys suppressed by tombstones form a safe candidate superset and do not increase the validated live source count. Full READY audit retains independent source SQL aggregation."
+assumptions = ["Legal writers preserve sealed source facts throughout preparation and validation. A retained plan does not detect unmanaged edits to immutable source rows on every page; full READY audit remains independent. Process-local plan ownership, authentication, scratch I/O and cleanup must refine the prepared values. Materialization and full audit still use source aggregates whose fanout is not bounded by the number of batch keys. Key pagination bounds each distinct union input, not every planner scan; actual query plans and integration tests validate backend costs and isolation."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_decision_batch.py"
 symbol = "load_file_decision_shadow_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_decision_batch.py"
+symbol = "load_file_decision_shadow_layers"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_load_file_decision_evidence"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_decision_batch.py"
 symbol = "ensure_file_decision_materialization_page"
@@ -3529,14 +3535,23 @@ symbol = "_evaluate_file_decision_page"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_file_hash_union_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "prepare_file_decision_validation_plan"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_require_prepared_file_validation_replay"
+[[evidence.location]]
+path = "src/h2hdb/vnext_file_decision_validation_plan.py"
+symbol = "build_file_decision_validation_plan"
 
 [[evidence]]
 id = "fault.production.analysis-scalar-batch"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Tests reject missing/orphan family members and changed or unexpected overlay facts before DML, inject failure after every table write and before the production checkpoint to require full rollback, then recover an already committed page through exact receipt replay and independent validation."
-assumptions = ["These are finite SQL-statement and response-loss simulations; no database server or host is forcibly terminated by these cases."]
+claim = "Tests reject missing/orphan family members and changed or unexpected overlay facts before DML, inject failure after every table write and before the production checkpoint to require full rollback, then recover an already committed page through exact receipt replay and independent validation. Disposable validation plans reject modified metadata, truncated records and forged expected pages; lifecycle cases cover local plan loss, lease takeover and terminal response-loss replay. POSIX child-process SIGKILL cases verify that spilled sort data and retained plans leave no named scratch requiring restart cleanup."
+assumptions = ["These are finite SQL-statement, response-loss and local-process termination cases; no database server or host is forcibly terminated. POSIX unlink evidence does not establish Windows process-termination behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_analysis_decision_batch.py"
 symbol = "test_partial_family_orphan_and_collision_fail_before_any_batch_dml"
@@ -3552,6 +3567,27 @@ symbol = "test_sqlite_production_page_rolls_back_and_replays_receipt"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_decision_batch.py"
 symbol = "test_live_mariadb_production_page_rolls_back_and_replays_receipt"
+[[evidence.location]]
+path = "tests/test_vnext_file_decision_validation_plan.py"
+symbol = "test_plan_rejects_mutated_metadata_and_payload"
+[[evidence.location]]
+path = "tests/test_vnext_file_decision_validation_plan.py"
+symbol = "test_prepared_page_rejects_forged_expected_values_and_coordinates"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_analysis_validation.py"
+symbol = "test_committed_response_loss_reuses_exact_page_and_plan_until_replay"
+[[evidence.location]]
+path = "tests/test_vnext_ingest_analysis_validation.py"
+symbol = "test_restart_discards_plan_and_rebuilds_at_durable_validation_cursor"
+[[evidence.location]]
+path = "tests/test_file_decision_plan_process_resources.py"
+symbol = "test_sigkill_discards_sort_and_retained_plan_without_restart_cleanup"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_layers.py"
+symbol = "test_maximum_layer_product_uses_one_query_and_exact_index_keys"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_layers.py"
+symbol = "test_every_incomplete_layer_is_rejected_including_orphan_children"
 
 [[evidence]]
 id = "integration.production.analysis-scalar-batch"

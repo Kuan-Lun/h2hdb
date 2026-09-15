@@ -25,10 +25,12 @@ from time import time_ns
 from typing import TypeVar
 
 from .domain import VNextIngestSession, VNextResolvedIngestPolicy
-from .ingest_performance import describe_ingest_step
+from .ingest_performance import describe_ingest_step, prepare_ingest_operation
 from .repository import RepositoryContext
 from .vnext_analysis_repository import (
     AnalysisBatchResult,
+    AnalysisFileDecisionValidationPage,
+    AnalysisFileDecisionValidationPlan,
     AnalysisGalleryPreparation,
     AnalysisRepository,
     AnalysisSnapshotPreparation,
@@ -60,6 +62,7 @@ _PREPARED_ANALYSIS_TOKEN = object()
 _ISSUED_ANALYSIS_STEP_TOKEN = object()
 _PREPARED_ANALYSIS_STEP_TOKEN = object()
 _ANALYSIS_SNAPSHOT_STAGE = b"snapshot_manifest"
+_FILE_DECISION_VALIDATION_STAGE = b"validate_file_hash_decision"
 
 
 def _now_microseconds() -> int:
@@ -122,6 +125,7 @@ class _LocalAnalysisWork:
     preparations: tuple[AnalysisGalleryPreparation | None, ...]
     snapshot: AnalysisSnapshotPreparation | None
     plans: tuple[CanonicalValueUploadPlan, ...]
+    file_decision_validation: AnalysisFileDecisionValidationPage | None = None
     plan_index: int = 0
     pages: Iterator[PreparedCanonicalPage] | None = None
 
@@ -180,6 +184,12 @@ class _AnalysisMachine:
     action: _AnalysisAction | None = None
     local: _LocalAnalysisWork | None = None
     snapshot_manifest_sha256: bytes | None = None
+    validation_plan: AnalysisFileDecisionValidationPlan | None = None
+
+    def close_validation_plan(self) -> None:
+        plan, self.validation_plan = self.validation_plan, None
+        if plan is not None:
+            plan.close()
 
 
 class VNextPreparedAnalysis:
@@ -223,13 +233,20 @@ class VNextPreparedAnalysis:
         self._closed = True
         local = self._machine.local
         step_local = _local_step_payload(self._active_step)
-        if step_local is not None and step_local is not local:
-            step_local.close()
-        if local is not None:
-            local.close()
-        self._active_issue = None
-        self._active_step = None
-        self._machine.local = None
+        try:
+            try:
+                if step_local is not None and step_local is not local:
+                    step_local.close()
+            finally:
+                if local is not None:
+                    local.close()
+        finally:
+            try:
+                self._machine.close_validation_plan()
+            finally:
+                self._active_issue = None
+                self._active_step = None
+                self._machine.local = None
 
     def __enter__(self) -> VNextPreparedAnalysis:
         self._require_open()
@@ -377,6 +394,8 @@ class VNextIngestAnalysisOrchestrator:
             if machine.analysis_id is not None and machine.analysis_id != analysis_id:
                 raise RuntimeError("analysis natural-key replay changed analysis_id")
             machine.analysis_id = analysis_id
+            if issued_payload.stage != _FILE_DECISION_VALIDATION_STAGE:
+                machine.close_validation_plan()
             if issued_payload.stage is not None:
                 action = _AnalysisAction.PREPARE_BATCH
             elif issued_payload.completion_snapshot_sha256 is not None:
@@ -421,7 +440,12 @@ class VNextIngestAnalysisOrchestrator:
         if action is _AnalysisAction.PREPARE_BATCH:
             if issued._payload is None:
                 raise RuntimeError("analysis batch issue payload is absent")
-            local = self._prepare_gallery_work(issued._payload)
+            if issued._payload.stage == _FILE_DECISION_VALIDATION_STAGE:
+                local = self._prepare_file_decision_validation_work(
+                    analysis, issued._payload
+                )
+            else:
+                local = self._prepare_gallery_work(issued._payload)
             payload = local
             if local.plans:
                 local.begin_current_pages()
@@ -523,6 +547,7 @@ class VNextIngestAnalysisOrchestrator:
                     ingest_turn=turn,
                     issue=local.issue,
                     preparations=local.preparations,
+                    file_decision_validation=local.file_decision_validation,
                     now=now,
                 )
             if action is _AnalysisAction.HANDOFF_SNAPSHOT:
@@ -601,6 +626,49 @@ class VNextIngestAnalysisOrchestrator:
             if preparation is not None and preparation.content_upload_plan is not None
         )
         return _LocalAnalysisWork(issue, exact, None, plans)
+
+    def _prepare_file_decision_validation_work(
+        self,
+        analysis: VNextPreparedAnalysis,
+        issue: AnalysisStageIssue,
+    ) -> _LocalAnalysisWork:
+        machine = analysis._machine
+        try:
+            if machine.validation_plan is None:
+                # Preparation owns its independent read snapshots and scratch;
+                # the caller's session lock remains available to its heartbeat.
+                with (
+                    prepare_ingest_operation(
+                        operation="prepare_file_decision_validation",
+                        generation=issue.preparation_authority.generation,
+                    ) as progress,
+                    self.__context.SQLConnector() as connector,
+                ):
+                    machine.validation_plan = (
+                        AnalysisRepository.prepare_file_decision_validation_plan(
+                            connector,
+                            backend=self.__backend,
+                            authority=issue.preparation_authority,
+                            progress=progress,
+                        )
+                    )
+            page = AnalysisRepository.prepare_file_decision_validation_page(
+                issue=issue,
+                plan=machine.validation_plan,
+            )
+            return _LocalAnalysisWork(
+                issue, (), None, (), file_decision_validation=page
+            )
+        except BaseException as error:
+            # Failed preparation is disposable. A failed commit deliberately
+            # retains its exact active page/plan for committed-response replay.
+            try:
+                machine.close_validation_plan()
+            except BaseException as close_error:
+                error.add_note(
+                    f"validation plan cleanup also failed: {type(close_error).__name__}"
+                )
+            raise
 
     def _prepare_snapshot_work(
         self,
@@ -722,6 +790,8 @@ def _apply_commit_outcome(
             outcome.replayed,
         )
         local.close()
+        if outcome.stage == _FILE_DECISION_VALIDATION_STAGE and outcome.terminal:
+            machine.close_validation_plan()
         machine.local = None
         machine.action = None
         return result

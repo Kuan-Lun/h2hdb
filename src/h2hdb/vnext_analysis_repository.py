@@ -22,6 +22,8 @@ __all__ = [
     "AnalysisBatchResult",
     "AnalysisCorruptionError",
     "AnalysisGalleryPreparation",
+    "AnalysisFileDecisionValidationPlan",
+    "AnalysisFileDecisionValidationPage",
     "AnalysisNotReadyError",
     "AnalysisPreparationAuthority",
     "AnalysisRepository",
@@ -32,8 +34,8 @@ __all__ = [
     "AnalysisUnsupportedError",
 ]
 
-from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from tempfile import TemporaryFile
 from typing import Any
@@ -41,8 +43,8 @@ from typing import Any
 from .sql_connector import SQLConnector
 from .vnext_analysis_decision_batch import (
     ensure_file_decision_materialization_page,
-    load_file_decision_shadow_page,
-    load_file_decision_tombstone_page,
+    load_file_decision_shadow_layers,
+    load_file_decision_tombstone_layers,
     require_file_decision_page_keys,
 )
 from .vnext_analysis_decision_reader import iter_resolved_file_decisions
@@ -95,6 +97,12 @@ from .vnext_domains import (
     require_positive_int63,
     require_uint32,
     require_uuid16,
+)
+from .vnext_file_decision_validation_plan import (
+    AnalysisFileDecisionValidationPage,
+    AnalysisFileDecisionValidationPlan,
+    FileDecisionSourceGallery,
+    build_file_decision_validation_plan,
 )
 from .vnext_identity import (
     ANALYSIS_ALREADY_UPLOADED_MARKER,
@@ -480,6 +488,13 @@ class _Decision:
 
 
 @dataclass(frozen=True, slots=True)
+class _FileDecisionEvidence:
+    resolved: dict[bytes, _Decision]
+    own_shadows: dict[bytes, _Decision]
+    own_tombstones: frozenset[bytes]
+
+
+@dataclass(frozen=True, slots=True)
 class _ContentCandidate:
     content_sha256: bytes
     gallery_id: int
@@ -604,6 +619,7 @@ class AnalysisStageIssue:
     checkpoint_cursor: bytes | None
     checkpoint_processed_count: int | None
     memberships: tuple[tuple[int, int | None], ...]
+    file_decision_actual_keys: tuple[bytes, ...]
     preparation_authority: AnalysisPreparationAuthority
     completion_snapshot_sha256: bytes | None
     replayed_result: AnalysisBatchResult | None
@@ -625,6 +641,10 @@ class AnalysisStageIssue:
             or self.preparation_authority.build_id != self.build_id
         ):
             raise ValueError("stage issue differs from its preparation authority")
+        if not isinstance(self.file_decision_actual_keys, tuple):
+            raise TypeError("stage issue actual keys must be an immutable tuple")
+        if self.stage != _STAGE_VALIDATE_FILE_HASH and self.file_decision_actual_keys:
+            raise ValueError("non-validation stage issue carries actual file keys")
         if self.stage is None:
             if any(
                 value is not None
@@ -672,6 +692,18 @@ class AnalysisStageIssue:
         )
         if limit > _MAX_BATCH_ROWS:
             raise ValueError("analysis stage issue exceeds the 128-row cap")
+        if len(self.file_decision_actual_keys) > limit + 1:
+            raise ValueError("stage issue actual keys exceed the bounded lookahead")
+        if self.stage == _STAGE_VALIDATE_FILE_HASH:
+            assert self.checkpoint_cursor is not None
+            previous_key, _live_count = _decode_cursor(
+                _CURSOR_DIGEST, self.checkpoint_cursor, live=True
+            )
+            for key in self.file_decision_actual_keys:
+                exact_key = require_digest32(key, field="stage issue actual file key")
+                if previous_key is not None and exact_key <= previous_key:
+                    raise ValueError("stage issue actual keys are not after its cursor")
+                previous_key = exact_key
         if self.completion_snapshot_sha256 is not None:
             raise ValueError("an active stage issue cannot be complete")
         previous = 0
@@ -1550,16 +1582,13 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
+        preparation: AnalysisFileDecisionValidationPage,
         now: int,
     ) -> AnalysisBatchResult:
-        """Independently compare exact target, overlay, and resolved rows.
-
-        The evaluator reads immutable source facts directly; it does not trust
-        ``analysis_file_hash_decision`` or a caller digest/count.  Its cursor
-        merge-walks the complete expected/parent/actual key union, so both an
-        omitted target row and an extra shadow/tombstone are detected.
-        """
-
+        """Exact-compare an independently prepared immutable source page."""
+        if not isinstance(preparation, AnalysisFileDecisionValidationPage):
+            raise TypeError("file validation requires a repository-issued page")
+        preparation.verify()
         authority, checkpoint, replay = _prepare_batch(
             work,
             gate_lease=gate_lease,
@@ -1570,8 +1599,11 @@ class AnalysisRepository:
             max_rows=max_rows,
             now=now,
         )
+        _require_file_validation_binding(work, authority, preparation, replay=replay)
         if replay is not None:
-            _validate_batch_replay(work, authority, replay)
+            _require_prepared_file_validation_replay(
+                work, authority, replay, preparation
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_FILE_HASH_DECISION)
@@ -1586,20 +1618,20 @@ class AnalysisRepository:
             checkpoint.cursor,
             live=True,
         )
-        rows = _validation_key_rows(
-            work,
-            authority,
-            after=last,
-            limit=checkpoint.page_limit + 1,
+        _require_file_validation_checkpoint(
+            preparation,
+            batch_key=batch_key,
+            generation=checkpoint.generation,
+            cursor=checkpoint.cursor,
+            processed_count=checkpoint.processed_count,
+            page_limit=checkpoint.page_limit,
         )
-        selected = rows[: checkpoint.page_limit]
-        validated = _require_file_decision_page(
+        selected = preparation.entries
+        validated = _require_file_decision_targets(
             work,
             authority,
-            tuple(
-                require_digest32(row[0], field="validation file_sha256")
-                for row in selected
-            ),
+            tuple(key for key, _values in selected),
+            {key: _Decision(*values) for key, values in selected if values is not None},
             require_delta=False,
         )
         live_count = _sum_int63(
@@ -1612,6 +1644,10 @@ class AnalysisRepository:
             else require_digest32(selected[-1][0], field="validation file cursor")
         )
         terminal = not selected
+        if terminal and live_count != preparation.source_count:
+            raise AnalysisCorruptionError(
+                "validated source count differs from its plan"
+            )
         result = _commit_batch(
             work,
             authority=authority,
@@ -1694,12 +1730,13 @@ class AnalysisRepository:
         max_rows: int,
         now: int,
     ) -> AnalysisStageIssue:
-        """Fix the exact next durable stage and gallery-membership page.
+        """Fix the exact next durable stage and bounded preparation coordinates.
 
         The caller supplies only an idempotency key and an upper bound. Stage,
-        cursor, processed count, gallery keys, and current membership are all
-        loaded under the live analysis authority. No corpus-sized value is
-        returned and the hard server cap remains 128.
+        cursor, processed count, gallery membership, and actual validation keys
+        are loaded under the live analysis authority. A validation prefix has
+        at most 129 keys, including one lookahead; each committed page is still
+        capped at 128. No corpus-sized value is returned.
         """
 
         authority = _authorize_analysis(
@@ -1727,6 +1764,7 @@ class AnalysisRepository:
         issue: AnalysisStageIssue,
         preparations: Sequence[AnalysisGalleryPreparation | None],
         now: int,
+        file_decision_validation: AnalysisFileDecisionValidationPage | None = None,
     ) -> AnalysisBatchResult:
         """Commit exactly one previously issued stage page or replay it."""
 
@@ -1741,7 +1779,18 @@ class AnalysisRepository:
                 "non-preparation analysis stage received gallery preparations"
             )
 
-        if issue.replayed_result is not None:
+        if (
+            file_decision_validation is not None
+            and issue.stage != _STAGE_VALIDATE_FILE_HASH
+        ):
+            raise AnalysisNotReadyError(
+                "file validation page supplied to another stage"
+            )
+
+        if (
+            issue.replayed_result is not None
+            and issue.stage != _STAGE_VALIDATE_FILE_HASH
+        ):
             authority = _authorize_analysis(
                 work,
                 gate_lease=gate_lease,
@@ -1770,8 +1819,12 @@ class AnalysisRepository:
         elif issue.stage == _STAGE_FILE_HASH_DECISION:
             result = AnalysisRepository.process_file_hash_decision_batch(work, **common)
         elif issue.stage == _STAGE_VALIDATE_FILE_HASH:
+            if file_decision_validation is None:
+                raise AnalysisNotReadyError(
+                    "file validation requires its prepared page"
+                )
             result = AnalysisRepository.validate_file_hash_decision_batch(
-                work, **common
+                work, preparation=file_decision_validation, **common
             )
         elif issue.stage == _STAGE_IMPACTED_GALLERY:
             result = AnalysisRepository.process_impacted_gallery_batch(work, **common)
@@ -1830,6 +1883,77 @@ class AnalysisRepository:
                 "analysis stage issue is stale against its durable checkpoint"
             )
         return result
+
+    @staticmethod
+    def prepare_file_decision_validation_plan(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        authority: AnalysisPreparationAuthority,
+        progress: Callable[[int], None] | None = None,
+    ) -> AnalysisFileDecisionValidationPlan:
+        """Read the sealed source once in short pages, sorting outside core SQL.
+
+        The plan is independent of materialized decisions. Legal source writers
+        cannot change these sealed facts. Full READY audit remains independent;
+        this preparation snapshot does not promise detection at every commit of
+        unmanaged SQL edits that leave the immutable source markers untouched.
+        """
+        if not isinstance(authority, AnalysisPreparationAuthority):
+            raise TypeError("authority must be AnalysisPreparationAuthority")
+        authority.__post_init__()
+        with connector.read_transaction():
+            work = VNextUnitOfWork(connector, backend=backend)
+            run = _load_file_validation_authority(work, authority)
+            _require_stage_complete(work, run.analysis_id, _STAGE_FILE_HASH_DECISION)
+        plan = build_file_decision_validation_plan(
+            authority,
+            _iter_file_validation_source(connector, authority.build_id, progress),
+            progress=progress,
+        )
+        try:
+            with connector.read_transaction():
+                _load_file_validation_authority(
+                    VNextUnitOfWork(connector, backend=backend), authority
+                )
+            return plan
+        except BaseException:
+            plan.close()
+            raise
+
+    @staticmethod
+    def prepare_file_decision_validation_page(
+        *,
+        issue: AnalysisStageIssue,
+        plan: AnalysisFileDecisionValidationPlan,
+    ) -> AnalysisFileDecisionValidationPage:
+        """Merge authenticated expected keys with the server-issued actual prefix.
+
+        This preparation is entirely local. Commit independently rechecks the
+        actual prefix and every selected family under fresh durable authority.
+        """
+        if not isinstance(issue, AnalysisStageIssue):
+            raise TypeError("issue must be AnalysisStageIssue")
+        issue.__post_init__()
+        if issue.stage != _STAGE_VALIDATE_FILE_HASH:
+            raise AnalysisNotReadyError("file validation preparation has another stage")
+        if not isinstance(plan, AnalysisFileDecisionValidationPlan):
+            raise TypeError("plan must be AnalysisFileDecisionValidationPlan")
+        plan._require_open()
+        receipt = _file_validation_receipt(plan.authority, issue.replayed_result)
+        if receipt != issue.preparation_authority:
+            raise AnalysisNotReadyError("file validation issue has another authority")
+        assert issue.checkpoint_cursor is not None
+        after, _count = _decode_cursor(
+            _CURSOR_DIGEST, issue.checkpoint_cursor, live=True
+        )
+        expected = dict(plan.source_page(after=after, limit=issue.page_limit + 1))
+        keys = sorted(set(expected) | set(issue.file_decision_actual_keys))[
+            : issue.page_limit
+        ]
+        return plan._prepare_page(
+            issue, tuple((key, expected.get(key)) for key in keys)
+        )
 
     @staticmethod
     def prepare_gallery(
@@ -5070,6 +5194,7 @@ def _issue_next_batch_authorized(
             None,
             None,
             (),
+            (),
             preparation_authority,
             require_digest32(
                 binding[0],
@@ -5128,6 +5253,7 @@ def _issue_next_batch_authorized(
             None,
             None,
             (),
+            (),
             preparation_authority,
             None,
             None,
@@ -5158,6 +5284,13 @@ def _issue_next_batch_authorized(
             replay.start_cursor,
             replay.start_processed_count,
             (),
+            _issued_file_decision_actual_keys(
+                work,
+                run,
+                stage=first_open,
+                cursor=replay.start_cursor,
+                page_limit=replay.page_limit,
+            ),
             preparation_authority,
             None,
             replay,
@@ -5182,10 +5315,36 @@ def _issue_next_batch_authorized(
         checkpoint.cursor,
         checkpoint.processed_count,
         memberships,
+        _issued_file_decision_actual_keys(
+            work,
+            run,
+            stage=first_open,
+            cursor=checkpoint.cursor,
+            page_limit=checkpoint.page_limit,
+        ),
         preparation_authority,
         None,
         None,
         _STAGE_ISSUE_TOKEN,
+    )
+
+
+def _issued_file_decision_actual_keys(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    stage: bytes,
+    cursor: bytes,
+    page_limit: int,
+) -> tuple[bytes, ...]:
+    if stage != _STAGE_VALIDATE_FILE_HASH:
+        return ()
+    after, _live_count = _decode_cursor(_CURSOR_DIGEST, cursor, live=True)
+    return tuple(
+        require_digest32(row[0], field="issued actual file decision key")
+        for row in _validation_actual_key_rows(
+            work, authority, after=after, limit=page_limit + 1
+        )
     )
 
 
@@ -5663,7 +5822,9 @@ def _replay_page_rows(
     if stage == _STAGE_FILE_HASH_DECISION:
         return _decision_work_rows(work, authority, after=after, limit=limit)
     if stage == _STAGE_VALIDATE_FILE_HASH:
-        return _validation_key_rows(work, authority, after=after, limit=limit)
+        raise AnalysisCorruptionError(
+            "file validation replay requires its prepared page"
+        )
     if stage == _STAGE_IMPACTED_GALLERY:
         return _impacted_gallery_rows(
             work,
@@ -6000,6 +6161,252 @@ def _require_replay_key_rows(
             )
 
 
+def _iter_file_validation_source(
+    connector: SQLConnector,
+    build_id: bytes,
+    progress: Callable[[int], None] | None,
+) -> Iterator[FileDecisionSourceGallery]:
+    """Read only selected observations, never retained history or global hashes."""
+    galleries_read = 0
+    after_gallery = 0
+
+    def boundary() -> None:
+        if progress is not None:
+            progress(galleries_read)
+
+    def artists(gallery_id: int, observation_id: int) -> Iterator[int]:
+        after_artist = 0
+        while True:
+            with connector.read_transaction():
+                rows = connector.fetch_all(
+                    "SELECT artist_tag_id FROM catalog_gallery_observation_artists "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND artist_tag_id > %s ORDER BY artist_tag_id LIMIT %s",
+                    (gallery_id, observation_id, after_artist, _MAX_BATCH_ROWS),
+                )
+            boundary()
+            for row in rows:
+                after_artist = require_positive_int63(
+                    row[0], field="validation source artist"
+                )
+                yield after_artist
+            if len(rows) < _MAX_BATCH_ROWS:
+                return
+
+    def occurrences(
+        gallery_id: int, observation_id: int
+    ) -> Iterator[tuple[bytes, int]]:
+        after_hash: bytes | None = None
+        while True:
+            predicate = "" if after_hash is None else "AND file_sha256 > %s "
+            parameters = (
+                (gallery_id, observation_id)
+                + (() if after_hash is None else (after_hash,))
+                + (_MAX_BATCH_ROWS,)
+            )
+            with connector.read_transaction():
+                rows = connector.fetch_all(
+                    "SELECT file_sha256, occurrence_count "
+                    "FROM catalog_gallery_observation_file_hash_occurrences "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    + predicate
+                    + "ORDER BY file_sha256 LIMIT %s",
+                    parameters,
+                )
+            boundary()
+            for row in rows:
+                after_hash = require_digest32(row[0], field="validation source hash")
+                yield (
+                    after_hash,
+                    require_positive_int63(
+                        row[1], field="validation source occurrences"
+                    ),
+                )
+            if len(rows) < _MAX_BATCH_ROWS:
+                return
+
+    while True:
+        with connector.read_transaction():
+            rows = connector.fetch_all(
+                "SELECT member.gallery_id, member.observation_id FROM "
+                + _ACCEPTED_SOURCE_MEMBERS
+                + " AS member "
+                "WHERE member.build_id = %s AND member.gallery_id > %s "
+                "ORDER BY member.gallery_id LIMIT %s",
+                (build_id, after_gallery, _MAX_BATCH_ROWS),
+            )
+        boundary()
+        for row in rows:
+            after_gallery = require_positive_int63(
+                row[0], field="validation source gallery"
+            )
+            observation_id = require_positive_int63(
+                row[1], field="validation source observation"
+            )
+            yield FileDecisionSourceGallery(
+                after_gallery,
+                observation_id,
+                artists(after_gallery, observation_id),
+                occurrences(after_gallery, observation_id),
+            )
+            galleries_read += 1
+            boundary()
+        if len(rows) < _MAX_BATCH_ROWS:
+            return
+
+
+def _load_file_validation_authority(
+    work: VNextUnitOfWork,
+    receipt: AnalysisPreparationAuthority,
+) -> _RunAuthority:
+    run = _load_preparation_authority(work, receipt)
+    _require_preparation_source_manifest(work, run, receipt)
+    return run
+
+
+def _require_preparation_source_manifest(
+    work: VNextUnitOfWork,
+    run: _RunAuthority,
+    receipt: AnalysisPreparationAuthority,
+) -> None:
+    try:
+        manifest = load_build_manifest_family(work.connector, build_id=run.build_id)
+    except ManifestFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if (
+        manifest is None
+        or _analysis_input_digest(
+            manifest.manifest_sha256,
+            (manifest.gallery_count, manifest.file_count, manifest.byte_count),
+            run.policy,
+        )
+        != receipt.input_manifest_sha256
+    ):
+        raise AnalysisCorruptionError("preparation source manifest changed")
+
+
+def _file_validation_receipt(
+    receipt: AnalysisPreparationAuthority,
+    replay: AnalysisBatchResult | None,
+) -> AnalysisPreparationAuthority:
+    if replay is None or not replay.terminal:
+        return receipt
+    _last, count = _decode_cursor(_CURSOR_DIGEST, replay.next_cursor, live=True)
+    seal = (_COMPONENT_FILE_HASH, count, replay.committed_at)
+    current = tuple(
+        row for row in receipt.component_seals if row[0] == _COMPONENT_FILE_HASH
+    )
+    if current:
+        if current != (seal,):
+            raise AnalysisNotReadyError(
+                "file validation replay changed its component seal"
+            )
+        return receipt
+    return replace(
+        receipt, component_seals=tuple(sorted((*receipt.component_seals, seal)))
+    )
+
+
+def _require_file_validation_binding(
+    work: VNextUnitOfWork,
+    run: _RunAuthority,
+    page: AnalysisFileDecisionValidationPage,
+    *,
+    replay: AnalysisBatchResult | None,
+) -> None:
+    page.verify()
+    _validate_authority_receipt(
+        work, run, _file_validation_receipt(page.authority, replay)
+    )
+
+    _require_preparation_source_manifest(work, run, page.authority)
+
+    after, _count = _decode_cursor(_CURSOR_DIGEST, page.checkpoint_cursor, live=True)
+    actual = _validation_actual_key_rows(
+        work, run, after=after, limit=page.page_limit + 1
+    )
+    selected = {key for key, _values in page.entries}
+    through = None if not page.entries else page.entries[-1][0]
+    if any(
+        (through is None or key <= through) and key not in selected for (key,) in actual
+    ):
+        raise AnalysisCorruptionError(
+            "actual file validation key prefix changed after preparation"
+        )
+
+
+def _require_file_validation_checkpoint(
+    page: AnalysisFileDecisionValidationPage,
+    *,
+    batch_key: bytes,
+    generation: int,
+    cursor: bytes,
+    processed_count: int,
+    page_limit: int,
+) -> None:
+    if (
+        page.batch_key,
+        page.checkpoint_generation,
+        page.checkpoint_cursor,
+        page.checkpoint_processed_count,
+        page.page_limit,
+    ) != (batch_key, generation, cursor, processed_count, page_limit):
+        raise AnalysisNotReadyError(
+            "file validation page is stale against its checkpoint"
+        )
+
+
+def _require_prepared_file_validation_replay(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    replay: AnalysisBatchResult,
+    page: AnalysisFileDecisionValidationPage,
+) -> None:
+    _require_file_validation_checkpoint(
+        page,
+        batch_key=replay.batch_key,
+        generation=replay.start_generation,
+        cursor=replay.start_cursor,
+        processed_count=replay.start_processed_count,
+        page_limit=replay.page_limit,
+    )
+    last, live_count = _decode_cursor(_CURSOR_DIGEST, replay.start_cursor, live=True)
+    live_count = _sum_int63(
+        live_count,
+        _require_file_decision_targets(
+            work,
+            authority,
+            tuple(key for key, _values in page.entries),
+            {
+                key: _Decision(*values)
+                for key, values in page.entries
+                if values is not None
+            },
+            require_delta=False,
+        ),
+        field="replayed file validation count",
+    )
+    terminal = not page.entries
+    cursor = _encode_cursor(
+        _CURSOR_DIGEST, last if terminal else page.entries[-1][0], live_count=live_count
+    )
+    if (
+        replay.row_count != len(page.entries)
+        or replay.next_cursor != cursor
+        or replay.terminal != terminal
+        or replay.next_processed_count
+        != replay.start_processed_count + len(page.entries)
+        or replay.next_state != (_CHECKPOINT_COMPLETE if terminal else _CHECKPOINT_OPEN)
+        or (
+            terminal
+            and (not replay.component_sealed or live_count != page.source_count)
+        )
+    ):
+        raise AnalysisCorruptionError(
+            "file validation replay differs from its prepared page"
+        )
+
+
 def _require_file_decision_page(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
@@ -6010,17 +6417,29 @@ def _require_file_decision_page(
     """Freshly aggregate source and exact-compare every validation/replay key."""
 
     keys = require_file_decision_page_keys(digests)
+    return _require_file_decision_targets(
+        work,
+        authority,
+        keys,
+        _evaluate_file_decision_page(work, authority, keys),
+        require_delta=require_delta,
+    )
+
+
+def _require_file_decision_targets(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    digests: Sequence[bytes],
+    targets: dict[bytes, _Decision],
+    *,
+    require_delta: bool,
+) -> int:
+    keys = require_file_decision_page_keys(digests)
     if not keys:
         return 0
     parents = _load_resolved_decision_page(work, authority.baseline_analysis_id, keys)
-    resolved = _load_resolved_decision_page(work, authority.analysis_id, keys)
+    current = _load_file_decision_evidence(work, authority.analysis_id, keys)
     try:
-        shadows = load_file_decision_shadow_page(
-            work.connector, analysis_id=authority.analysis_id, digests=keys
-        )
-        tombstones = load_file_decision_tombstone_page(
-            work.connector, analysis_id=authority.analysis_id, digests=keys
-        )
         deltas = (
             load_analysis_exclusion_delta_families(
                 work.connector, analysis_id=authority.analysis_id, file_sha256s=keys
@@ -6040,7 +6459,6 @@ def _require_file_decision_page(
         if require_delta and authority.baseline_analysis_id is not None
         else authority.policy
     )
-    targets = _evaluate_file_decision_page(work, authority, keys)
     live_count = 0
     for digest in keys:
         target = targets.get(digest)
@@ -6054,25 +6472,15 @@ def _require_file_decision_page(
                 raise AnalysisCorruptionError(
                     "file-decision exclusion delta differs from its evaluator"
                 )
-        family = shadows.get(digest)
-        shadow = (
-            None
-            if family is None
-            else _Decision(
-                family.occurrence_count,
-                family.artist_count,
-                family.maximum_gallery_artist_count,
-            )
-        )
         _require_overlay_exact(
             label="file decision",
             overlay_depth=authority.overlay_depth,
             target=target,
             parent=parent,
-            shadow=shadow,
-            tombstone=digest in tombstones,
+            shadow=current.own_shadows.get(digest),
+            tombstone=digest in current.own_tombstones,
         )
-        if resolved.get(digest) != target:
+        if current.resolved.get(digest) != target:
             raise AnalysisCorruptionError(
                 "resolved file decision differs from its evaluator"
             )
@@ -8269,37 +8677,59 @@ def _load_resolved_decision_page(
     analysis_id: bytes | None,
     digests: Sequence[bytes],
 ) -> dict[bytes, _Decision]:
+    return _load_file_decision_evidence(work, analysis_id, digests).resolved
+
+
+def _load_file_decision_evidence(
+    work: VNextUnitOfWork,
+    analysis_id: bytes | None,
+    digests: Sequence[bytes],
+) -> _FileDecisionEvidence:
     keys = require_file_decision_page_keys(digests)
     if analysis_id is None or not keys:
-        return {}
+        return _FileDecisionEvidence({}, {}, frozenset())
     analysis = require_uuid16(analysis_id, field="resolved decision analysis")
-    placeholders = ", ".join("%s" for _digest in keys)
-    rows = work.connector.fetch_all(
-        "SELECT analysis_id, file_sha256, occurrence_count, artist_count, "
-        "maximum_gallery_artist_count "
-        "FROM catalog_analysis_file_hash_decision_resolved "
-        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders}) "
-        "ORDER BY file_sha256 LIMIT %s",
-        (analysis, *keys, _MAX_BATCH_ROWS + 1),
-    )
+    _baseline, _anchor, _depth, ancestry = _load_layout(work, analysis)
+    try:
+        shadows = load_file_decision_shadow_layers(
+            work.connector, analysis_ids=ancestry, digests=keys
+        )
+        tombstones = load_file_decision_tombstone_layers(
+            work.connector, analysis_ids=ancestry, digests=keys
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if shadows.keys() & tombstones:
+        raise AnalysisCorruptionError(
+            "resolved decision layer has a shadow and tombstone"
+        )
     decisions: dict[bytes, _Decision] = {}
-    if len(rows) > len(keys):
-        raise AnalysisCorruptionError("resolved decision page exceeds its key set")
-    for row in rows:
-        if len(row) != 5 or row[0] != analysis:
-            raise AnalysisCorruptionError(
-                "resolved decision page has a foreign or malformed row"
+    for digest in keys:
+        for ancestor in ancestry:
+            coordinate = (ancestor, digest)
+            if coordinate in tombstones:
+                break
+            family = shadows.get(coordinate)
+            if family is not None:
+                decisions[digest] = _Decision(
+                    family.occurrence_count,
+                    family.artist_count,
+                    family.maximum_gallery_artist_count,
+                )
+                break
+    return _FileDecisionEvidence(
+        decisions,
+        {
+            digest: _Decision(
+                family.occurrence_count,
+                family.artist_count,
+                family.maximum_gallery_artist_count,
             )
-        digest = require_digest32(row[1], field="resolved decision page digest")
-        if digest not in keys or digest in decisions:
-            raise AnalysisCorruptionError(
-                "resolved decision page has a foreign or duplicate key"
-            )
-        decision = _decision_from_row(row[2:], field="resolved decision page")
-        if decision is None:
-            raise AnalysisCorruptionError("resolved decision page omitted a value")
-        decisions[digest] = decision
-    return decisions
+            for (owner, digest), family in shadows.items()
+            if owner == analysis
+        },
+        frozenset(digest for owner, digest in tombstones if owner == analysis),
+    )
 
 
 def _decision_from_row(row: tuple[Any, ...], *, field: str) -> _Decision | None:
@@ -8314,13 +8744,18 @@ def _decision_from_row(row: tuple[Any, ...], *, field: str) -> _Decision | None:
     )
 
 
-def _validation_key_rows(
+def _validation_actual_key_rows(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     *,
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
+    require_positive_int63(limit, field="actual file hash key page limit")
+    if limit > _MAX_BATCH_ROWS + 1:
+        raise ValueError("actual file hash key page limit exceeds the server cap")
+    if after is not None:
+        require_digest32(after, field="actual file hash key cursor")
     shadow_tables = (
         "catalog_a_file_decision_shadow_anchors",
         "catalog_a_file_decision_shadow_occurrences",
@@ -8329,37 +8764,68 @@ def _validation_key_rows(
         "catalog_a_file_decision_shadow_seals",
     )
     subqueries: list[tuple[str, tuple[Any, ...]]] = [
-        (
-            "SELECT occurrence.file_sha256 AS file_sha256 "
-            "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-            "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-            "ON occurrence.gallery_id = member.gallery_id "
-            "AND occurrence.observation_id = member.observation_id "
-            "WHERE member.build_id = %s",
-            (authority.build_id,),
-        ),
         *(
             (
-                f"SELECT file_sha256 FROM {table} WHERE analysis_id = %s",
+                "SELECT file_sha256 FROM "
+                + work.connector.primary_key_table_reference(table)
+                + " WHERE analysis_id = %s",
                 (authority.analysis_id,),
             )
             for table in shadow_tables
         ),
         (
-            "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_tombstone "
-            "WHERE analysis_id = %s",
+            "SELECT file_sha256 FROM "
+            + work.connector.primary_key_table_reference(
+                "catalog_analysis_file_hash_decision_tombstone"
+            )
+            + " WHERE analysis_id = %s",
             (authority.analysis_id,),
         ),
     ]
     if authority.baseline_analysis_id is not None:
-        subqueries.append(
-            (
-                "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_resolved "
-                "WHERE analysis_id = %s",
-                (authority.baseline_analysis_id,),
-            )
+        _baseline, _anchor, _depth, ancestry = _load_layout(
+            work, authority.baseline_analysis_id
         )
-    return _file_hash_union_page(work, subqueries, after=after, limit=limit)
+        # Every live inherited decision originates at an ancestor anchor.
+        # Keep the bounded superset, including subsequently tombstoned keys:
+        # exact target comparison gives those keys zero live rows. Asking the
+        # resolved view to fill a live-key page can sort the entire retained
+        # shadow population, or scan an arbitrarily long tombstoned gap.
+        anchor_table = work.connector.primary_key_table_reference(
+            "catalog_a_file_decision_shadow_anchors"
+        )
+        subqueries.extend(
+            (
+                f"SELECT file_sha256 FROM {anchor_table} WHERE analysis_id = %s",
+                (ancestor,),
+            )
+            for ancestor in ancestry
+        )
+    # Every actual input has a unique (analysis_id, file_sha256) key. Apply
+    # its keyset predicate directly to that relation; a DISTINCT derived
+    # wrapper can make MariaDB scan the analysis prefix before filtering.
+    pages: list[str] = []
+    parameters: list[Any] = []
+    for index, (query, values) in enumerate(subqueries):
+        predicate = "" if after is None else " AND file_sha256 > %s"
+        pages.append(
+            "SELECT file_sha256 FROM ("
+            + query
+            + predicate
+            + " ORDER BY file_sha256 LIMIT %s) AS actual_page_"
+            + str(index)
+        )
+        parameters.extend(values)
+        if after is not None:
+            parameters.append(after)
+        parameters.append(limit)
+    parameters.append(limit)
+    return work.connector.fetch_all(
+        "SELECT keyset.file_sha256 FROM ("
+        + " UNION ".join(pages)
+        + ") AS keyset ORDER BY keyset.file_sha256 LIMIT %s",
+        tuple(parameters),
+    )
 
 
 def _file_hash_union_page(

@@ -162,7 +162,8 @@ class AnalysisFileDecisionValidationPlan:
         self, *, after: bytes | None, limit: int
     ) -> tuple[tuple[bytes, FileDecisionValues], ...]:
         self._require_open()
-        if not 1 <= limit <= 129:
+        require_positive_int63(limit, field="file-decision source page limit")
+        if limit > 129:
             raise ValueError("file-decision source page exceeds 129")
         if after is not None:
             require_digest32(after, field="file-decision plan cursor")
@@ -307,6 +308,9 @@ def build_file_decision_validation_plan(
                     PRIMARY KEY (file_sha256, gallery_id)
                 ) WITHOUT ROWID;
             """)
+            # This transaction owns only private scratch pages. Source reads
+            # retain their separate short transactions and heartbeat callbacks.
+            database.execute("BEGIN")
             for gallery in galleries:
                 galleries_read += 1
                 gallery_id = require_positive_int63(
@@ -343,6 +347,7 @@ def build_file_decision_validation_plan(
                             ),
                         ),
                     )
+            database.commit()
             artists = database.execute(
                 "SELECT occurrence.file_sha256, COUNT(DISTINCT artist.artist_id) "
                 "FROM occurrences AS occurrence LEFT JOIN artists AS artist "

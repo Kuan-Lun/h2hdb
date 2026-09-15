@@ -14,7 +14,7 @@ from h2hdb.vnext_analysis_repository import (
     _file_hash_union_page,
     _Policy,
     _RunAuthority,
-    _validation_key_rows,
+    _validation_actual_key_rows,
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -103,23 +103,30 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
         )
 
     work = VNextUnitOfWork(connector, backend=backend)
-    expected = sorted(source | baseline | orphans | tombstones | {821, 822})
+    expected_actual = sorted(baseline | orphans | tombstones | {820, 821, 822})
+    expected_union = sorted(source | baseline | orphans | tombstones | {820, 821, 822})
     with connector.read_transaction():
         for limit in (1, 7, 129):
             found: list[int] = []
             after = None
-            while rows := _validation_key_rows(
+            while rows := _validation_actual_key_rows(
                 work, authority, after=after, limit=limit
             ):
                 assert len(rows) <= limit
                 found.extend(int.from_bytes(row[0], "big") for row in rows)
                 after = rows[-1][0]
-            assert found == expected
+            assert found == expected_actual
+            # Source keys now come from the independently prepared plan. Keep
+            # the original complete-union oracle alongside the actual-side pages.
+            assert sorted(source | set(found)) == expected_union
         for boundary in (0, 1, 257, 599, 705, 800, 1000):
-            rows = _validation_key_rows(
+            rows = _validation_actual_key_rows(
                 work, authority, after=_digest(boundary), limit=129
             )
-            assert rows == [(_digest(key),) for key in expected if key > boundary][:129]
+            assert (
+                rows
+                == [(_digest(key),) for key in expected_actual if key > boundary][:129]
+            )
         assert _decision_work_rows(work, authority, after=None, limit=129) == [
             (_digest(key),) for key in sorted(changed)
         ]
@@ -132,10 +139,12 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
         assert found == sorted(source | changed)
 
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
-            _validation_key_rows(work, authority, after=_digest(700), limit=129)
-        assert fetched.call_count == 1
+            _validation_actual_key_rows(work, authority, after=_digest(700), limit=129)
+        assert fetched.call_count == 2
         sql, parameters = fetched.call_args.args
-        assert sql.count("LIMIT %s") == 9  # Eight bounded inputs and the final page.
+        assert (
+            sql.count("LIMIT %s") == 9
+        )  # Six current inputs, two ancestors, and final page.
         assert parameters.count(_digest(700)) == 8
     # A fresh validation page must discover newly added orphan facts instead of
     # reusing an in-memory key cache from an earlier transaction.
@@ -145,10 +154,42 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
             "(analysis_id, file_sha256) VALUES (%s, %s)",
             (analysis, _digest(970)),
         )
+        connector.execute(
+            "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
+            "(analysis_id, file_sha256) VALUES (%s, %s)",
+            (analysis, _digest(971)),
+        )
     with connector.read_transaction():
-        assert _validation_key_rows(work, authority, after=_digest(822), limit=129) == [
-            (_digest(970),)
-        ]
+        assert _validation_actual_key_rows(
+            work, authority, after=_digest(822), limit=129
+        ) == [(_digest(970),), (_digest(971),)]
+        fresh_actual = _validation_actual_key_rows(
+            work, authority, after=None, limit=129
+        )
+        assert sorted(
+            source | {int.from_bytes(row[0], "big") for row in fresh_actual}
+        ) == sorted(set(expected_union) | {970, 971})
+
+    # A long tombstoned ancestor gap remains bounded candidate work. It must
+    # not loop through the gap to fill a page of live resolved decisions.
+    with connector.transaction():
+        connector.execute_many(
+            "INSERT INTO catalog_a_file_decision_shadow_anchors "
+            "(analysis_id, file_sha256) VALUES (%s, %s)",
+            [(ancestor, _digest(key)) for key in range(1001, 1261)],
+        )
+        connector.execute_many(
+            "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
+            "(analysis_id, file_sha256) VALUES (%s, %s)",
+            [(parent, _digest(key)) for key in range(1001, 1261)],
+        )
+    with connector.read_transaction():
+        with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
+            dead_page = _validation_actual_key_rows(
+                work, authority, after=_digest(1000), limit=129
+            )
+        assert dead_page == [(_digest(key),) for key in range(1001, 1130)]
+        assert fetched.call_count == 2
 
 
 def test_sqlite_file_hash_pages_cover_sources_orphans_and_baseline(

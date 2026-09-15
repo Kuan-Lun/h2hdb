@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
@@ -14,6 +15,7 @@ from vnext_analysis_fixtures import (
     seed_content_owner_shadow,
     set_analysis_component_sealed_at,
 )
+from vnext_analysis_validation_fixtures import file_validation_pages
 from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import (
     seed_file_name_identity,
@@ -1440,72 +1442,86 @@ def _run_stage(
     replay_each: bool = False,
 ) -> list[Any]:
     results = []
-    for index in range(1000):
-        with connector.transaction():
-            result = method(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=analysis_id,
-                batch_key=prefix + index.to_bytes(4, "big"),
-                max_rows=max_rows,
-                now=start_now + index,
-            )
-        results.append(result)
-        if replay_each:
-            with connector.transaction():
-                with (
-                    patch.object(
-                        connector,
-                        "execute",
-                        side_effect=AssertionError("batch replay attempted DML"),
-                    ),
-                    patch.object(
-                        connector,
-                        "execute_affected",
-                        side_effect=AssertionError("batch replay attempted DML"),
-                    ),
-                ):
-                    replay = method(
-                        VNextUnitOfWork(connector, backend="sqlite"),
-                        gate_lease=gate,
-                        ingest_turn=turn,
-                        analysis_id=analysis_id,
-                        batch_key=prefix + index.to_bytes(4, "big"),
-                        max_rows=0,
-                        now=start_now + index,
+    with file_validation_pages(
+        connector, backend="sqlite", gate=gate, turn=turn, analysis_id=analysis_id
+    ) as prepare:
+        for index in range(1000):
+            preparation = (
+                {
+                    "preparation": prepare(
+                        prefix + index.to_bytes(4, "big"), max_rows, start_now + index
                     )
-            assert replay.replayed
-            assert (
-                replay.start_generation,
-                replay.start_cursor,
-                replay.start_processed_count,
-                replay.page_limit,
-                replay.next_cursor,
-                replay.next_processed_count,
-                replay.next_state,
-                replay.row_count,
-                replay.terminal,
-                replay.committed_generation,
-                replay.committed_at,
-                replay.component_sealed,
-            ) == (
-                result.start_generation,
-                result.start_cursor,
-                result.start_processed_count,
-                result.page_limit,
-                result.next_cursor,
-                result.next_processed_count,
-                result.next_state,
-                result.row_count,
-                result.terminal,
-                result.committed_generation,
-                result.committed_at,
-                result.component_sealed,
+                }
+                if method is AnalysisRepository.validate_file_hash_decision_batch
+                else {}
             )
-        if result.next_state == "COMPLETE":
-            return results
-    raise AssertionError("analysis stage did not converge")
+            with connector.transaction():
+                result = method(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=analysis_id,
+                    batch_key=prefix + index.to_bytes(4, "big"),
+                    max_rows=max_rows,
+                    now=start_now + index,
+                    **preparation,
+                )
+            results.append(result)
+            if replay_each:
+                with connector.transaction():
+                    with (
+                        patch.object(
+                            connector,
+                            "execute",
+                            side_effect=AssertionError("batch replay attempted DML"),
+                        ),
+                        patch.object(
+                            connector,
+                            "execute_affected",
+                            side_effect=AssertionError("batch replay attempted DML"),
+                        ),
+                    ):
+                        replay = method(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=analysis_id,
+                            batch_key=prefix + index.to_bytes(4, "big"),
+                            max_rows=0,
+                            now=start_now + index,
+                            **preparation,
+                        )
+                assert replay.replayed
+                assert (
+                    replay.start_generation,
+                    replay.start_cursor,
+                    replay.start_processed_count,
+                    replay.page_limit,
+                    replay.next_cursor,
+                    replay.next_processed_count,
+                    replay.next_state,
+                    replay.row_count,
+                    replay.terminal,
+                    replay.committed_generation,
+                    replay.committed_at,
+                    replay.component_sealed,
+                ) == (
+                    result.start_generation,
+                    result.start_cursor,
+                    result.start_processed_count,
+                    result.page_limit,
+                    result.next_cursor,
+                    result.next_processed_count,
+                    result.next_state,
+                    result.row_count,
+                    result.terminal,
+                    result.committed_generation,
+                    result.committed_at,
+                    result.component_sealed,
+                )
+            if result.next_state == "COMPLETE":
+                return results
+        raise AssertionError("analysis stage did not converge")
 
 
 def _run_file_slice(
@@ -2288,103 +2304,125 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
             analysis_id=b"C" * 16,
             now=30,
         )
-        stages = (
+        stages: tuple[tuple[Callable[..., Any], bytes], ...] = (
             (AnalysisRepository.process_changed_gallery_batch, b"crash-gallery"),
             (AnalysisRepository.process_changed_file_hash_batch, b"crash-hash"),
             (AnalysisRepository.process_file_hash_decision_batch, b"crash-decision"),
             (AnalysisRepository.validate_file_hash_decision_batch, b"crash-validate"),
         )
-        for index, (method, batch_key) in enumerate(stages):
-            receipt_count = connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
-                "WHERE analysis_id = %s",
-                (run.analysis_id,),
-            )[0]
-            with pytest.raises(RuntimeError, match="injected crash"):
+        with file_validation_pages(
+            connector,
+            backend="sqlite",
+            gate=gate,
+            turn=turn,
+            analysis_id=run.analysis_id,
+        ) as prepare:
+            for index, (method, batch_key) in enumerate(stages):
+                preparation = (
+                    {"preparation": prepare(batch_key, 128, 100 + index)}
+                    if method is AnalysisRepository.validate_file_hash_decision_batch
+                    else {}
+                )
+                receipt_count = connector.fetch_one(
+                    "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
+                    "WHERE analysis_id = %s",
+                    (run.analysis_id,),
+                )[0]
+                with pytest.raises(RuntimeError, match="injected crash"):
+                    with connector.transaction():
+                        method(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=run.analysis_id,
+                            batch_key=batch_key,
+                            max_rows=128,
+                            now=100 + index,
+                            **preparation,
+                        )
+                        raise RuntimeError("injected crash")
+                assert (
+                    connector.fetch_one(
+                        "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
+                        "WHERE analysis_id = %s",
+                        (run.analysis_id,),
+                    )[0]
+                    == receipt_count
+                )
                 with connector.transaction():
-                    method(
+                    committed = method(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
                         batch_key=batch_key,
                         max_rows=128,
-                        now=100 + index,
+                        now=200 + index,
+                        **preparation,
                     )
-                    raise RuntimeError("injected crash")
-            assert (
-                connector.fetch_one(
+                assert committed.next_state == "OPEN"
+                before = connector.fetch_one(
                     "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                     "WHERE analysis_id = %s",
                     (run.analysis_id,),
                 )[0]
-                == receipt_count
-            )
-            with connector.transaction():
-                committed = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=batch_key,
-                    max_rows=128,
-                    now=200 + index,
+                with connector.transaction():
+                    replay = method(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=batch_key,
+                        max_rows=128,
+                        now=300 + index,
+                        **preparation,
+                    )
+                assert replay.replayed
+                assert replay == type(replay)(
+                    analysis_id=committed.analysis_id,
+                    stage=committed.stage,
+                    batch_key=committed.batch_key,
+                    start_generation=committed.start_generation,
+                    start_cursor=committed.start_cursor,
+                    start_processed_count=committed.start_processed_count,
+                    page_limit=committed.page_limit,
+                    next_cursor=committed.next_cursor,
+                    next_processed_count=committed.next_processed_count,
+                    next_state=committed.next_state,
+                    row_count=committed.row_count,
+                    terminal=committed.terminal,
+                    committed_generation=committed.committed_generation,
+                    committed_at=committed.committed_at,
+                    replayed=True,
+                    component_sealed=committed.component_sealed,
                 )
-            assert committed.next_state == "OPEN"
-            before = connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
-                "WHERE analysis_id = %s",
-                (run.analysis_id,),
-            )[0]
-            with connector.transaction():
-                replay = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=batch_key,
-                    max_rows=128,
-                    now=300 + index,
+                assert (
+                    connector.fetch_one(
+                        "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
+                        "WHERE analysis_id = %s",
+                        (run.analysis_id,),
+                    )[0]
+                    == before
                 )
-            assert replay.replayed
-            assert replay == type(replay)(
-                analysis_id=committed.analysis_id,
-                stage=committed.stage,
-                batch_key=committed.batch_key,
-                start_generation=committed.start_generation,
-                start_cursor=committed.start_cursor,
-                start_processed_count=committed.start_processed_count,
-                page_limit=committed.page_limit,
-                next_cursor=committed.next_cursor,
-                next_processed_count=committed.next_processed_count,
-                next_state=committed.next_state,
-                row_count=committed.row_count,
-                terminal=committed.terminal,
-                committed_generation=committed.committed_generation,
-                committed_at=committed.committed_at,
-                replayed=True,
-                component_sealed=committed.component_sealed,
-            )
-            assert (
-                connector.fetch_one(
-                    "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
-                    "WHERE analysis_id = %s",
-                    (run.analysis_id,),
-                )[0]
-                == before
-            )
-            with connector.transaction():
-                terminal = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=batch_key + b"-terminal",
-                    max_rows=128,
-                    now=400 + index,
-                )
-            assert terminal.next_state == "COMPLETE"
-            assert terminal.terminal and terminal.row_count == 0
+                if preparation:
+                    preparation = {
+                        "preparation": prepare(
+                            batch_key + b"-terminal", 128, 400 + index
+                        )
+                    }
+                with connector.transaction():
+                    terminal = method(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=batch_key + b"-terminal",
+                        max_rows=128,
+                        now=400 + index,
+                        **preparation,
+                    )
+                assert terminal.next_state == "COMPLETE"
+                assert terminal.terminal and terminal.row_count == 0
         assert connector.fetch_one(
             "SELECT row_count FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s AND state_component = %s",
@@ -2807,7 +2845,17 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
                     "WHERE analysis_id = %s AND file_sha256 = %s",
                     (run.analysis_id, first),
                 )
-        with pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"):
+        with (
+            pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"),
+            file_validation_pages(
+                connector,
+                backend="sqlite",
+                gate=gate,
+                turn=turn,
+                analysis_id=run.analysis_id,
+            ) as prepare,
+        ):
+            preparation = prepare(b"validate-corrupt", 128, 500)
             with connector.transaction():
                 AnalysisRepository.validate_file_hash_decision_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -2815,6 +2863,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
                     batch_key=b"validate-corrupt",
+                    preparation=preparation,
                     max_rows=128,
                     now=500,
                 )

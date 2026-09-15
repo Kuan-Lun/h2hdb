@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -8,7 +9,9 @@ from h2hdb.vnext_analysis_repository import (
     _PREPARATION_TOKEN,
     _STAGE_ISSUE_TOKEN,
     AnalysisPreparationAuthority,
+    AnalysisRepository,
     AnalysisStageIssue,
+    _encode_cursor,
 )
 from h2hdb.vnext_file_decision_validation_plan import (
     FileDecisionSourceGallery,
@@ -30,8 +33,9 @@ def _issue(authority: AnalysisPreparationAuthority) -> AnalysisStageIssue:
         b"batch",
         128,
         1,
-        b"cursor",
+        _encode_cursor(b"D", None, live_count=0),
         0,
+        (),
         (),
         authority,
         None,
@@ -42,6 +46,64 @@ def _issue(authority: AnalysisPreparationAuthority) -> AnalysisStageIssue:
 
 def _key(value: int) -> bytes:
     return value.to_bytes(32, "big")
+
+
+@pytest.mark.parametrize(
+    "keys",
+    (
+        [_key(1)],
+        (b"short",),
+        (_key(1), _key(1)),
+        (_key(2), _key(1)),
+        tuple(_key(value) for value in range(130)),
+    ),
+)
+def test_issued_actual_keys_reject_invalid_shape_domain_order_and_bound(
+    keys: Any,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        replace(_issue(_authority()), file_decision_actual_keys=keys)
+
+
+def test_issued_actual_keys_require_validation_stage_and_exact_cursor_prefix() -> None:
+    issue = replace(_issue(_authority()), file_decision_actual_keys=(_key(1),))
+    with pytest.raises(ValueError, match="non-validation"):
+        replace(issue, stage=b"file_hash_decision")
+    with pytest.raises(ValueError, match="after its cursor"):
+        replace(issue, checkpoint_cursor=_encode_cursor(b"D", _key(1), live_count=0))
+    with pytest.raises(ValueError, match="lookahead"):
+        replace(
+            issue, page_limit=1, file_decision_actual_keys=(_key(1), _key(2), _key(3))
+        )
+
+
+def test_local_validation_page_merges_bounded_source_and_issued_actual_prefix() -> None:
+    authority = _authority()
+    plan = build_file_decision_validation_plan(
+        authority,
+        (FileDecisionSourceGallery(1, 1, (), ((_key(2), 1), (_key(4), 1))),),
+    )
+    try:
+        issue = replace(
+            _issue(authority),
+            page_limit=2,
+            file_decision_actual_keys=(_key(1), _key(3), _key(5)),
+        )
+        page = AnalysisRepository.prepare_file_decision_validation_page(
+            issue=issue, plan=plan
+        )
+        assert page.entries == ((_key(1), None), (_key(2), (1, 0, 0)))
+        page.verify()
+        with pytest.raises(RuntimeError, match="another authority"):
+            AnalysisRepository.prepare_file_decision_validation_page(
+                issue=replace(
+                    issue,
+                    preparation_authority=replace(authority, generation=2),
+                ),
+                plan=plan,
+            )
+    finally:
+        plan.close()
 
 
 def test_independent_plan_aggregates_occurrences_artist_union_and_gallery_max() -> None:
@@ -129,3 +191,32 @@ def test_empty_plan_is_a_valid_independent_empty_source() -> None:
         assert plan.source_page(after=None, limit=128) == ()
     finally:
         plan.close()
+
+
+def test_scratch_inputs_use_one_local_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    statements: list[str] = []
+    original = sqlite3.connect
+
+    def connect(database: str, *, isolation_level: None) -> sqlite3.Connection:
+        connection = original(database, isolation_level=isolation_level)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    plan = build_file_decision_validation_plan(
+        _authority(),
+        (FileDecisionSourceGallery(1, 1, (1, 2), ((_key(i), 1) for i in range(260))),),
+    )
+    plan.close()
+    assert statements.count("BEGIN") == 1
+    assert statements.count("COMMIT") == 1
+    assert statements.index("BEGIN") < next(
+        i for i, sql in enumerate(statements) if sql.startswith("INSERT")
+    )
+    assert statements.index("COMMIT") < next(
+        i for i, sql in enumerate(statements) if sql.startswith("SELECT occurrence.")
+    )
