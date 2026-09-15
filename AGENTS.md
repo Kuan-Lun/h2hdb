@@ -46,6 +46,10 @@
   包含 primary 的最新 tip。分歧由正常 three-way merge處理。
 - merge conflict 或 gate failure 時必須 abort merge並保留 task branch。
 - merge 後收到的任何 follow-up 都建立新的 task branch。
+- Primary 不得 rebase，以免移除或改寫已完成的 merge commit。安裝 hooks 時
+  設定 `pull.rebase=false`、`branch.<primary>.rebase=false` 與 `pull.ff=only`；
+  pull 遇到分歧必須停止，再透過明確的 merge 流程處理。Task branch 整合仍
+  使用 `--no-ff`，`pre-rebase` 必須拒絕對 primary 的顯式 rebase。
 - 本機 task branch、commit、`--no-ff` merge與 `branch -d` 已獲預先授權。
 - fetch、pull、push、remote branch、tag、release、publish、deploy與任何
   force操作仍須逐次明確授權。

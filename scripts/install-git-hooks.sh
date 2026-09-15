@@ -27,5 +27,8 @@ fi
 git config --local core.hooksPath .githooks
 primary="$(scripts/detect-primary-branch.sh)"
 git config --local "branch.$primary.mergeOptions" --no-ff
+git config --local "branch.$primary.rebase" false
+git config --local pull.rebase false
+git config --local pull.ff only
 
 printf 'Installed h2hdb Git hooks; primary branch: %s\n' "$primary"
