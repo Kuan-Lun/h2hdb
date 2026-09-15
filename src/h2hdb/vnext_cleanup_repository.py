@@ -27,6 +27,7 @@ __all__ = [
 ]
 
 import hashlib
+import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -606,128 +607,214 @@ class VNextCleanupRepository:
             return transition_replay
         if checkpoint.generation != attempt.expected_generation:
             raise CleanupUnavailableError("cleanup checkpoint generation is stale")
-        if checkpoint.state != "OPEN":
-            raise CleanupCorruptionError(
-                "a COMPLETE cleanup checkpoint lacks its exact terminal replay"
-            )
-        if checkpoint.generation == INT63_MAX:
-            raise CleanupCycleExhaustedError(
-                "cleanup checkpoint generation reached portable int63 maximum"
-            )
-
-        strategy = _STRATEGIES[requested.target_kind]
-        try:
-            phase_index = strategy.phases.index(checkpoint.phase)
-        except ValueError as error:
-            raise CleanupCorruptionError(
-                "cleanup checkpoint phase is not registered for its target"
-            ) from error
-        mutation = strategy.mutators[phase_index](work, requested, checkpoint.cursor)
-        next_generation = checkpoint.generation + 1
-        row_count = len(mutation.row_keys)
-        next_deleted_count = checkpoint.deleted_count + row_count
-        require_int63(next_deleted_count, field="cleanup deleted_count")
-        input_sha256 = _input_digest(
-            requested, checkpoint.phase, checkpoint.cursor, mutation.row_keys
+        result, _next_checkpoint = _advance_checkpoint(
+            work, requested, checkpoint, attempt, timestamp=timestamp
         )
-        next_chain = _next_chain(
-            checkpoint.chain_sha256,
-            checkpoint.phase,
+        return result
+
+    @staticmethod
+    def advance_current_only_cycle(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        cycle: CleanupCycle,
+        now: int,
+    ) -> tuple[CleanupBatchResult, ...]:
+        """Advance empty phases and at most one bounded deletion batch.
+
+        The caller owns no cross-transaction batch command: response loss resumes
+        the durable checkpoint on the next attempt. Every phase still writes its
+        canonical checkpoint and receipt. Empty transitions share the already
+        locked cycle authority, so no lower-rank gate/checkpoint lock is acquired
+        after a phase takes its own locks. The first nonempty mutation ends this
+        transaction, preserving the cycle's logical-key bound and child lock order.
+        """
+
+        requested = _require_cycle(cycle)
+        timestamp = require_int63(now, field="current-only cleanup advance now")
+        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        job, checkpoint = _lock_cycle(work, requested)
+        if job == "COMPLETE":
+            return (
+                _complete_result(
+                    requested,
+                    deleted_count=_require_completion_row(work, requested),
+                    replayed=True,
+                ),
+            )
+        if checkpoint is None:
+            raise CleanupCorruptionError("OPEN cleanup cycle lacks a checkpoint")
+        results: list[CleanupBatchResult] = []
+        for _phase in _STRATEGIES[requested.target_kind].phases:
+            if requested.target_kind is CleanupTargetKind.PUBLICATION_COMMIT and (
+                checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
+            ):
+                _require_publication_commit_post_compound_transition(
+                    work,
+                    cycle=requested,
+                    phase=checkpoint.phase,
+                    cursor=checkpoint.cursor,
+                )
+            result, next_checkpoint = _advance_checkpoint(
+                work,
+                requested,
+                checkpoint,
+                CleanupBatchCommand(secrets.token_bytes(32), checkpoint.generation),
+                timestamp=timestamp,
+            )
+            results.append(result)
+            if result.row_count or result.cycle_complete:
+                return tuple(results)
+            if next_checkpoint is None:
+                raise CleanupCorruptionError("empty transition lacks next checkpoint")
+            checkpoint = next_checkpoint
+        raise CleanupCorruptionError("cleanup exceeded its fixed phase count")
+
+
+def _advance_checkpoint(
+    work: VNextUnitOfWork,
+    requested: CleanupCycle,
+    checkpoint: _Checkpoint,
+    attempt: CleanupBatchCommand,
+    *,
+    timestamp: int,
+) -> tuple[CleanupBatchResult, _Checkpoint | None]:
+    """Mutate one phase under this transaction's exact locked cycle authority."""
+
+    if checkpoint.state != "OPEN":
+        raise CleanupCorruptionError(
+            "a COMPLETE cleanup checkpoint lacks its exact terminal replay"
+        )
+    if checkpoint.generation == INT63_MAX:
+        raise CleanupCycleExhaustedError(
+            "cleanup checkpoint generation reached portable int63 maximum"
+        )
+
+    strategy = _STRATEGIES[requested.target_kind]
+    try:
+        phase_index = strategy.phases.index(checkpoint.phase)
+    except ValueError as error:
+        raise CleanupCorruptionError(
+            "cleanup checkpoint phase is not registered for its target"
+        ) from error
+    mutation = strategy.mutators[phase_index](work, requested, checkpoint.cursor)
+    next_generation = checkpoint.generation + 1
+    row_count = len(mutation.row_keys)
+    next_deleted_count = checkpoint.deleted_count + row_count
+    require_int63(next_deleted_count, field="cleanup deleted_count")
+    input_sha256 = _input_digest(
+        requested, checkpoint.phase, checkpoint.cursor, mutation.row_keys
+    )
+    next_chain = _next_chain(
+        checkpoint.chain_sha256,
+        checkpoint.phase,
+        next_generation,
+        checkpoint.cursor,
+        mutation.next_cursor,
+        input_sha256,
+        row_count,
+    )
+    terminal = row_count == 0
+
+    work.compare_and_swap(
+        f"""
+        UPDATE {_CHECKPOINT_TABLE}
+        SET generation = %s, cursor_bytes = %s, deleted_count = %s,
+            chain_sha256 = %s, state = %s, updated_at = %s,
+            receipt_batch_key = %s, receipt_start_cursor = %s,
+            receipt_prior_chain_sha256 = %s,
+            receipt_prior_deleted_count = %s,
+            receipt_input_sha256 = %s, receipt_row_count = %s
+        WHERE cleanup_id = %s AND phase = %s AND generation = %s
+          AND cursor_bytes = %s AND deleted_count = %s
+          AND chain_sha256 = %s AND state = 'OPEN'
+        """,
+        (
             next_generation,
-            checkpoint.cursor,
             mutation.next_cursor,
+            next_deleted_count,
+            next_chain,
+            "COMPLETE" if terminal else "OPEN",
+            timestamp,
+            attempt.batch_key,
+            checkpoint.cursor,
+            checkpoint.chain_sha256,
+            checkpoint.deleted_count,
             input_sha256,
             row_count,
-        )
-        terminal = row_count == 0
+            requested.cleanup_id,
+            checkpoint.phase,
+            checkpoint.generation,
+            checkpoint.cursor,
+            checkpoint.deleted_count,
+            checkpoint.chain_sha256,
+        ),
+        authority="cleanup checkpoint",
+    )
 
-        work.compare_and_swap(
-            f"""
-            UPDATE {_CHECKPOINT_TABLE}
-            SET generation = %s, cursor_bytes = %s, deleted_count = %s,
-                chain_sha256 = %s, state = %s, updated_at = %s,
-                receipt_batch_key = %s, receipt_start_cursor = %s,
-                receipt_prior_chain_sha256 = %s,
-                receipt_prior_deleted_count = %s,
-                receipt_input_sha256 = %s, receipt_row_count = %s
-            WHERE cleanup_id = %s AND phase = %s AND generation = %s
-              AND cursor_bytes = %s AND deleted_count = %s
-              AND chain_sha256 = %s AND state = 'OPEN'
-            """,
-            (
-                next_generation,
-                mutation.next_cursor,
-                next_deleted_count,
-                next_chain,
-                "COMPLETE" if terminal else "OPEN",
-                timestamp,
-                attempt.batch_key,
-                checkpoint.cursor,
-                checkpoint.chain_sha256,
-                checkpoint.deleted_count,
-                input_sha256,
-                row_count,
-                requested.cleanup_id,
-                checkpoint.phase,
-                checkpoint.generation,
-                checkpoint.cursor,
-                checkpoint.deleted_count,
-                checkpoint.chain_sha256,
-            ),
-            authority="cleanup checkpoint",
-        )
+    if not terminal:
+        return CleanupBatchResult(
+            cycle=requested,
+            phase=checkpoint.phase,
+            generation=next_generation,
+            cursor=mutation.next_cursor,
+            deleted_count=next_deleted_count,
+            row_count=row_count,
+            phase_complete=False,
+            cycle_complete=False,
+            replayed=False,
+        ), None
 
-        if not terminal:
-            return CleanupBatchResult(
-                cycle=requested,
-                phase=checkpoint.phase,
-                generation=next_generation,
-                cursor=mutation.next_cursor,
-                deleted_count=next_deleted_count,
-                row_count=row_count,
-                phase_complete=False,
-                cycle_complete=False,
-                replayed=False,
-            )
-
-        if phase_index + 1 < len(strategy.phases):
-            next_phase = strategy.phases[phase_index + 1]
-            _validate_phase_seed(
-                work, requested.target_kind, next_phase, phase_index + 2
-            )
-            _insert_checkpoint(
-                work,
-                cycle=requested,
-                phase=next_phase,
-                chain_sha256=_phase_chain(next_chain, next_phase),
-                now=timestamp,
-            )
-            return CleanupBatchResult(
-                cycle=requested,
-                phase=next_phase,
-                generation=1,
-                cursor=_EMPTY_CURSOR,
-                deleted_count=0,
-                row_count=0,
-                phase_complete=True,
-                cycle_complete=False,
-                replayed=False,
-            )
-
-        total_deleted = _fixed_checkpoint_total(work, requested, strategy.phases)
-        _complete_cycle(
+    if phase_index + 1 < len(strategy.phases):
+        next_phase = strategy.phases[phase_index + 1]
+        _validate_phase_seed(work, requested.target_kind, next_phase, phase_index + 2)
+        _insert_checkpoint(
             work,
             cycle=requested,
-            final_chain_sha256=next_chain,
-            deleted_count=total_deleted,
+            phase=next_phase,
+            chain_sha256=_phase_chain(next_chain, next_phase),
             now=timestamp,
         )
-        return _complete_result(
-            requested,
-            row_count=0,
-            deleted_count=total_deleted,
-            replayed=False,
+        next_checkpoint = _Checkpoint(
+            phase=next_phase,
+            generation=1,
+            cursor=_EMPTY_CURSOR,
+            deleted_count=0,
+            chain_sha256=_phase_chain(next_chain, next_phase),
+            state="OPEN",
+            receipt_batch_key=None,
+            receipt_row_count=None,
+            receipt_start_cursor=None,
+            receipt_prior_chain_sha256=None,
+            receipt_prior_deleted_count=None,
+            receipt_input_sha256=None,
         )
+        return CleanupBatchResult(
+            cycle=requested,
+            phase=next_phase,
+            generation=1,
+            cursor=_EMPTY_CURSOR,
+            deleted_count=0,
+            row_count=0,
+            phase_complete=True,
+            cycle_complete=False,
+            replayed=False,
+        ), next_checkpoint
+
+    total_deleted = _fixed_checkpoint_total(work, requested, strategy.phases)
+    _complete_cycle(
+        work,
+        cycle=requested,
+        final_chain_sha256=next_chain,
+        deleted_count=total_deleted,
+        now=timestamp,
+    )
+    return _complete_result(
+        requested,
+        row_count=0,
+        deleted_count=total_deleted,
+        replayed=False,
+    ), None
 
 
 def _require_serialized_open_cycle(

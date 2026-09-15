@@ -61,6 +61,16 @@ class MariaDBConnectorParams(SQLConnectorParams):
 
 
 class MariaDBConnector(SQLConnector):
+    def binary_parameter_expression(self, byte_count: int) -> str:
+        parameter = super().binary_parameter_expression(byte_count)
+        return f"CAST({parameter} AS BINARY({byte_count}))"
+
+    def primary_key_table_reference(self, relation: str) -> str:
+        # An unrelated FK index can make MariaDB 10.11 choose a PRIMARY ref
+        # scan of the entire equality prefix, then filter the keyset boundary.
+        # Restricting candidates to PRIMARY restores the composite range scan.
+        return super().primary_key_table_reference(relation) + " FORCE INDEX (PRIMARY)"
+
     def __init__(
         self,
         host: str,

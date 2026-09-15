@@ -114,6 +114,11 @@ def test_two_real_sqlite_publications_advance_and_publish_latest_content(
     )
     assert report["source_provenance"]["source_sha256"]
     assert "warm the cache" in report["measurement_notes"]
+    assert all(step["advance_transactions"] <= 16 for step in second["steps"])
+    assert sum(step["logical_phase_rows"] for step in second["steps"]) > 0
+    assert any(
+        step["advance_count"] > step["advance_transactions"] for step in second["steps"]
+    )
 
 
 def test_replayed_revision_is_rejected_before_catalog_hydration(

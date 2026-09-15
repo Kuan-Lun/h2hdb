@@ -5,6 +5,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from vnext_analysis_validation_fixtures import file_validation_pages
 from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
@@ -314,8 +315,9 @@ def test_shadow_page_uses_bounded_index_searches(tmp_path: Path) -> None:
             )
         assert len(loaded) == 2 and fetched.call_count == 1
         sql, parameters = fetched.call_args.args
-        assert sql.count("file_sha256 IN (%s, %s)") == 5
-        assert parameters[-1] == 129
+        assert sql.count("LEFT JOIN ") == 5
+        assert len(parameters) == 4
+        assert parameters[-1] == 3
         plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
         descriptions = [str(row[3]) for row in plan]
         for table in _SHADOWS:
@@ -496,8 +498,18 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             max_rows=128,
             now=201,
         )
-    with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
+    with (
+        file_validation_pages(
+            connector,
+            backend=backend,
+            gate=gate,
+            turn=turn,
+            analysis_id=run.analysis_id,
+        ) as prepare,
+        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
+    ):
         for page in range(2):
+            preparation = prepare(f"validate-{page}".encode(), 128, 300 + page)
             with connector.transaction():
                 validated = AnalysisRepository.validate_file_hash_decision_batch(
                     work(),
@@ -507,6 +519,7 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
                     batch_key=f"validate-{page}".encode(),
                     max_rows=128,
                     now=300 + page,
+                    preparation=preparation,
                 )
     assert validated.component_sealed
     assert (
@@ -514,15 +527,17 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             "SUM(occurrence.occurrence_count)" in call.args[0]
             for call in fetched.call_args_list
         )
-        == 1
+        == 0
     )
     with connector.read_transaction():
         expected = _independent_file_oracle(cast(Any, connector), build)
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
-            actual = analysis_module._load_resolved_decision_page(
+            evidence = analysis_module._load_file_decision_evidence(
                 work(), run.analysis_id, (first, second)
             )
-        sql, parameters = fetched.call_args.args
+        actual = evidence.resolved
+        assert evidence.own_shadows == actual
+        assert evidence.own_tombstones == frozenset()
         assert {
             key: (
                 value.occurrence_count,
@@ -531,27 +546,20 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             )
             for key, value in actual.items()
         } == expected
+        statements = [call.args[0] for call in fetched.call_args_list]
+        assert not any(
+            "file_hash_decision_resolved" in statement for statement in statements
+        )
+        point_queries = [
+            call.args
+            for call in fetched.call_args_list
+            if call.args[0].startswith("WITH requested_analyses(")
+        ]
+        assert len(point_queries) == 2
         if backend == "mariadb":
-            plan = connector.fetch_all("EXPLAIN " + sql, parameters)
-            # The nearest-ancestor view must push the analysis/hash predicates
-            # to its base tables; the final small result may use a filesort.
-            indexed = [
-                row
-                for row in plan
-                if row[2]
-                in {
-                    "sealed",
-                    "anchor",
-                    "member_1",
-                    "member_2",
-                    "member_3",
-                    "same_tomb",
-                    "near_tomb",
-                }
-            ]
-            assert indexed and all(row[3] != "ALL" for row in indexed), "\n".join(
-                str(row) for row in plan
-            )
+            for query, values in point_queries:
+                assert "FORCE INDEX (PRIMARY)" in query
+                assert connector.fetch_all("EXPLAIN " + query, values)
 
 
 def test_sqlite_production_page_rolls_back_and_replays_receipt(tmp_path: Path) -> None:

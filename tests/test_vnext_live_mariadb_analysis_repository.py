@@ -12,6 +12,7 @@ from test_vnext_analysis_repository import (
     _seed_initial_snapshot,
     _seed_root,
 )
+from vnext_analysis_validation_fixtures import file_validation_pages
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.mariadb_connector import MariaDBConnector
@@ -118,21 +119,34 @@ def _run_stage_to_completion(
     start_now: int,
 ) -> tuple[Any, ...]:
     results = []
-    for index in range(10):
-        with connector.transaction():
-            result = operation(
-                _work(connector),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=analysis_id,
-                batch_key=batch_prefix + index.to_bytes(2, "big"),
-                max_rows=128,
-                now=start_now + index,
+    with file_validation_pages(
+        connector, backend="mariadb", gate=gate, turn=turn, analysis_id=analysis_id
+    ) as prepare:
+        for index in range(10):
+            preparation = (
+                {
+                    "preparation": prepare(
+                        batch_prefix + index.to_bytes(2, "big"), 128, start_now + index
+                    )
+                }
+                if operation is AnalysisRepository.validate_file_hash_decision_batch
+                else {}
             )
-        results.append(result)
-        if result.next_state == "COMPLETE":
-            return tuple(results)
-    raise AssertionError("live MariaDB analysis stage did not converge")
+            with connector.transaction():
+                result = operation(
+                    _work(connector),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=analysis_id,
+                    batch_key=batch_prefix + index.to_bytes(2, "big"),
+                    max_rows=128,
+                    now=start_now + index,
+                    **preparation,
+                )
+            results.append(result)
+            if result.next_state == "COMPLETE":
+                return tuple(results)
+        raise AssertionError("live MariaDB analysis stage did not converge")
 
 
 def _prepare_file_decision_stage(

@@ -62,14 +62,16 @@ def test_real_validation_crosses_page_boundary_and_matches_independent_oracle(
         assert result["sql_calls"] > 0
         assert result["sql_seconds"] > 0
         assert Counter(query["kind"] for query in result["queries"]) == {
-            "validation_union": 3,
-            "occurrences": 2,
-            "distinct_artists": 2,
-            "maximum_gallery_artists": 2,
+            "validation_actual_union": 6,
+            "shadow_family_points": 2,
+            "tombstone_points": 2,
+            "source_memberships": 1,
+            "source_artists": 2,
+            "source_occurrences": 2,
         }
         for query in result["queries"]:
             assert query["rows"] <= (
-                129 if query["kind"] == "validation_union" else 128
+                129 if query["kind"] == "validation_actual_union" else 128
             )
             assert query["sqlite_vm_steps"] >= 0
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
@@ -163,3 +165,50 @@ def test_missing_query_classification_cannot_report_success(
     with probe.databases("sqlite", 1) as connections:
         with pytest.raises(RuntimeError, match="incomplete query measurement"):
             probe.measure_case(next(connections), "sqlite", probe.Shape(2))
+
+
+def test_validation_source_work_scales_with_current_facts_not_retained_history(
+    probe: ModuleType,
+) -> None:
+    shapes = [probe.Shape(64), probe.Shape(256), probe.Shape(256, 8, 2, True)]
+    with probe.databases("sqlite", len(shapes)) as connections:
+        cases = [
+            probe.measure_case(connector, "sqlite", shape)
+            for connector, shape in zip(connections, shapes, strict=True)
+        ]
+    assert [case["source_rows_read"] for case in cases] == [128, 512, 512]
+    assert all(case["validation_source_aggregates"] == 0 for case in cases)
+    steps = [
+        sum(
+            query["sqlite_vm_steps"]
+            for query in case["queries"]
+            if query["kind"] == "source_occurrences"
+        )
+        for case in cases
+    ]
+    # Four times the selected facts may perform four times the source VM work,
+    # plus one 100-opcode sampling interval for each of six bounded reads.
+    # Unselected distinct history (with a long hash gap) adds no source reads.
+    assert steps[1] <= 4 * steps[0] + 600
+    assert abs(steps[2] - steps[1]) <= 600
+
+
+@pytest.mark.parametrize(
+    "kind,families", [("shadow_family_points", 5), ("tombstone_points", 1)]
+)
+def test_mariadb_point_work_contract_rejects_prefix_scans(
+    probe: ModuleType,
+    kind: str,
+    families: int,
+) -> None:
+    query = probe.Query(kind, "", (), 128, 0, None)
+    counters = {
+        "Handler_read_key": families * 128,
+        "Handler_read_next": 0,
+        "Handler_read_prev": 0,
+    }
+    query.plan = {"handler_read_delta": counters}
+    probe.require_point_work_bound(query)
+    counters["Handler_read_next"] = 512
+    with pytest.raises(RuntimeError, match="point work exceeded"):
+        probe.require_point_work_bound(query)

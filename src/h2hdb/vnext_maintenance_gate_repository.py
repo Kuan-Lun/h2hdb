@@ -130,10 +130,7 @@ class MaintenanceGateRepository:
                 "VALUES (%s, 0, %s)",
                 (token, deadline),
             )
-            work.connector.execute(
-                f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES (%s, 0)",
-                (token,),
-            )
+            _insert_holders_exact(work, token, (0,))
             return GateLease(token, 0, GateMode.SHARED, (0,), deadline)
 
         target = MaintenanceGateRepository._lock_owner(work, token)
@@ -184,14 +181,11 @@ class MaintenanceGateRepository:
         )
         replaced = slots[candidate]
         if replaced is None:
-            work.connector.execute(
-                f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES (%s, %s)",
-                (token, candidate),
-            )
+            _insert_holders_exact(work, token, (candidate,))
         else:
             _replace_holder(work, candidate, replaced.token, token)
             if len(owners[replaced.token]) == 1:
-                _delete_owner_exact(work, replaced)
+                _delete_owners_exact(work, (replaced,))
 
         if next_generation != head.generation:
             work.compare_and_swap(
@@ -242,11 +236,7 @@ class MaintenanceGateRepository:
                 "VALUES (%s, 0, %s)",
                 (token, deadline),
             )
-            for slot in _SLOTS:
-                work.connector.execute(
-                    f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES (%s, %s)",
-                    (token, slot),
-                )
+            _insert_holders_exact(work, token, _SLOTS)
             return GateLease(token, 0, GateMode.EXCLUSIVE, _SLOTS, deadline)
 
         target = MaintenanceGateRepository._lock_owner(work, token)
@@ -276,18 +266,22 @@ class MaintenanceGateRepository:
             "(owner_token, gate_generation, lease_expires_at) VALUES (%s, %s, %s)",
             (token, next_generation, deadline),
         )
-        replaced_tokens: dict[bytes, _Owner] = {}
-        for slot, replaced in enumerate(slots):
-            if replaced is None:
-                work.connector.execute(
-                    f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES (%s, %s)",
-                    (token, slot),
-                )
-            else:
-                _replace_holder(work, slot, replaced.token, token)
-                replaced_tokens[replaced.token] = replaced
-        for replaced in replaced_tokens.values():
-            _delete_owner_exact(work, replaced)
+        # The locked singleton head serializes every gate mutation. The exact
+        # old slot/owner pairs are durable authority, bounded by the 64-slot
+        # domain. Replace that set atomically instead of issuing one round trip
+        # per slot; old owners are removed only after their children are gone.
+        _delete_holders_exact(
+            work,
+            tuple(
+                (slot, owner.token)
+                for slot, owner in enumerate(slots)
+                if owner is not None
+            ),
+        )
+        _insert_holders_exact(work, token, _SLOTS)
+        _delete_owners_exact(
+            work, tuple({owner.token: owner for owner in slots if owner}.values())
+        )
         work.compare_and_swap(
             f"UPDATE {_HEAD_TABLE} SET gate_generation = %s, updated_at = %s "
             "WHERE singleton_id = 1 AND gate_generation = %s AND updated_at = %s",
@@ -384,28 +378,19 @@ class MaintenanceGateRepository:
         now: int,
     ) -> None:
         current = MaintenanceGateRepository.lock_and_require_live(work, lease, now=now)
-        for slot in current.slots:
-            affected = work.connector.execute_affected(
-                f"DELETE FROM {_HOLDER_TABLE} WHERE slot = %s AND owner_token = %s",
-                (slot, current.owner_token),
-            )
-            if affected != 1:
-                raise MaintenanceGateCorruptionError(
-                    f"gate holder {slot} deletion affected {affected} rows"
-                )
-        affected = work.connector.execute_affected(
-            f"DELETE FROM {_OWNER_TABLE} WHERE owner_token = %s "
-            "AND gate_generation = %s AND lease_expires_at = %s",
+        _delete_holders_exact(
+            work, tuple((slot, current.owner_token) for slot in current.slots)
+        )
+        _delete_owners_exact(
+            work,
             (
-                current.owner_token,
-                current.gate_generation,
-                current.lease_expires_at,
+                _Owner(
+                    current.owner_token,
+                    current.gate_generation,
+                    current.lease_expires_at,
+                ),
             ),
         )
-        if affected != 1:
-            raise MaintenanceGateCorruptionError(
-                f"gate owner deletion affected {affected} rows"
-            )
 
     @staticmethod
     def _lock_head_and_mode(work: VNextUnitOfWork) -> _Head | None:
@@ -594,13 +579,52 @@ def _replace_holder(
         )
 
 
-def _delete_owner_exact(work: VNextUnitOfWork, owner: _Owner) -> None:
+def _insert_holders_exact(
+    work: VNextUnitOfWork, token: bytes, slots: tuple[int, ...]
+) -> None:
     affected = work.connector.execute_affected(
-        f"DELETE FROM {_OWNER_TABLE} WHERE owner_token = %s "
-        "AND gate_generation = %s AND lease_expires_at = %s",
-        (owner.token, owner.generation, owner.lease_expires_at),
+        f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES "
+        + ", ".join("(%s, %s)" for _ in slots),
+        tuple(value for slot in slots for value in (token, slot)),
     )
-    if affected != 1:
+    if affected != len(slots):
+        raise MaintenanceGateCorruptionError(
+            f"gate holder insertion affected {affected} rows; expected {len(slots)}"
+        )
+
+
+def _delete_holders_exact(
+    work: VNextUnitOfWork, holders: tuple[tuple[int, bytes], ...]
+) -> None:
+    if not holders:
+        return
+    affected = work.connector.execute_affected(
+        f"DELETE FROM {_HOLDER_TABLE} WHERE "
+        + " OR ".join("(slot = %s AND owner_token = %s)" for _ in holders),
+        tuple(value for holder in holders for value in holder),
+    )
+    if affected != len(holders):
+        raise MaintenanceGateCorruptionError(
+            f"gate holder deletion affected {affected} rows; expected {len(holders)}"
+        )
+
+
+def _delete_owners_exact(work: VNextUnitOfWork, owners: tuple[_Owner, ...]) -> None:
+    if not owners:
+        return
+    affected = work.connector.execute_affected(
+        f"DELETE FROM {_OWNER_TABLE} WHERE "
+        + " OR ".join(
+            "(owner_token = %s AND gate_generation = %s AND lease_expires_at = %s)"
+            for _ in owners
+        ),
+        tuple(
+            value
+            for owner in owners
+            for value in (owner.token, owner.generation, owner.lease_expires_at)
+        ),
+    )
+    if affected != len(owners):
         raise MaintenanceGateCorruptionError(
             "reclaimed gate owner was still referenced or changed"
         )

@@ -100,8 +100,9 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
     recorder = Recorder()
     state_checks: list[float] = []
     advances: list[dict[str, Any]] = []
+    transaction_advances: list[int] = []
     original_state = VNextCleanupRepository.current_only_maintenance_state
-    original_advance = VNextCleanupRepository.advance
+    original_advance = VNextCleanupRepository.advance_current_only_cycle
 
     def state(*args: Any, **kwargs: Any) -> Any:
         previous = recorder.group
@@ -113,23 +114,25 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
             state_checks.append(time.perf_counter() - started)
             recorder.group = previous
 
-    def advance(*args: Any, **kwargs: Any) -> CleanupBatchResult:
-        result = original_advance(*args, **kwargs)
-        advances.append(
-            {
-                "target": result.cycle.target_kind.value,
-                "phase": result.phase,
-                "row_count": result.row_count,
-                "cycle_deleted_count": result.deleted_count,
-                "cycle_complete": result.cycle_complete,
-                "replayed": result.replayed,
-            }
-        )
-        return result
+    def advance(*args: Any, **kwargs: Any) -> tuple[CleanupBatchResult, ...]:
+        results = original_advance(*args, **kwargs)
+        transaction_advances.append(len(results))
+        for result in results:
+            advances.append(
+                {
+                    "target": result.cycle.target_kind.value,
+                    "phase": result.phase,
+                    "row_count": result.row_count,
+                    "cycle_deleted_count": result.deleted_count,
+                    "cycle_complete": result.cycle_complete,
+                    "replayed": result.replayed,
+                }
+            )
+        return results
 
     with (
         patch.object(VNextCleanupRepository, "current_only_maintenance_state", state),
-        patch.object(VNextCleanupRepository, "advance", advance),
+        patch.object(VNextCleanupRepository, "advance_current_only_cycle", advance),
         measure_sql(recorder),
     ):
         started = time.perf_counter()
@@ -142,6 +145,8 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
         "sql_seconds": sum(q["seconds"] for q in queries if q["category"] == "sql"),
         "state_check_seconds": state_checks,
         "advance_count": len(advances),
+        "advance_transactions": len(transaction_advances),
+        "phases_per_transaction": transaction_advances,
         "logical_phase_rows": sum(
             value["row_count"] for value in advances if not value["replayed"]
         ),
@@ -190,6 +195,8 @@ def new_report(backend: str, gallery_count: int) -> dict[str, Any]:
             "state_check_seconds overlap SQL/wall time and must not be added to them. "
             "logical_phase_rows are cleanup "
             "receipt row_count values, not distinct galleries or physical deleted rows. "
+            "advance_count counts durable phase receipts; advance_transactions counts "
+            "bounded deletion transactions, which may coalesce empty phases. "
             "Net physical decreases may coexist with new durable cleanup receipts. "
             "Completed means the measurement and correctness checks finished, not that "
             "cleanup efficiency passed a performance threshold."

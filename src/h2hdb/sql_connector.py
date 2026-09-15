@@ -8,6 +8,7 @@ __all__ = [
 ]
 
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -49,6 +50,26 @@ class SQLConnectorParams(BaseModel):
 
 
 class SQLConnector(ABC):
+    def binary_parameter_expression(self, byte_count: int) -> str:
+        """Render one bound immutable UUID/digest key in a derived key grid."""
+        if type(byte_count) is not int or byte_count not in (16, 32):
+            raise ValueError("binary key parameter width must be 16 or 32")
+        return "%s"
+
+    def primary_key_table_reference(self, relation: str) -> str:
+        """Render an internal physical table for a primary-key keyset query.
+
+        The repository must supply predicates in that table's primary-key
+        order. Views and caller-supplied SQL expressions are not accepted.
+        Dialects may restrict competing access paths without changing rows.
+        """
+        if (
+            not isinstance(relation, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", relation) is None
+        ):
+            raise ValueError("primary-key table reference requires one SQL identifier")
+        return relation
+
     @abstractmethod
     def __init__(self) -> None:
         pass

@@ -221,6 +221,133 @@ def test_source_oracle_rejects_unmanifested_work(
         fixture_module._check_sources(tmp_path, manifest)
 
 
+@pytest.fixture
+def collection_fixture(
+    fixture_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ModuleType, Path]:
+    def page(path: Path, gid: int, index: int, generation: int, _profile: str) -> Any:
+        identity = fixture_module.page_identity(gid, index, generation)
+        data = identity.encode()
+        path.write_bytes(data)
+        return fixture_module.PageFixture(
+            path.name, sha256(data).hexdigest(), len(data), 128, 192, identity
+        )
+
+    monkeypatch.setattr(fixture_module, "_write_page", page)
+    source = tmp_path / "source"
+    fixture_module.generate(source, count=1, pages=2)
+    return fixture_module, source
+
+
+def test_collection_append_exposes_all_complete_galleries_in_one_rename(
+    collection_fixture: tuple[ModuleType, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, source = collection_fixture
+    rename = Path.rename
+    exposed = []
+
+    def observe(path: Path, target: Path) -> Path:
+        assert target == source / "growth-append-1"
+        assert not target.exists()
+        assert path.parent == source.parent
+        assert {entry.name for entry in path.iterdir()} == {"1000002", "1000003"}
+        assert all(
+            (path / str(gid) / "galleryinfo.txt").is_file()
+            for gid in (1_000_002, 1_000_003)
+        )
+        assert len(module.read_manifest(source / module.MANIFEST_NAME).galleries) == 3
+        exposed.append(target)
+        return rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", observe)
+    manifest = module.append_collection(
+        source,
+        count=2,
+        start_gid=1_000_002,
+        pages=2,
+        profile="small",
+        collection="growth-append-1",
+    )
+    assert len(exposed) == 1
+    assert [row.collection for row in manifest.galleries] == [
+        None,
+        "growth-append-1",
+        "growth-append-1",
+    ]
+    assert module._check_sources(source, manifest) > 0
+    assert not list(source.parent.glob(".acceptance-collection-*"))
+    changed = module.change(source, gid=1_000_002, generation=2)
+    assert changed.galleries[1].collection == "growth-append-1"
+    assert module._check_sources(source, changed) > 0
+
+
+def test_collection_failed_rename_restores_manifest_and_removes_only_owned_staging(
+    collection_fixture: tuple[ModuleType, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, source = collection_fixture
+    previous = (source / module.MANIFEST_NAME).read_bytes()
+
+    def fail(_path: Path, _target: Path) -> Path:
+        raise OSError("injected rename failure")
+
+    monkeypatch.setattr(Path, "rename", fail)
+    with pytest.raises(OSError, match="injected"):
+        module.append_collection(
+            source,
+            count=2,
+            start_gid=1_000_002,
+            pages=2,
+            profile="small",
+            collection="growth",
+        )
+    assert (source / module.MANIFEST_NAME).read_bytes() == previous
+    assert not (source / "growth").exists()
+    assert not list(source.parent.glob(".acceptance-collection-*"))
+
+
+@pytest.mark.parametrize("collection", ["../escape", "/absolute", "", "growth/nested"])
+def test_collection_append_rejects_unsafe_names_before_writing(
+    collection_fixture: tuple[ModuleType, Path], collection: str
+) -> None:
+    module, source = collection_fixture
+    with pytest.raises(ValueError, match="collection name"):
+        module.append_collection(
+            source,
+            count=2,
+            start_gid=1_000_002,
+            pages=2,
+            profile="small",
+            collection=collection,
+        )
+    assert not list(source.parent.glob(".acceptance-collection-*"))
+
+
+def test_collection_append_and_oracle_reject_extra_or_overlapping_galleries(
+    collection_fixture: tuple[ModuleType, Path],
+) -> None:
+    module, source = collection_fixture
+    with pytest.raises(ValueError, match="existing GID"):
+        module.append_collection(
+            source,
+            count=2,
+            start_gid=1_000_001,
+            pages=2,
+            profile="small",
+            collection="growth",
+        )
+    manifest = module.append_collection(
+        source,
+        count=2,
+        start_gid=1_000_002,
+        pages=2,
+        profile="small",
+        collection="growth",
+    )
+    (source / "growth/untracked").mkdir()
+    with pytest.raises(ValueError, match="collection gallery directories"):
+        module._check_sources(source, manifest)
+
+
 def _integration_python() -> str:
     configured = os.environ.get("H2HDB_ACCEPTANCE_PYTHON")
     if configured:
@@ -323,6 +450,13 @@ assert missing_new["verified_publications"] == 3
 module.change(source, gid=1000004, generation=1, marker="complete")
 final = run()
 assert final["verified_publications"] == 4
+module.append_collection(source, count=2, start_gid=1000005, pages=2, profile="small", collection="growth-append-1")
+grouped = run()
+assert grouped["verified_publications"] == 6 and grouped["verified_pages"] == final["verified_pages"] + 4
+module.change(source, gid=1000005, generation=2)
+final = run()
+assert final["verified_publications"] == 6
+assert (source / "growth-append-1/1000005/galleryinfo.txt").is_file()
 report = module.verify(config=config_path, source=source, library=library, expected_manifest=source / module.MANIFEST_NAME, output=root / "verified.json")
 assert report["artifacts"] == final["artifacts"]
 from io import BytesIO
@@ -370,7 +504,7 @@ except ValueError as error:
 else:
     raise AssertionError("independent oracle accepted a corrupted archive")
 assert not (root / "corrupt.json").exists()
-print(json.dumps({"actual_galleries": 4, "actual_pages": report["verified_pages"], "oracle": "passed"}))
+print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"], "oracle": "passed"}))
 """
     result = subprocess.run(
         [interpreter, "-c", program, str(_SCRIPT), str(tmp_path)],

@@ -715,3 +715,120 @@ def test_elapsed_format_preserves_readable_units(
     from h2hdb.ingest_performance_format import duration
 
     assert duration(seconds) == expected
+
+
+def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    from h2hdb.ingest_performance import prepare_ingest_operation
+
+    clock = _Clock()
+    performance = IngestPerformance(
+        performance_log, backend="sqlite", clock=clock, level=logging.DEBUG
+    )
+    with performance.step(
+        "analysis", "prepare", "validate_file_hash_decision", 9
+    ) as outer:
+        with prepare_ingest_operation(
+            operation="prepare_file_decision_validation", generation=9
+        ) as progress:
+            assert (
+                "preparation started: preparing file hash validation data"
+                in caplog.text
+            )
+            with instrument_connector(
+                SQLiteConnector(str(tmp_path / "progress.db"))
+            ) as connector:
+                with connector.read_transaction():
+                    assert connector.fetch_one("SELECT 1") == (1,)
+            clock.now = 59
+            progress(1)
+            assert "preparation in progress" not in caplog.text
+            clock.now = 60
+            progress(2)
+            assert (
+                "preparation in progress: preparing file hash validation data"
+                in caplog.text
+            )
+            assert "read 2 galleries; elapsed 1m 00s" in caplog.text
+            clock.now = 61
+            progress(2)
+            assert caplog.text.count("preparation in progress:") == 1
+            clock.now = 70
+        clock.now = 72
+        outer.terminal = True
+    raw = [
+        record.message for record in caplog.records if record.levelno == logging.DEBUG
+    ]
+    plan = next(
+        line for line in raw if "event=completed " in line and "scope=nested" in line
+    )
+    assert "operation=prepare_file_decision_validation" in plan
+    assert "elapsed_seconds=70.000000 call_seconds=70.000000" in plan
+    assert "sql_calls=1 " in plan
+    parent = next(
+        line
+        for line in raw
+        if "event=completed " in line and "scope=sequential" in line
+    )
+    assert "call_seconds=2.000000" in parent
+    assert "nested_seconds=70.000000" in parent
+    assert "sql_calls=0 " in parent
+    assert any(
+        "event=stage_terminal" in line and "prepare_seconds=2.000000" in line
+        for line in raw
+    )
+    human = [
+        record.message for record in caplog.records if record.levelno == logging.INFO
+    ]
+    assert any(
+        "preparation finished: preparing file hash validation data" in line
+        and "elapsed 1m 10s" in line
+        for line in human
+    )
+    assert all("sql_calls=" not in line and "SELECT 1" not in line for line in human)
+    assert all("nested work" not in line for line in human)
+    assert all("stage completion not confirmed" not in line for line in human)
+
+
+def test_announced_preparation_does_not_hide_other_nested_failures(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    from h2hdb.ingest_performance import prepare_ingest_operation
+
+    performance = IngestPerformance(performance_log, backend="sqlite")
+    with performance.step("analysis", "prepare", "validate_file_hash_decision", 9):
+        with prepare_ingest_operation(
+            operation="prepare_file_decision_validation", generation=9
+        ):
+            pass
+        with pytest.raises(RuntimeError, match="another nested failure"):
+            with performance.step("analysis", "prepare", "snapshot_manifest", 9):
+                raise RuntimeError("another nested failure")
+    human = [
+        record.message for record in caplog.records if record.levelno == logging.INFO
+    ]
+    assert any("nested call failed: saving and sealing" in line for line in human)
+    assert any("nested work" in line for line in human)
+
+
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("failed preparation"), KeyboardInterrupt()]
+)
+def test_local_validation_preparation_failure_is_never_reported_as_finished(
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    failure: BaseException,
+) -> None:
+    from h2hdb.ingest_performance import prepare_ingest_operation
+
+    performance = IngestPerformance(performance_log, backend="sqlite")
+    with pytest.raises(type(failure)):
+        with performance.step("analysis", "prepare", "validate_file_hash_decision", 9):
+            with prepare_ingest_operation(
+                operation="prepare_file_decision_validation", generation=9
+            ):
+                raise failure
+    expected = "failed" if isinstance(failure, Exception) else "interrupted"
+    assert f"preparation {expected}: preparing file hash validation data" in caplog.text
+    assert "preparation finished:" not in caplog.text

@@ -373,6 +373,13 @@ records wait for the outer call to finish, with at most 64 deferred records and
 an explicit omitted-record count. Expired or copied scopes cannot attribute
 another thread or task's work to a completed call.
 
+File-decision validation has a separately measured local preparation operation.
+It announces its start and completion at INFO and reports elapsed time and
+galleries read at 60-second safe boundaries outside catalog transactions.
+The preparation cost must be included when comparing validation performance;
+parent call time excludes this nested work. A single blocked database call
+still needs the integration's progress reporter.
+
 Setting the application's core logger configuration to `{"level": "debug"}`
 adds structured stage and per-call completion records and the five query
 fingerprints with the highest total SQL time. Each `query_top` entry identifies
@@ -408,6 +415,28 @@ plan records centralize decoding for catalog writers and validators, and upload
 time comparison independently checks immutable GID authority. These optimizations do
 not change the schema or artifact format and require no data rebuild.
 
+File-decision validation reads the selected sealed source observations once in
+bounded pages and computes independent expected counts using a private disk
+sort. Scratch input writes share one local transaction without extending any
+catalog transaction. It retains authenticated fixed-width records for the
+lifetime of that analysis preparation. Each validation page merges those
+expected keys with fresh ancestor and actual key prefixes issued by the
+repository, then compares the exact scalar families under the existing
+generation, lease and checkpoint fences. Source facts are not
+reaggregated for every validation page. The plan is disposable: interruption
+discards it, and restarting reconstructs it from the sealed source before
+resuming durable checkpoints. It adds no database relation or restart cleanup
+protocol. Full READY audit still derives decisions independently from source
+SQL; a retained plan relies on legal writers preserving sealed observations.
+It does not promise per-commit detection of unmanaged SQL edits to those facts.
+Ancestor key discovery uses bounded physical primary-key pages instead of
+sorting the entire resolved view. Its safe candidate superset can include an
+ancestral key already removed by a tombstone; such a key contributes no live
+source count. Scalar resolution joins a bounded grid of requested hashes and
+at most 17 ancestry layers to the physical primary keys; it does not rescan the
+resolved view for each page. The connector owns backend-specific access paths,
+and commit rechecks the current candidate prefix before comparing values.
+
 After `complete_ingest()` releases its SHARED gate lease, resident integrations
 call `VNextIngestFacade.drain_current_only_maintenance()` with their artifact
 release-adapter registry. If an unpublished abandoned candidate still protects
@@ -422,8 +451,12 @@ and retain the database-only behavior.
 
 Each cleanup transaction selects at most 256 logical cleanup keys/families
 under a renewable EXCLUSIVE lease; each selected key executes only a
-schema-fixed bounded set of physical deletes. One public attempt advances at
-most 16 cleanup batches. The typed result is `DONE`,
+schema-fixed bounded set of physical deletes. Consecutive empty phases share
+one fenced transaction, preserving their individual durable receipts, and the
+transaction ends after the first nonempty deletion batch. Exclusive gate holder
+changes use bounded multi-row mutations. One public attempt advances at most
+16 cleanup transactions; it renews the lease when needed instead of at every
+empty phase. The typed result is `DONE`,
 `PROGRESSED`, `BLOCKED`, or `CONTENDED`; residents immediately retry
 `PROGRESSED`, while blocked/contended attempts use the ordinary poll cadence.
 Every result retains no caller capability, and durable shard checkpoints make
@@ -549,6 +582,22 @@ audits and per-record SQL/journal work. Dedicated fixtures test shared-image
 selection and 16/17-value, 128/129-row and byte-budget boundaries. After a group
 of optimizations, run increasing `--base-count` values sequentially with the same
 page profile to measure growth; small-run timings alone do not establish scaling.
+For three additional equal append rounds in the same resident, add
+`--growth-batches 3 --base-count 2 --append-count 2 --pages 129 --image-profile small`.
+The original fresh, restart and append scenarios still run first; the growth
+rounds then reach 6, 8 and 10 galleries. Each round prepares its complete source
+collection outside the visible source and exposes it with one directory rename.
+Reports retain actual resident generation counts, completed phase durations,
+core stage SQL costs and independent source/catalog/CBZ verification. They require
+non-replayed validation beyond 128 keys and complete source, analysis and
+publication evidence; they do not require validation to revisit every current
+hash. An input round with multiple publications is reported as multiple batches.
+`--growth-batches` defaults to zero, accepts at most three and requires more than
+128 new image pages per round. It adds no work to ordinary pytest or merge runs.
+The dev-only fixture manifest is now schema 2 to record collection paths; old
+synthetic fixtures must be regenerated. Production data and CBZ formats are
+unaffected. Phase totals contain core stages and must not be added to their
+nested stage totals; process-wide probe counters remain separately cumulative.
 `--instrumented` adds test-only startup, SQL, render, and explicit
 Python fsync observations. Run it separately from the uninstrumented baseline;
 its observer cost is not free. `--faults --instrumented` additionally interrupts
