@@ -293,11 +293,8 @@ def test_instrumentation_is_explicit_and_reader_credentials_are_separate(
                 assignments = [
                     "PYTHONPATH=/acceptance",
                     "H2HDB_ACCEPTANCE_PROBE_DIR=/acceptance-evidence",
+                    "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control",
                 ]
-                if role == "ingest":
-                    assignments.append(
-                        "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
-                    )
                 command = ["env", *assignments, *command]
             assert service["command"] == command
             assert service["healthcheck"] == model()["services"][name]["healthcheck"]
@@ -342,10 +339,7 @@ def test_executor_rejects_role_command_or_observer_scope_drift(
         )
     elif change == "control":
         assignment = "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
-        if role == "ingest":
-            command.remove(assignment)
-        else:
-            command.insert(1, assignment)
+        command.remove(assignment)
     else:
         command[-1] = "bootstrap"
     with pytest.raises(ValueError, match="role command or observer scope changed"):
@@ -450,11 +444,8 @@ def test_real_role_descendants_inherit_probe_but_ambient_healthcheck_does_not(
         expected_observer = {
             "PYTHONPATH": str(probes),
             "H2HDB_ACCEPTANCE_PROBE_DIR": str(evidence),
+            "H2HDB_ACCEPTANCE_CONTROL_DIR": str(tmp_path / "control"),
         }
-        if role == "ingest":
-            expected_observer["H2HDB_ACCEPTANCE_CONTROL_DIR"] = str(
-                tmp_path / "control"
-            )
     descendants = (observed, observed["child"], observed["child"]["child"])
     assert [item["kind"] for item in descendants] == [role, "child", "grandchild"]
     for item in descendants:

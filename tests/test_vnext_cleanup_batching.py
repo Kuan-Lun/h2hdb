@@ -30,6 +30,8 @@ from h2hdb.vnext_maintenance_gate_repository import (
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
+pytestmark = pytest.mark.cleanup_acceptance
+
 
 def _claim(connector: SQLConnector) -> GateLease:
     with connector.transaction():

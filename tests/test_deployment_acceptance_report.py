@@ -179,6 +179,163 @@ def _write(path: Path, events: list[dict[str, Any]]) -> None:
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
 
 
+def _lifecycle(
+    *, generation: int = 2, instance: str = "ingest"
+) -> list[dict[str, Any]]:
+    facts: list[tuple[str, dict[str, Any]]] = [
+        ("installed", {}),
+        ("maintenance_result", {"outcome": "DONE", "after_ingest_generation": None}),
+        ("ingest_claimed", {"ingest_generation": generation}),
+        ("publication_terminal", {"ingest_generation": generation, "replayed": False}),
+        (
+            "ingest_completed",
+            {
+                "ingest_generation": generation,
+                "completed_at": 123,
+                "publication_terminal": True,
+                "replayed": False,
+            },
+        ),
+        (
+            "maintenance_result",
+            {"outcome": "PROGRESSED", "after_ingest_generation": generation},
+        ),
+        (
+            "maintenance_result",
+            {"outcome": "DONE", "after_ingest_generation": generation},
+        ),
+    ]
+    events = []
+    for sequence, (event, details) in enumerate(facts, 1):
+        row = {**_event(sequence, event, 0, instance=instance), **details}
+        if event == "maintenance_result":
+            row["started_monotonic_ns"] = row["monotonic_ns"] - 500
+        events.append(row)
+    return events
+
+
+def test_cleanup_requires_fresh_publication_then_done_and_reports_distinct_time(
+    report: ModuleType,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "probe.jsonl"
+    _write(path, _lifecycle())
+    events, damaged = report.read_probe_events([path])
+    assert not damaged
+    assert report.cleanup_completion(events[:6], {}) is None
+    result = report.cleanup_completion(events, {})
+    assert result["cleanup_outcomes"] == ["PROGRESSED", "DONE"]
+    assert result["ingest_generation"] == 2
+    assert result["publication_session_seconds"] == 0.000002
+    assert result["post_completion_cleanup_seconds"] == 0.000002
+    assert result["cleanup_call_seconds"] == 0.000001
+    assert report.cleanup_completion(events, report.probe_cursor(events)) is None
+
+
+@pytest.mark.parametrize(
+    "missing", ["ingest_claimed", "publication_terminal", "ingest_completed"]
+)
+def test_cleanup_does_not_substitute_startup_done_or_unrelated_results(
+    report: ModuleType,
+    missing: str,
+) -> None:
+    events = _lifecycle()
+    for event in events:
+        if event["event"] == missing:
+            event["event"] = "snapshot"
+    assert report.cleanup_completion(events, {}) is None
+
+
+def test_cleanup_rejects_completion_replay_or_old_process_done(
+    report: ModuleType,
+) -> None:
+    old = _lifecycle(instance="old")
+    current = _lifecycle(generation=3, instance="new")
+    assert (
+        report.cleanup_completion(old + current[:-1], report.probe_cursor(old)) is None
+    )
+    current[4]["replayed"] = True
+    assert report.cleanup_completion(current, {}) is None
+
+
+def test_cleanup_requires_latest_completed_generation_not_earlier_batch(
+    report: ModuleType,
+) -> None:
+    events = _lifecycle()
+    later = _lifecycle(generation=3)[2:6]
+    for sequence, event in enumerate(later, len(events) + 1):
+        event["sequence"] = sequence
+        event["monotonic_ns"] = sequence * 1000
+        if event["event"] == "maintenance_result":
+            event["started_monotonic_ns"] = event["monotonic_ns"] - 500
+    assert report.cleanup_completion(events + later, {}) is None
+
+
+def test_post_oracle_done_allows_a_completed_idle_claim_but_not_an_active_one(
+    report: ModuleType,
+) -> None:
+    events = _lifecycle()
+    new_claim = {
+        **_event(8, "ingest_claimed", 0, instance="ingest"),
+        "ingest_generation": 3,
+    }
+    assert report.cleanup_completion([*events, new_claim], {}) is not None
+    boundary = report.probe_cursor(events)
+    assert (
+        report.cleanup_completion([*events, new_claim], {}, verified_after=boundary)
+        is None
+    )
+    next_done = {
+        **_event(9, "maintenance_result", 0, instance="ingest"),
+        "after_ingest_generation": 2,
+        "outcome": "DONE",
+        "started_monotonic_ns": 8500,
+    }
+    assert (
+        report.cleanup_completion(
+            [*events, new_claim, next_done], {}, verified_after=boundary
+        )
+        is None
+    )
+    idle_complete = {
+        **_event(9, "ingest_completed", 0, instance="ingest"),
+        "ingest_generation": 3,
+        "publication_terminal": False,
+        "replayed": False,
+        "completed_at": 124,
+    }
+    next_done.update(sequence=10, monotonic_ns=10000, started_monotonic_ns=9500)
+    result = report.cleanup_completion(
+        [*events, new_claim, idle_complete, next_done], {}, verified_after=boundary
+    )
+    assert result["first_done_sequence"] == 7 and result["done_sequence"] == 10
+
+
+def test_cleanup_rejects_missing_middle_event_and_waits_on_truncated_tail(
+    report: ModuleType,
+) -> None:
+    events = _lifecycle()
+    with pytest.raises(AssertionError, match="missing or reordered"):
+        report.cleanup_completion(events[:3] + events[4:], {})
+    events[-1]["evidence_file_damaged"] = True
+    assert report.cleanup_completion(events, {}) is None
+
+
+def test_next_scenario_requires_real_new_claim_after_done(report: ModuleType) -> None:
+    previous = report.cleanup_completion(_lifecycle(), {})
+    current = report.cleanup_completion(
+        _lifecycle(generation=3, instance="restart"), {}
+    )
+    result = report.claim_handoff(previous, current)
+    assert result["same_process"] is False
+    assert result["same_process_handoff_seconds"] is None
+    with pytest.raises(AssertionError, match="newer ingest"):
+        report.claim_handoff(previous, previous)
+    current["process_instance"] = previous["process_instance"]
+    with pytest.raises(AssertionError, match="predates"):
+        report.claim_handoff(previous, current)
+
+
 def test_container_pid_reuse_is_separate_and_snapshots_are_not_added(
     report: ModuleType,
     tmp_path: Path,

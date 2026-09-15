@@ -121,6 +121,19 @@ def test_server_crash_profile_is_isolated_and_explicitly_bounded_by_its_entry() 
     assert runner.MARIADB_SERVER_CRASH_PHASE.mariadb_enabled
 
 
+def test_cleanup_acceptance_is_explicit_serial_and_covers_both_backends() -> None:
+    arguments = runner._arguments(["cleanup-acceptance", "--budget-seconds", "1200"])
+    phases = runner._phases(arguments.profile)
+    assert arguments.budget_seconds == 1200
+    assert [phase.marker_expression for phase in phases] == [
+        "cleanup_acceptance and not mariadb",
+        "cleanup_acceptance and mariadb",
+    ]
+    assert [phase.mariadb_enabled for phase in phases] == [False, True]
+    assert all(phase.worker_count == "0" for phase in phases)
+    assert not any(phase in runner.MERGE_PHASES for phase in phases)
+
+
 def test_phase_environment_isolates_backend_and_pytest_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

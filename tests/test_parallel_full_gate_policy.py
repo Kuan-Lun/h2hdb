@@ -266,6 +266,7 @@ def test_pytest_xdist_is_a_required_bounded_development_dependency() -> None:
         "mariadb: requires the single live MariaDB testcontainer worker",
         "mariadb_smoke: representative live MariaDB coverage retained in the bounded merge profile",
         "mariadb_server_crash: isolated disposable MariaDB server SIGKILL evidence",
+        "cleanup_acceptance: manual compaction, retention, bounded cleanup and recovery contracts",
     ]
 
 

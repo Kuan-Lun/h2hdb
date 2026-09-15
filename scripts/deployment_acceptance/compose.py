@@ -257,13 +257,14 @@ def _validate_original(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _instrumented_command(command: str | list[str], role: str) -> list[str]:
+    if role not in SERVICES:
+        raise ValueError("Unknown instrumented role")
     argv = shlex.split(command) if isinstance(command, str) else command
     assignments = [
         "PYTHONPATH=/acceptance",
         "H2HDB_ACCEPTANCE_PROBE_DIR=/acceptance-evidence",
+        "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control",
     ]
-    if role == "ingest":
-        assignments.append("H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control")
     # Docker healthchecks inherit the service environment, independently of its
     # main process. Scope the observer to the actual role and its descendants.
     return ["env", *assignments, *argv]

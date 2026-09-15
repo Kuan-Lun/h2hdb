@@ -135,6 +135,37 @@ def test_replayed_revision_is_rejected_before_catalog_hydration(
         )
 
 
+@pytest.mark.cleanup_acceptance
+def test_three_round_policy_change_compacts_real_history(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    config = CoreConfig(
+        database=DatabaseConfig(
+            sql_type="sqlite", database=str(tmp_path / "catalog.db")
+        )
+    )
+    report = probe.run_case(
+        config,
+        gallery_count=2,
+        revisions=3,
+        policy_change_at=3,
+        output=tmp_path / "report.json",
+    )
+    first, incremental, compacted = report["cases"]
+    assert [case["overlay_depth"] for case in report["cases"]] == [0, 1, 0]
+    assert first["policy_id"] == incremental["policy_id"] != compacted["policy_id"]
+    assert (
+        incremental["gallery_1_content_sha256"] == compacted["gallery_1_content_sha256"]
+    )
+    assert (
+        compacted["retained_analysis_count"]
+        == compacted["retained_source_build_count"]
+        == 1
+    )
+    assert all(case["steps"][-1]["outcome"] == "DONE" for case in report["cases"])
+    assert report["full_ready_audit"] == "passed"
+
+
 @pytest.mark.parametrize("stale_field", ["title", "content_sha256"])
 def test_advancing_revision_with_stale_source_content_is_rejected(
     probe: ModuleType, stale_field: str

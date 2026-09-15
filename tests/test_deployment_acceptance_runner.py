@@ -5,6 +5,10 @@ from __future__ import annotations
 import copy
 import importlib
 import importlib.util
+import json
+import os
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -32,6 +36,91 @@ def _load_runner() -> ModuleType:
 runner = _load_runner()
 
 
+def _observer_package(tmp_path: Path, *, complete: bool = True) -> Path:
+    root = tmp_path / "mounted-acceptance"
+    package = root / "deployment_acceptance"
+    package.mkdir(parents=True)
+    source = Path(__file__).resolve().parents[1] / "scripts/deployment_acceptance"
+    names = ["__init__.py", "http_observer.py"]
+    if complete:
+        names.append("http_probe.py")
+    for name in names:
+        shutil.copy2(source / name, package / name)
+    return root
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="Compose acceptance uses a Linux env command on a POSIX host",
+)
+def test_observer_package_launches_without_ambient_pythonpath(tmp_path: Path) -> None:
+    root = _observer_package(tmp_path)
+    receipt = tmp_path / "http-result-test.json"
+    environment = {"PATH": os.defpath}
+    assert "PYTHONPATH" not in environment
+    result = subprocess.run(
+        runner.http_observer_command(
+            ["--help"], result_path=receipt, package_root=root, python=sys.executable
+        ),
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--control-directory" in result.stdout
+    assert "--evidence-directory" in result.stdout
+    assert not receipt.exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="Compose acceptance uses a Linux env command on a POSIX host",
+)
+@pytest.mark.parametrize("broken_import", [True, False])
+def test_observer_bootstrap_records_import_or_argument_failure_before_ready(
+    tmp_path: Path,
+    broken_import: bool,
+) -> None:
+    root = _observer_package(tmp_path, complete=not broken_import)
+    receipt = tmp_path / "http-result-test.json"
+    result = subprocess.run(
+        runner.http_observer_command(
+            ["--help"] if broken_import else ["--invalid"],
+            result_path=receipt,
+            package_root=root,
+            python=sys.executable,
+        ),
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0
+    failure = json.loads(receipt.read_text())
+    assert failure["status"] == "failed" and failure["stage"] == "observer-launch"
+    assert failure["failure"].startswith("Observer bootstrap failed: ")
+    assert not (tmp_path / "http-ready-test.json").exists()
+
+
+def test_observer_accepts_deployment_advertised_origin_using_shared_loopback_policy() -> (
+    None
+):
+    assert runner.__package__ is not None
+    observer = importlib.import_module(runner.__package__ + ".http_observer")
+    base = observer.http._base("http://127.0.0.1:8000")
+    assert (
+        observer.http._acquisition_url(
+            base, "http://h2hdb-opds:8000/opds/v2/acquisition?revision=7&gid=1"
+        )
+        == "http://127.0.0.1:8000/opds/v2/acquisition?revision=7&gid=1"
+    )
+
+
 def _artifact(gid: int) -> dict[str, Any]:
     return {
         "gid": gid,
@@ -50,8 +139,77 @@ def _artifact(gid: int) -> dict[str, Any]:
     }
 
 
+def _cleanup_fault_events() -> list[dict[str, Any]]:
+    operation = "core.cleanup.committed_nonempty_shard"
+    facts = [
+        {
+            "event": "cleanup_shard_committed",
+            "operation": operation,
+            "row_count": 5,
+            "cycle_complete": False,
+            "after_ingest_generation": None,
+        },
+        {
+            "event": "ingest_completed",
+            "ingest_generation": 14,
+            "publication_terminal": True,
+            "replayed": False,
+        },
+        {
+            "event": "cleanup_shard_committed",
+            "operation": operation,
+            "row_count": 19,
+            "cycle_complete": False,
+            "after_ingest_generation": 14,
+        },
+        {
+            "event": "fault_reached",
+            "operation": operation,
+            "fault_injection": True,
+            "completed_ingest_generation": 14,
+            "required_after_ingest_generation": 13,
+            "committed_shard_sequence": 3,
+        },
+    ]
+    return [
+        {**fact, "sequence": sequence, "process_instance": "restarted-ingest"}
+        for sequence, fact in enumerate(facts, 1)
+    ]
+
+
+def test_cleanup_fault_uses_exact_cause_despite_startup_shards_with_no_generation() -> (
+    None
+):
+    events = _cleanup_fault_events()
+    result = runner.cleanup_fault_evidence(events, events[-1], prior_generation=13)
+    assert result["committed_shard_sequence"] == 3
+    assert result["completion_sequence"] == 2
+    assert result["ingest_generation"] == 14 and result["row_count"] == 19
+
+
+@pytest.mark.parametrize("cause", [1, 2, 4, 999, None, True])
+def test_cleanup_fault_rejects_wrong_cause_instead_of_searching_other_good_shards(
+    cause: object,
+) -> None:
+    events = _cleanup_fault_events()
+    events[-1]["committed_shard_sequence"] = cause
+    with pytest.raises(AssertionError, match="Cleanup fault"):
+        runner.cleanup_fault_evidence(events, events[-1], prior_generation=13)
+
+
+@pytest.mark.parametrize("generation", [None, 12, 13, True])
+def test_cleanup_fault_rejects_a_gate_before_the_required_publication(
+    generation: object,
+) -> None:
+    events = _cleanup_fault_events()
+    events[-1]["completed_ingest_generation"] = generation
+    with pytest.raises(AssertionError, match="fresh generation"):
+        runner.cleanup_fault_evidence(events, events[-1], prior_generation=13)
+
+
 def _oracle() -> dict[str, Any]:
     return {
+        "revision": 1,
         "verified_publications": 2,
         "verified_pages": 4,
         "artifacts": [_artifact(1), _artifact(2)],
@@ -123,6 +281,9 @@ def _argv(tmp_path: Path) -> list[str]:
     "invalid",
     [
         ["--faults"],
+        ["--cleanup-faults"],
+        ["--concurrent-http"],
+        ["--instrumented", "--concurrent-http", "--phase-seconds", "3481"],
         ["--base-count", "0"],
         ["--base-count", "1000001"],
         ["--append-count", "-1"],
@@ -273,7 +434,12 @@ def _acceptance(
     verify: Callable[[str], object],
 ) -> Any:
     result = runner.Acceptance.__new__(runner.Acceptance)
-    result.args = SimpleNamespace(phase_seconds=10, http_artifacts=False)
+    result.args = SimpleNamespace(
+        phase_seconds=10,
+        http_artifacts=False,
+        instrumented=False,
+        concurrent_http=False,
+    )
     result.commands = SimpleNamespace(output=tmp_path)
     result.report = {"scenarios": []}
     log_calls = 0
@@ -316,6 +482,153 @@ def test_phase_requires_completion_and_independent_oracle(tmp_path: Path) -> Non
     assert calls == ["fresh"]
     assert acceptance.report["scenarios"][0]["status"] == "passed"
     assert (tmp_path / "report.json").is_file()
+
+
+def test_instrumented_phase_cannot_pass_at_publication_without_cleanup(
+    tmp_path: Path,
+) -> None:
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=lambda _name: _oracle())
+    acceptance.args.instrumented = True
+    acceptance.probe_events = list
+    with pytest.raises(TimeoutError, match="cleanup DONE"):
+        acceptance.phase("fresh", lambda: None, require_analysis=True)
+    assert acceptance.report["scenarios"][0]["status"] == "running"
+
+
+def test_instrumented_phase_waits_for_cleanup_after_independent_oracle(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+
+    def verify(_name: str) -> dict[str, Any]:
+        order.append("oracle")
+        return _oracle()
+
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=verify)
+    acceptance.args.instrumented = True
+    acceptance.probe_events = list
+
+    def cleanup(record: dict[str, Any], boundary: dict[str, int]) -> None:
+        assert order == ["oracle"]
+        assert boundary == {}
+        order.append("cleanup-DONE")
+        record["catalog_cleanup"] = {"status": "passed"}
+
+    acceptance.await_cleanup = cleanup
+    acceptance.phase("fresh", lambda: None)
+    assert order == ["oracle", "cleanup-DONE", "oracle"]
+    assert acceptance.report["scenarios"][0]["catalog_cleanup"]["status"] == "passed"
+
+
+def test_cleanup_must_preserve_full_oracle_bytes_after_done(tmp_path: Path) -> None:
+    count = 0
+
+    def verify(_name: str) -> dict[str, Any]:
+        nonlocal count
+        count += 1
+        result = _oracle()
+        if count == 2:
+            result["artifacts"][0]["sha256"] = "f" * 64
+        return result
+
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=verify)
+    acceptance.args.instrumented = True
+    acceptance.probe_events = list
+    acceptance.await_cleanup = lambda record, _boundary: record.update(
+        catalog_cleanup={"status": "passed"}
+    )
+    with pytest.raises(AssertionError, match="rewrote artifact"):
+        acceptance.phase("fresh", lambda: None)
+    assert count == 2
+    assert acceptance.report["scenarios"][0]["status"] != "passed"
+
+
+def test_baseline_does_not_claim_cleanup_acceptance(tmp_path: Path) -> None:
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=lambda _name: _oracle())
+    acceptance.phase("baseline", lambda: None)
+    assert (
+        acceptance.report["scenarios"][0]["catalog_cleanup"]["status"] == "not_observed"
+    )
+
+
+def test_concurrent_http_is_held_through_cleanup_and_post_cleanup_oracle(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+
+    def verify(_name: str) -> dict[str, Any]:
+        order.append("oracle")
+        return _oracle()
+
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=verify)
+    acceptance.args.instrumented = True
+    acceptance.args.concurrent_http = True
+    acceptance._last_oracle = _oracle()
+    acceptance.probe_events = list
+
+    def start(_oracle: dict[str, Any]) -> str:
+        order.append("held")
+        return "token"
+
+    def cleanup(record: dict[str, Any], _boundary: dict[str, int]) -> None:
+        order.append("DONE")
+        record["catalog_cleanup"] = {"status": "passed"}
+
+    def finish(token: str, oracle: dict[str, Any]) -> dict[str, Any]:
+        assert token == "token" and oracle == _oracle()
+        assert order == ["held", "action", "oracle", "DONE", "oracle"]
+        order.append("released")
+        return {"status": "passed"}
+
+    acceptance.start_http_observer = start
+    acceptance.await_cleanup = cleanup
+    acceptance.finish_http_observer = finish
+    acceptance.phase("append", lambda: order.append("action"))
+    assert order[-1] == "released"
+    assert acceptance.report["scenarios"][0]["concurrent_http"]["status"] == "passed"
+
+
+def test_detached_observer_response_loss_still_retains_gate_release_capability(
+    tmp_path: Path,
+) -> None:
+    acceptance = _acceptance(tmp_path, logs=[], verify=lambda _name: _oracle())
+    control = tmp_path / "control"
+    control.mkdir()
+    acceptance.prepared = SimpleNamespace(control_dir=control)
+
+    def response_lost(_command: list[str]) -> str:
+        raise RuntimeError("detached process may already have started")
+
+    acceptance.compose = response_lost
+    with pytest.raises(RuntimeError, match="already have started"):
+        acceptance.start_http_observer(_oracle())
+    token = acceptance._http_observer_token
+    assert token
+    acceptance.release_http_observer()
+    assert (control / f"stream-release-{token}").is_file()
+    assert not (control / "stream-arm.json").exists()
+
+
+def test_cleanup_fault_arms_the_latest_completed_generation_before_new_input(
+    tmp_path: Path,
+) -> None:
+    acceptance = _acceptance(tmp_path, logs=[], verify=lambda _name: _oracle())
+    control = tmp_path / "control"
+    control.mkdir()
+    acceptance.prepared = SimpleNamespace(control_dir=control)
+    acceptance.report["scenarios"] = [{"catalog_cleanup": {"ingest_generation": 13}}]
+
+    def generate(count: int, gid: int) -> None:
+        assert (count, gid) == (1, 1_000_014)
+        arm = json.loads((control / "arm.json").read_text())
+        assert set(arm) == {"operation", "token", "after_ingest_generation"}
+        assert arm["operation"] == "core.cleanup.committed_nonempty_shard"
+        assert arm["after_ingest_generation"] == 13
+        raise RuntimeError("stop before any Docker wait or signal")
+
+    acceptance.generate = generate
+    with pytest.raises(RuntimeError, match="stop before"):
+        acceptance.fault("SIGKILL", 1_000_014, cleanup=True)
 
 
 def test_growth_rounds_add_equal_inputs_and_keep_actual_generation_evidence(

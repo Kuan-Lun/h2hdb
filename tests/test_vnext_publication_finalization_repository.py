@@ -910,6 +910,7 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
         connector.close()
 
 
+@pytest.mark.cleanup_acceptance
 def test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline(
     tmp_path: Path,
 ) -> None:
@@ -975,6 +976,7 @@ def test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline(
         connector.close()
 
 
+@pytest.mark.cleanup_acceptance
 def test_terminal_handoff_retains_a_positive_depth_immediate_baseline(
     tmp_path: Path,
 ) -> None:
@@ -1072,6 +1074,7 @@ def test_non_genesis_terminal_handoff_rejects_a_missing_baseline_zero_write(
         connector.close()
 
 
+@pytest.mark.cleanup_acceptance
 def test_depth_sixteen_compaction_prune_releases_the_old_chain_to_fixed_point_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -1135,6 +1138,7 @@ def test_depth_sixteen_compaction_prune_releases_the_old_chain_to_fixed_point_cl
 
 
 @pytest.mark.parametrize("fail_at", range(1, 5))
+@pytest.mark.cleanup_acceptance
 def test_terminal_baseline_prune_rolls_back_with_every_database_mutation(
     tmp_path: Path,
     fail_at: int,

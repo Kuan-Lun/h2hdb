@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import shutil
 import time
+import tomllib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -19,6 +20,14 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from compaction_contracts import (
+    CompactionLayout,
+    compaction_semantics,
+    current_compaction_layout,
+    fresh_compaction_semantics,
+    pending_compaction_layout,
+    retained_compaction_roots,
+)
 from test_vnext_pipeline_takeover_matrix import FENCE_ERRORS
 from vnext_fault_harness import (
     open_connector,
@@ -70,6 +79,7 @@ from h2hdb import (
     vnext_publication_repository as publication_module,
 )
 from h2hdb.catalog_refinement import CatalogSemanticValidationError
+from h2hdb.vnext_analysis_repository import _MAX_OVERLAY_DEPTH
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
     CleanupTargetKind,
@@ -94,6 +104,7 @@ class Pipeline:
         periodic: bool = True,
         drain: bool = True,
         policy: VNextIngestPolicy | None = None,
+        boundary: Callable[[str], None] | None = None,
     ) -> tuple[IngestTurnReceipts, int]:
         facade = VNextIngestFacade(self.config, clock=clock or Clock())
         try:
@@ -103,6 +114,7 @@ class Pipeline:
                 library=self.library,
                 policy=policy,
                 periodic=periodic,
+                boundary=boundary,
             )
             progressed = drain_maintenance(facade) if drain else 0
         finally:
@@ -2338,8 +2350,10 @@ def test_spam_exclusion_flip_matches_a_fresh_ingest(pipeline: Pipeline) -> None:
         assert _publication_titles(pipeline.view()) == _publication_titles(reference)
 
 
+@pytest.mark.cleanup_acceptance
 def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
     pipeline: Pipeline,
+    tmp_path: Path,
 ) -> None:
     """The overlay chain is bounded at depth sixteen: the seventeenth
     incremental analysis compacts to a self-only depth-zero analysis.  That
@@ -2347,7 +2361,17 @@ def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
     changed since the compacted pin) and publish exactly what a fresh ingest of
     the same snapshot publishes; the chain then keeps going."""
 
+    manifest = tomllib.loads(
+        (Path(__file__).parents[1] / "verification/schema/catalog.toml").read_text()
+    )
+    assert manifest["analysis_resolution_contract"]["max_overlay_depth"] == 16
+    assert _MAX_OVERLAY_DEPTH == 16
+    # Genesis has depth zero. Sixteen incremental publications reach depth 16;
+    # the next publication (number 18) compacts. Never shrink the runtime limit.
     pipeline.turn()
+    observed = [current_compaction_layout(pipeline.config)]
+    assert observed[0].depth == 0
+    assert observed[0].baseline is None
     pipeline.source.remove(("gallery-1003",))
     for revision in range(2, 21):
         pipeline.source.put(
@@ -2358,28 +2382,116 @@ def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
             )
         )
         pipeline.turn()
+        current = current_compaction_layout(pipeline.config)
+        observed.append(current)
+        expected_depth = (revision - 1) % 17
+        expected_lineage = tuple(
+            item.analysis_id for item in reversed(observed[-(expected_depth + 1) :])
+        )
+        assert current.revision == revision
+        assert current.publication_state == "PUBLISHED"
+        assert current.ancestry == expected_lineage
+        assert current.baseline == (expected_lineage[1] if expected_depth else None)
+        # Cleanup must preserve every still-referenced ancestor, but no retired
+        # chain is needed after a fully materialized PUBLISHED handoff.
+        retained_analyses, retained_builds = retained_compaction_roots(pipeline.config)
+        assert retained_analyses == set(expected_lineage)
+        assert retained_builds == {
+            item.build_id for item in observed[-(expected_depth + 1) :]
+        }
         if revision in {18, 20}:
             pipeline.ready()
-    connector = open_connector(pipeline.config)
-    try:
-        with connector.read_transaction():
-            depths = connector.fetch_all(
-                "SELECT MAX(ancestry.ancestor_depth) "
-                "FROM catalog_analysis_run_completed_ats AS completed "
-                "JOIN catalog_analysis_state_ancestry AS ancestry "
-                "ON ancestry.analysis_id = completed.analysis_id "
-                "GROUP BY completed.analysis_id, completed.completed_at "
-                "ORDER BY completed.completed_at"
+            assert compaction_semantics(
+                pipeline.config, pipeline.source, pipeline.library
+            ) == fresh_compaction_semantics(
+                pipeline.source,
+                directory=tmp_path / f"fresh-compaction-{revision}",
             )
-    finally:
-        connector.close()
-    # Depth grows to sixteen, the seventeenth incremental analysis compacts
-    # to zero, and the chain restarts from there.
-    assert [int(row[0]) for row in depths] == list(range(17)) + [0, 1, 2]
+    # These are observations made each round, not the rows surviving final GC.
+    assert [item.depth for item in observed] == list(range(17)) + [0, 1, 2]
     assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
-    reference = _fresh_reference(pipeline, "reference")
-    if reference is not None:
-        assert _publication_titles(pipeline.view()) == _publication_titles(reference)
+
+
+@pytest.mark.cleanup_acceptance
+def test_policy_compaction_releases_only_the_retired_chain_and_preserves_bytes(
+    db_config: CoreConfig,
+    tmp_path: Path,
+) -> None:
+    """Two galleries, three real turns exercise the depth-zero handoff cheaply.
+
+    Policy change is a second manifest-declared compaction trigger, not a
+    substitute for the separate depth-sixteen boundary regression above.
+    Unique page hashes stay below both spam thresholds, so all selected content
+    must remain identical across this policy-only final turn.
+    """
+
+    initialize_database(db_config)
+    source = MemorySource(
+        [
+            gallery(1001, pages=[b"first-old", b"first-stable"], artists=["alice"]),
+            gallery(1002, pages=[b"second-0", b"second-1"], artists=["bob"]),
+        ]
+    )
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
+    first, _ = pipeline.turn()
+    genesis = current_compaction_layout(db_config)
+    first_semantics = compaction_semantics(db_config, source, pipeline.library)
+    source.put(gallery(1001, pages=[b"first-new", b"first-stable"], artists=["alice"]))
+    second, _ = pipeline.turn()
+    incremental = current_compaction_layout(db_config)
+    assert incremental.ancestry == (incremental.analysis_id, genesis.analysis_id)
+    assert incremental.baseline == genesis.analysis_id
+    assert retained_compaction_roots(db_config) == (
+        {genesis.analysis_id, incremental.analysis_id},
+        {first.source.build_id, second.source.build_id},
+    )
+    before = compaction_semantics(db_config, source, pipeline.library)
+    # The title and GID are unchanged, but the oracle must observe changed
+    # content and its bytes before it can validate policy-only equivalence.
+    assert before != first_semantics
+    pending: list[CompactionLayout] = []
+
+    def before_terminal_handoff(label: str) -> None:
+        if label == "publication.commit:FINALIZE":
+            # The old public head stays current until terminal finalization
+            # activates the new commit in the same transaction as its prune.
+            assert current_compaction_layout(db_config) == incremental
+            layout = pending_compaction_layout(db_config)
+            assert layout.ancestry == (layout.analysis_id,)
+            assert layout.publication_state == "DB_COMMITTED"
+            assert layout.baseline == incremental.analysis_id
+            assert {
+                genesis.analysis_id,
+                incremental.analysis_id,
+            } <= retained_compaction_roots(db_config)[0]
+            pending.append(layout)
+
+    changed = ingest_policy(spam_occurrence_threshold=CHANGED_POLICY_THRESHOLD)
+    third, _ = pipeline.turn(
+        policy=changed, drain=False, boundary=before_terminal_handoff
+    )
+    compacted = current_compaction_layout(db_config)
+    assert pending
+    assert [genesis.depth, incremental.depth, compacted.depth] == [0, 1, 0]
+    assert compacted.policy_id == third.policy.analysis_policy_id
+    assert compacted.policy_id != incremental.policy_id
+    assert compacted.publication_state == "PUBLISHED"
+    assert compacted.baseline is None
+    assert retained_compaction_roots(db_config) == (
+        {genesis.analysis_id, incremental.analysis_id, compacted.analysis_id},
+        {first.source.build_id, second.source.build_id, third.source.build_id},
+    )
+    with VNextIngestFacade(db_config, clock=Clock()) as facade:
+        assert drain_maintenance(facade) > 0
+    assert retained_compaction_roots(db_config) == (
+        {compacted.analysis_id},
+        {third.source.build_id},
+    )
+    assert compaction_semantics(db_config, source, pipeline.library) == before
+    assert before == fresh_compaction_semantics(
+        source, directory=tmp_path / "fresh-policy-compaction", policy=changed
+    )
+    pipeline.ready()
 
 
 # --- analysis-policy change crash matrix ----------------------------------

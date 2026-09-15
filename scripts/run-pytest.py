@@ -30,7 +30,7 @@ TERMINATION_FAILED_EXIT_CODE = 125
 INTERRUPTED_EXIT_CODE = 130
 _WINDOWS_SUPERVISOR_MODE: Final = "--internal-windows-supervisor"
 _WINDOWS_START_TOKEN: Final = b"\x01"
-ProfileName = Literal["merge", "deep", "mariadb-server-crash"]
+ProfileName = Literal["merge", "deep", "mariadb-server-crash", "cleanup-acceptance"]
 
 
 class RunnerSignalInterrupt(BaseException):
@@ -350,6 +350,23 @@ MARIADB_SERVER_CRASH_PHASE = PytestPhase(
     stop_after_first_failure=True,
 )
 
+# Deliberately manual: real depth-boundary and live-backend evidence must not
+# be inferred from the bounded merge receipt. Serial phases preserve timings.
+CLEANUP_ACCEPTANCE_PHASES = tuple(
+    PytestPhase(
+        label=f"{backend} cleanup acceptance profile",
+        marker_expression=f"cleanup_acceptance and {selector}",
+        worker_count="0",
+        mariadb_enabled=backend == "MariaDB 10.11.11",
+        durations=20,
+        stop_after_first_failure=True,
+    )
+    for backend, selector in (
+        ("SQLite", "not mariadb"),
+        ("MariaDB 10.11.11", "mariadb"),
+    )
+)
+
 DEEP_PHASES = (
     PytestPhase(
         label="SQLite complete manual profile",
@@ -388,6 +405,8 @@ def _phases(profile: ProfileName) -> tuple[PytestPhase, ...]:
         return MERGE_PHASES
     if profile == "mariadb-server-crash":
         return (MARIADB_SERVER_CRASH_PHASE,)
+    if profile == "cleanup-acceptance":
+        return CLEANUP_ACCEPTANCE_PHASES
     return DEEP_PHASES
 
 
@@ -961,12 +980,13 @@ def _arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "profile",
-        choices=("merge", "deep", "mariadb-server-crash"),
+        choices=("merge", "deep", "mariadb-server-crash", "cleanup-acceptance"),
         nargs="?",
         default="merge",
         help=(
             "merge is bounded and selective; deep is complete and manual-only; "
-            "mariadb-server-crash is its isolated destructive-container phase"
+            "mariadb-server-crash is its isolated destructive-container phase; "
+            "cleanup-acceptance is the manual two-backend compaction/cleanup contract"
         ),
     )
     parser.add_argument(
@@ -974,7 +994,7 @@ def _arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_seconds,
         help=(
             "aggregate wall-clock budget for every pytest phase; defaults to 300 "
-            "for merge and no limit for deep"
+            "for merge and no limit for manual profiles"
         ),
     )
     return parser.parse_args(arguments)
