@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-14T14:59:18+00:00",
+  "checked_at": "2026-09-15T06:14:53+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.38.2",
+  "project_version": "0.38.3",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 12 direct Python build/runtime/development entries and the Node tool against fresh registry latest candidates, including versions outside current upper bounds. Every candidate matches the reviewed 0.38.1 receipt and satisfies its bounds; no new third-party release needs further release-note review. Dependency declarations are unchanged. This task changes human INFO summaries and source activity observations while keeping detailed measurement at DEBUG; the SQLite and diagnostic regressions are separate evidence, and the exact-tree release gate and live deployment acceptance are reported separately.",
+    "note": "Quality-first file-decision preparation and bounded cleanup task: refreshed all Python build/runtime/development and Node registry candidates. Every candidate remains identical to the previously reviewed 0.38.2 audit; direct dependency declarations and supported Python bounds are unchanged, so there are no new upstream releases requiring an additional compatibility review. Targeted SQLite, MariaDB, lifecycle, rollback and process-resource checks validate the affected contracts; exact-tree release gate and Compose candidate results are separate evidence and are not asserted by this dependency receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
