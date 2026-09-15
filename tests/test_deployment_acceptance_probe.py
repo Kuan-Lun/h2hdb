@@ -258,6 +258,74 @@ else:
     assert all(value["completed"] > 0 for value in validators.values())
 
 
+def test_real_startup_results_distinguish_full_from_zero_validator_quick(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _run(
+        """
+from h2hdb import CoreConfig, VNextDatabaseAdminFacade
+from h2hdb.config_loader import DatabaseConfig
+admin = VNextDatabaseAdminFacade(CoreConfig(database=DatabaseConfig(sql_type='sqlite', database='private-core.sqlite')))
+try:
+    admin.initialize()
+    first = admin.start_ingest_runtime(lease_duration_microseconds=60_000_000)
+    assert first.full_audit is not None
+    admin.mark_initial_catchup_complete(first.session)
+    admin.finish_ingest_runtime(first.session)
+    second = admin.start_ingest_runtime(lease_duration_microseconds=60_000_000)
+    assert second.full_audit is None
+    admin.finish_ingest_runtime(second.session)
+finally:
+    admin.close()
+""",
+        tmp_path,
+        _environment(evidence),
+    )
+    assert result.returncode == 0, result.stderr
+    events = _events(evidence)
+    results = [event for event in events if event["event"] == "audit_result"]
+    assert [event["mode"] for event in results] == ["full", "quick"]
+    assert [event["reason"] for event in results] == ["first_run", "recent_audit"]
+    assert all(event["elapsed_seconds"] >= 0 for event in results)
+    assert "run_token" not in json.dumps(events)
+    assert "private-core.sqlite" not in json.dumps(events)
+    boundaries = [
+        event
+        for event in events
+        if event["operation"] == "core.admin.start_ingest_runtime"
+        and event["event"] in {"start", "end"}
+    ]
+    assert [event["event"] for event in boundaries] == ["start", "end"] * 2
+    for index, (before, after) in enumerate(
+        zip(boundaries[::2], boundaries[1::2], strict=True)
+    ):
+        assert before["span_id"] == after["span_id"]
+        assert after["outcome"] == "completed"
+        assert after["sequence"] < results[index]["sequence"]
+        prior = before["counters"].get("core.admin.check", {}).get("calls", 0)
+        following = after["counters"].get("core.admin.check", {}).get("calls", 0)
+        assert following - prior == (1 if index == 0 else 0)
+        validators = {
+            name for name in after["counters"] if name.startswith("core.validator.")
+        }
+        assert validators
+        deltas = {
+            name: after["counters"][name]["calls"]
+            - before["counters"].get(name, {}).get("calls", 0)
+            for name in validators
+        }
+        if index == 0:
+            assert any(value > 0 for value in deltas.values())
+        else:
+            assert all(value == 0 for value in deltas.values())
+    counters = events[-1]["counters"]
+    assert counters["core.admin.start_ingest_runtime"]["calls"] == 2
+    assert counters["core.admin.start_ingest_runtime"]["completed"] == 2
+    assert counters["core.admin.check"]["calls"] == 1
+
+
 def test_core_sql_counts_real_sqlite_calls_outside_performance_context(
     tmp_path: Path,
 ) -> None:

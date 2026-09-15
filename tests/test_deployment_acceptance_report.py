@@ -208,6 +208,41 @@ def test_container_pid_reuse_is_separate_and_snapshots_are_not_added(
     assert processes[1]["measurement_valid"] is None
 
 
+def test_structured_audit_results_preserve_mode_and_reject_invalid_measurements(
+    report: ModuleType,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "audit.jsonl"
+    observed = _event(2, "audit_result", 0)
+    observed.update(
+        operation="core.admin.start_ingest_runtime",
+        mode="quick",
+        reason="recent_audit",
+        elapsed_seconds=0.02,
+    )
+    _write(path, [_event(1, "installed", 0), observed, _event(3, "process_exit", 0)])
+    events, damaged = report.read_probe_events([path])
+    assert not damaged
+    result = report.summarize_probe(events)["processes"][0]["audit_results"]
+    assert result == [
+        {
+            "sequence": 2,
+            "operation": "core.admin.start_ingest_runtime",
+            "mode": "quick",
+            "reason": "recent_audit",
+            "elapsed_seconds": 0.02,
+        }
+    ]
+    for fields in (
+        {"mode": "health_certificate"},
+        {"reason": ""},
+        {"elapsed_seconds": -1},
+        {"elapsed_seconds": float("nan")},
+        {"elapsed_seconds": True},
+    ):
+        assert not report._valid_probe_event({**observed, **fields})
+
+
 @pytest.mark.parametrize(
     "tail", [b'{"unfinished":', b'{"not_an_event": 1}\n', b"\xff\n"]
 )
