@@ -28,8 +28,8 @@ __all__ = [
 
 import hashlib
 import secrets
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .vnext_domains import (
@@ -64,6 +64,12 @@ _INPUT_DOMAIN = b"h2hdb-cleanup-input-v1\0"
 _FROZEN_ROOT_SET_DOMAIN = b"h2hdb-cleanup-frozen-root-set-v1\0"
 _MAX_BATCH_ROWS = 256
 _MAX_FROZEN_ROOT_KEY_BYTES = 260
+# Amortize terminal absence checks without handing the optimizer an unbounded
+# expression. These are work budgets, not claims of optimal batch sizes. The
+# bind budget remains below a conservative 999-variable SQLite connection; one
+# current spec needs at most 256 two-column roots plus three shard parameters.
+_MAX_TERMINAL_PROBE_SPECS = 8
+_MAX_TERMINAL_PROBE_BINDS = 900
 _CLEANUP_ALGORITHM_VERSION = 2
 _EMPTY_CURSOR = b""
 
@@ -260,7 +266,26 @@ class _Mutation:
     row_keys: tuple[bytes, ...]
 
 
-_Mutator = Callable[[VNextUnitOfWork, CleanupCycle, bytes], _Mutation]
+@dataclass(frozen=True, slots=True)
+class _CleanupOperation:
+    """Authority owned by one repository call under its locked transaction.
+
+    No connector, unit of work, or facade retains this value. Each entry locks
+    and validates durable authority afresh, including after rollback or restart.
+    Frozen roots are immutable until completion. Empty static phases may share
+    their absence proofs only while this call advances without deleting payload;
+    the first nonempty mutation ends the call.
+    """
+
+    work: VNextUnitOfWork
+    cycle: CleanupCycle
+    initial_checkpoint: _Checkpoint | None
+    complete: bool
+    frozen_roots: tuple[tuple[_StaticScalar, ...], ...]
+    empty_static_phases: set[str] = field(default_factory=set)
+
+
+_Mutator = Callable[[_CleanupOperation, bytes], _Mutation]
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,8 +565,9 @@ class VNextCleanupRepository:
         requested = _require_cycle(cycle)
         timestamp = require_int63(now, field="cleanup resume now")
         _require_exclusive_gate(work, gate_lease, now=timestamp)
-        job, checkpoint = _lock_cycle(work, requested)
-        if job == "COMPLETE":
+        operation = _lock_cycle(work, requested)
+        checkpoint = operation.initial_checkpoint
+        if operation.complete:
             deleted_count = _require_completion_row(work, requested)
             return _complete_result(
                 requested, deleted_count=deleted_count, replayed=True
@@ -552,8 +578,7 @@ class VNextCleanupRepository:
             checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
         ):
             _require_publication_commit_post_compound_transition(
-                work,
-                cycle=requested,
+                operation,
                 phase=checkpoint.phase,
                 cursor=checkpoint.cursor,
             )
@@ -572,8 +597,9 @@ class VNextCleanupRepository:
         attempt = _require_command(command)
         timestamp = require_int63(now, field="cleanup advance now")
         _require_exclusive_gate(work, gate_lease, now=timestamp)
-        job, checkpoint = _lock_cycle(work, requested)
-        if job == "COMPLETE":
+        operation = _lock_cycle(work, requested)
+        checkpoint = operation.initial_checkpoint
+        if operation.complete:
             deleted_count = _require_completion_row(work, requested)
             return _complete_result(
                 requested, deleted_count=deleted_count, replayed=True
@@ -584,8 +610,7 @@ class VNextCleanupRepository:
             checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
         ):
             _require_publication_commit_post_compound_transition(
-                work,
-                cycle=requested,
+                operation,
                 phase=checkpoint.phase,
                 cursor=checkpoint.cursor,
             )
@@ -608,7 +633,7 @@ class VNextCleanupRepository:
         if checkpoint.generation != attempt.expected_generation:
             raise CleanupUnavailableError("cleanup checkpoint generation is stale")
         result, _next_checkpoint = _advance_checkpoint(
-            work, requested, checkpoint, attempt, timestamp=timestamp
+            operation, checkpoint, attempt, timestamp=timestamp
         )
         return result
 
@@ -633,8 +658,9 @@ class VNextCleanupRepository:
         requested = _require_cycle(cycle)
         timestamp = require_int63(now, field="current-only cleanup advance now")
         _require_exclusive_gate(work, gate_lease, now=timestamp)
-        job, checkpoint = _lock_cycle(work, requested)
-        if job == "COMPLETE":
+        operation = _lock_cycle(work, requested)
+        checkpoint = operation.initial_checkpoint
+        if operation.complete:
             return (
                 _complete_result(
                     requested,
@@ -650,14 +676,12 @@ class VNextCleanupRepository:
                 checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
             ):
                 _require_publication_commit_post_compound_transition(
-                    work,
-                    cycle=requested,
+                    operation,
                     phase=checkpoint.phase,
                     cursor=checkpoint.cursor,
                 )
             result, next_checkpoint = _advance_checkpoint(
-                work,
-                requested,
+                operation,
                 checkpoint,
                 CleanupBatchCommand(secrets.token_bytes(32), checkpoint.generation),
                 timestamp=timestamp,
@@ -672,8 +696,7 @@ class VNextCleanupRepository:
 
 
 def _advance_checkpoint(
-    work: VNextUnitOfWork,
-    requested: CleanupCycle,
+    operation: _CleanupOperation,
     checkpoint: _Checkpoint,
     attempt: CleanupBatchCommand,
     *,
@@ -681,6 +704,7 @@ def _advance_checkpoint(
 ) -> tuple[CleanupBatchResult, _Checkpoint | None]:
     """Mutate one phase under this transaction's exact locked cycle authority."""
 
+    work, requested = operation.work, operation.cycle
     if checkpoint.state != "OPEN":
         raise CleanupCorruptionError(
             "a COMPLETE cleanup checkpoint lacks its exact terminal replay"
@@ -697,7 +721,7 @@ def _advance_checkpoint(
         raise CleanupCorruptionError(
             "cleanup checkpoint phase is not registered for its target"
         ) from error
-    mutation = strategy.mutators[phase_index](work, requested, checkpoint.cursor)
+    mutation = strategy.mutators[phase_index](operation, checkpoint.cursor)
     next_generation = checkpoint.generation + 1
     row_count = len(mutation.row_keys)
     next_deleted_count = checkpoint.deleted_count + row_count
@@ -767,7 +791,6 @@ def _advance_checkpoint(
 
     if phase_index + 1 < len(strategy.phases):
         next_phase = strategy.phases[phase_index + 1]
-        _validate_phase_seed(work, requested.target_kind, next_phase, phase_index + 2)
         _insert_checkpoint(
             work,
             cycle=requested,
@@ -803,8 +826,7 @@ def _advance_checkpoint(
 
     total_deleted = _fixed_checkpoint_total(work, requested, strategy.phases)
     _complete_cycle(
-        work,
-        cycle=requested,
+        operation,
         final_chain_sha256=next_chain,
         deleted_count=total_deleted,
         now=timestamp,
@@ -1088,7 +1110,7 @@ def _insert_checkpoint(
     chain_sha256: bytes,
     now: int,
 ) -> None:
-    _validate_phase_seed(work, cycle.target_kind, phase, _phase_order(cycle, phase))
+    # The operation has already exact-compared the complete strategy registry.
     work.connector.execute(
         f"""
         INSERT INTO {_CHECKPOINT_TABLE}
@@ -1098,27 +1120,6 @@ def _insert_checkpoint(
         """,
         (cycle.cleanup_id, phase, _EMPTY_CURSOR, chain_sha256, now),
     )
-
-
-def _phase_order(cycle: CleanupCycle, phase: str) -> int:
-    try:
-        return _STRATEGIES[cycle.target_kind].phases.index(phase) + 1
-    except ValueError as error:
-        raise CleanupCorruptionError("cleanup phase is not registered") from error
-
-
-def _validate_phase_seed(
-    work: VNextUnitOfWork,
-    kind: CleanupTargetKind,
-    phase: str,
-    expected_order: int,
-) -> None:
-    row = work.connector.fetch_one(
-        f"SELECT target_kind, phase_order FROM {_PHASE_TABLE} WHERE phase = %s",
-        (phase,),
-    )
-    if row != (kind.value, expected_order):
-        raise CleanupCorruptionError("fixed cleanup phase seed is missing or corrupt")
 
 
 def _validate_strategy_seeds(work: VNextUnitOfWork, kind: CleanupTargetKind) -> None:
@@ -1134,9 +1135,7 @@ def _validate_strategy_seeds(work: VNextUnitOfWork, kind: CleanupTargetKind) -> 
         raise CleanupCorruptionError("fixed cleanup phase seed set is corrupt")
 
 
-def _lock_cycle(
-    work: VNextUnitOfWork, cycle: CleanupCycle
-) -> tuple[str, _Checkpoint | None]:
+def _lock_cycle(work: VNextUnitOfWork, cycle: CleanupCycle) -> _CleanupOperation:
     row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("cleanup-cycle", cycle.target_key),
@@ -1186,10 +1185,11 @@ def _lock_cycle(
         if row[9] is not None:
             raise CleanupCorruptionError("COMPLETE cleanup retains a checkpoint")
         _require_no_frozen_roots(work, cycle.cleanup_id)
-        return state, None
+        return _CleanupOperation(work, cycle, None, True, ())
     if state != "OPEN" or row[9] is None:
         raise CleanupCorruptionError("OPEN cleanup lacks one current checkpoint")
-    _load_frozen_roots(
+    _validate_strategy_seeds(work, cycle.target_kind)
+    frozen_roots = _load_frozen_roots(
         work,
         cycle,
         _STATIC_PLANS.get(cycle.target_kind),
@@ -1239,7 +1239,7 @@ def _lock_cycle(
         ),
     )
     _validate_checkpoint_receipt(cycle, checkpoint)
-    return state, checkpoint
+    return _CleanupOperation(work, cycle, checkpoint, False, frozen_roots)
 
 
 def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -> None:
@@ -1517,23 +1517,18 @@ def _fixed_checkpoint_total(
 
 
 def _complete_cycle(
-    work: VNextUnitOfWork,
+    operation: _CleanupOperation,
     *,
-    cycle: CleanupCycle,
     final_chain_sha256: bytes,
     deleted_count: int,
     now: int,
 ) -> None:
-    frozen_roots = _load_frozen_roots(
-        work,
-        cycle,
-        _STATIC_PLANS.get(cycle.target_kind),
-    )
+    work, cycle = operation.work, operation.cycle
     removed_roots = work.connector.execute_affected(
         f"DELETE FROM {_FROZEN_ROOT_TABLE} WHERE cleanup_id = %s",
         (cycle.cleanup_id,),
     )
-    if removed_roots != len(frozen_roots):
+    if removed_roots != len(operation.frozen_roots):
         raise CleanupUnavailableError("cleanup frozen root set changed")
     work.connector.execute(
         f"DELETE FROM {_CHECKPOINT_TABLE} WHERE cleanup_id = %s",
@@ -1609,9 +1604,8 @@ def _digest_bounds(cycle: CleanupCycle, cursor: bytes) -> tuple[bytes, bytes, in
     return lower, bytes((cycle.shard_no + 1,)) + bytes(31), 0
 
 
-def _select_content_blobs(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
+def _select_content_blobs(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+    work, cycle = operation.work, operation.cycle
     lower, upper, no_upper = _digest_bounds(cycle, cursor)
     rows = work.connector.fetch_all(
         """
@@ -1679,8 +1673,9 @@ def _select_content_blobs(
 
 
 def _select_file_name_identities(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
+    operation: _CleanupOperation, cursor: bytes
 ) -> _Mutation:
+    work, cycle = operation.work, operation.cycle
     lower, upper, no_upper = _digest_bounds(cycle, cursor)
     rows = work.connector.fetch_all(
         """
@@ -1730,8 +1725,9 @@ def _select_file_name_identities(
 
 
 def _select_publication_identities(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
+    operation: _CleanupOperation, cursor: bytes
 ) -> _Mutation:
+    work, cycle = operation.work, operation.cycle
     lower, upper, no_upper = _digest_bounds(cycle, cursor)
     rows = work.connector.fetch_all(
         """
@@ -1790,9 +1786,8 @@ def _select_publication_identities(
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
-def _select_artifact_blobs(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
+def _select_artifact_blobs(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+    work, cycle = operation.work, operation.cycle
     lower, upper, no_upper = _digest_bounds(cycle, cursor)
     rows = work.connector.fetch_all(
         """
@@ -2342,8 +2337,7 @@ def _static_shard_parameters(
     return (lower, 0, upper)
 
 
-def _static_raw_responsibility_exists(
-    work: VNextUnitOfWork,
+def _static_raw_responsibility_query(
     *,
     plan: _StaticTargetPlan,
     spec: _StaticDeleteSpec,
@@ -2351,7 +2345,7 @@ def _static_raw_responsibility_exists(
     frozen_root_parameters: tuple[_StaticScalar, ...],
     shard_parameters: tuple[object, ...],
     through: tuple[_StaticScalar, ...] | None = None,
-) -> bool:
+) -> tuple[str, tuple[object, ...]]:
     ordered = tuple(f"r.{column}" for column in plan.root_key) + tuple(
         f"c.{column}" for column in spec.primary_key
     )
@@ -2364,12 +2358,41 @@ def _static_raw_responsibility_exists(
             )
         covered = f" AND NOT ({_keyset_predicate(ordered)})"
         parameters += _keyset_parameters(through)
-    row = work.connector.fetch_one(
+    return (
         f"SELECT 1 FROM {spec.source} WHERE ({spec.extra_predicate}) "
         f"AND ({_static_shard_sql(plan)}) "
         f"AND ({frozen_root_predicate}){covered} LIMIT 1",
         parameters,
     )
+
+
+def _static_raw_responsibility_exists(
+    work: VNextUnitOfWork,
+    *,
+    plan: _StaticTargetPlan,
+    spec: _StaticDeleteSpec,
+    frozen_root_predicate: str,
+    frozen_root_parameters: tuple[_StaticScalar, ...],
+    shard_parameters: tuple[object, ...],
+    through: tuple[_StaticScalar, ...] | None = None,
+) -> bool:
+    query, parameters = _static_raw_responsibility_query(
+        plan=plan,
+        spec=spec,
+        frozen_root_predicate=frozen_root_predicate,
+        frozen_root_parameters=frozen_root_parameters,
+        shard_parameters=shard_parameters,
+        through=through,
+    )
+    return _responsibility_query_exists(work, query, parameters)
+
+
+def _responsibility_query_exists(
+    work: VNextUnitOfWork,
+    query: str,
+    parameters: tuple[object, ...],
+) -> bool:
+    row = work.connector.fetch_one(query, parameters)
     if not row:
         return False
     if row != (1,):
@@ -2377,6 +2400,43 @@ def _static_raw_responsibility_exists(
             "cleanup raw responsibility probe returned an invalid shape"
         )
     return True
+
+
+def _static_terminal_probe_batches(
+    *,
+    plan: _StaticTargetPlan,
+    specs: Sequence[_StaticDeleteSpec],
+    frozen_root_predicate: str,
+    frozen_root_parameters: tuple[_StaticScalar, ...],
+    shard_parameters: tuple[object, ...],
+) -> Iterator[tuple[str, tuple[object, ...]]]:
+    """Preserve every raw responsibility while bounding each SQL statement."""
+
+    probes: list[str] = []
+    parameters: tuple[object, ...] = ()
+    for spec in specs:
+        query, bindings = _static_raw_responsibility_query(
+            plan=plan,
+            spec=spec,
+            frozen_root_predicate=frozen_root_predicate,
+            frozen_root_parameters=frozen_root_parameters,
+            shard_parameters=shard_parameters,
+        )
+        if len(bindings) > _MAX_TERMINAL_PROBE_BINDS:
+            raise CleanupCorruptionError(
+                "one cleanup responsibility exceeds the terminal probe bind budget"
+            )
+        if probes and (
+            len(probes) == _MAX_TERMINAL_PROBE_SPECS
+            or len(parameters) + len(bindings) > _MAX_TERMINAL_PROBE_BINDS
+        ):
+            yield "SELECT 1 WHERE " + " OR ".join(probes), parameters
+            probes = []
+            parameters = ()
+        probes.append(f"EXISTS ({query})")
+        parameters += bindings
+    if probes:
+        yield "SELECT 1 WHERE " + " OR ".join(probes), parameters
 
 
 def _validate_static_cursor_covered_postcondition(
@@ -2408,7 +2468,7 @@ def _validate_static_cursor_covered_postcondition(
 
 
 def _require_static_terminal_responsibility_empty(
-    work: VNextUnitOfWork,
+    operation: _CleanupOperation,
     *,
     plan: _StaticTargetPlan,
     phase: str,
@@ -2423,19 +2483,28 @@ def _require_static_terminal_responsibility_empty(
         raise CleanupCorruptionError(
             "cleanup static phase is outside its registered plan"
         ) from error
-    for checked_phase in phase_names[: phase_index + 1]:
-        for spec in plan.phases[checked_phase]:
-            if _static_raw_responsibility_exists(
-                work,
-                plan=plan,
-                spec=spec,
-                frozen_root_predicate=frozen_root_predicate,
-                frozen_root_parameters=frozen_root_parameters,
-                shard_parameters=shard_parameters,
-            ):
-                raise CleanupRetentionBlockedError(
-                    f"{plan.kind.value} still owns rows hidden by a retention predicate"
-                )
+    unchecked_phases = tuple(
+        checked_phase
+        for checked_phase in phase_names[: phase_index + 1]
+        if checked_phase not in operation.empty_static_phases
+    )
+    specs = tuple(
+        spec
+        for checked_phase in unchecked_phases
+        for spec in plan.phases[checked_phase]
+    )
+    for query, parameters in _static_terminal_probe_batches(
+        plan=plan,
+        specs=specs,
+        frozen_root_predicate=frozen_root_predicate,
+        frozen_root_parameters=frozen_root_parameters,
+        shard_parameters=shard_parameters,
+    ):
+        if _responsibility_query_exists(operation.work, query, parameters):
+            raise CleanupRetentionBlockedError(
+                f"{plan.kind.value} still owns rows hidden by a retention predicate"
+            )
+    operation.empty_static_phases.update(unchecked_phases)
 
 
 def _freeze_static_cycle_roots(
@@ -2612,8 +2681,7 @@ def _static_values(row: Sequence[object]) -> tuple[_StaticScalar, ...]:
 
 
 def _run_static_phase(
-    work: VNextUnitOfWork,
-    cycle: CleanupCycle,
+    operation: _CleanupOperation,
     cursor: bytes,
     plan: _StaticTargetPlan,
     phase: str,
@@ -2621,8 +2689,9 @@ def _run_static_phase(
     eligibility: str | None = None,
     policy_parameters: tuple[object, ...] | None = None,
 ) -> _Mutation:
+    work, cycle = operation.work, operation.cycle
     specs = plan.phases[phase]
-    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_roots = operation.frozen_roots
     start_index, start_values = _decode_static_cursor(cursor, specs, len(plan.root_key))
     _validate_terminal_staging_cleanup_roots(
         work,
@@ -2770,7 +2839,7 @@ def _run_static_phase(
             raise CleanupCorruptionError(str(error)) from error
     if not deleted:
         _require_static_terminal_responsibility_empty(
-            work,
+            operation,
             plan=plan,
             phase=phase,
             frozen_root_predicate=frozen_predicate,
@@ -2895,24 +2964,25 @@ def _gos_root_checkpoint_covers_staging(
 
 
 def _static_mutator(kind: CleanupTargetKind, phase: str) -> _Mutator:
-    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+    def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+        cycle = operation.cycle
         if cycle.target_kind != kind:
             raise CleanupCorruptionError("cleanup static strategy kind drifted")
-        return _run_static_phase(work, cycle, cursor, _STATIC_PLANS[kind], phase)
+        return _run_static_phase(operation, cursor, _STATIC_PLANS[kind], phase)
 
     return mutate
 
 
 def _source_build_mutator(phase: str) -> _Mutator:
-    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+    def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+        cycle = operation.cycle
         if cycle.target_kind is not CleanupTargetKind.SOURCE_BUILD:
             raise CleanupCorruptionError("source-build cleanup kind drifted")
         plan = _STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD]
         if phase != "SB_ROOT":
-            return _run_static_phase(work, cycle, cursor, plan, phase)
+            return _run_static_phase(operation, cursor, plan, phase)
         return _run_static_phase(
-            work,
-            cycle,
+            operation,
             cursor,
             plan,
             phase,
@@ -2924,15 +2994,15 @@ def _source_build_mutator(phase: str) -> _Mutator:
 
 
 def _analysis_run_mutator(phase: str) -> _Mutator:
-    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+    def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+        cycle = operation.cycle
         if cycle.target_kind is not CleanupTargetKind.ANALYSIS_RUN:
             raise CleanupCorruptionError("analysis-run cleanup kind drifted")
         plan = _STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
         if phase != "AR_ROOT":
-            return _run_static_phase(work, cycle, cursor, plan, phase)
+            return _run_static_phase(operation, cursor, plan, phase)
         return _run_static_phase(
-            work,
-            cycle,
+            operation,
             cursor,
             plan,
             phase,
@@ -2944,7 +3014,8 @@ def _analysis_run_mutator(phase: str) -> _Mutator:
 
 
 def _publication_commit_mutator(phase: str) -> _Mutator:
-    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+    def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+        cycle = operation.cycle
         if cycle.target_kind is not CleanupTargetKind.PUBLICATION_COMMIT:
             raise CleanupCorruptionError("publication-commit cleanup kind drifted")
         plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
@@ -2957,12 +3028,9 @@ def _publication_commit_mutator(phase: str) -> _Mutator:
             "PCOM_FINALIZATION_MARKER",
             "PCOM_FINALIZATION_BATCH",
         }:
-            _require_publication_commit_frozen_preparation_mapping(
-                work,
-                cycle=cycle,
-            )
+            _require_publication_commit_frozen_preparation_mapping(operation)
         if phase == "PCOM_RELEASE_BUILD_BASE":
-            return _run_static_phase(work, cycle, cursor, plan, phase)
+            return _run_static_phase(operation, cursor, plan, phase)
         if phase in {
             "PCOM_PREPARATION_BINDING",
             "PCOM_PREPARATION_BATCH",
@@ -2970,15 +3038,14 @@ def _publication_commit_mutator(phase: str) -> _Mutator:
             "PCOM_PREPARATION",
         }:
             _validate_publication_commit_preparation_authority(
-                work,
-                cycle=cycle,
+                operation,
                 phase=phase,
                 cursor=cursor,
             )
         if phase == "PCOM_EVENT":
-            return _run_publication_commit_event_phase(work, cycle, cursor)
+            return _run_publication_commit_event_phase(operation, cursor)
         if phase == "PCOM_COMMIT_EFFECT_ROOT":
-            return _run_publication_commit_effect_root_phase(work, cycle, cursor)
+            return _run_publication_commit_effect_root_phase(operation, cursor)
         if phase == "PCOM_PREPARATION_BINDING":
             eligibility = _PUBLICATION_COMMIT_AFTER_BUILD_BASE_ELIGIBILITY
         elif phase == "PCOM_PREPARATION_BATCH":
@@ -2996,8 +3063,7 @@ def _publication_commit_mutator(phase: str) -> _Mutator:
         else:
             eligibility = _PUBLICATION_COMMIT_AFTER_CHECKPOINT_ELIGIBILITY
         return _run_static_phase(
-            work,
-            cycle,
+            operation,
             cursor,
             plan,
             phase,
@@ -3009,12 +3075,10 @@ def _publication_commit_mutator(phase: str) -> _Mutator:
 
 
 def _require_publication_commit_frozen_preparation_mapping(
-    work: VNextUnitOfWork,
-    *,
-    cycle: CleanupCycle,
+    operation: _CleanupOperation,
 ) -> None:
-    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
-    for root in _load_frozen_roots(work, cycle, plan):
+    work = operation.work
+    for root in operation.frozen_roots:
         receipt_id = require_uuid16(
             root[0],
             field="publication-commit frozen receipt_id",
@@ -3034,14 +3098,14 @@ def _require_publication_commit_frozen_preparation_mapping(
 
 
 def _validate_publication_commit_preparation_authority(
-    work: VNextUnitOfWork,
+    operation: _CleanupOperation,
     *,
-    cycle: CleanupCycle,
     phase: str,
     cursor: bytes,
 ) -> None:
     """Validate the exact commit-owned preparation control family before DML."""
 
+    work = operation.work
     plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
     specs = plan.phases[phase]
     relation_index, cursor_values = _decode_static_cursor(
@@ -3049,7 +3113,7 @@ def _validate_publication_commit_preparation_authority(
         specs,
         len(plan.root_key),
     )
-    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_roots = operation.frozen_roots
     for root in frozen_roots:
         if len(root) != 2:
             raise CleanupCorruptionError(
@@ -3308,14 +3372,14 @@ def _validate_publication_commit_event_row(
 
 
 def _run_publication_commit_event_phase(
-    work: VNextUnitOfWork,
-    cycle: CleanupCycle,
+    operation: _CleanupOperation,
     cursor: bytes,
 ) -> _Mutation:
     """Atomically retire each exact subtype/base-event coordinate."""
 
+    work, cycle = operation.work, operation.cycle
     plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
-    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_roots = operation.frozen_roots
     event_cursor = _publication_commit_event_cursor(cursor, plan=plan)
     frozen_authorities = tuple(
         (
@@ -3494,12 +3558,12 @@ def _run_publication_commit_event_phase(
 
 
 def _run_publication_commit_effect_root_phase(
-    work: VNextUnitOfWork,
-    cycle: CleanupCycle,
+    operation: _CleanupOperation,
     cursor: bytes,
 ) -> _Mutation:
     """Delete every frozen commit/seal/stream triple in one bounded transaction."""
 
+    work, cycle = operation.work, operation.cycle
     plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
     specs = plan.phases["PCOM_COMMIT_EFFECT_ROOT"]
     relation_index, cursor_values = _decode_static_cursor(
@@ -3507,7 +3571,7 @@ def _run_publication_commit_effect_root_phase(
         specs,
         len(plan.root_key),
     )
-    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_roots = operation.frozen_roots
     frozen_authorities = tuple(
         (
             require_uuid16(root[0], field="PCOM compound frozen receipt_id"),
@@ -3683,12 +3747,12 @@ def _require_publication_commit_compound_authority_absent(
 
 
 def _require_publication_commit_post_compound_transition(
-    work: VNextUnitOfWork,
+    operation: _CleanupOperation,
     *,
-    cycle: CleanupCycle,
     phase: str,
     cursor: bytes,
 ) -> None:
+    work = operation.work
     plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
     if phase not in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}:
         raise CleanupCorruptionError("PCOM post-compound phase is invalid")
@@ -3715,7 +3779,7 @@ def _require_publication_commit_post_compound_transition(
                 "PCOM post-compound cursor receipt identity differs"
             )
 
-    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_roots = operation.frozen_roots
     frozen_receipts = tuple(
         require_uuid16(root[0], field="PCOM post-compound frozen receipt_id")
         for root in frozen_roots
