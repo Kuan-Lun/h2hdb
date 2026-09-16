@@ -490,7 +490,12 @@ merge gates or production-load tests:
   and measures source preparation/persistence, analysis, and catalog publication.
   It verifies published results and a full READY audit. In-memory adapters and
   metadata-only publication deliberately exclude image decoding, CBZ rendering,
-  and filesystem activation.
+  and filesystem activation. Shapes allow up to 256 galleries with aggregate
+  limits of 4096 pages, 4 MiB of comments, and 32768 tags. Public catalog checks
+  traverse keyset pages and compare all expected publications. Each operation
+  separates SQL, connection, transaction, and remaining time; the final READY
+  audit records its existing validators separately. These timings are scoped
+  observations, not proof that local proportions match a remote deployment.
 - `scripts/ingest_growth_cleanup_probe.py --mode idle` measures two maintenance
   calls at the cleanup fixed point followed by an ingest claim. Candidate-target
   attribution distinguishes expensive absence checks from actual deletion work.
@@ -499,7 +504,9 @@ merge gates or production-load tests:
   It is approximate work evidence, not an exact instruction or examined-row
   count; zero can mean work below the sampling quantum. MariaDB leaves these
   SQLite-only fields null. Claim-completion cleanup is measured separately from
-  the idle sequence.
+  the idle sequence. Gallery count is capped at 128 with at most 512 total pages;
+  consecutive idle calls and the claim run without report serialization between
+  them. Separate diagnostic replays do not count toward these baseline timings.
 - `scripts/ingest_growth_hash_probe.py` isolates file-decision validation while
   varying active hashes and unselected source history. Its source-history axis
   is not analysis-overlay depth; it records SQLite query plans or MariaDB
@@ -532,6 +539,57 @@ and profiling itself adds overhead. Local synthetic timings cannot predict NAS
 completion time. A completed report means its correctness checks passed, not
 that a performance target was met. Keep wall-clock thresholds out of ordinary
 regression tests; use deterministic work bounds when the contract justifies them.
+
+Both pipeline and idle-maintenance probes accept `--mariadb-diagnostics` only
+with their private MariaDB backend. Pipeline diagnostics capture Performance
+Schema statement-digest deltas outside each timed phase. Maintenance diagnostics
+replay captured candidate SELECTs separately from the idle baseline and retain
+EXPLAIN/ANALYZE plans, session handler counters, and global row-lock counters.
+These additional queries have their own cost. Keep diagnostic and ordinary
+timings distinct, and serialize benchmarks when comparing wall time.
+
+The pipeline probe's `--audit-cache-control` performs three complete READY audits
+on the same privately published fixture: the original 128-entry canonical cache,
+a 512-entry control, then the restored 128-entry cache. The 64 KiB per-value and
+8 MiB total byte limits stay fixed. Every pass runs the original validators and
+checks the same public catalog result. This isolates cache eviction costs without
+changing production configuration or accepting an existing database. Cache
+hit/miss/eviction counters observe the original decisions without changing LRU
+order. These are warm synthetic audits, not measurements of NAS startup.
+
+For a running MariaDB deployment, the separate manual
+`scripts/collect_mariadb_performance.py` reads two existing statistics snapshots
+over a short window. It accepts a core or ingest configuration file and uses a
+separate connection with no default schema and a read-only session. It never
+initializes/audits/scans the catalog, executes caller-supplied SQL, enables
+instrumentation, resets counters, or runs ANALYZE against production data.
+For example, copy this standalone script into the existing ingest Python
+environment and run during the analysis stage:
+
+```sh
+python /tmp/collect_mariadb_performance.py \
+  --config /config/h2hdb-ingest.json --config-kind ingest \
+  --seconds 60 --output /tmp/mariadb-performance.json
+```
+
+The output must be a new file in an existing directory. Credentials and
+exception text are excluded. Digest output contains normalized SQL prefixes,
+not bound values; it is limited to 10000 digests and 2048 characters per prefix.
+Pair the window with existing `ingest_db_performance` DEBUG records to compare
+client calls with server statement costs. Digest statistics include all users
+of the selected schema, while global counters include all server activity and
+the collector's own small traffic. Server elapsed times can overlap and are not
+CPU times or wall-clock percentages. The post-window SELECT-1 samples include
+driver, server and transport overhead; they are not pure network latency.
+
+The report explicitly flags disabled/inaccessible instrumentation, overflow,
+counter decreases and changing counter sets. Missing statistics never mean
+zero query cost. MariaDB's
+[Performance Schema](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/system-tables/performance-schema/performance-schema-overview)
+may be disabled; enabling it requires server-start configuration. The collector
+does not change that setting. Even with complete snapshots, a hidden counter
+reset followed by sufficient regrowth may evade detection. This manual collector
+is excluded from automatic live-service tests and merge gates.
 
 Catalog preparation validates common tag values in batches of at most 128 and
 retains their bytes in a private disk cache for that plan. BUILD and VALIDATE
