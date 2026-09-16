@@ -85,44 +85,29 @@ class _Owner:
     lease_expires_at: int
 
 
-class MaintenanceGateRepository:
-    """Acquire and fence SHARED/EXCLUSIVE maintenance leases.
+@dataclass(frozen=True, slots=True)
+class LockedSharedGateClaim:
+    """Unpublished claim state, valid only in its owning write transaction."""
 
-    Owner tokens are repository-generated, single-use opaque capabilities;
-    public claims never accept caller-selected token bytes.  A caller that
-    already has the complete capability may use :meth:`resume` after response
-    loss.  A generated-token collision fails closed instead of being treated
-    as replay.
-    """
+    work: VNextUnitOfWork
+    token: bytes
+    head: _Head | None
+    slots: tuple[_Owner | None, ...]
 
-    @staticmethod
-    def claim_shared(
-        work: VNextUnitOfWork,
-        *,
-        now: int,
-        lease_duration: int,
-    ) -> GateLease:
-        token = require_uuid16(_new_owner_token(), field="generated gate owner_token")
+    def require_available(self, *, now: int) -> None:
+        """Reject ordinary contention before a potentially expensive proof."""
+
+        timestamp = require_int63(now, field="shared gate admission now")
+        _shared_claim_position(self.head, self.slots, now=timestamp)
+
+    def grant(self, *, now: int, lease_duration: int) -> GateLease:
         timestamp = require_int63(now, field="shared gate claim now")
         deadline = _lease_deadline(timestamp, lease_duration)
-        head = MaintenanceGateRepository._lock_head_and_mode(work)
-
+        work, token, head, slots = self.work, self.token, self.head, self.slots
+        next_generation, candidate = _shared_claim_position(head, slots, now=timestamp)
         if head is None:
-            target = MaintenanceGateRepository._lock_owner(work, token)
-            slots = MaintenanceGateRepository._lock_slots(work)
-            if target is not None:
-                raise MaintenanceGateTokenCollisionError(
-                    "generated gate owner token already exists"
-                )
-            if any(owner is not None for owner in slots):
-                raise MaintenanceGateCorruptionError(
-                    "gate authority exists without its singleton head"
-                )
             MaintenanceGateRepository._create_generation_and_head(
-                work,
-                generation=0,
-                mode=GateMode.SHARED,
-                now=timestamp,
+                work, generation=0, mode=GateMode.SHARED, now=timestamp
             )
             work.connector.execute(
                 f"INSERT INTO {_OWNER_TABLE} "
@@ -132,41 +117,8 @@ class MaintenanceGateRepository:
             )
             _insert_holders_exact(work, token, (0,))
             return GateLease(token, 0, GateMode.SHARED, (0,), deadline)
-
-        target = MaintenanceGateRepository._lock_owner(work, token)
-        slots = MaintenanceGateRepository._lock_slots(work)
         owners = _owners_by_token(slots)
-        _validate_current_holders(head, slots, owners)
-
-        if target is not None:
-            raise MaintenanceGateTokenCollisionError(
-                "generated gate owner token already exists"
-            )
-
-        if head.mode == GateMode.EXCLUSIVE:
-            live = _live_current_owners(head, slots, owners, now=timestamp)
-            if live:
-                raise MaintenanceGateUnavailableError(
-                    "the current EXCLUSIVE gate has a live owner"
-                )
-            next_generation = _successor(head.generation)
-            claim_mode = GateMode.SHARED
-        else:
-            next_generation = head.generation
-            claim_mode = GateMode.SHARED
-
-        candidate = next(
-            (
-                slot
-                for slot, owner in enumerate(slots)
-                if owner is None
-                or owner.generation != head.generation
-                or owner.lease_expires_at <= timestamp
-            ),
-            None,
-        )
-        if candidate is None:
-            raise MaintenanceGateUnavailableError("all 64 SHARED slots are live")
+        claim_mode = GateMode.SHARED
 
         if next_generation != head.generation:
             work.connector.execute(
@@ -200,6 +152,93 @@ class MaintenanceGateRepository:
                 authority="maintenance gate head",
             )
         return GateLease(token, next_generation, claim_mode, (candidate,), deadline)
+
+
+@dataclass(frozen=True, slots=True)
+class LockedGateRenewal:
+    """Exact persisted authority locked by one owning write transaction."""
+
+    work: VNextUnitOfWork
+    lease: GateLease
+
+    def require_live(self, *, now: int) -> GateLease:
+        timestamp = require_int63(now, field="gate authorization now")
+        if self.lease.lease_expires_at <= timestamp:
+            raise MaintenanceGateUnavailableError("the gate lease is stale or expired")
+        return self.lease
+
+    def renew(self, *, now: int, lease_duration: int) -> GateLease:
+        current = self.require_live(now=now)
+        deadline = _lease_deadline(now, lease_duration)
+        if deadline <= current.lease_expires_at:
+            return current
+        self.work.compare_and_swap(
+            f"UPDATE {_OWNER_TABLE} SET lease_expires_at = %s "
+            "WHERE owner_token = %s AND gate_generation = %s "
+            "AND lease_expires_at = %s",
+            (
+                deadline,
+                current.owner_token,
+                current.gate_generation,
+                current.lease_expires_at,
+            ),
+            authority="maintenance gate owner lease",
+        )
+        return GateLease(
+            current.owner_token,
+            current.gate_generation,
+            current.mode,
+            current.slots,
+            deadline,
+        )
+
+
+class MaintenanceGateRepository:
+    """Acquire and fence SHARED/EXCLUSIVE maintenance leases.
+
+    Owner tokens are repository-generated, single-use opaque capabilities;
+    public claims never accept caller-selected token bytes.  A caller that
+    already has the complete capability may use :meth:`resume` after response
+    loss.  A generated-token collision fails closed instead of being treated
+    as replay.
+    """
+
+    @staticmethod
+    def claim_shared(
+        work: VNextUnitOfWork,
+        *,
+        now: int,
+        lease_duration: int,
+    ) -> GateLease:
+        timestamp = require_int63(now, field="shared gate claim now")
+        _lease_deadline(timestamp, lease_duration)
+        return MaintenanceGateRepository.lock_shared_claim(work).grant(
+            now=timestamp, lease_duration=lease_duration
+        )
+
+    @staticmethod
+    def lock_shared_claim(work: VNextUnitOfWork) -> LockedSharedGateClaim:
+        """Lock claim authority without starting its lease deadline.
+
+        The result cannot escape this transaction. Compound writers may acquire
+        later-ranked locks before granting with a freshly sampled time.
+        """
+
+        token = require_uuid16(_new_owner_token(), field="generated gate owner_token")
+        head = MaintenanceGateRepository._lock_head_and_mode(work)
+        target = MaintenanceGateRepository._lock_owner(work, token)
+        slots = MaintenanceGateRepository._lock_slots(work)
+        if head is not None:
+            _validate_current_holders(head, slots, _owners_by_token(slots))
+        if target is not None:
+            raise MaintenanceGateTokenCollisionError(
+                "generated gate owner token already exists"
+            )
+        if head is None and any(owner is not None for owner in slots):
+            raise MaintenanceGateCorruptionError(
+                "gate authority exists without its singleton head"
+            )
+        return LockedSharedGateClaim(work, token, head, slots)
 
     @staticmethod
     def claim_exclusive(
@@ -313,29 +352,8 @@ class MaintenanceGateRepository:
         now: int,
         lease_duration: int,
     ) -> GateLease:
-        current = MaintenanceGateRepository.lock_and_require_live(work, lease, now=now)
-        timestamp = require_int63(now, field="gate renew now")
-        deadline = _lease_deadline(timestamp, lease_duration)
-        if deadline <= current.lease_expires_at:
-            return current
-        work.compare_and_swap(
-            f"UPDATE {_OWNER_TABLE} SET lease_expires_at = %s "
-            "WHERE owner_token = %s AND gate_generation = %s "
-            "AND lease_expires_at = %s",
-            (
-                deadline,
-                current.owner_token,
-                current.gate_generation,
-                current.lease_expires_at,
-            ),
-            authority="maintenance gate owner lease",
-        )
-        return GateLease(
-            current.owner_token,
-            current.gate_generation,
-            current.mode,
-            current.slots,
-            deadline,
+        return MaintenanceGateRepository.lock_for_renewal(work, lease).renew(
+            now=now, lease_duration=lease_duration
         )
 
     @staticmethod
@@ -345,8 +363,16 @@ class MaintenanceGateRepository:
         *,
         now: int,
     ) -> GateLease:
-        requested = _require_lease(lease)
         timestamp = require_int63(now, field="gate authorization now")
+        return MaintenanceGateRepository.lock_for_renewal(work, lease).require_live(
+            now=timestamp
+        )
+
+    @staticmethod
+    def lock_for_renewal(work: VNextUnitOfWork, lease: GateLease) -> LockedGateRenewal:
+        """Lock and exact-match authority; expiry is checked after later locks."""
+
+        requested = _require_lease(lease)
         head = MaintenanceGateRepository._lock_head_and_mode(work)
         if head is None:
             raise MaintenanceGateUnavailableError(
@@ -363,12 +389,11 @@ class MaintenanceGateRepository:
             or head.mode != requested.mode
             or target.generation != requested.gate_generation
             or target.lease_expires_at != requested.lease_expires_at
-            or target.lease_expires_at <= timestamp
             or actual_slots != requested.slots
         ):
             raise MaintenanceGateUnavailableError("the gate lease is stale or expired")
         _require_slots(actual_slots, mode=head.mode)
-        return requested
+        return LockedGateRenewal(work, requested)
 
     @staticmethod
     def release(
@@ -499,6 +524,39 @@ class MaintenanceGateRepository:
             "(singleton_id, gate_generation, updated_at) VALUES (1, %s, %s)",
             (generation, now),
         )
+
+
+def _shared_claim_position(
+    head: _Head | None,
+    slots: tuple[_Owner | None, ...],
+    *,
+    now: int,
+) -> tuple[int, int]:
+    """Select from already locked authority without creating a lease."""
+
+    if head is None:
+        return 0, 0
+    if head.mode == GateMode.EXCLUSIVE:
+        if _live_current_owners(head, slots, _owners_by_token(slots), now=now):
+            raise MaintenanceGateUnavailableError(
+                "the current EXCLUSIVE gate has a live owner"
+            )
+        generation = _successor(head.generation)
+    else:
+        generation = head.generation
+    candidate = next(
+        (
+            slot
+            for slot, owner in enumerate(slots)
+            if owner is None
+            or owner.generation != head.generation
+            or owner.lease_expires_at <= now
+        ),
+        None,
+    )
+    if candidate is None:
+        raise MaintenanceGateUnavailableError("all 64 SHARED slots are live")
+    return generation, candidate
 
 
 def _owners_by_token(

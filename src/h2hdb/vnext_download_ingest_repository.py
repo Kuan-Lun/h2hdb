@@ -33,6 +33,8 @@ from .vnext_ingest_fence_repository import (
     IngestFenceRepository,
     IngestFenceUnavailableError,
     IngestTurn,
+    LockedIngestClaim,
+    LockedIngestRenewal,
 )
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
@@ -177,6 +179,88 @@ class _DownloadState:
 class _DownloadHandoffTransition:
     handoff: DownloadHandoff
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LockedCoordinatedIngestClaim:
+    """One transaction's locked download relationship and pending ingest grant."""
+
+    work: VNextUnitOfWork
+    head: _DownloadHead
+    state: _DownloadState
+    ingest: LockedIngestClaim
+    periodic: bool
+
+    def claim(self, *, now: int, lease_duration: int) -> CoordinatedIngestTurn:
+        timestamp = require_int63(now, field="coordinated ingest claim now")
+        require_int63(lease_duration, field="coordinated ingest lease duration")
+        head, state = self.head, self.state
+        handoff: DownloadHandoff | None
+        if self.periodic:
+            if head.current_generation != head.completed_generation:
+                raise DownloadIngestUnavailableError(
+                    "periodic ingest requires quiescent download authority"
+                )
+            handoff = None
+        else:
+            if head.current_generation == head.completed_generation:
+                raise DownloadIngestUnavailableError(
+                    "there is no pending download handoff to consume"
+                )
+            if state.ingest_generation is not None:
+                raise DownloadIngestUnavailableError(
+                    "the download handoff was already consumed"
+                )
+            if state.owner_token is not None:
+                if state.lease_expires_at is None:
+                    raise DownloadIngestCorruptionError(
+                        "download owner lacks its normalized lease"
+                    )
+                if state.lease_expires_at > timestamp:
+                    raise DownloadIngestUnavailableError(
+                        "the downloader still has a live lease"
+                    )
+                handoff = _take_over_expired_download(self.work, state, now=timestamp)
+            else:
+                handoff = _handoff_from_state(state)
+
+        ingest_turn = self.ingest.claim(now=timestamp, lease_duration=lease_duration)
+        if handoff is None:
+            return CoordinatedIngestTurn(ingest_turn, None, None, None, None)
+        self.work.connector.execute(
+            f"INSERT INTO {_CONSUMPTION_TABLE} "
+            "(download_generation, ingest_generation, consumed_at) "
+            "VALUES (%s, %s, %s)",
+            (handoff.download_generation, ingest_turn.generation, timestamp),
+        )
+        return CoordinatedIngestTurn(
+            ingest_turn,
+            handoff.download_generation,
+            handoff.owner_token,
+            handoff.handoff_kind,
+            timestamp,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LockedCoordinatedIngestRenewal:
+    """An exact relationship whose locks are held until its transaction ends."""
+
+    requested: CoordinatedIngestTurn
+    ingest: LockedIngestRenewal
+
+    def require_live(self, *, now: int) -> None:
+        self.ingest.require_live(now=now)
+
+    def renew(self, *, now: int, lease_duration: int) -> CoordinatedIngestTurn:
+        renewed = self.ingest.renew(now=now, lease_duration=lease_duration)
+        return CoordinatedIngestTurn(
+            renewed,
+            self.requested.download_generation,
+            self.requested.handoff_owner_token,
+            self.requested.handoff_kind,
+            self.requested.consumed_at,
+        )
 
 
 class DownloadIngestRepository:
@@ -427,10 +511,24 @@ class DownloadIngestRepository:
         lease_duration: int,
         periodic: bool = False,
     ) -> CoordinatedIngestTurn:
-        if not isinstance(periodic, bool):
-            raise TypeError("periodic must be bool")
         timestamp = require_int63(now, field="coordinated ingest claim now")
         require_int63(lease_duration, field="coordinated ingest lease duration")
+        return DownloadIngestRepository.lock_ingest_claim(
+            work, initialized_at=timestamp, periodic=periodic
+        ).claim(now=timestamp, lease_duration=lease_duration)
+
+    @staticmethod
+    def lock_ingest_claim(
+        work: VNextUnitOfWork,
+        *,
+        initialized_at: int,
+        periodic: bool = False,
+    ) -> LockedCoordinatedIngestClaim:
+        """Lock the full relationship before sampling the lease grant time."""
+
+        if not isinstance(periodic, bool):
+            raise TypeError("periodic must be bool")
+        timestamp = require_int63(initialized_at, field="ingest bootstrap time")
         ingest_token = require_uuid16(
             _new_ingest_owner_token(), field="generated ingest owner_token"
         )
@@ -438,58 +536,13 @@ class DownloadIngestRepository:
         state = _lock_download_state(work, head.current_generation)
         _validate_current_download_state(head, state)
 
-        handoff: DownloadHandoff | None
-        if periodic:
-            if head.current_generation != head.completed_generation:
-                raise DownloadIngestUnavailableError(
-                    "periodic ingest requires quiescent download authority"
-                )
-            handoff = None
-        else:
-            if head.current_generation == head.completed_generation:
-                raise DownloadIngestUnavailableError(
-                    "there is no pending download handoff to consume"
-                )
-            if state.ingest_generation is not None:
-                raise DownloadIngestUnavailableError(
-                    "the download handoff was already consumed"
-                )
-            if state.owner_token is not None:
-                if state.lease_expires_at is None:
-                    raise DownloadIngestCorruptionError(
-                        "download owner lacks its normalized lease"
-                    )
-                if state.lease_expires_at > timestamp:
-                    raise DownloadIngestUnavailableError(
-                        "the downloader still has a live lease"
-                    )
-                handoff = _take_over_expired_download(work, state, now=timestamp)
-            else:
-                handoff = _handoff_from_state(state)
-
-        ingest_turn = IngestFenceRepository.claim(
+        ingest = IngestFenceRepository.lock_claim(
             work,
             owner_token=ingest_token,
-            now=timestamp,
-            lease_duration=lease_duration,
+            initialized_at=timestamp,
         )
         _require_fresh_ingest_completion_token(work, ingest_token)
-        if handoff is None:
-            return CoordinatedIngestTurn(ingest_turn, None, None, None, None)
-
-        work.connector.execute(
-            f"INSERT INTO {_CONSUMPTION_TABLE} "
-            "(download_generation, ingest_generation, consumed_at) "
-            "VALUES (%s, %s, %s)",
-            (handoff.download_generation, ingest_turn.generation, timestamp),
-        )
-        return CoordinatedIngestTurn(
-            ingest_turn,
-            handoff.download_generation,
-            handoff.owner_token,
-            handoff.handoff_kind,
-            timestamp,
-        )
+        return LockedCoordinatedIngestClaim(work, head, state, ingest, periodic)
 
     @staticmethod
     def resume_ingest(
@@ -514,21 +567,20 @@ class DownloadIngestRepository:
         now: int,
         lease_duration: int,
     ) -> CoordinatedIngestTurn:
-        requested = _require_coordinated_turn(turn)
         timestamp = require_int63(now, field="coordinated ingest renew now")
-        _lock_and_validate_active_relationship(work, requested)
-        renewed = IngestFenceRepository.renew(
-            work,
-            requested.ingest_turn,
-            now=timestamp,
-            lease_duration=lease_duration,
+        return DownloadIngestRepository.lock_ingest_renewal(work, turn).renew(
+            now=timestamp, lease_duration=lease_duration
         )
-        return CoordinatedIngestTurn(
-            renewed,
-            requested.download_generation,
-            requested.handoff_owner_token,
-            requested.handoff_kind,
-            requested.consumed_at,
+
+    @staticmethod
+    def lock_ingest_renewal(
+        work: VNextUnitOfWork, turn: CoordinatedIngestTurn
+    ) -> LockedCoordinatedIngestRenewal:
+        requested = _require_coordinated_turn(turn)
+        _lock_and_validate_active_relationship(work, requested)
+        return LockedCoordinatedIngestRenewal(
+            requested,
+            IngestFenceRepository.lock_for_renewal(work, requested.ingest_turn),
         )
 
     @staticmethod
