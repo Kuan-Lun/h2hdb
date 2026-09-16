@@ -1,4 +1,4 @@
-"""Small, synthetic current-only cleanup measurements; never opens user data.
+"""Synthetic current-only cleanup and idle measurements; never opens user data.
 
 Run from a checkout with its development dependencies installed. SQLite is the
 default; MariaDB starts a private Testcontainer and accepts no server arguments.
@@ -13,13 +13,14 @@ import argparse
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -50,6 +51,7 @@ from vnext_pipeline import (  # noqa: E402 - checkout fixture paths are set abov
 )
 
 from h2hdb import (  # noqa: E402 - use this checkout's source, not an installed wheel.
+    CatalogPublication,
     CatalogRevision,
     CoreConfig,
     DatabaseConfig,
@@ -57,7 +59,15 @@ from h2hdb import (  # noqa: E402 - use this checkout's source, not an installed
     VNextCurrentOnlyMaintenanceOutcome,
     VNextIngestFacade,
 )
-from h2hdb.sql_performance import measure_sql  # noqa: E402 - select checkout.
+from h2hdb import (  # noqa: E402 - select checkout.
+    vnext_cleanup_repository as cleanup_repository,
+)
+from h2hdb.sql_connector import SQLConnector  # noqa: E402 - select checkout.
+from h2hdb.sql_performance import (  # noqa: E402 - select checkout.
+    _MeasuredConnector,
+    measure_sql,
+)
+from h2hdb.sqlite_connector import SQLiteConnector  # noqa: E402 - select checkout.
 from h2hdb.vnext_cleanup_repository import (  # noqa: E402 - checkout source path is set above.
     CleanupBatchResult,
     VNextCleanupRepository,
@@ -74,10 +84,47 @@ class QueryMeasurement:
     returned_rows: int = 0
 
 
+SQLITE_PROGRESS_QUANTUM = 100
+
+
+@dataclass
+class SQLiteProgressSample:
+    callbacks: int = 0
+
+    def advance(self) -> int:
+        self.callbacks += 1
+        return 0
+
+
+@contextmanager
+def sample_sqlite_candidate(
+    connector: SQLConnector,
+) -> Iterator[SQLiteProgressSample | None]:
+    """Sample one candidate query on this probe's fresh private connection.
+
+    The harness owns these connections and installs no other progress handler.
+    SQLite exposes no handler getter: clearing to None is deliberately not a
+    general-purpose restoration of an arbitrary caller's existing handler.
+    """
+    raw = (
+        connector._connector if isinstance(connector, _MeasuredConnector) else connector
+    )
+    if not isinstance(raw, SQLiteConnector):
+        yield None
+        return
+    sample = SQLiteProgressSample()
+    raw.connection.set_progress_handler(sample.advance, SQLITE_PROGRESS_QUANTUM)
+    try:
+        yield sample
+    finally:
+        raw.connection.set_progress_handler(None, 0)
+
+
 class Recorder:
     def __init__(self) -> None:
         self.group = "operation"
-        self.queries: dict[tuple[str, str, str], QueryMeasurement] = defaultdict(
+        self.target = "unclassified"
+        self.queries: dict[tuple[str, str, str, str], QueryMeasurement] = defaultdict(
             QueryMeasurement
         )
 
@@ -88,15 +135,23 @@ class Recorder:
         query: str,
         read_rows: int,
     ) -> None:
-        value = self.queries[(self.group, category, " ".join(query.split()))]
+        value = self.queries[
+            (self.group, self.target, category, " ".join(query.split()))
+        ]
         value.calls += 1
         value.seconds += elapsed
         value.returned_rows += read_rows
 
     def report(self) -> list[dict[str, Any]]:
         return [
-            {"group": group, "category": category, "sql": sql, **asdict(value)}
-            for (group, category, sql), value in sorted(self.queries.items())
+            {
+                "group": group,
+                "target": target,
+                "category": category,
+                "sql": sql,
+                **asdict(value),
+            }
+            for (group, target, category, sql), value in sorted(self.queries.items())
         ]
 
 
@@ -104,10 +159,53 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
     """Attribute state discovery inside the real call without double counting."""
     recorder = Recorder()
     state_checks: list[float] = []
+    candidate_probes: list[dict[str, Any]] = []
     advances: list[dict[str, Any]] = []
     transaction_advances: list[int] = []
     original_state = VNextCleanupRepository.current_only_maintenance_state
     original_advance = VNextCleanupRepository.advance_current_only_cycle
+
+    def candidate_probe(
+        original: Callable[..., int | None], target: str | None
+    ) -> Callable[..., int | None]:
+        def wrapped(*args: Any, **kwargs: Any) -> int | None:
+            plan = args[1] if target is None and len(args) > 1 else kwargs.get("plan")
+            if target is None:
+                if plan is None:
+                    raise RuntimeError(
+                        "static candidate instrumentation requires a plan"
+                    )
+                measured_target = str(plan.kind.value)
+            else:
+                measured_target = target
+            previous = recorder.target
+            recorder.target = measured_target
+            started = time.perf_counter()
+            try:
+                work = args[0] if args else kwargs["work"]
+                with sample_sqlite_candidate(work.connector) as sample:
+                    result = original(*args, **kwargs)
+                candidate_probes.append(
+                    {
+                        "group": recorder.group,
+                        "target": measured_target,
+                        "seconds": time.perf_counter() - started,
+                        "candidate_found": result is not None,
+                        "sqlite_progress_callbacks": (
+                            sample.callbacks if sample is not None else None
+                        ),
+                        "sqlite_progress_operations_estimate": (
+                            sample.callbacks * SQLITE_PROGRESS_QUANTUM
+                            if sample is not None
+                            else None
+                        ),
+                    }
+                )
+                return result
+            finally:
+                recorder.target = previous
+
+        return wrapped
 
     def state(*args: Any, **kwargs: Any) -> Any:
         previous = recorder.group
@@ -138,8 +236,25 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
     with (
         patch.object(VNextCleanupRepository, "current_only_maintenance_state", state),
         patch.object(VNextCleanupRepository, "advance_current_only_cycle", advance),
+        ExitStack() as probes,
         measure_sql(recorder),
     ):
+        # Wrap the original functions, without copying their SQL or selection
+        # logic. Each SQL event retains its own duration and discovery group.
+        for name, target in (
+            ("_next_static_candidate_shard", None),
+            ("_next_artifact_blob_candidate_shard", "ARTIFACT_BLOB"),
+            ("_next_publication_identity_candidate_shard", "PUBLICATION_IDENTITY"),
+            ("_next_file_name_candidate_shard", "FILE_NAME_IDENTITY"),
+            ("_next_content_blob_candidate_shard", "CONTENT_BLOB"),
+        ):
+            probes.enter_context(
+                patch.object(
+                    cleanup_repository,
+                    name,
+                    candidate_probe(getattr(cleanup_repository, name), target),
+                )
+            )
         started = time.perf_counter()
         result = action()
         elapsed = time.perf_counter() - started
@@ -149,6 +264,7 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
         "sql_calls": sum(q["calls"] for q in queries if q["category"] == "sql"),
         "sql_seconds": sum(q["seconds"] for q in queries if q["category"] == "sql"),
         "state_check_seconds": state_checks,
+        "candidate_probes": candidate_probes,
         "advance_count": len(advances),
         "advance_transactions": len(transaction_advances),
         "phases_per_transaction": transaction_advances,
@@ -201,6 +317,8 @@ def new_report(backend: str, gallery_count: int) -> dict[str, Any]:
             "SQL timings exclude evidence COUNT scans, but those scans warm the cache. "
             "returned_rows count connector results, not database rows examined. "
             "state_check_seconds overlap SQL/wall time and must not be added to them. "
+            "candidate_probes seconds also overlap SQL/state/wall time; query target "
+            "attribution measures actual SQL calls inside each candidate probe. "
             "logical_phase_rows are cleanup "
             "receipt row_count values, not distinct galleries or physical deleted rows. "
             "advance_count counts durable phase receipts; advance_transactions counts "
@@ -213,6 +331,24 @@ def new_report(backend: str, gallery_count: int) -> dict[str, Any]:
             "POSIX SIGALRM is cooperative, not a hard deadline. Native driver calls "
             "and container startup/teardown can delay interruption or completion."
         ),
+        "sqlite_progress_sampling": {
+            "callback_quantum": SQLITE_PROGRESS_QUANTUM,
+            "sqlite_runtime_version": sqlite3.sqlite_version
+            if backend == "sqlite"
+            else None,
+            "notes": (
+                "Candidate probes use SQLite progress callbacks times 100 as an "
+                "approximate operation estimate, not examined rows or an exact VM "
+                "instruction count. SQLite defines the interval as approximate; "
+                "callbacks can include SQL preparation work. Sub-quantum work can "
+                "be unreported; no strict error bound is claimed. Callback overhead "
+                "is included in SQLite timings. Each private fixture connection "
+                "has no other progress handler; finally clears this handler to None "
+                "and does not restore arbitrary external handlers. MariaDB fields "
+                "are null because its engine operations are not sampled."
+            ),
+            "reference": "https://www.sqlite.org/c3ref/progress_handler.html",
+        },
         "cases": [],
     }
 
@@ -288,7 +424,7 @@ def verify_publication(
     previous_revision: int,
     gallery_count: int,
     expected_title: str,
-    expected_page: bytes,
+    expected_page: bytes | tuple[bytes, ...],
 ) -> dict[str, Any]:
     if current.revision <= previous_revision:
         raise RuntimeError(
@@ -298,7 +434,12 @@ def verify_publication(
         raise RuntimeError("unexpected publication/artifact count")
     page = catalog.discover_publications(revision=current, limit=128)
     latest = next((item for item in page.publications if item.gid == 1), None)
-    expected_content = effective_content_digest((sha256(expected_page).digest(),)).hex()
+    expected_pages = (
+        (expected_page,) if isinstance(expected_page, bytes) else expected_page
+    )
+    expected_content = effective_content_digest(
+        tuple(sha256(page).digest() for page in expected_pages)
+    ).hex()
     if latest is None or (latest.title, latest.content_sha256) != (
         expected_title,
         expected_content,
@@ -314,6 +455,87 @@ def verify_publication(
     }
 
 
+def catalog_snapshot(
+    catalog: VNextCatalogFacade,
+) -> tuple[CatalogRevision, tuple[CatalogPublication, ...]]:
+    """Read all public catalog facts for this deliberately bounded fixture."""
+    revision = catalog.get_catalog_revision()
+    page = catalog.discover_publications(revision=revision, limit=128)
+    if (
+        page.next_cursor is not None
+        or len(page.publications) != revision.publication_count
+    ):
+        raise RuntimeError("idle probe catalog exceeds its bounded snapshot")
+    return revision, page.publications
+
+
+def measure_idle_sequence(
+    facade: VNextIngestFacade,
+    catalog: VNextCatalogFacade,
+    config: CoreConfig,
+    *,
+    report: dict[str, Any],
+    case: dict[str, Any],
+    output: Path,
+) -> None:
+    """Measure two consecutive DONE probes and one successful periodic claim."""
+    before = catalog_snapshot(catalog)
+    roots_before = retained_compaction_roots(config)
+    sequence: list[dict[str, Any]] = []
+    case["idle_sequence"] = sequence
+    for ordinal in (1, 2):
+        report["stage"] = f"idle_drain_{ordinal}"
+        outcome, record = measure(
+            lambda: facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
+        )
+        record.update(operation=f"drain_{ordinal}", outcome=str(outcome))
+        sequence.append(record)
+        write_report(output, report)
+        if outcome is not VNextCurrentOnlyMaintenanceOutcome.DONE:
+            raise RuntimeError("idle drain did not return DONE")
+        if record["advance_count"]:
+            raise RuntimeError("idle drain unexpectedly advanced cleanup")
+    report["stage"] = "idle_periodic_claim"
+    session, claim = measure(lambda: facade.try_claim_ingest(True, LEASE_MICROSECONDS))
+    claim.update(operation="periodic_claim", granted=session is not None)
+    sequence.append(claim)
+    write_report(output, report)
+    if session is None:
+        raise RuntimeError("periodic claim after repeated DONE probes was refused")
+    # This turn deliberately performs no source/catalog work. Complete through
+    # the public API so the measured claim leaves no outstanding capability.
+    report["stage"] = "idle_claim_complete"
+    facade.complete_ingest(session)
+    if catalog_snapshot(catalog) != before:
+        raise RuntimeError("idle probes changed public catalog facts")
+    if retained_compaction_roots(config) != roots_before:
+        raise RuntimeError("idle probes changed retained analysis/source roots")
+    # Completing the otherwise empty periodic turn can itself retire an
+    # operational generation. Drain that new work outside the idle timings,
+    # before another revision or the existing empty-drain correctness probe.
+    report["stage"] = "idle_claim_followup_cleanup"
+    for attempt in range(1, 257):
+        outcome = facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
+        if outcome is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            case["idle_claim_followup_cleanup"] = {
+                "attempts": attempt,
+                "outcome": str(outcome),
+                "outside_idle_timings": True,
+            }
+            break
+        if outcome is not VNextCurrentOnlyMaintenanceOutcome.PROGRESSED:
+            raise RuntimeError(f"post-claim cleanup did not progress: {outcome}")
+    else:
+        raise RuntimeError("post-claim cleanup exceeded its 256-attempt budget")
+    if catalog_snapshot(catalog) != before:
+        raise RuntimeError("post-claim cleanup changed public catalog facts")
+    if retained_compaction_roots(config) != roots_before:
+        raise RuntimeError("post-claim cleanup changed retained analysis/source roots")
+    case["idle_catalog_snapshot_unchanged"] = True
+    case["idle_retained_roots_unchanged"] = True
+    case["idle_claim_completed"] = True
+
+
 def run_case(
     config: CoreConfig,
     *,
@@ -322,7 +544,17 @@ def run_case(
     output: Path,
     report: dict[str, Any] | None = None,
     policy_change_at: int | None = None,
+    mode: Literal["cleanup", "idle"] = "cleanup",
+    pages_per_gallery: int = 1,
 ) -> dict[str, Any]:
+    if mode not in {"cleanup", "idle"}:
+        raise ValueError("mode must be cleanup or idle")
+    if not 1 <= gallery_count <= 32 or not 1 <= pages_per_gallery <= 32:
+        raise ValueError("galleries and pages per gallery must be between 1 and 32")
+    if gallery_count * pages_per_gallery > 512:
+        raise ValueError("synthetic fixture must not exceed 512 pages")
+    if mode == "cleanup" and pages_per_gallery != 1:
+        raise ValueError("page scaling requires idle mode")
     if not 1 <= revisions <= 20:
         raise ValueError("revisions must be between 1 and 20")
     if policy_change_at is not None and not 3 <= policy_change_at <= revisions:
@@ -337,6 +569,16 @@ def run_case(
     )
     write_report(output, report)
     try:
+        report["mode"] = mode
+        report["pages_per_gallery"] = pages_per_gallery
+        report["measurement_notes"] += (
+            " Idle mode snapshots the full public catalog and retained roots before "
+            "two consecutive drains plus a periodic claim, and after public completion. "
+            "Snapshot reads are outside timings and warm caches. Fixture setup, "
+            "cleanup-to-DONE, claim completion, and READY audit are not idle timings."
+            if mode == "idle"
+            else ""
+        )
         report["policy_change_at"] = policy_change_at
         report["stage"] = "source_provenance"
         report["source_provenance"] = source_provenance()
@@ -347,6 +589,8 @@ def run_case(
             output=output,
             report=report,
             policy_change_at=policy_change_at,
+            mode=mode,
+            pages_per_gallery=pages_per_gallery,
         )
     except BaseException as error:
         record_failure(output, report, error)
@@ -365,10 +609,23 @@ def _collect_case(
     output: Path,
     report: dict[str, Any],
     policy_change_at: int | None,
+    mode: Literal["cleanup", "idle"],
+    pages_per_gallery: int,
 ) -> None:
     report["stage"] = "database_initialize"
     initialize_database(config)
-    source = MemorySource([gallery(gid) for gid in range(1, gallery_count + 1)])
+    source = MemorySource(
+        [
+            gallery(
+                gid,
+                pages=[
+                    f"page-{page}-of-{gid}".encode()
+                    for page in range(pages_per_gallery)
+                ],
+            )
+            for gid in range(1, gallery_count + 1)
+        ]
+    )
     library = MemoryLibrary(source)
     cases = report["cases"]
     previous_revision = 0
@@ -382,12 +639,15 @@ def _collect_case(
             # path without overriding the production overlay-depth contract.
             source_revision = revision - 1 if revision == policy_change_at else revision
             expected_title = f"Gallery 1 revision {source_revision}"
-            expected_page = f"page 1 revision {source_revision}".encode()
+            expected_pages = tuple(
+                f"page {page + 1} revision {source_revision}".encode()
+                for page in range(pages_per_gallery)
+            )
             source.put(
                 gallery(
                     1,
                     title=expected_title,
-                    pages=[expected_page],
+                    pages=expected_pages,
                 )
             )
             report["stage"] = f"revision_{revision}_claim"
@@ -419,7 +679,7 @@ def _collect_case(
                 previous_revision=previous_revision,
                 gallery_count=gallery_count,
                 expected_title=expected_title,
-                expected_page=expected_page,
+                expected_page=expected_pages,
             )
             previous_revision = current.revision
             layout = current_compaction_layout(config)
@@ -481,7 +741,7 @@ def _collect_case(
                 previous_revision=current.revision - 1,
                 gallery_count=gallery_count,
                 expected_title=expected_title,
-                expected_page=expected_page,
+                expected_page=expected_pages,
             )
             analyses, builds = retained_compaction_roots(config)
             case["retained_analysis_count"] = len(analyses)
@@ -490,6 +750,10 @@ def _collect_case(
                 analyses != {layout.analysis_id} or builds != {layout.build_id}
             ):
                 raise RuntimeError("full compaction did not reclaim obsolete history")
+            if mode == "idle":
+                measure_idle_sequence(
+                    facade, catalog, config, report=report, case=case, output=output
+                )
             report["stage"] = f"revision_{revision}_empty_drain"
             empty, case["empty_drain"] = measure(
                 lambda: facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
@@ -516,8 +780,26 @@ def _collect_case(
                         "logical_phase_rows": sum(
                             s["logical_phase_rows"] for s in case["steps"]
                         ),
-                        "empty_sql": case["empty_drain"]["sql_calls"],
-                        "idle_claim_sql": case["idle_claim"]["sql_calls"],
+                        **(
+                            {
+                                "idle_sequence": [
+                                    {
+                                        "operation": step["operation"],
+                                        "seconds": step["seconds"],
+                                        "sql_calls": step["sql_calls"],
+                                    }
+                                    for step in case["idle_sequence"]
+                                ],
+                                "post_claim_cleanup_attempts": case[
+                                    "idle_claim_followup_cleanup"
+                                ]["attempts"],
+                            }
+                            if mode == "idle"
+                            else {
+                                "empty_sql": case["empty_drain"]["sql_calls"],
+                                "idle_claim_sql": case["idle_claim"]["sql_calls"],
+                            }
+                        ),
                     }
                 ),
                 flush=True,
@@ -586,7 +868,15 @@ def database(backend: str, root: Path) -> Iterator[CoreConfig]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("sqlite", "mariadb"), default="sqlite")
-    parser.add_argument("--galleries", type=int, choices=range(2, 6), default=2)
+    parser.add_argument("--mode", choices=("cleanup", "idle"), default="cleanup")
+    parser.add_argument("--galleries", type=int, choices=range(1, 33), default=2)
+    parser.add_argument(
+        "--pages-per-gallery",
+        type=int,
+        choices=range(1, 33),
+        default=1,
+        help="idle mode only; galleries times pages is capped at 512",
+    )
     parser.add_argument("--revisions", type=int, choices=range(1, 21), default=3)
     parser.add_argument(
         "--policy-change-at",
@@ -603,6 +893,10 @@ def main() -> None:
     )
     parser.add_argument("--output-directory", type=Path, required=True)
     args = parser.parse_args()
+    if args.galleries * args.pages_per_gallery > 512:
+        parser.error("--galleries times --pages-per-gallery must not exceed 512")
+    if args.mode == "cleanup" and args.pages_per_gallery != 1:
+        parser.error("--pages-per-gallery requires --mode idle")
     if args.policy_change_at is not None and args.policy_change_at > args.revisions:
         parser.error("--policy-change-at must not exceed --revisions")
     if not hasattr(signal, "SIGALRM"):
@@ -613,6 +907,7 @@ def main() -> None:
     root = Path(tempfile.mkdtemp(prefix=f"{args.backend}-", dir=args.output_directory))
     output = root / "report.json"
     report = new_report(args.backend, args.galleries)
+    report.update(mode=args.mode, pages_per_gallery=args.pages_per_gallery)
     report["stage"] = "database_startup"
     write_report(output, report)
 
@@ -630,6 +925,8 @@ def main() -> None:
                 output=output,
                 report=report,
                 policy_change_at=args.policy_change_at,
+                mode=args.mode,
+                pages_per_gallery=args.pages_per_gallery,
             )
             report["status"] = "incomplete"
             report["stage"] = "database_teardown"
