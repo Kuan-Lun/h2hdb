@@ -41,13 +41,25 @@ from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
 from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import CanonicalValueRepository
 from .vnext_cleanup_repository import VNextCleanupRepository
-from .vnext_download_ingest_repository import DownloadIngestRepository
+from .vnext_download_ingest_repository import (
+    DownloadIngestRepository,
+    LockedCoordinatedIngestClaim,
+    LockedCoordinatedIngestRenewal,
+)
 from .vnext_gallery_identity_repository import GalleryIdentityRepository
 from .vnext_gallery_staging_repository import GalleryObservationStagingRepository
 from .vnext_hash_cache_repository import VNextHashCacheRepository
-from .vnext_ingest_fence_repository import IngestFenceRepository
+from .vnext_ingest_fence_repository import (
+    IngestFenceRepository,
+    LockedIngestClaim,
+    LockedIngestRenewal,
+)
 from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
-from .vnext_maintenance_gate_repository import MaintenanceGateRepository
+from .vnext_maintenance_gate_repository import (
+    LockedGateRenewal,
+    LockedSharedGateClaim,
+    MaintenanceGateRepository,
+)
 from .vnext_operational_event_repository import OperationalEffectRepository
 from .vnext_physical_domains import (
     CATALOG_PHYSICAL_DOMAIN_GUARDS,
@@ -251,7 +263,11 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         "h2hdb.vnext_cleanup_repository": frozenset({"VNextCleanupRepository"}),
         "h2hdb.vnext_download_ingest_repository": frozenset(
-            {"DownloadIngestRepository"}
+            {
+                "DownloadIngestRepository",
+                "LockedCoordinatedIngestClaim",
+                "LockedCoordinatedIngestRenewal",
+            }
         ),
         "h2hdb.vnext_gallery_identity_repository": frozenset(
             {"GalleryIdentityRepository"}
@@ -260,12 +276,14 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
             {"GalleryObservationStagingRepository"}
         ),
         "h2hdb.vnext_hash_cache_repository": frozenset({"VNextHashCacheRepository"}),
-        "h2hdb.vnext_ingest_fence_repository": frozenset({"IngestFenceRepository"}),
+        "h2hdb.vnext_ingest_fence_repository": frozenset(
+            {"IngestFenceRepository", "LockedIngestClaim", "LockedIngestRenewal"}
+        ),
         "h2hdb.vnext_ingest_policy_repository": frozenset(
             {"VNextIngestPolicyRepository"}
         ),
         "h2hdb.vnext_maintenance_gate_repository": frozenset(
-            {"MaintenanceGateRepository"}
+            {"MaintenanceGateRepository", "LockedSharedGateClaim", "LockedGateRenewal"}
         ),
         "h2hdb.vnext_operational_event_repository": frozenset(
             {"OperationalEffectRepository"}
@@ -689,6 +707,10 @@ _DOWNLOAD_INGEST_WRITERS: tuple[WriterEntrypoint, ...] = (
     DownloadIngestRepository.resume_ingest,
     DownloadIngestRepository.renew_ingest,
     DownloadIngestRepository.complete_ingest,
+    DownloadIngestRepository.lock_ingest_claim,
+    DownloadIngestRepository.lock_ingest_renewal,
+    LockedCoordinatedIngestClaim.claim,
+    LockedCoordinatedIngestRenewal.renew,
 )
 
 _BUILD_GENERATION_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -749,6 +771,10 @@ _FENCE_AUTHORITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     IngestFenceRepository.lock_and_require_live,
     IngestFenceRepository.lock_and_require_quiescent,
     IngestFenceRepository.complete,
+    IngestFenceRepository.lock_claim,
+    IngestFenceRepository.lock_for_renewal,
+    LockedIngestClaim.claim,
+    LockedIngestRenewal.renew,
     *_INGEST_FENCED_WRITERS,
 )
 
@@ -759,6 +785,10 @@ _MAINTENANCE_GATE_AUTHORITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     MaintenanceGateRepository.renew,
     MaintenanceGateRepository.lock_and_require_live,
     MaintenanceGateRepository.release,
+    MaintenanceGateRepository.lock_shared_claim,
+    MaintenanceGateRepository.lock_for_renewal,
+    LockedSharedGateClaim.grant,
+    LockedGateRenewal.renew,
     *_INGEST_FENCED_WRITERS,
     *_CLEANUP_WRITERS,
     *_ARTIFACT_RELEASE_WRITERS,

@@ -1393,35 +1393,37 @@ class VNextIngestFacade:
         )
         if type(periodic) is not bool:
             raise TypeError("periodic must be bool")
-        now = require_int63(self.__clock(), field="ingest session claim now")
 
         def claim(work: VNextUnitOfWork) -> VNextIngestSession:
-            gate = MaintenanceGateRepository.claim_shared(
-                work,
-                now=now,
-                lease_duration=duration,
-            )
+            # Serialize the maintenance proof without starting a lease while
+            # connection, query and lock waits are still in progress.
+            gate_claim = MaintenanceGateRepository.lock_shared_claim(work)
+            inspected_at = require_int63(self.__clock(), field="ingest inspection now")
+            gate_claim.require_available(now=inspected_at)
             maintenance_state = VNextCleanupRepository.current_only_maintenance_state(
                 work,
-                cycle_cutoff_at=now,
+                cycle_cutoff_at=inspected_at,
             )
             if maintenance_state is CatalogPublicationMaintenanceState.ACTIONABLE:
-                # Raising inside the same transaction rolls the tentative
-                # SHARED claim back.  A bounded EXCLUSIVE attempt may have
+                # A bounded EXCLUSIVE attempt may have
                 # removed an entire shard and closed its job while other old
                 # payload remains, so OPEN jobs alone are not a sufficient
                 # fence against recreating a predecessor pin.
                 raise _CurrentOnlyMaintenancePending
-            turn = DownloadIngestRepository.claim_ingest(
+            turn_claim = DownloadIngestRepository.lock_ingest_claim(
                 work,
-                now=now,
-                lease_duration=duration,
+                initialized_at=require_int63(
+                    self.__clock(), field="ingest bootstrap now"
+                ),
                 periodic=periodic,
             )
+            granted_at = require_int63(self.__clock(), field="ingest session grant now")
+            gate = gate_claim.grant(now=granted_at, lease_duration=duration)
+            turn = turn_claim.claim(now=granted_at, lease_duration=duration)
             return _public_session(gate, turn)
 
         try:
-            return self.__write(claim)
+            session = self.__write(claim)
         except MaintenanceGateTokenCollisionError:
             raise
         except (
@@ -1430,6 +1432,8 @@ class VNextIngestFacade:
             DownloadIngestUnavailableError,
         ):
             return None
+        self.__require_session_live_at_return(session)
+        return session
 
     def resume_ingest(self, session: VNextIngestSession) -> VNextIngestSession:
         """Revalidate an exact public ingest capability."""
@@ -1462,24 +1466,33 @@ class VNextIngestFacade:
             lease_duration_microseconds,
             field="ingest session lease_duration_microseconds",
         )
-        now = require_int63(self.__clock(), field="ingest session renew now")
 
         def renew(work: VNextUnitOfWork) -> VNextIngestSession:
-            renewed_gate = MaintenanceGateRepository.renew(
-                work,
-                gate,
-                now=now,
-                lease_duration=duration,
-            )
-            renewed_turn = DownloadIngestRepository.renew_ingest(
-                work,
-                turn,
-                now=now,
-                lease_duration=duration,
-            )
+            locked_gate = MaintenanceGateRepository.lock_for_renewal(work, gate)
+            locked_turn = DownloadIngestRepository.lock_ingest_renewal(work, turn)
+            now = require_int63(self.__clock(), field="ingest session renew now")
+            # A lease that expired while waiting for any lock cannot be revived.
+            locked_gate.require_live(now=now)
+            locked_turn.require_live(now=now)
+            renewed_gate = locked_gate.renew(now=now, lease_duration=duration)
+            renewed_turn = locked_turn.renew(now=now, lease_duration=duration)
             return _public_session(renewed_gate, renewed_turn)
 
-        return self.__write(renew)
+        renewed = self.__write(renew)
+        self.__require_session_live_at_return(renewed)
+        return renewed
+
+    def __require_session_live_at_return(self, session: VNextIngestSession) -> None:
+        # A committed grant can outlive its deadline during COMMIT/connection
+        # teardown. Do not expose it as live or retry indefinitely. Its durable
+        # expired generation remains durable. Periodic work can be taken over;
+        # an already consumed download handoff must not be silently re-bound.
+        now = require_int63(self.__clock(), field="ingest session return now")
+        if min(session.gate_lease_expires_at, session.ingest_lease_expires_at) <= now:
+            raise MaintenanceGateUnavailableError(
+                "database transaction committed, but the ingest session expired "
+                "before its result returned"
+            )
 
     def complete_ingest(
         self,

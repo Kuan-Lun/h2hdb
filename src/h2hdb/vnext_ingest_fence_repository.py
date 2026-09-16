@@ -66,25 +66,22 @@ class _GenerationState:
     lease_expires_at: int | None
 
 
-class IngestFenceRepository:
-    """Claim, renew, authorize, and complete one ingest generation.
+@dataclass(frozen=True, slots=True)
+class LockedIngestClaim:
+    """Claim authority valid only within its owning write transaction."""
 
-    ``owner_token`` is a caller-generated, cryptographically fresh, single-use
-    capability, not a general idempotency request ID.  Its generation is the
-    durable fence, so response-loss replay of that same generation is the only
-    reason to submit the same token again.
-    """
+    work: VNextUnitOfWork
+    token: bytes
+    head: _Head
+    state: _GenerationState
 
-    @staticmethod
     def claim(
-        work: VNextUnitOfWork,
+        self,
         *,
-        owner_token: bytes,
         now: int,
         lease_duration: int,
         expected_generation: int | None = None,
     ) -> IngestTurn:
-        token = require_uuid16(owner_token, field="ingest owner_token")
         timestamp = require_int63(now, field="ingest claim now")
         deadline = _lease_deadline(timestamp, lease_duration, field="ingest lease")
         expected = (
@@ -92,17 +89,7 @@ class IngestFenceRepository:
             if expected_generation is None
             else require_int63(expected_generation, field="expected ingest generation")
         )
-
-        head = IngestFenceRepository._lock_head(work)
-        if head is None:
-            IngestFenceRepository._create_genesis(work, timestamp)
-            head = _Head(0, 0, "READY", timestamp)
-
-        state = IngestFenceRepository._lock_generation_state(
-            work, head.current_generation
-        )
-        IngestFenceRepository._validate_head_state(head, state)
-
+        work, token, head, state = self.work, self.token, self.head, self.state
         if (
             head.phase == "INGESTING"
             and state.owner_token == token
@@ -172,20 +159,26 @@ class IngestFenceRepository:
         )
         return IngestTurn(successor, token, deadline)
 
-    @staticmethod
-    def renew(
-        work: VNextUnitOfWork,
-        turn: IngestTurn,
-        *,
-        now: int,
-        lease_duration: int,
-    ) -> IngestTurn:
-        current = IngestFenceRepository.lock_and_require_live(work, turn, now=now)
-        timestamp = require_int63(now, field="ingest renew now")
-        deadline = _lease_deadline(timestamp, lease_duration, field="ingest lease")
+
+@dataclass(frozen=True, slots=True)
+class LockedIngestRenewal:
+    """Exact persisted authority locked by one owning write transaction."""
+
+    work: VNextUnitOfWork
+    turn: IngestTurn
+
+    def require_live(self, *, now: int) -> IngestTurn:
+        timestamp = require_int63(now, field="ingest authorization now")
+        if self.turn.lease_expires_at <= timestamp:
+            raise IngestFenceUnavailableError("the ingest turn is stale or expired")
+        return self.turn
+
+    def renew(self, *, now: int, lease_duration: int) -> IngestTurn:
+        current = self.require_live(now=now)
+        deadline = _lease_deadline(now, lease_duration, field="ingest lease")
         if deadline <= current.lease_expires_at:
             return current
-        work.compare_and_swap(
+        self.work.compare_and_swap(
             f"UPDATE {_OWNER_TABLE} SET lease_expires_at = %s "
             "WHERE generation = %s AND owner_token = %s AND lease_expires_at = %s",
             (
@@ -198,6 +191,72 @@ class IngestFenceRepository:
         )
         return IngestTurn(current.generation, current.owner_token, deadline)
 
+
+class IngestFenceRepository:
+    """Claim, renew, authorize, and complete one ingest generation.
+
+    ``owner_token`` is a caller-generated, cryptographically fresh, single-use
+    capability, not a general idempotency request ID.  Its generation is the
+    durable fence, so response-loss replay of that same generation is the only
+    reason to submit the same token again.
+    """
+
+    @staticmethod
+    def claim(
+        work: VNextUnitOfWork,
+        *,
+        owner_token: bytes,
+        now: int,
+        lease_duration: int,
+        expected_generation: int | None = None,
+    ) -> IngestTurn:
+        timestamp = require_int63(now, field="ingest claim now")
+        _lease_deadline(timestamp, lease_duration, field="ingest lease")
+        return IngestFenceRepository.lock_claim(
+            work, owner_token=owner_token, initialized_at=timestamp
+        ).claim(
+            now=timestamp,
+            lease_duration=lease_duration,
+            expected_generation=expected_generation,
+        )
+
+    @staticmethod
+    def lock_claim(
+        work: VNextUnitOfWork,
+        *,
+        owner_token: bytes,
+        initialized_at: int,
+    ) -> LockedIngestClaim:
+        """Lock the current generation before sampling its new lease time.
+
+        Genesis is ordinary completed history, not a provisional active lease.
+        The returned state must be consumed within this write transaction.
+        """
+
+        token = require_uuid16(owner_token, field="ingest owner_token")
+        timestamp = require_int63(initialized_at, field="ingest initialized_at")
+        head = IngestFenceRepository._lock_head(work)
+        if head is None:
+            IngestFenceRepository._create_genesis(work, timestamp)
+            head = _Head(0, 0, "READY", timestamp)
+        state = IngestFenceRepository._lock_generation_state(
+            work, head.current_generation
+        )
+        IngestFenceRepository._validate_head_state(head, state)
+        return LockedIngestClaim(work, token, head, state)
+
+    @staticmethod
+    def renew(
+        work: VNextUnitOfWork,
+        turn: IngestTurn,
+        *,
+        now: int,
+        lease_duration: int,
+    ) -> IngestTurn:
+        return IngestFenceRepository.lock_for_renewal(work, turn).renew(
+            now=now, lease_duration=lease_duration
+        )
+
     @staticmethod
     def lock_and_require_live(
         work: VNextUnitOfWork,
@@ -205,8 +264,18 @@ class IngestFenceRepository:
         *,
         now: int,
     ) -> IngestTurn:
-        requested = _require_turn(turn)
         timestamp = require_int63(now, field="ingest authorization now")
+        return IngestFenceRepository.lock_for_renewal(work, turn).require_live(
+            now=timestamp
+        )
+
+    @staticmethod
+    def lock_for_renewal(
+        work: VNextUnitOfWork, turn: IngestTurn
+    ) -> LockedIngestRenewal:
+        """Lock and exact-match authority without trusting an earlier time."""
+
+        requested = _require_turn(turn)
         head = IngestFenceRepository._lock_head(work)
         if head is None:
             raise IngestFenceUnavailableError("the ingest head is missing")
@@ -220,10 +289,9 @@ class IngestFenceRepository:
             or state.owner_token != requested.owner_token
             or state.lease_expires_at != requested.lease_expires_at
             or state.lease_expires_at is None
-            or state.lease_expires_at <= timestamp
         ):
             raise IngestFenceUnavailableError("the ingest turn is stale or expired")
-        return requested
+        return LockedIngestRenewal(work, requested)
 
     @staticmethod
     def lock_and_require_quiescent(work: VNextUnitOfWork) -> int | None:
