@@ -480,6 +480,59 @@ thresholds both apply; ordinary diagnostic clock, recorder, or handler failures
 do not change commit or retry results. Operation labels come from the
 orchestrator's validated state, without diagnostic inspection of caller handles.
 
+Performance investigations use disposable synthetic data before changing runtime
+behavior. The checkout-only probes below measure the production implementation;
+they do not accept an existing database or server address. MariaDB runs use a
+private MariaDB 10.11.11 Testcontainer. They are manual tools, not additional
+merge gates or production-load tests:
+
+- `scripts/ingest_pipeline_probe.py` varies one source-shape dimension at a time
+  and measures source preparation/persistence, analysis, and catalog publication.
+  It verifies published results and a full READY audit. In-memory adapters and
+  metadata-only publication deliberately exclude image decoding, CBZ rendering,
+  and filesystem activation.
+- `scripts/ingest_growth_cleanup_probe.py --mode idle` measures two maintenance
+  calls at the cleanup fixed point followed by an ingest claim. Candidate-target
+  attribution distinguishes expensive absence checks from actual deletion work.
+  On SQLite, `sqlite_progress_operations_estimate` samples progress callbacks
+  with a 100-operation quantum, including possible statement preparation work.
+  It is approximate work evidence, not an exact instruction or examined-row
+  count; zero can mean work below the sampling quantum. MariaDB leaves these
+  SQLite-only fields null. Claim-completion cleanup is measured separately from
+  the idle sequence.
+- `scripts/ingest_growth_hash_probe.py` isolates file-decision validation while
+  varying active hashes and unselected source history. Its source-history axis
+  is not analysis-overlay depth; it records SQLite query plans or MariaDB
+  ANALYZE/EXPLAIN and handler counters.
+
+For example, run a controlled source-shape matrix and an idle-maintenance case:
+
+```sh
+.venv/bin/python scripts/ingest_pipeline_probe.py \
+  --backend sqlite --vary all --repeats 3 --output /tmp/pipeline-sqlite.json
+.venv/bin/python scripts/ingest_growth_cleanup_probe.py \
+  --backend sqlite --mode idle --galleries 8 --pages-per-gallery 1 \
+  --revisions 2 --output-directory /tmp/idle-maintenance
+.venv/bin/python scripts/ingest_growth_hash_probe.py \
+  --backend sqlite --hashes 64 129 256 --history 0 4 \
+  --output /tmp/hash-validation.json
+```
+
+Use `--backend mariadb` for the isolated live backend. Pipeline/hash output paths
+must be new files; cleanup creates a separate run directory. Keep reports outside
+the checkout. The tools use cooperative POSIX alarms, not hard process deadlines;
+native calls and container startup/teardown can exceed the requested timeout.
+
+Compare cases with the same backend and all but one input dimension fixed.
+Record query counts, returned rows, actual source shape, and correctness along
+with elapsed time; repeat fresh fixtures to assess timing variability. Source
+provenance and measurement boundaries belong with every saved report. Returned
+rows are not examined rows, nested timings overlap their enclosing operation,
+and profiling itself adds overhead. Local synthetic timings cannot predict NAS
+completion time. A completed report means its correctness checks passed, not
+that a performance target was met. Keep wall-clock thresholds out of ordinary
+regression tests; use deterministic work bounds when the contract justifies them.
+
 Catalog preparation validates common tag values in batches of at most 128 and
 retains their bytes in a private disk cache for that plan. BUILD and VALIDATE
 prepare separate plans and independently revalidate their source snapshots.
