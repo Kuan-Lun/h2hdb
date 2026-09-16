@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -202,12 +203,13 @@ def test_idle_mode_measures_each_target_and_preserves_real_catalog(
     "shape",
     [
         {"gallery_count": 0},
-        {"gallery_count": 33},
+        {"gallery_count": 129},
         {"pages_per_gallery": 0},
         {"pages_per_gallery": 33},
         {"gallery_count": 32, "pages_per_gallery": 32},
         {"mode": "invalid"},
         {"mode": "cleanup", "pages_per_gallery": 2},
+        {"profile_mariadb": True},
     ],
 )
 def test_invalid_idle_shape_is_rejected_before_database_access(
@@ -221,9 +223,241 @@ def test_invalid_idle_shape_is_rejected_before_database_access(
     options = {"gallery_count": 1, "pages_per_gallery": 1, "mode": "idle", **shape}
     with pytest.raises(ValueError):
         probe.run_case(
-            CoreConfig(), revisions=1, output=tmp_path / "report.json", **options
+            CoreConfig(
+                database=DatabaseConfig(
+                    sql_type="sqlite", database=str(tmp_path / "unused.db")
+                )
+            ),
+            revisions=1,
+            output=tmp_path / "report.json",
+            **options,
         )
     initialize.assert_not_called()
+
+
+def test_mariadb_candidate_diagnostics_separate_replay_and_server_nodes(
+    probe: ModuleType,
+) -> None:
+    module = probe.maria_diagnostics
+    raw = Mock(spec=module.MariaDBConnector)
+    plan = {
+        "query_block": {
+            "r_total_time_ms": 1.25,
+            "nested_loop": [
+                {
+                    "table": {
+                        "table_name": "r",
+                        "r_rows": 3,
+                        "r_loops": 2,
+                        "access_type": "index",
+                        "r_table_time_ms": 0.25,
+                    }
+                }
+            ],
+        }
+    }
+
+    def fetch(query: str, _parameters: tuple[object, ...] = ()) -> tuple[object, ...]:
+        return (json.dumps(plan),) if query.startswith(("EXPLAIN", "ANALYZE")) else ()
+
+    original = Mock(side_effect=fetch)
+    raw.fetch_one = original
+    raw.fetch_all.side_effect = [
+        [("Handler_read_key", "0"), ("Handler_read_next", "0")],
+        [("Handler_read_key", "0"), ("Handler_read_next", "0")],
+        [("Handler_read_key", "3"), ("Handler_read_next", "7")],
+    ]
+    result, report = module.profile_candidate(
+        raw,
+        lambda: raw.fetch_one(
+            "SELECT key FROM candidate WHERE key = %s", (b"synthetic-secret",)
+        ),
+    )
+    assert result == ()
+    assert raw.fetch_one is original
+    assert report["parameter_count"] == 1
+    assert report["returned_rows"] == 0
+    assert report["handler_status_control_delta"] == {
+        "Handler_read_key": 0,
+        "Handler_read_next": 0,
+    }
+    assert report["handler_read_delta"] == {
+        "Handler_read_key": 3,
+        "Handler_read_next": 7,
+    }
+    assert report["analyze_root_server_time_ms"] == 1.25
+    assert report["analyze_table_nodes"][0]["r_rows"] == 3
+    assert report["analyze_table_nodes"][0]["r_loops"] == 2
+    assert "synthetic-secret" not in json.dumps(report)
+    assert [call.args[0].split()[0] for call in original.call_args_list] == [
+        "SELECT",
+        "SELECT",
+        "EXPLAIN",
+        "ANALYZE",
+    ]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "DELETE FROM candidate",
+        "SELECT 1; SELECT 2",
+        "SELECT 1 FOR UPDATE",
+        "SELECT 1 INTO OUTFILE 'x'",
+    ],
+)
+def test_mariadb_diagnostics_reject_non_candidate_sql_and_restore_capture(
+    probe: ModuleType,
+    query: str,
+) -> None:
+    module = probe.maria_diagnostics
+    raw = Mock(spec=module.MariaDBConnector)
+    original = raw.fetch_one
+    with pytest.raises(ValueError, match="nonlocking candidate SELECT"):
+        module.profile_candidate(raw, lambda: raw.fetch_one(query))
+    assert raw.fetch_one is original
+    original.assert_not_called()
+    raw.fetch_all.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure", ["candidate", "second_query", "control", "replay", "plan"]
+)
+def test_mariadb_diagnostic_failures_propagate_and_restore_capture(
+    probe: ModuleType,
+    failure: str,
+) -> None:
+    module = probe.maria_diagnostics
+    raw = Mock(spec=module.MariaDBConnector)
+    raw.fetch_one.side_effect = (
+        RuntimeError("candidate failed")
+        if failure == "candidate"
+        else [(), (1,) if failure == "replay" else (), ("malformed JSON",)]
+    )
+    raw.fetch_all.side_effect = [
+        [("Handler_read_key", "0")],
+        [("Handler_read_key", "1" if failure == "control" else "0")],
+        [("Handler_read_key", "3")],
+    ]
+    original = raw.fetch_one
+
+    def candidate() -> None:
+        raw.fetch_one("SELECT key FROM candidate")
+        if failure == "second_query":
+            raw.fetch_one("SELECT key FROM candidate")
+
+    with pytest.raises((RuntimeError, ValueError)):
+        module.profile_candidate(raw, candidate)
+    assert raw.fetch_one is original
+
+
+def test_mariadb_counter_validation_and_roundtrip_control(probe: ModuleType) -> None:
+    module = probe.maria_diagnostics
+    with pytest.raises(RuntimeError, match="set changed"):
+        module.counter_delta({"a": 1}, {"b": 1})
+    with pytest.raises(RuntimeError, match="decreased"):
+        module.counter_delta({"a": 2}, {"a": 1})
+    raw = Mock(spec=module.MariaDBConnector)
+    raw.fetch_one.return_value = (1,)
+    control = module.roundtrip_control(raw, repetitions=2)
+    assert control["repetitions"] == 2
+    assert len(control["client_seconds"]) == 2
+    assert all(call.args == ("SELECT 1",) for call in raw.fetch_one.call_args_list)
+    with pytest.raises(ValueError):
+        module.roundtrip_control(raw, repetitions=101)
+
+
+def test_idle_measurement_window_has_no_interleaved_report_serialization(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = probe.VNextCurrentOnlyMaintenanceOutcome.DONE
+    events: list[str] = []
+
+    def drain(_duration: int) -> object:
+        events.append("drain")
+        return done
+
+    def claim(*_args: object) -> object:
+        events.append("claim")
+        return object()
+
+    facade = SimpleNamespace(
+        drain_current_only_maintenance=drain,
+        try_claim_ingest=claim,
+        complete_ingest=lambda _session: events.append("complete"),
+    )
+    monkeypatch.setattr(probe, "catalog_snapshot", lambda _catalog: ("unchanged",))
+    monkeypatch.setattr(probe, "retained_compaction_roots", lambda _config: ({1}, {2}))
+    monkeypatch.setattr(
+        probe, "write_report", lambda *_args: events.append("serialize")
+    )
+    probe.measure_idle_sequence(
+        facade,
+        object(),
+        CoreConfig(),
+        report={},
+        case={},
+        output=tmp_path / "unused.json",
+    )
+    assert events[:4] == ["drain", "drain", "claim", "serialize"]
+    assert events[4:] == ["complete", "drain"]
+
+
+def test_idle_failure_retains_partial_measurements_without_interim_serialization(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = probe.VNextCurrentOnlyMaintenanceOutcome.DONE
+    blocked = probe.VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+    facade = SimpleNamespace(
+        drain_current_only_maintenance=Mock(side_effect=[done, blocked]),
+        try_claim_ingest=Mock(),
+        complete_ingest=Mock(),
+    )
+    monkeypatch.setattr(probe, "catalog_snapshot", lambda _catalog: ("unchanged",))
+    monkeypatch.setattr(probe, "retained_compaction_roots", lambda _config: ({1}, {2}))
+    writer = Mock()
+    monkeypatch.setattr(probe, "write_report", writer)
+    case: dict[str, Any] = {}
+    report: dict[str, Any] = {"cases": [case]}
+    with pytest.raises(RuntimeError, match="idle drain did not return DONE"):
+        probe.measure_idle_sequence(
+            facade,
+            object(),
+            CoreConfig(),
+            report=report,
+            case=case,
+            output=tmp_path / "report.json",
+        )
+    assert [step["outcome"] for step in case["idle_sequence"]] == ["DONE", "BLOCKED"]
+    assert report["stage"] == "idle_drain_2"
+    writer.assert_not_called()
+    facade.try_claim_ingest.assert_not_called()
+
+
+def test_real_fixture_crosses_locator_decimal_width_without_reordering(
+    probe: ModuleType,
+    tmp_path: Path,
+) -> None:
+    config = CoreConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "ten.db"))
+    )
+    report = probe.run_case(
+        config,
+        gallery_count=10,
+        pages_per_gallery=1,
+        revisions=1,
+        mode="idle",
+        output=tmp_path / "report.json",
+    )
+    case = report["cases"][0]
+    assert case["published_count"] == 10
+    assert case["gallery_1_title"] == "Gallery 1 revision 1"
+    assert case["idle_catalog_snapshot_unchanged"]
+    assert report["full_ready_audit"] == "passed"
 
 
 @pytest.mark.parametrize(
