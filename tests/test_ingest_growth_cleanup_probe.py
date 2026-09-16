@@ -88,6 +88,203 @@ def test_failed_probe_preserves_original_exception_and_restores_patches(
     assert probe.VNextCleanupRepository.current_only_maintenance_state is original
 
 
+def test_sqlite_progress_sample_measures_real_work_and_unwraps_connector(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    query = (
+        "WITH RECURSIVE numbers(value) AS (VALUES(1) UNION ALL "
+        "SELECT value + 1 FROM numbers WHERE value < %s) "
+        "SELECT SUM(value) FROM numbers"
+    )
+    samples = []
+    with probe.measure_sql(probe.Recorder()):
+        with instrument_connector(SQLiteConnector(str(tmp_path / "sample.db"))) as db:
+            for limit in (200, 2000):
+                with probe.sample_sqlite_candidate(db) as sample:
+                    assert sample is not None
+                    assert db.fetch_one(query, (limit,)) == (limit * (limit + 1) // 2,)
+                callbacks = sample.callbacks
+                assert callbacks > 0
+                # A subsequent real query must not invoke the cleared handler.
+                db.fetch_one(query, (2000,))
+                assert sample.callbacks == callbacks
+                samples.append(callbacks)
+    # Work grows while query count and returned-row count remain identical.
+    # Avoid machine-specific timing or precise opcode thresholds.
+    assert samples[1] > samples[0]
+
+
+def test_sqlite_progress_handler_is_cleared_after_measured_exception(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    query = (
+        "WITH RECURSIVE numbers(value) AS (VALUES(1) UNION ALL "
+        "SELECT value + 1 FROM numbers WHERE value < 1000) SELECT SUM(value) FROM numbers"
+    )
+    with SQLiteConnector(str(tmp_path / "failed-sample.db")) as db:
+        with pytest.raises(ValueError, match="synthetic callback scope failure"):
+            with probe.sample_sqlite_candidate(db) as sample:
+                assert sample is not None
+                db.fetch_one(query)
+                raise ValueError("synthetic callback scope failure")
+        callbacks = sample.callbacks
+        assert callbacks > 0
+        db.fetch_one(query)
+        assert sample.callbacks == callbacks
+
+
+def test_non_sqlite_progress_sample_explicitly_reports_unmeasured(
+    probe: ModuleType,
+) -> None:
+    with probe.sample_sqlite_candidate(object()) as sample:
+        assert sample is None
+
+
+def test_idle_mode_measures_each_target_and_preserves_real_catalog(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    config = CoreConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "idle.db"))
+    )
+    output = tmp_path / "report.json"
+    report = probe.run_case(
+        config,
+        gallery_count=1,
+        pages_per_gallery=2,
+        revisions=2,
+        mode="idle",
+        output=output,
+    )
+    assert report == json.loads(output.read_text())
+    assert report["status"] == "completed"
+    assert report["full_ready_audit"] == "passed"
+    assert report["pages_per_gallery"] == 2
+    assert [case["overlay_depth"] for case in report["cases"]] == [0, 1]
+    targets = {
+        kind.value for kind in probe.cleanup_repository._CURRENT_ONLY_TARGET_PRIORITY
+    }
+    for case in report["cases"]:
+        assert case["idle_catalog_snapshot_unchanged"]
+        assert case["idle_retained_roots_unchanged"]
+        assert case["idle_claim_completed"]
+        first, second, claim = case["idle_sequence"]
+        assert first["outcome"] == second["outcome"] == "DONE"
+        assert first["advance_count"] == second["advance_count"] == 0
+        assert claim["granted"]
+        for operation in case["idle_sequence"]:
+            candidates = operation["candidate_probes"]
+            assert {row["target"] for row in candidates} == targets
+            assert all(not row["candidate_found"] for row in candidates)
+            assert all(
+                row["sqlite_progress_operations_estimate"]
+                == row["sqlite_progress_callbacks"] * probe.SQLITE_PROGRESS_QUANTUM
+                for row in candidates
+            )
+            assert (
+                sum(row["sqlite_progress_operations_estimate"] for row in candidates)
+                > 0
+            )
+            queries = [
+                row
+                for row in operation["queries"]
+                if row["category"] == "sql" and row["target"] != "unclassified"
+            ]
+            assert {row["target"] for row in queries} == targets
+            assert {row["group"] for row in queries} == {
+                "current_only_maintenance_state"
+            }
+            # Zero returned candidates does not assert zero examined rows.
+            assert all(row["returned_rows"] == 0 for row in queries)
+            assert sum(row["seconds"] for row in queries) <= operation["sql_seconds"]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        {"gallery_count": 0},
+        {"gallery_count": 33},
+        {"pages_per_gallery": 0},
+        {"pages_per_gallery": 33},
+        {"gallery_count": 32, "pages_per_gallery": 32},
+        {"mode": "invalid"},
+        {"mode": "cleanup", "pages_per_gallery": 2},
+    ],
+)
+def test_invalid_idle_shape_is_rejected_before_database_access(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shape: dict[str, object],
+) -> None:
+    initialize = Mock()
+    monkeypatch.setattr(probe, "initialize_database", initialize)
+    options = {"gallery_count": 1, "pages_per_gallery": 1, "mode": "idle", **shape}
+    with pytest.raises(ValueError):
+        probe.run_case(
+            CoreConfig(), revisions=1, output=tmp_path / "report.json", **options
+        )
+    initialize.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["drain", "claim", "catalog", "roots", "followup_catalog", "followup_roots"],
+)
+def test_idle_oracle_rejects_unexpected_work_or_changed_facts(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    done = probe.VNextCurrentOnlyMaintenanceOutcome.DONE
+    progressed = probe.VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+    facade = SimpleNamespace(
+        drain_current_only_maintenance=Mock(
+            return_value=progressed if failure == "drain" else done
+        ),
+        try_claim_ingest=Mock(return_value=None if failure == "claim" else object()),
+        complete_ingest=Mock(),
+    )
+    monkeypatch.setattr(
+        probe,
+        "catalog_snapshot",
+        Mock(
+            side_effect=[
+                "original",
+                "changed" if failure == "catalog" else "original",
+                "changed" if failure == "followup_catalog" else "original",
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        probe,
+        "retained_compaction_roots",
+        Mock(
+            side_effect=[
+                ({1}, {2}),
+                ({1}, {3} if failure == "roots" else {2}),
+                ({1}, {3} if failure == "followup_roots" else {2}),
+            ]
+        ),
+    )
+    case: dict[str, object] = {}
+    with pytest.raises(RuntimeError):
+        probe.measure_idle_sequence(
+            facade,
+            object(),
+            CoreConfig(),
+            report={"cases": [case]},
+            case=case,
+            output=tmp_path / "report.json",
+        )
+    assert "idle_catalog_snapshot_unchanged" not in case
+    assert "idle_claim_completed" not in case
+    if failure in {"catalog", "roots", "followup_catalog", "followup_roots"}:
+        facade.complete_ingest.assert_called_once()
+    if failure in {"followup_catalog", "followup_roots"}:
+        assert facade.drain_current_only_maintenance.call_count == 3
+
+
 def test_two_real_sqlite_publications_advance_and_publish_latest_content(
     probe: ModuleType, tmp_path: Path
 ) -> None:
