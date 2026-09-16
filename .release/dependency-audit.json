@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-16T04:08:59+00:00",
+  "checked_at": "2026-09-16T08:07:04+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.1",
+  "project_version": "0.39.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Quality-first cleanup performance release. Reviewed all 12 Python and 1 Node direct dependency entries against the prior 0.39.0 audit: registry latest versions are unchanged, all satisfy declared bounds, and all Python candidates have release-file metadata accepting Python 3.14. The repository environment contains those exact latest candidates; uv --no-cache pip check verified 36 installed packages and npm ls --depth=0 passed. Previous upstream compatibility review remains applicable because no dependency candidates changed. This receipt records dependency review only; exact-tree release, manual cleanup acceptance, and isolated Compose outcomes are separate validation evidence.",
+    "note": "Reviewed all 13 direct Python/Node manifest entries for Core 0.39.2. Registry candidates and constraints are unchanged from the reviewed 0.39.1 receipt, so prior upstream release review remains applicable. All installed direct Python versions match the current registry candidates and support Python 3.14; uv pip check validates 36 installed packages and npm ls is clean. No dependency changes are needed. Lease timing regressions and cross-repository candidate-wheel tests are reported separately; this receipt does not claim completion of those release checks.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
