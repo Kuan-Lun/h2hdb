@@ -6,6 +6,7 @@ import logging
 import sys
 from contextlib import contextmanager
 from dataclasses import asdict
+from io import BytesIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -41,7 +42,7 @@ def probe() -> ModuleType:
     "field,value",
     [
         ("galleries", 0),
-        ("galleries", 33),
+        ("galleries", 257),
         ("pages", 0),
         ("pages", 257),
         ("tags", -1),
@@ -61,6 +62,9 @@ def test_shape_product_budget_and_one_factor_matrix(probe: ModuleType) -> None:
         probe.Shape(galleries=32, pages=256)
     with pytest.raises(ValueError, match="metadata payload"):
         probe.Shape(galleries=32, metadata_bytes=262144)
+    probe.Shape(galleries=256, pages=16, tags=128, metadata_bytes=16384)
+    with pytest.raises(ValueError, match="metadata payload"):
+        probe.Shape(galleries=256, pages=16, metadata_bytes=16385)
     base = probe.Shape()
     matrix = probe.shapes(base, "all")
     assert len(matrix) == 5
@@ -191,6 +195,29 @@ def test_real_pipeline_publishes_same_gids_across_tag_shapes(
     assert first["oracle"]["gids"] == [1, 2]
     for case in cases:
         assert case["full_ready_audit"] == "passed"
+        audit = case["full_ready_audit_measurements"]
+        assert audit["sql_calls"] > 0
+        assert audit["returned_rows"] > 0
+        assert audit["query_details_truncated"]
+        labels = {value["operation"] for value in audit["operations"]}
+        assert "schema_structure" in labels
+        assert "provider_resolution" in labels
+        assert any(label.startswith("semantic:catalog.") for label in labels)
+        expected_semantics = {
+            "semantic:" + key
+            for key in probe.schema_provider.GeneratedVNextSchemaProvider(
+                "sqlite"
+            ).definition.ready_semantic_obligation_ids
+        }
+        assert expected_semantics <= labels
+        assert (
+            sum(value["sql_calls"] for value in audit["operations"])
+            == audit["sql_calls"]
+        )
+        assert (
+            sum(value["returned_rows"] for value in audit["operations"])
+            == audit["returned_rows"]
+        )
         assert set(case["phase_seconds"]) == {
             "source",
             "analysis",
@@ -227,6 +254,33 @@ def test_real_pipeline_crosses_128_page_source_boundary(
     case = probe.run_case(config, probe.Shape(galleries=1, pages=129))
     assert case["oracle"]["gids"] == [1]
     assert case["full_ready_audit"] == "passed"
+
+
+def test_forced_start_report_is_outside_phase_and_audit_timers(
+    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_counter = probe.time.perf_counter
+    virtual_serialization_seconds = 0.0
+    starts = []
+
+    def counter() -> float:
+        return float(real_counter()) + virtual_serialization_seconds
+
+    def progress(stage: str, _phases: dict[str, float]) -> None:
+        nonlocal virtual_serialization_seconds
+        if stage.endswith(":started"):
+            starts.append(stage)
+            virtual_serialization_seconds += 86400.0
+
+    monkeypatch.setattr(probe.time, "perf_counter", counter)
+    config = CoreConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "timer.db"))
+    )
+    case = probe.run_case(config, probe.Shape(galleries=1), progress=progress)
+    assert len(starts) == 5
+    # The injected day represents report serialization, not a performance SLO.
+    assert all(value < 86400.0 for value in case["phase_seconds"].values())
+    assert case["full_ready_audit_seconds"] < 86400.0
 
 
 def test_failure_report_is_atomic_and_preserves_exception(
@@ -385,3 +439,294 @@ def test_publication_oracle_rejects_lost_metadata_or_tags(
     ):
         probe.verify_publication(CoreConfig(), source.galleries)
     catalog.close.assert_called_once_with()
+
+
+def test_fixture_locator_order_is_canonical_across_decimal_widths(
+    probe: ModuleType,
+) -> None:
+    from h2hdb.vnext_ingest_facade import _iter_source_locators
+
+    source = probe.source_for(probe.Shape(galleries=256))
+    locators = tuple(_iter_source_locators(source))
+    assert len(locators) == 256
+    assert locators[0] == ("gallery-000001",)
+    assert locators[-1] == ("gallery-000256",)
+    assert len(set(locators)) == 256
+
+
+@pytest.mark.parametrize("fault", [None, "duplicate", "missing"])
+def test_oracle_reads_multiple_public_pages_and_rejects_invalid_membership(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, fault: str | None
+) -> None:
+    source = probe.source_for(probe.Shape(galleries=256))
+    publications = [
+        SimpleNamespace(
+            gid=item.gid,
+            title=item.title,
+            summary=item.comment,
+            subjects=(),
+            content_sha256=probe.effective_content_digest(
+                tuple(
+                    probe.sha256(data).digest()
+                    for name, data in item.files.items()
+                    if name.endswith(b".png")
+                )
+            ).hex(),
+        )
+        for item in source.galleries
+    ]
+    second = (
+        publications[:128]
+        if fault == "duplicate"
+        else publications[128 : 255 if fault == "missing" else 256]
+    )
+    discover = Mock(
+        side_effect=[
+            SimpleNamespace(publications=publications[:128], next_cursor="second-page"),
+            SimpleNamespace(publications=second, next_cursor=None),
+        ]
+    )
+    catalog = SimpleNamespace(
+        get_catalog_revision=lambda: SimpleNamespace(
+            revision=1, publication_count=256, artifact_count=0
+        ),
+        discover_publications=discover,
+        close=Mock(),
+    )
+    monkeypatch.setattr(probe, "VNextCatalogFacade", Mock(return_value=catalog))
+    if fault is None:
+        oracle = probe.verify_publication(CoreConfig(), source.galleries)
+        assert oracle["gids"] == list(range(1, 257))
+        assert discover.call_args_list[0].kwargs["after"] is None
+        assert discover.call_args_list[1].kwargs["after"] == "second-page"
+    else:
+        with pytest.raises(RuntimeError):
+            probe.verify_publication(CoreConfig(), source.galleries)
+    catalog.close.assert_called_once_with()
+
+
+def test_audit_nested_scopes_are_exclusive_and_sql_is_not_duplicated(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(probe.time, "perf_counter", lambda: clock[0])
+    observer = probe.AuditObserver()
+    with observer.scope("parent"):
+        observer.record_sql_operation("sql", 0.1, "SELECT parent", 1)
+        clock[0] = 1.0
+        with observer.scope("child"):
+            observer.record_sql_operation("sql", 0.2, "SELECT child", 2)
+            clock[0] = 3.0
+        clock[0] = 5.0
+    report = observer.finish(6.0)
+    measured = {value["operation"]: value for value in report["operations"]}
+    assert measured["parent"]["exclusive_seconds"] == 3.0
+    assert measured["child"]["exclusive_seconds"] == 2.0
+    assert measured["outside"]["exclusive_seconds"] == 1.0
+    assert report["sql_calls"] == 2
+    assert report["returned_rows"] == 3
+    assert measured["parent"]["non_sql_seconds"] == 2.9
+    assert measured["child"]["top_queries"][0]["sql"] == "SELECT child"
+
+
+def test_audit_validator_wrapper_preserves_failure_and_restores_hooks(
+    probe: ModuleType,
+) -> None:
+    original = probe.schema_provider._load_builtin_semantic_validators
+    observer = probe.AuditObserver()
+    failure = ValueError("validator failure")
+
+    def fail() -> None:
+        raise failure
+
+    with pytest.raises(ValueError) as caught:
+        with observer.installed():
+            observer.wrap("validator", fail)()
+    assert caught.value is failure
+    assert probe.schema_provider._load_builtin_semantic_validators is original
+    assert observer.source_scope is None
+    assert not observer.children
+
+
+def test_audit_cache_observer_preserves_lru_order_and_counts_eviction(
+    probe: ModuleType,
+) -> None:
+    owner = probe.catalog_refinement._CanonicalValidationCache
+    original_open = owner.open
+    observer = probe.AuditObserver()
+    domain = b"title_utf8_v1"
+    capacity = probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    with observer.installed():
+        cache = owner()
+        for value in range(capacity + 1):
+            digest = value.to_bytes(32)
+            assert cache.open(digest, domain) is None
+            cache.remember(digest, domain, BytesIO(b"x"), byte_count=1)
+        newest = capacity.to_bytes(32)
+        opened = cache.open(newest, domain)
+        assert opened is not None
+        with opened[0] as spool:
+            assert spool.read() == b"x"
+        assert cache.open(bytes(32), domain) is None
+        assert list(cache._values)[-1] == (newest, domain)
+    assert owner.open is original_open
+    report = observer.finish(0.0)["canonical_cache"]
+    metric = report["domains"][domain.decode()]
+    assert metric["hits"] == 1
+    assert metric["misses"] == capacity + 2
+    assert metric["admissions"] == capacity + 1
+    assert metric["evictions_caused"] == 1
+    assert metric["max_resident_entries"] == capacity
+    assert report["observed_distinct_validated_bytes"] == capacity + 1
+    assert report["observed_distinct_requested_keys"] == capacity + 1
+
+
+def test_audit_cache_observer_bounds_keys_and_records_uncached_values(
+    probe: ModuleType,
+) -> None:
+    observer = probe.AuditObserver()
+    observer.cache_key_budget = 1
+    domain = b"title_utf8_v1"
+    size = probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES + 1
+    with observer.installed():
+        cache = probe.catalog_refinement._CanonicalValidationCache()
+        cache.remember(bytes(32), domain, BytesIO(b"x" * size), byte_count=size)
+        assert not cache._values
+        with pytest.raises(RuntimeError, match="key budget exceeded"):
+            cache.open(b"a" * 32, domain)
+    report = observer.finish(0.0)["canonical_cache"]
+    assert report["domains"][domain.decode()]["oversize_bypasses"] == 1
+    assert report["observed_distinct_validated_bytes"] == size
+
+
+def test_audit_cache_control_preserves_byte_caps_validators_and_restores_capacity(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = probe.catalog_refinement
+    original = runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    byte_caps = (
+        runtime._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES,
+        runtime._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES,
+    )
+    oracle = {"gids": [1]}
+    verification = Mock(return_value=oracle)
+    monkeypatch.setattr(probe, "verify_publication", verification)
+    baseline = {"operations": [{"operation": "semantic:real_validator", "calls": 1}]}
+    observed = []
+
+    def measure(label: str) -> dict[str, Any]:
+        observed.append((label, runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES))
+        assert byte_caps == (
+            runtime._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES,
+            runtime._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES,
+        )
+        return baseline
+
+    result = probe.audit_cache_comparison(CoreConfig(), (), oracle, baseline, measure)
+    assert observed == [
+        ("ready_audit_B_capacity512", 512),
+        ("ready_audit_A_restored", original),
+    ]
+    assert result["order"] == ["A_baseline", "B_capacity512", "A_restored"]
+    assert result["same_published_oracle"]
+    assert verification.call_count == 3
+    assert runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES == original
+
+
+@pytest.mark.parametrize("failure", ["measure", "oracle", "validators"])
+def test_audit_cache_control_fails_closed_and_restores_capacity(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    runtime = probe.catalog_refinement
+    original = runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    oracle = {"gids": [1]}
+    monkeypatch.setattr(
+        probe,
+        "verify_publication",
+        Mock(return_value={} if failure == "oracle" else oracle),
+    )
+    baseline = {"operations": [{"operation": "semantic:real_validator", "calls": 1}]}
+
+    def measure(_label: str) -> dict[str, Any]:
+        if failure == "measure":
+            raise RuntimeError("audit failed")
+        return {"operations": []} if failure == "validators" else baseline
+
+    with pytest.raises(RuntimeError):
+        probe.audit_cache_comparison(CoreConfig(), (), oracle, baseline, measure)
+    assert runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES == original
+
+
+def test_server_diagnostics_preserve_unavailable_status_and_original_error(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = {"snapshot_seconds": 1.0, "phase": "before"}
+    after = {"snapshot_seconds": 2.0, "phase": "after"}
+    snapshot = Mock(side_effect=[before, after])
+    difference = {
+        "complete_counter_comparison": False,
+        "limitations_detected": ["disabled"],
+    }
+    monkeypatch.setattr(probe.mariadb_performance, "snapshot", snapshot)
+    monkeypatch.setattr(
+        probe.mariadb_performance, "differences", Mock(return_value=difference)
+    )
+    connection = object()
+    diagnostic = probe.ServerDiagnostics(connection, "private_probe")
+    diagnostic.start("source")
+    diagnostic.finish("source")
+    report = diagnostic.report()
+    assert report["snapshot_seconds"] == 3.0
+    assert report["phases"]["source"] == {
+        "before": before,
+        "after": after,
+        "differences": difference,
+    }
+    assert all(
+        call.args == (connection, "private_probe") for call in snapshot.call_args_list
+    )
+    monkeypatch.setattr(
+        diagnostic, "finish", Mock(side_effect=TimeoutError("diagnostics failed"))
+    )
+    original = ValueError("original failure")
+    diagnostic.finish_preserving("source", original)
+    assert original.__notes__ == ["Post-phase diagnostics also failed: TimeoutError"]
+    with pytest.raises(TimeoutError, match="diagnostics failed"):
+        diagnostic.finish_preserving("source", None)
+
+
+def test_diagnostic_session_uses_read_only_private_root_and_closes(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cursor = Mock()
+    connection = Mock()
+    connection.cursor.return_value = probe.closing(cursor)
+    opened = Mock(return_value=connection)
+    monkeypatch.setattr(probe.mariadb_performance, "open_connection", opened)
+    config = CoreConfig(
+        database=DatabaseConfig(
+            sql_type="mariadb",
+            host="127.0.0.1",
+            port=33333,
+            user="probe",
+            database="private_probe",
+        )
+    )
+    with pytest.raises(ValueError, match="body"):
+        with probe.diagnostic_session(config, True) as diagnostic:
+            assert diagnostic.schema == "private_probe"
+            raise ValueError("body")
+    root = opened.call_args.args[0].database
+    assert root.user == "root" and root.host == "127.0.0.1" and root.port == 33333
+    assert config.database.user == "probe"
+    cursor.execute.assert_called_once_with("SET SESSION TRANSACTION READ ONLY")
+    connection.close.assert_called_once_with()
+
+
+def test_sqlite_refuses_server_diagnostics_before_database_open(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="MariaDB"):
+        with probe.database("sqlite", tmp_path, diagnostics=True):
+            pytest.fail("unexpected database entry")
+    assert not (tmp_path / "catalog.sqlite3").exists()

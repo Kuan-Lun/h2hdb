@@ -28,8 +28,9 @@ from typing import Any, Literal
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 
+import ingest_maintenance_mariadb as maria_diagnostics  # noqa: E402 - checkout helper.
 from compaction_contracts import (  # noqa: E402 - checkout evidence helper.
     current_compaction_layout,
     retained_compaction_roots,
@@ -155,7 +156,9 @@ class Recorder:
         ]
 
 
-def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
+def measure[T](
+    action: Callable[[], T], *, profile_mariadb: bool = False
+) -> tuple[T, dict[str, Any]]:
     """Attribute state discovery inside the real call without double counting."""
     recorder = Recorder()
     state_checks: list[float] = []
@@ -184,13 +187,19 @@ def measure[T](action: Callable[[], T]) -> tuple[T, dict[str, Any]]:
             try:
                 work = args[0] if args else kwargs["work"]
                 with sample_sqlite_candidate(work.connector) as sample:
-                    result = original(*args, **kwargs)
+                    if profile_mariadb:
+                        result, maria = maria_diagnostics.profile_candidate(
+                            work.connector, lambda: original(*args, **kwargs)
+                        )
+                    else:
+                        result, maria = original(*args, **kwargs), None
                 candidate_probes.append(
                     {
                         "group": recorder.group,
                         "target": measured_target,
                         "seconds": time.perf_counter() - started,
                         "candidate_found": result is not None,
+                        "mariadb_diagnostics": maria,
                         "sqlite_progress_callbacks": (
                             sample.callbacks if sample is not None else None
                         ),
@@ -399,6 +408,7 @@ def source_provenance() -> dict[str, Any]:
     ).stdout.strip()
     files = (
         Path(__file__).relative_to(ROOT),
+        Path("scripts/ingest_maintenance_mariadb.py"),
         Path("tests/vnext_pipeline.py"),
         Path("tests/vnext_fault_harness.py"),
         Path("tests/compaction_contracts.py"),
@@ -477,10 +487,15 @@ def measure_idle_sequence(
     report: dict[str, Any],
     case: dict[str, Any],
     output: Path,
+    profile_mariadb: bool = False,
 ) -> None:
     """Measure two consecutive DONE probes and one successful periodic claim."""
     before = catalog_snapshot(catalog)
     roots_before = retained_compaction_roots(config)
+    lock_before: dict[str, int] | None = None
+    if profile_mariadb:
+        with closing(open_connector(config)) as connector:
+            lock_before = maria_diagnostics.lock_counters(connector)
     sequence: list[dict[str, Any]] = []
     case["idle_sequence"] = sequence
     for ordinal in (1, 2):
@@ -490,7 +505,6 @@ def measure_idle_sequence(
         )
         record.update(operation=f"drain_{ordinal}", outcome=str(outcome))
         sequence.append(record)
-        write_report(output, report)
         if outcome is not VNextCurrentOnlyMaintenanceOutcome.DONE:
             raise RuntimeError("idle drain did not return DONE")
         if record["advance_count"]:
@@ -499,9 +513,20 @@ def measure_idle_sequence(
     session, claim = measure(lambda: facade.try_claim_ingest(True, LEASE_MICROSECONDS))
     claim.update(operation="periodic_claim", granted=session is not None)
     sequence.append(claim)
+    # Persist once after the complete measurement window. Serializing a growing
+    # report between calls can perturb the next sample despite being outside its
+    # timer. On failure the owning run_case still saves the in-memory samples.
     write_report(output, report)
     if session is None:
         raise RuntimeError("periodic claim after repeated DONE probes was refused")
+    if lock_before is not None:
+        with closing(open_connector(config)) as connector:
+            lock_after = maria_diagnostics.lock_counters(connector)
+        case["mariadb_baseline_row_lock_counters"] = {
+            "before": lock_before,
+            "after": lock_after,
+            "delta": maria_diagnostics.counter_delta(lock_before, lock_after),
+        }
     # This turn deliberately performs no source/catalog work. Complete through
     # the public API so the measured claim leaves no outstanding capability.
     report["stage"] = "idle_claim_complete"
@@ -527,6 +552,33 @@ def measure_idle_sequence(
             raise RuntimeError(f"post-claim cleanup did not progress: {outcome}")
     else:
         raise RuntimeError("post-claim cleanup exceeded its 256-attempt budget")
+    if profile_mariadb:
+        report["stage"] = "idle_mariadb_candidate_diagnostics"
+        with closing(open_connector(config)) as connector:
+            roundtrip = maria_diagnostics.roundtrip_control(connector)
+        outcome, diagnostic = measure(
+            lambda: facade.drain_current_only_maintenance(LEASE_MICROSECONDS),
+            profile_mariadb=True,
+        )
+        expected_targets = {
+            kind.value for kind in cleanup_repository._CURRENT_ONLY_TARGET_PRIORITY
+        }
+        if (
+            outcome is not VNextCurrentOnlyMaintenanceOutcome.DONE
+            or diagnostic["advance_count"]
+            or len(diagnostic["candidate_probes"]) != len(expected_targets)
+            or {value["target"] for value in diagnostic["candidate_probes"]}
+            != expected_targets
+        ):
+            raise RuntimeError(
+                "MariaDB diagnostic pass did not cover the idle fixed point"
+            )
+        case["mariadb_candidate_diagnostics"] = {
+            "roundtrip_control": roundtrip,
+            "outcome": str(outcome),
+            "measurement": diagnostic,
+            **maria_diagnostics.diagnostic_notes(),
+        }
     if catalog_snapshot(catalog) != before:
         raise RuntimeError("post-claim cleanup changed public catalog facts")
     if retained_compaction_roots(config) != roots_before:
@@ -546,11 +598,14 @@ def run_case(
     policy_change_at: int | None = None,
     mode: Literal["cleanup", "idle"] = "cleanup",
     pages_per_gallery: int = 1,
+    profile_mariadb: bool = False,
 ) -> dict[str, Any]:
     if mode not in {"cleanup", "idle"}:
         raise ValueError("mode must be cleanup or idle")
-    if not 1 <= gallery_count <= 32 or not 1 <= pages_per_gallery <= 32:
-        raise ValueError("galleries and pages per gallery must be between 1 and 32")
+    if not 1 <= gallery_count <= 128 or not 1 <= pages_per_gallery <= 32:
+        raise ValueError("galleries must be 1..128 and pages per gallery 1..32")
+    if profile_mariadb and (mode != "idle" or config.database.sql_type != "mariadb"):
+        raise ValueError("MariaDB diagnostics require MariaDB idle mode")
     if gallery_count * pages_per_gallery > 512:
         raise ValueError("synthetic fixture must not exceed 512 pages")
     if mode == "cleanup" and pages_per_gallery != 1:
@@ -571,6 +626,7 @@ def run_case(
     try:
         report["mode"] = mode
         report["pages_per_gallery"] = pages_per_gallery
+        report["mariadb_diagnostics_enabled"] = profile_mariadb
         report["measurement_notes"] += (
             " Idle mode snapshots the full public catalog and retained roots before "
             "two consecutive drains plus a periodic claim, and after public completion. "
@@ -591,6 +647,7 @@ def run_case(
             policy_change_at=policy_change_at,
             mode=mode,
             pages_per_gallery=pages_per_gallery,
+            profile_mariadb=profile_mariadb,
         )
     except BaseException as error:
         record_failure(output, report, error)
@@ -611,6 +668,7 @@ def _collect_case(
     policy_change_at: int | None,
     mode: Literal["cleanup", "idle"],
     pages_per_gallery: int,
+    profile_mariadb: bool,
 ) -> None:
     report["stage"] = "database_initialize"
     initialize_database(config)
@@ -618,6 +676,7 @@ def _collect_case(
         [
             gallery(
                 gid,
+                locator=(f"gallery-{gid:03d}",),
                 pages=[
                     f"page-{page}-of-{gid}".encode()
                     for page in range(pages_per_gallery)
@@ -646,6 +705,7 @@ def _collect_case(
             source.put(
                 gallery(
                     1,
+                    locator=("gallery-001",),
                     title=expected_title,
                     pages=expected_pages,
                 )
@@ -752,7 +812,13 @@ def _collect_case(
                 raise RuntimeError("full compaction did not reclaim obsolete history")
             if mode == "idle":
                 measure_idle_sequence(
-                    facade, catalog, config, report=report, case=case, output=output
+                    facade,
+                    catalog,
+                    config,
+                    report=report,
+                    case=case,
+                    output=output,
+                    profile_mariadb=profile_mariadb,
                 )
             report["stage"] = f"revision_{revision}_empty_drain"
             empty, case["empty_drain"] = measure(
@@ -869,7 +935,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("sqlite", "mariadb"), default="sqlite")
     parser.add_argument("--mode", choices=("cleanup", "idle"), default="cleanup")
-    parser.add_argument("--galleries", type=int, choices=range(1, 33), default=2)
+    parser.add_argument("--galleries", type=int, choices=range(1, 129), default=2)
+    parser.add_argument(
+        "--mariadb-diagnostics",
+        action="store_true",
+        help="separate idle SELECT replay, plans and handler counters on private MariaDB",
+    )
     parser.add_argument(
         "--pages-per-gallery",
         type=int,
@@ -887,12 +958,14 @@ def main() -> None:
     parser.add_argument(
         "--timeout",
         type=int,
-        choices=range(30, 601),
+        choices=range(30, 1201),
         default=180,
         help="cooperative POSIX alarm in seconds; native calls and teardown can exceed it",
     )
     parser.add_argument("--output-directory", type=Path, required=True)
     args = parser.parse_args()
+    if args.mariadb_diagnostics and (args.mode != "idle" or args.backend != "mariadb"):
+        parser.error("--mariadb-diagnostics requires --mode idle --backend mariadb")
     if args.galleries * args.pages_per_gallery > 512:
         parser.error("--galleries times --pages-per-gallery must not exceed 512")
     if args.mode == "cleanup" and args.pages_per_gallery != 1:
@@ -927,6 +1000,7 @@ def main() -> None:
                 policy_change_at=args.policy_change_at,
                 mode=args.mode,
                 pages_per_gallery=args.pages_per_gallery,
+                profile_mariadb=args.mariadb_diagnostics,
             )
             report["status"] = "incomplete"
             report["stage"] = "database_teardown"
