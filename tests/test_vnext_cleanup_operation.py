@@ -94,10 +94,11 @@ def _seed(
             max_rows_per_transaction=2,
             now=2,
         )
-    assert connector.fetch_one(
-        "SELECT frozen_root_count FROM operational_cleanup_jobs WHERE cleanup_id = %s",
-        (cycle.cleanup_id,),
-    ) == (1,)
+    with connector.read_transaction():
+        assert connector.fetch_one(
+            "SELECT frozen_root_count FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (1,)
     return gate, cycle
 
 
@@ -168,18 +169,19 @@ def _assert_one_operation_reads(queries: tuple[str, ...]) -> None:
 
 
 def _snapshot(connector: SQLConnector) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
-        connector.fetch_all(query)
-        for query in (
-            "SELECT * FROM operational_cleanup_jobs ORDER BY cleanup_id",
-            "SELECT * FROM operational_cleanup_checkpoints ORDER BY cleanup_id, phase",
-            "SELECT * FROM operational_cleanup_cycle_roots "
-            "ORDER BY cleanup_id, frozen_root_key",
-            "SELECT * FROM catalog_analysis_run_descriptor ORDER BY analysis_id",
-            "SELECT * FROM catalog_analysis_run_states ORDER BY analysis_id",
-            "SELECT * FROM catalog_analysis_run_completed_ats ORDER BY analysis_id",
+    with connector.read_transaction():
+        return tuple(
+            connector.fetch_all(query)
+            for query in (
+                "SELECT * FROM operational_cleanup_jobs ORDER BY cleanup_id",
+                "SELECT * FROM operational_cleanup_checkpoints ORDER BY cleanup_id, phase",
+                "SELECT * FROM operational_cleanup_cycle_roots "
+                "ORDER BY cleanup_id, frozen_root_key",
+                "SELECT * FROM catalog_analysis_run_descriptor ORDER BY analysis_id",
+                "SELECT * FROM catalog_analysis_run_states ORDER BY analysis_id",
+                "SELECT * FROM catalog_analysis_run_completed_ats ORDER BY analysis_id",
+            )
         )
-    )
 
 
 def test_empty_phase_chain_reads_immutable_authority_once_per_operation(
