@@ -31,7 +31,7 @@ __all__ = [
     "ArtifactReleaseUnavailableError",
 ]
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -292,14 +292,13 @@ class ArtifactReleaseRepository:
         gate_lease: GateLease,
         cursor: bytes = b"",
         page_limit: int = _MAX_PAGE_ROWS,
-        now: int,
+        now: int | Callable[[], int],
     ) -> ArtifactReleasePage:
         """Return one bounded page without calling storage or writing state."""
 
         start = _require_cursor(cursor)
         bound = _require_page_limit(page_limit)
-        timestamp = require_int63(now, field="artifact release issue now")
-        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        _require_exclusive_gate(work, gate_lease, now=now)
 
         cursor_clause = ""
         parameters: tuple[object, ...] = ()
@@ -364,19 +363,18 @@ class ArtifactReleaseRepository:
         backend: str,
         page: ArtifactReleasePage,
         adapters: Mapping[bytes, ArtifactReleaseAdapter],
-        now: int,
+        now: int | Callable[[], int],
     ) -> ArtifactReleaseAcknowledgement:
         """Call terminal storage releases only after committed revalidation."""
 
         requested = _require_page(page)
         if backend not in {"sqlite", "mariadb"}:
             raise ValueError("artifact release backend is not registered")
-        timestamp = require_int63(now, field="artifact release external now")
         resolved = _resolve_adapters(adapters, requested.items)
 
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=backend)
-            _require_exclusive_gate(work, requested.gate_lease, now=timestamp)
+            _require_exclusive_gate(work, requested.gate_lease, now=now)
             _revalidate_page(connector, requested)
 
         released: list[bytes] = []
@@ -404,14 +402,13 @@ class ArtifactReleaseRepository:
         work: VNextUnitOfWork,
         *,
         acknowledgement: ArtifactReleaseAcknowledgement,
-        now: int,
+        now: int | Callable[[], int],
     ) -> ArtifactReleaseCommitReceipt:
         """CAS one fully acknowledged page to COMMITTED, or replay with no DML."""
 
         ack = _require_acknowledgement(acknowledgement)
         page = ack.page
-        timestamp = require_int63(now, field="artifact release commit now")
-        _require_exclusive_gate(work, page.gate_lease, now=timestamp)
+        _require_exclusive_gate(work, page.gate_lease, now=now)
 
         current_items: list[ArtifactReleaseItem] = []
         candidates: set[bytes] = set()
@@ -887,13 +884,18 @@ def _require_exclusive_gate(
     work: VNextUnitOfWork,
     lease: GateLease,
     *,
-    now: int,
-) -> None:
-    current = MaintenanceGateRepository.lock_and_require_live(work, lease, now=now)
+    now: int | Callable[[], int],
+) -> int:
+    locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
+    timestamp = require_int63(
+        now() if callable(now) else now, field="artifact release gate now"
+    )
+    current = locked.require_live(now=timestamp)
     if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
         raise ArtifactReleaseUnavailableError(
             "artifact release requires the exact EXCLUSIVE maintenance gate"
         )
+    return timestamp
 
 
 def _require_exclusive_lease_shape(lease: GateLease) -> None:

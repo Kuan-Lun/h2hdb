@@ -438,7 +438,7 @@ class VNextCleanupRepository:
         *,
         cycle_cutoff_at: int,
         gate_lease: GateLease | None = None,
-        now: int | None = None,
+        now: int | Callable[[], int] | None = None,
     ) -> CatalogPublicationMaintenanceState:
         """Classify the catalog/resource fixed point across 22 of 23 targets.
 
@@ -462,8 +462,7 @@ class VNextCleanupRepository:
             raise TypeError("gate_lease and now must be supplied together")
         if gate_lease is not None:
             assert now is not None
-            timestamp = require_int63(now, field="current-only maintenance state now")
-            _require_exclusive_gate(work, gate_lease, now=timestamp)
+            _require_exclusive_gate(work, gate_lease, now=now)
 
         if _load_open_current_only_cycle(work) is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
@@ -481,7 +480,7 @@ class VNextCleanupRepository:
         *,
         gate_lease: GateLease,
         cycle_cutoff_at: int,
-        now: int,
+        now: int | Callable[[], int],
     ) -> CleanupCycle | None:
         """Resume the sole OPEN job or begin the first actionable target.
 
@@ -493,11 +492,10 @@ class VNextCleanupRepository:
         this path never starts new hash-cache work.
         """
 
-        timestamp = require_int63(now, field="current-only maintenance next now")
         cutoff = require_int63(
             cycle_cutoff_at, field="current-only maintenance cycle_cutoff_at"
         )
-        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        timestamp = _require_exclusive_gate(work, gate_lease, now=now)
 
         interrupted = _load_open_current_only_cycle(work)
         if interrupted is not None:
@@ -643,7 +641,7 @@ class VNextCleanupRepository:
         *,
         gate_lease: GateLease,
         cycle: CleanupCycle,
-        now: int,
+        now: int | Callable[[], int],
     ) -> tuple[CleanupBatchResult, ...]:
         """Advance empty phases and at most one bounded deletion batch.
 
@@ -656,8 +654,7 @@ class VNextCleanupRepository:
         """
 
         requested = _require_cycle(cycle)
-        timestamp = require_int63(now, field="current-only cleanup advance now")
-        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        timestamp = _require_exclusive_gate(work, gate_lease, now=now)
         operation = _lock_cycle(work, requested)
         checkpoint = operation.initial_checkpoint
         if operation.complete:
@@ -1026,11 +1023,17 @@ def _require_batch_bound(value: object) -> int:
 
 
 def _require_exclusive_gate(
-    work: VNextUnitOfWork, lease: GateLease, *, now: int
-) -> None:
-    current = MaintenanceGateRepository.lock_and_require_live(work, lease, now=now)
+    work: VNextUnitOfWork, lease: GateLease, *, now: int | Callable[[], int]
+) -> int:
+    # Current-only orchestration supplies its clock, so database/lock waits
+    # cannot leave the next operation authorized by a stale sampled time.
+    # Explicit repository commands retain their deterministic event timestamp.
+    locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
+    timestamp = require_int63(now() if callable(now) else now, field="cleanup gate now")
+    current = locked.require_live(now=timestamp)
     if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
         raise CleanupUnavailableError("cleanup requires the exact EXCLUSIVE gate")
+    return timestamp
 
 
 def _cleanup_id(kind: CleanupTargetKind, shard_no: int, generation: int) -> bytes:

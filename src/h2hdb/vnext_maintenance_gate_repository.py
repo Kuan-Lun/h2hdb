@@ -155,6 +155,79 @@ class LockedSharedGateClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class LockedExclusiveGateClaim:
+    """Unpublished EXCLUSIVE claim; its deadline starts after gate lock waits."""
+
+    work: VNextUnitOfWork
+    token: bytes
+    head: _Head | None
+    slots: tuple[_Owner | None, ...]
+
+    def grant(self, *, now: int, lease_duration: int) -> GateLease:
+        timestamp = require_int63(now, field="exclusive gate claim now")
+        deadline = _lease_deadline(timestamp, lease_duration)
+        work, token, head, slots = self.work, self.token, self.head, self.slots
+        if head is None:
+            MaintenanceGateRepository._create_generation_and_head(
+                work,
+                generation=0,
+                mode=GateMode.EXCLUSIVE,
+                now=timestamp,
+            )
+            work.connector.execute(
+                f"INSERT INTO {_OWNER_TABLE} "
+                "(owner_token, gate_generation, lease_expires_at) "
+                "VALUES (%s, 0, %s)",
+                (token, deadline),
+            )
+            _insert_holders_exact(work, token, _SLOTS)
+            return GateLease(token, 0, GateMode.EXCLUSIVE, _SLOTS, deadline)
+
+        owners = _owners_by_token(slots)
+
+        live = _live_current_owners(head, slots, owners, now=timestamp)
+        if live:
+            raise MaintenanceGateUnavailableError(
+                "a live current gate holder blocks EXCLUSIVE acquisition"
+            )
+        next_generation = _successor(head.generation)
+
+        work.connector.execute(
+            f"INSERT INTO {_GENERATION_TABLE} "
+            "(gate_generation, mode, created_at) VALUES (%s, %s, %s)",
+            (next_generation, GateMode.EXCLUSIVE.value, timestamp),
+        )
+        work.connector.execute(
+            f"INSERT INTO {_OWNER_TABLE} "
+            "(owner_token, gate_generation, lease_expires_at) VALUES (%s, %s, %s)",
+            (token, next_generation, deadline),
+        )
+        # The locked singleton head serializes every gate mutation. The exact
+        # old slot/owner pairs are durable authority, bounded by the 64-slot
+        # domain. Replace that set atomically instead of issuing one round trip
+        # per slot; old owners are removed only after their children are gone.
+        _delete_holders_exact(
+            work,
+            tuple(
+                (slot, owner.token)
+                for slot, owner in enumerate(slots)
+                if owner is not None
+            ),
+        )
+        _insert_holders_exact(work, token, _SLOTS)
+        _delete_owners_exact(
+            work, tuple({owner.token: owner for owner in slots if owner}.values())
+        )
+        work.compare_and_swap(
+            f"UPDATE {_HEAD_TABLE} SET gate_generation = %s, updated_at = %s "
+            "WHERE singleton_id = 1 AND gate_generation = %s AND updated_at = %s",
+            (next_generation, timestamp, head.generation, head.updated_at),
+            authority="maintenance gate head",
+        )
+        return GateLease(token, next_generation, GateMode.EXCLUSIVE, _SLOTS, deadline)
+
+
+@dataclass(frozen=True, slots=True)
 class LockedGateRenewal:
     """Exact persisted authority locked by one owning write transaction."""
 
@@ -190,6 +263,24 @@ class LockedGateRenewal:
             current.mode,
             current.slots,
             deadline,
+        )
+
+    def release(self, *, now: int) -> None:
+        """Delete only this already locked, exact and still live capability."""
+
+        current = self.require_live(now=now)
+        _delete_holders_exact(
+            self.work, tuple((slot, current.owner_token) for slot in current.slots)
+        )
+        _delete_owners_exact(
+            self.work,
+            (
+                _Owner(
+                    current.owner_token,
+                    current.gate_generation,
+                    current.lease_expires_at,
+                ),
+            ),
         )
 
 
@@ -247,87 +338,31 @@ class MaintenanceGateRepository:
         now: int,
         lease_duration: int,
     ) -> GateLease:
-        token = require_uuid16(_new_owner_token(), field="generated gate owner_token")
         timestamp = require_int63(now, field="exclusive gate claim now")
-        deadline = _lease_deadline(timestamp, lease_duration)
+        _lease_deadline(timestamp, lease_duration)
+        return MaintenanceGateRepository.lock_exclusive_claim(work).grant(
+            now=timestamp, lease_duration=lease_duration
+        )
+
+    @staticmethod
+    def lock_exclusive_claim(work: VNextUnitOfWork) -> LockedExclusiveGateClaim:
+        """Lock the complete fixed gate domain before sampling the grant time."""
+
+        token = require_uuid16(_new_owner_token(), field="generated gate owner_token")
         head = MaintenanceGateRepository._lock_head_and_mode(work)
-
-        if head is None:
-            target = MaintenanceGateRepository._lock_owner(work, token)
-            slots = MaintenanceGateRepository._lock_slots(work)
-            if target is not None:
-                raise MaintenanceGateTokenCollisionError(
-                    "generated gate owner token already exists"
-                )
-            if any(owner is not None for owner in slots):
-                raise MaintenanceGateCorruptionError(
-                    "gate authority exists without its singleton head"
-                )
-            MaintenanceGateRepository._create_generation_and_head(
-                work,
-                generation=0,
-                mode=GateMode.EXCLUSIVE,
-                now=timestamp,
-            )
-            work.connector.execute(
-                f"INSERT INTO {_OWNER_TABLE} "
-                "(owner_token, gate_generation, lease_expires_at) "
-                "VALUES (%s, 0, %s)",
-                (token, deadline),
-            )
-            _insert_holders_exact(work, token, _SLOTS)
-            return GateLease(token, 0, GateMode.EXCLUSIVE, _SLOTS, deadline)
-
         target = MaintenanceGateRepository._lock_owner(work, token)
         slots = MaintenanceGateRepository._lock_slots(work)
-        owners = _owners_by_token(slots)
-        _validate_current_holders(head, slots, owners)
-
+        if head is not None:
+            _validate_current_holders(head, slots, _owners_by_token(slots))
         if target is not None:
             raise MaintenanceGateTokenCollisionError(
                 "generated gate owner token already exists"
             )
-
-        live = _live_current_owners(head, slots, owners, now=timestamp)
-        if live:
-            raise MaintenanceGateUnavailableError(
-                "a live current gate holder blocks EXCLUSIVE acquisition"
+        if head is None and any(owner is not None for owner in slots):
+            raise MaintenanceGateCorruptionError(
+                "gate authority exists without its singleton head"
             )
-        next_generation = _successor(head.generation)
-
-        work.connector.execute(
-            f"INSERT INTO {_GENERATION_TABLE} "
-            "(gate_generation, mode, created_at) VALUES (%s, %s, %s)",
-            (next_generation, GateMode.EXCLUSIVE.value, timestamp),
-        )
-        work.connector.execute(
-            f"INSERT INTO {_OWNER_TABLE} "
-            "(owner_token, gate_generation, lease_expires_at) VALUES (%s, %s, %s)",
-            (token, next_generation, deadline),
-        )
-        # The locked singleton head serializes every gate mutation. The exact
-        # old slot/owner pairs are durable authority, bounded by the 64-slot
-        # domain. Replace that set atomically instead of issuing one round trip
-        # per slot; old owners are removed only after their children are gone.
-        _delete_holders_exact(
-            work,
-            tuple(
-                (slot, owner.token)
-                for slot, owner in enumerate(slots)
-                if owner is not None
-            ),
-        )
-        _insert_holders_exact(work, token, _SLOTS)
-        _delete_owners_exact(
-            work, tuple({owner.token: owner for owner in slots if owner}.values())
-        )
-        work.compare_and_swap(
-            f"UPDATE {_HEAD_TABLE} SET gate_generation = %s, updated_at = %s "
-            "WHERE singleton_id = 1 AND gate_generation = %s AND updated_at = %s",
-            (next_generation, timestamp, head.generation, head.updated_at),
-            authority="maintenance gate head",
-        )
-        return GateLease(token, next_generation, GateMode.EXCLUSIVE, _SLOTS, deadline)
+        return LockedExclusiveGateClaim(work, token, head, slots)
 
     @staticmethod
     def resume(
@@ -402,20 +437,7 @@ class MaintenanceGateRepository:
         *,
         now: int,
     ) -> None:
-        current = MaintenanceGateRepository.lock_and_require_live(work, lease, now=now)
-        _delete_holders_exact(
-            work, tuple((slot, current.owner_token) for slot in current.slots)
-        )
-        _delete_owners_exact(
-            work,
-            (
-                _Owner(
-                    current.owner_token,
-                    current.gate_generation,
-                    current.lease_expires_at,
-                ),
-            ),
-        )
+        MaintenanceGateRepository.lock_for_renewal(work, lease).release(now=now)
 
     @staticmethod
     def _lock_head_and_mode(work: VNextUnitOfWork) -> _Head | None:

@@ -1390,7 +1390,7 @@ id = "runtime.production.artifact-release"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production artifact-release repository reconstructs a bounded immutable keyset page from current sealed candidate, artifact, locator, codec, generation, token, adapter and PENDING-or-PREPARED state facts under the exact live EXCLUSIVE gate, excludes active or published candidates, commits exact revalidation before invoking terminal external tombstones outside every database transaction, accepts only its opaque acknowledgement, then relocks and exact-compares the complete page under that gate before atomically compare-and-swapping every PENDING or PREPARED row to COMMITTED; the public current-only facade wires one resource at a time into the existing cleanup fixed point, and all-COMMITTED acknowledgement replay performs zero DML."
+claim = "The production artifact-release repository reconstructs a bounded immutable keyset page from current sealed candidate, artifact, locator, codec, generation, token, adapter and PENDING-or-PREPARED state facts under the exact live EXCLUSIVE gate, excludes active or published candidates, commits exact revalidation before invoking terminal external tombstones outside every database transaction, accepts only its opaque acknowledgement, then relocks and exact-compares the complete page under that gate before atomically compare-and-swapping every PENDING or PREPARED row to COMMITTED; the public current-only facade wires one resource at a time into the existing cleanup fixed point, and all-COMMITTED acknowledgement replay performs zero DML. Current-only orchestration supplies its clock so issue, pre-external revalidation and acknowledgement commit sample time after locking the exact gate; explicit internal event timestamps remain supported."
 assumptions = ["Every registered release adapter makes each exact protection-token tombstone idempotent and terminal against every delayed protect."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_artifact_release_repository.py"
@@ -1408,12 +1408,16 @@ symbol = "ArtifactReleaseRepository.commit_page"
 path = "src/h2hdb/vnext_ingest_facade.py"
 symbol = "VNextIngestFacade.drain_current_only_maintenance"
 
+[[evidence.location]]
+path = "src/h2hdb/vnext_artifact_release_repository.py"
+symbol = "_require_exclusive_gate"
+
 [[evidence]]
 id = "fault.production.artifact-release"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Artifact-release tests reject active or durably committed candidates before external release, reject missing committed cursor predecessors, corrupt token/key/blob authority, forged page evidence and noncanonical typed cursors, enforce acquisition-before-thumbnail lock order for one publication, replay an externally durable tombstone after its response is lost, and drive every pre-commit policy-crash boundary to the same terminal cleanup result."
+claim = "Artifact-release tests reject active or durably committed candidates before external release, reject missing committed cursor predecessors, corrupt token/key/blob authority, forged page evidence and noncanonical typed cursors, enforce acquisition-before-thumbnail lock order for one publication, replay an externally durable tombstone after its response is lost, and drive every pre-commit policy-crash boundary to the same terminal cleanup result. Post-lock clock tests cover issue, pre-external revalidation and acknowledgement commit immediately before, at and after expiry. Expiry after an external tombstone preserves PREPARED evidence for exact token replay; expiry after acknowledgement COMMIT preserves COMMITTED progress without repeating the external effect. Fresh facade attempts converge to cleanup DONE and admit the next ingest."
 assumptions = ["The monotone test adapter models the required terminal tombstone but is not a live production storage service."]
 [[evidence.location]]
 path = "tests/test_vnext_artifact_release_repository.py"
@@ -1436,6 +1440,16 @@ symbol = "test_public_facade_replays_release_after_tombstone_response_loss"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_policy_change_crash_matrix_converges_under_the_requested_policy"
+
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_lease.py"
+symbol = "test_artifact_phase_samples_after_gate_wait_and_rejects_expiry"
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_lease.py"
+symbol = "test_artifact_explicit_event_timestamp_remains_supported"
+[[evidence.location]]
+path = "tests/test_vnext_artifact_release_lease.py"
+symbol = "test_facade_artifact_expiry_retains_durable_evidence_and_converges"
 
 [[evidence]]
 id = "integration.sqlite.artifact-release"
@@ -1802,7 +1816,7 @@ layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
 claim = "The production cleanup repository uses the fixed twenty-three-kind phase registry, deterministic reusable target identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. PUBLICATION_GENERATION freezes the oldest complete contiguous eligible prefix regardless of the slot selected by its first generation, so a completed bounded cycle always restores a contiguous suffix; OPEN PG_EDGE and PG_ROOT gaps remain exact sealed-root/cursor transitions. STORAGE_OBJECT_KEY reclaims only unreachable normalized key families; CATALOG_PUBLICATION removes only finalized non-head payload; PUBLICATION_CANDIDATE retains unresolved resource protection families; OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement."
-assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
+assumptions = ["Every bounded cleanup transaction requires exact live EXCLUSIVE authority at admission under the gate lock. A multi-transaction cleanup cycle can outlive one lease; its durable checkpoint remains resumable under a newly claimed generation. Logical row bounds do not guarantee that a transaction finishes before a wall-clock lease deadline.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_cleanup_repository.py"
 symbol = "VNextCleanupRepository"
@@ -2319,8 +2333,8 @@ id = "runtime.production.maintenance-gate"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production maintenance-gate repository allocates the exact 64-slot domain, uses repository-issued capabilities, exact owner and lease compare-and-swap, atomic exclusive generation replacement, live authorization and fenced release."
-assumptions = ["Destructive callers retain and revalidate the exclusive lease for their complete bounded cycle."]
+claim = "The production maintenance-gate repository allocates the exact 64-slot domain, uses repository-issued capabilities, exact owner and lease compare-and-swap, atomic exclusive generation replacement, live authorization and fenced release. The public current-only maintenance driver samples its authorization clock after acquiring gate locks, yields on stale or expired authority, and lets a later fresh claim resume the durable cleanup checkpoint. Expired capabilities cannot renew or authorize another cleanup transaction; token collision, corruption and database errors remain failures."
+assumptions = ["Each bounded destructive transaction requires exact live authority at its locked admission point. One lease need not span the entire multi-transaction cleanup cycle, and renewal scheduling is not authorization. The supplied clock is the application clock; no theorem proves clock accuracy, SQL wait duration, Python exception handling, or a wall-clock completion deadline."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_maintenance_gate_repository.py"
 symbol = "MaintenanceGateRepository"
@@ -2328,13 +2342,29 @@ symbol = "MaintenanceGateRepository"
 path = "src/h2hdb/vnext_maintenance_gate_repository.py"
 symbol = "lock_and_require_live"
 
+[[evidence.location]]
+path = "src/h2hdb/vnext_maintenance_gate_repository.py"
+symbol = "MaintenanceGateRepository.lock_exclusive_claim"
+[[evidence.location]]
+path = "src/h2hdb/vnext_maintenance_gate_repository.py"
+symbol = "LockedExclusiveGateClaim.grant"
+[[evidence.location]]
+path = "src/h2hdb/vnext_maintenance_gate_repository.py"
+symbol = "LockedGateRenewal.require_live"
+[[evidence.location]]
+path = "src/h2hdb/vnext_maintenance_gate_repository.py"
+symbol = "LockedGateRenewal.release"
+[[evidence.location]]
+path = "src/h2hdb/vnext_ingest_facade.py"
+symbol = "VNextIngestFacade.drain_current_only_maintenance"
+
 [[evidence]]
 id = "lean.operational.maintenance-gate-batch"
 layer = "lean"
 strength = "unbounded_theorem"
 directness = "supporting"
 claim = "Materializing one exact holder snapshot preserves every per-slot owner lookup and every authorization predicate over the resulting fixed 64-slot vector."
-assumptions = ["The SQL result is one exact locked snapshot with validated owner fields; runtime tests cover duplicate, orphan, domain and missing-exclusive-slot rejection. The theorem does not prove SQL locking or Python allocation sizes."]
+assumptions = ["The SQL result is one exact locked snapshot with validated owner fields; runtime tests cover duplicate, orphan, domain and missing-exclusive-slot rejection. The theorem does not model clock advancement, renewal, expired-lease yield, checkpoint resumption, SQL locking or Python allocation sizes."]
 [[evidence.location]]
 path = "verification/lean/MaintenanceGateBatch.lean"
 symbol = "all_slots_preserve_exact_authority"
@@ -2350,8 +2380,8 @@ id = "fault.production.maintenance-gate"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Maintenance-gate tests reject token collision, live shared versus exclusive contention and the sixty-fifth shared owner, fence stale renew and release, and inject partial exclusive insertion failure while proving generation, owner and all holders roll back."
-assumptions = ["The current matrix does not interrupt a complete destructive caller cycle after each cleanup batch."]
+claim = "Maintenance-gate tests reject token collision, live shared versus exclusive contention and the sixty-fifth shared owner, fence stale renew and release, and inject partial exclusive insertion failure while proving generation, owner and all holders roll back. Current-only facade cases expire a lease at or beyond its deadline after a committed batch, preserve that checkpoint, and resume to DONE through a new claim. Lock-wait clock advances test claim and renewal timing, stale-operation zero mutation, replaced-owner retention, exact token-collision propagation, and rollback with propagation for fatal failures. A rolled-back attempt never reports progress, and the persisted checkpoint rows remain exactly unchanged. A finite job still completes when every admitted deletion batch outlasts its lease and each next call claims again; a claim whose own COMMIT crosses expiry yields without starting cleanup. Failure-compensation errors either preserve the primary failure or retain it as an explicit cause chain."
+assumptions = ["These are finite deterministic expiry, lock-wait and failure schedules, not all possible interleavings or a wall-clock liveness guarantee. The injected clock controls the authority deadline; a cleanup checkpoint is accepted only when its owning transaction commits."]
 [[evidence.location]]
 path = "tests/test_vnext_maintenance_gate_repository.py"
 symbol = "test_full_shared_slot_domain_rejects_the_sixty_fifth_owner_without_writes"
@@ -2367,6 +2397,41 @@ symbol = "test_batched_slot_authority_rejects_orphans_and_nonexact_domains"
 [[evidence.location]]
 path = "tests/test_vnext_maintenance_gate_repository.py"
 symbol = "test_exclusive_authority_still_requires_every_slot_after_batching"
+
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_expired_committed_batch_yields_then_resumes_to_done"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_gate_wait_expiry_yields_without_mutating_under_stale_time"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_exclusive_claim_starts_lease_after_gate_wait"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_renewal_samples_after_gate_wait_and_never_revives_expired_owner"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_replaced_owner_is_not_released_and_fresh_claim_resumes_durable_job"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_exclusive_token_collision_is_not_disguised_as_contention"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_fatal_failures_propagate_and_uncommitted_batch_rolls_back"
+
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_every_slow_batch_yields_and_finite_work_still_reaches_done"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_claim_committed_after_expiry_yields_without_starting_cleanup"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_failure_compensation_preserves_primary_or_explicit_error_chain"
+[[evidence.location]]
+path = "tests/test_vnext_current_maintenance_lease.py"
+symbol = "test_rolled_back_attempt_never_reports_progress"
 
 [[evidence]]
 id = "runtime.production.operational-event"

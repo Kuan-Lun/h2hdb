@@ -394,6 +394,38 @@ and every destructive cycle requires the exclusive maintenance gate. Shared
 observation pages use allocation associations plus exact incoming-FK blockers;
 canonical pages are owner scoped.
 
+The public current-only maintenance driver treats lease expiry as a bounded
+attempt ending, while preserving the durable cleanup checkpoint. It samples a
+fresh authorization clock after acquiring gate locks; an expired capability
+cannot renew or authorize another cleanup transaction. A later call obtains a
+new claim and resumes the retained job. A checkpoint admitted under exact live
+authority remains progress after its transaction commits, even if the lease
+expires meanwhile and the driver has not yet established the cleanup fixed
+point. Token collisions, corrupt authority and database errors remain
+failures rather than ordinary contention. Each destructive transaction needs
+live authority at its locked admission point; the entire multi-transaction
+cycle need not fit inside one lease. Bounded logical row counts do not promise
+that SQL finishes before a wall-clock deadline.
+
+`MaintenanceGateBatch.lean` proves lookup/authorization equivalence for one
+already validated 64-slot snapshot. It does not model clock advancement or
+lease recovery. `CatalogCore.tla` models the separate ingest lease, and the
+staging model represents maintenance exclusion as a Boolean. The maintenance
+expiry, post-lock clock and durable-resume claims therefore require direct
+runtime, fault and backend evidence; existing Lean/TLC success does not prove
+those behaviors. Deterministic tests include a finite job whose every admitted
+deletion batch crosses the deadline, and a claim whose own COMMIT crosses its
+deadline before cleanup starts. They establish those schedules, not eventual
+completion under arbitrary lock waits or a clock that prevents every claim
+from authorizing work.
+
+Artifact release crosses an external-I/O boundary: expiry after a terminal
+storage tombstone preserves its PREPARED database evidence for exact-token
+replay, while expiry after the acknowledgement transaction commits preserves
+COMMITTED progress without repeating the external effect. Its issue,
+pre-external validation and acknowledgement phases each test time after their
+gate locks; adapter I/O remains outside database transactions.
+
 Catalog revision descriptors, common commits, generation nodes, and source
 lineage are not lifetime audit history. They may remain while a current build or
 candidate still pins its predecessor, then fixed-shard cleanup removes the

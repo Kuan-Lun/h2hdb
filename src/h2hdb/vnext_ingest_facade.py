@@ -1556,9 +1556,11 @@ class VNextIngestFacade:
         such transactions. Consecutive empty phases share one transaction while
         retaining their durable receipts; the first nonempty phase ends it.
         ``PROGRESSED``
-        means at least one advance committed *and work remains*, so callers
-        should retry promptly; ``BLOCKED`` and ``CONTENDED`` should use the
-        ordinary poll cadence.  Callers retain no capability, and interrupted
+        means at least one advance committed and completion is not yet proven,
+        so callers should retry promptly. ``CONTENDED`` also covers authority
+        lost before any advance committed; it and ``BLOCKED`` use the ordinary
+        poll cadence. Expired authority is never revived. Callers retain no
+        capability, and interrupted
         shard jobs resume before new work.  Every completed cycle restarts the
         fixed dependency-priority scan from its head.
 
@@ -1597,19 +1599,22 @@ class VNextIngestFacade:
                 return VNextCurrentOnlyMaintenanceOutcome.BLOCKED
 
             try:
-                claim_now = require_int63(
-                    self.__clock(),
-                    field="current-only maintenance claim now",
-                )
                 with connector.transaction():
-                    lease = MaintenanceGateRepository.claim_exclusive(
-                        VNextUnitOfWork(connector, backend=self.__backend),
-                        now=claim_now,
+                    claim = MaintenanceGateRepository.lock_exclusive_claim(
+                        VNextUnitOfWork(connector, backend=self.__backend)
+                    )
+                    lease = claim.grant(
+                        now=require_int63(
+                            self.__clock(), field="current-only maintenance claim now"
+                        ),
                         lease_duration=duration,
                     )
+            except MaintenanceGateTokenCollisionError:
+                raise
             except MaintenanceGateUnavailableError:
                 return VNextCurrentOnlyMaintenanceOutcome.CONTENDED
 
+            progressed = False
             try:
                 lease = self.__renew_current_only_lease(
                     connector, lease, duration=duration
@@ -1624,6 +1629,7 @@ class VNextIngestFacade:
                     )
                 )
                 if released_artifact_page:
+                    progressed = True
                     outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
                 else:
                     advanced_batches = 0
@@ -1646,6 +1652,7 @@ class VNextIngestFacade:
                                 connector, lease, cycle=cycle
                             )
                             advanced_batches += 1
+                            progressed = True
                             if results[-1].cycle_complete:
                                 break
                         if not results[-1].cycle_complete:
@@ -1667,20 +1674,25 @@ class VNextIngestFacade:
                         outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
                     else:
                         outcome = VNextCurrentOnlyMaintenanceOutcome.BLOCKED
-            except BaseException:
-                self.__release_current_only_after_failure(connector, lease)
+                self.__release_current_only_lease(connector, lease)
+            except MaintenanceGateTokenCollisionError as error:
+                self.__release_current_only_after_failure(connector, lease, cause=error)
                 raise
-
-            release_now = require_int63(
-                self.__clock(),
-                field="current-only maintenance release now",
-            )
-            with connector.transaction():
-                MaintenanceGateRepository.release(
-                    VNextUnitOfWork(connector, backend=self.__backend),
-                    lease,
-                    now=release_now,
+            except MaintenanceGateUnavailableError as error:
+                # A bounded SQL operation or COMMIT can outlast any lease.
+                # Committed checkpoints remain authoritative; the next call
+                # must obtain a new capability and resume them. Never continue
+                # this attempt with an expired or replaced owner, nor claim
+                # DONE without completing the final live release.
+                self.__release_current_only_after_failure(connector, lease, cause=error)
+                return (
+                    VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+                    if progressed
+                    else VNextCurrentOnlyMaintenanceOutcome.CONTENDED
                 )
+            except BaseException as error:
+                self.__release_current_only_after_failure(connector, lease, cause=error)
+                raise
             return outcome
 
     def __release_current_only_artifact_page(
@@ -1692,15 +1704,12 @@ class VNextIngestFacade:
     ) -> bool:
         """Release one bounded orphan page across the database/I/O boundary."""
 
-        issue_now = require_int63(
-            self.__clock(), field="current-only artifact release issue now"
-        )
         with connector.transaction():
             page = ArtifactReleaseRepository.issue_page(
                 VNextUnitOfWork(connector, backend=self.__backend),
                 gate_lease=lease,
                 page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
-                now=issue_now,
+                now=self.__clock,
             )
         if page.terminal:
             return False
@@ -1710,18 +1719,13 @@ class VNextIngestFacade:
             backend=self.__backend,
             page=page,
             adapters=artifact_release_adapters,
-            now=require_int63(
-                self.__clock(), field="current-only artifact release external now"
-            ),
-        )
-        commit_now = require_int63(
-            self.__clock(), field="current-only artifact release commit now"
+            now=self.__clock,
         )
         with connector.transaction():
             ArtifactReleaseRepository.commit_page(
                 VNextUnitOfWork(connector, backend=self.__backend),
                 acknowledgement=acknowledgement,
-                now=commit_now,
+                now=self.__clock,
             )
         return True
 
@@ -1732,16 +1736,13 @@ class VNextIngestFacade:
         *,
         cycle_cutoff_at: int,
     ) -> CatalogPublicationMaintenanceState:
-        now = require_int63(
-            self.__clock(), field="current-only maintenance preflight now"
-        )
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=self.__backend)
             state = VNextCleanupRepository.current_only_maintenance_state(
                 work,
                 cycle_cutoff_at=cycle_cutoff_at,
                 gate_lease=lease,
-                now=now,
+                now=self.__clock,
             )
         return state
 
@@ -1752,16 +1753,13 @@ class VNextIngestFacade:
         *,
         cycle_cutoff_at: int,
     ) -> CleanupCycle | None:
-        now = require_int63(
-            self.__clock(), field="current-only maintenance next-cycle now"
-        )
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=self.__backend)
             cycle = VNextCleanupRepository.next_current_only_cycle(
                 work,
                 gate_lease=lease,
                 cycle_cutoff_at=cycle_cutoff_at,
-                now=now,
+                now=self.__clock,
             )
         return cycle
 
@@ -1772,16 +1770,13 @@ class VNextIngestFacade:
         *,
         cycle: CleanupCycle,
     ) -> tuple[CleanupBatchResult, ...]:
-        now = require_int63(
-            self.__clock(), field="current-only maintenance advance now"
-        )
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=self.__backend)
             result = VNextCleanupRepository.advance_current_only_cycle(
                 work,
                 gate_lease=lease,
                 cycle=cycle,
-                now=now,
+                now=self.__clock,
             )
         return result
 
@@ -1806,33 +1801,46 @@ class VNextIngestFacade:
         if lease.lease_expires_at - now > duration // 2:
             return lease
         with connector.transaction():
-            return MaintenanceGateRepository.renew(
-                VNextUnitOfWork(connector, backend=self.__backend),
-                lease,
-                now=now,
+            locked = MaintenanceGateRepository.lock_for_renewal(
+                VNextUnitOfWork(connector, backend=self.__backend), lease
+            )
+            return locked.renew(
+                now=require_int63(
+                    self.__clock(), field="current-only maintenance locked renewal now"
+                ),
                 lease_duration=duration,
+            )
+
+    def __release_current_only_lease(
+        self, connector: SQLConnector, lease: GateLease
+    ) -> None:
+        with connector.transaction():
+            locked = MaintenanceGateRepository.lock_for_renewal(
+                VNextUnitOfWork(connector, backend=self.__backend), lease
+            )
+            locked.release(
+                now=require_int63(
+                    self.__clock(), field="current-only maintenance release now"
+                )
             )
 
     def __release_current_only_after_failure(
         self,
         connector: SQLConnector,
         lease: GateLease,
+        *,
+        cause: BaseException,
     ) -> None:
         try:
-            now = require_int63(
-                self.__clock(),
-                field="failed current-only maintenance release now",
-            )
-            with connector.transaction():
-                MaintenanceGateRepository.release(
-                    VNextUnitOfWork(connector, backend=self.__backend),
-                    lease,
-                    now=now,
-                )
+            self.__release_current_only_lease(connector, lease)
+        except MaintenanceGateTokenCollisionError as error:
+            raise error from cause
         except MaintenanceGateUnavailableError:
             # A process crash likewise loses this capability; expiry/takeover
             # plus durable cleanup checkpoints make a later call safe.
             return
+        except BaseException as error:
+            raise error from cause
 
     def ensure_policy(
         self,
