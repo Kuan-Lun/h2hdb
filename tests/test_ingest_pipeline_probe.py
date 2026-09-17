@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
+from sqlite3 import OperationalError
 from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -15,6 +16,7 @@ from unittest.mock import Mock
 import pytest
 
 from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb.database_performance import DatabasePerformance, database_phase
 from h2hdb.ingest_performance import IngestPerformance
 from h2hdb.sql_performance import instrument_connector
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -144,6 +146,114 @@ def test_swallowed_sql_observer_failure_invalidates_report(
     with pytest.raises(RuntimeError, match="observer failed") as error:
         observer.report()
     assert isinstance(error.value.__cause__, ValueError)
+
+
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG, logging.WARNING])
+def test_mixed_diagnostics_preserve_exact_sql_boundaries_and_validated_labels(
+    probe: ModuleType, tmp_path: Path, level: int
+) -> None:
+    observer = probe.Observer()
+    ingest = IngestPerformance(logging.getLogger("mixed-ingest"), backend="sqlite")
+    database = DatabasePerformance(
+        logging.getLogger("mixed-database"), backend="sqlite", level=level
+    )
+    with observer.installed():
+        with instrument_connector(
+            SQLiteConnector(str(tmp_path / "mixed.db"))
+        ) as connector:
+            connector.fetch_one("SELECT 1")
+            with ingest.step("analysis", "commit", "pending", 1) as outer:
+                with connector.transaction():
+                    connector.fetch_one("SELECT 2")
+                    with database.operation("nested_database"):
+                        with database_phase("validation"):
+                            connector.fetch_one("SELECT 3")
+                    with ingest.step("analysis", "prepare", "inner", 1):
+                        connector.fetch_one("SELECT 4")
+                outer.operation = "validated"
+            with database.operation("outer_database"):
+                connector.fetch_one("SELECT 5")
+                with ingest.step("analysis", "commit", "rolled_back", 1):
+                    with pytest.raises(OperationalError, match="no such table"):
+                        with connector.transaction():
+                            connector.fetch_one("SELECT 6")
+                            connector.fetch_one("SELECT * FROM missing_table")
+                with database_phase("after_failure"):
+                    connector.fetch_one("SELECT 7")
+    report = observer.report()
+    assert report["sql_calls"] == 8
+    assert report["returned_rows"] == 7
+    assert (
+        sum(
+            query["calls"]
+            for query in report["queries"]
+            if query["category"] == "connection"
+        )
+        == 2
+    )
+    assert (
+        sum(
+            query["calls"]
+            for query in report["queries"]
+            if query["category"] == "transaction"
+        )
+        == 4
+    )
+    actual = {
+        (query["operation"], query["sql"]): (query["calls"], query["returned_rows"])
+        for query in report["queries"]
+        if query["category"] == "sql"
+    }
+    assert actual == {
+        ("outside", "SELECT 1"): (1, 1),
+        ("validated", "SELECT 2"): (1, 1),
+        ("validated", "SELECT 3"): (1, 1),
+        ("inner", "SELECT 4"): (1, 1),
+        ("outside", "SELECT 5"): (1, 1),
+        ("rolled_back", "SELECT 6"): (1, 1),
+        ("rolled_back", "SELECT * FROM missing_table"): (1, 0),
+        ("outside", "SELECT 7"): (1, 1),
+    }
+    assert observer.active is None
+    assert not observer.pending
+
+
+def test_audit_observer_counts_mixed_diagnostics_once_under_validator_labels(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    observer = probe.AuditObserver()
+    ingest = IngestPerformance(logging.getLogger("audit-ingest"), backend="sqlite")
+    database = DatabasePerformance(
+        logging.getLogger("audit-database"), backend="sqlite", level=logging.DEBUG
+    )
+    with observer.installed():
+        with instrument_connector(
+            SQLiteConnector(str(tmp_path / "audit-mixed.db"))
+        ) as connector:
+            with observer.scope("schema_structure"):
+                with database.operation("schema_check"):
+                    connector.fetch_one("SELECT 1")
+                    with observer.scope("semantic:example"):
+                        with ingest.step("analysis", "prepare", "nested", 1):
+                            connector.fetch_one("SELECT 2")
+                            with database_phase("nested_validator"):
+                                connector.fetch_one("SELECT 3")
+                    connector.fetch_one("SELECT 4")
+    report = observer.finish(1.0)
+    assert report["sql_calls"] == 4
+    assert report["returned_rows"] == 4
+    assert (
+        sum(
+            query["calls"]
+            for query in report["queries"]
+            if query["category"] == "connection"
+        )
+        == 2
+    )
+    operations = {item["operation"]: item for item in report["operations"]}
+    assert operations["schema_structure"]["sql_calls"] == 2
+    assert operations["semantic:example"]["sql_calls"] == 2
+    assert sum(item["sql_calls"] for item in operations.values()) == 4
 
 
 def test_measurement_fingerprint_budget_fails_closed(probe: ModuleType) -> None:
