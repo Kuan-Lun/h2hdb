@@ -156,6 +156,33 @@ separate requirements.
 
 ## Performance cost contracts
 
+Audit and current-only cleanup telemetry supplies implementation observations,
+not an additional formal proof or release gate. `tests/test_database_performance.py`
+checks nested counter conservation, deterministic delay attribution, bounded
+phase/query retention across capacity boundaries and repeated traces, failure
+preservation, scope ownership, and independent progress snapshots.
+`tests/test_audit_performance.py` exercises the wheel-owned validators, real
+semantic corruption, BUILDING activation versus READY checks, and deferred
+synchronous logging. `tests/test_cleanup_performance.py` separates attempted
+work from confirmed batch commits, covers response loss and expired leases,
+and reconciles repeated cleanup attempts with actual durable results.
+
+Inclusive SQL counts overlap between parent and child phases; exclusive counts
+and the root's exclusive work reconstruct the total when phase details have not
+been truncated. Omitted detail does not reduce the root totals. Measured client
+SQL duration does not distinguish server execution, transport, or lock waits.
+An in-flight SQL call enters the counters only on return, while the background
+snapshot's active-phase elapsed time can reveal that it is still blocked.
+Snapshot delivery can race with a terminal record, so analysis correlates
+`operation_id` and `sequence`, not handler arrival order. These diagnostic values
+never authorize a transaction or substitute for a durable checkpoint.
+
+The telemetry tests establish those finite observation contracts; they do not
+establish a cleanup latency bound, prove cache efficiency, or identify the cause
+of a deployment's slow query. Cost models and corpus dimensions remain explicit
+requirements of the investigations below. The tests do not add or strengthen a
+manifest semantic obligation, and the existing Lean/TLA claims remain unchanged.
+
 Correct results and bounded storage do not establish efficient execution.
 `ReadyAuditCanonicalCache.lean` now includes an always-miss cache that satisfies
 its semantic-equivalence theorem. The former capacity theorem merely projected

@@ -246,7 +246,7 @@ def measure[T](
         patch.object(VNextCleanupRepository, "current_only_maintenance_state", state),
         patch.object(VNextCleanupRepository, "advance_current_only_cycle", advance),
         ExitStack() as probes,
-        measure_sql(recorder),
+        measure_sql(recorder, observe_nested=True),
     ):
         # Wrap the original functions, without copying their SQL or selection
         # logic. Each SQL event retains its own duration and discovery group.

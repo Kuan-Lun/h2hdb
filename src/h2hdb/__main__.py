@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from contextlib import closing
 
 from .config_loader import load_config
-from .logger import setup_logger
+from .logger import _route_database_diagnostics, setup_logger
 from .vnext_facade import VNextDatabaseAdminFacade
 
 
@@ -19,7 +19,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     config = load_config(args.config)
     logger = setup_logger(config.logger)
-    with closing(VNextDatabaseAdminFacade(config)) as database:
+    with (
+        _route_database_diagnostics(logger, level=int(config.logger.level)),
+        closing(VNextDatabaseAdminFacade(config)) as database,
+    ):
         if args.command == "migrate":
             provisioned = database.initialize()
             audit = (

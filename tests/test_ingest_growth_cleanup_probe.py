@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -11,6 +12,8 @@ from unittest.mock import Mock
 import pytest
 
 from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb.database_performance import DatabasePerformance
+from h2hdb.ingest_performance import IngestPerformance
 from h2hdb.sql_performance import instrument_connector
 from h2hdb.sqlite_connector import SQLiteConnector
 
@@ -74,6 +77,34 @@ def test_actual_sql_call_is_measured_and_measurement_context_is_restored(
     assert record["seconds"] >= record["sql_seconds"] >= 0
     raw = SQLiteConnector(str(tmp_path / "unmeasured.db"))
     assert instrument_connector(raw) is raw
+
+
+def test_nested_diagnostic_families_preserve_exact_physical_counts(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    logger = logging.getLogger("h2hdb.cleanup-probe-test")
+    database = DatabasePerformance(logger, backend="sqlite", level=logging.DEBUG)
+    ingest = IngestPerformance(logger, backend="sqlite", level=logging.DEBUG)
+
+    def read_values() -> None:
+        with instrument_connector(SQLiteConnector(str(tmp_path / "nested.db"))) as db:
+            assert db.fetch_one("SELECT 1") == (1,)
+            with database.operation("cleanup"):
+                assert db.fetch_one("SELECT 2") == (2,)
+                with ingest.step("analysis", "prepare", "nested", 1):
+                    assert db.fetch_one("SELECT 3") == (3,)
+
+    _, record = probe.measure(read_values)
+    queries = [row for row in record["queries"] if row["category"] == "sql"]
+    assert record["sql_calls"] == 3
+    assert {row["sql"] for row in queries} == {"SELECT 1", "SELECT 2", "SELECT 3"}
+    assert all(row["calls"] == row["returned_rows"] == 1 for row in queries)
+    assert (
+        sum(
+            row["calls"] for row in record["queries"] if row["category"] == "connection"
+        )
+        == 2
+    )
 
 
 def test_failed_probe_preserves_original_exception_and_restores_patches(

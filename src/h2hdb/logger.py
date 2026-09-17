@@ -1,6 +1,8 @@
 __all__ = ["HentaiDBLogger", "setup_logger"]
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config_loader import LoggerConfig
@@ -72,3 +74,37 @@ class HentaiDBLogger:
 
 def setup_logger(logger_config: LoggerConfig) -> HentaiDBLogger:
     return HentaiDBLogger(level=logger_config.level, file=logger_config.file)
+
+
+class _DatabaseDiagnosticHandler(logging.Handler):
+    def __init__(self, destination: HentaiDBLogger) -> None:
+        super().__init__()
+        self._destination = destination
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._destination._log(record.levelno, record.getMessage())
+
+
+@contextmanager
+def _route_database_diagnostics(
+    destination: HentaiDBLogger, *, level: int
+) -> Iterator[None]:
+    """The Core CLI owns routing to its configured console and file sinks.
+
+    Embedded hosts such as ingest configure stdlib logging themselves. The CLI
+    routes only this diagnostic namespace and restores the host's configuration
+    when its command exits, including failure exits.
+    """
+    logger = logging.getLogger("h2hdb.database_performance")
+    previous_level, previous_propagate = logger.level, logger.propagate
+    handler = _DatabaseDiagnosticHandler(destination)
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate

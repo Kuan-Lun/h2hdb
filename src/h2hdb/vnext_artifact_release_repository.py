@@ -37,6 +37,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import vnext_identity as identity
+from .database_performance import database_phase
 from .domain import (
     ArtifactReleaseStorageEvidence,
     CatalogResourceKind,
@@ -372,25 +373,37 @@ class ArtifactReleaseRepository:
             raise ValueError("artifact release backend is not registered")
         resolved = _resolve_adapters(adapters, requested.items)
 
-        with connector.transaction():
-            work = VNextUnitOfWork(connector, backend=backend)
-            _require_exclusive_gate(work, requested.gate_lease, now=now)
-            _revalidate_page(connector, requested)
+        with database_phase(
+            "artifact_revalidate", transaction_outcome="unconfirmed"
+        ) as step:
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend=backend)
+                _require_exclusive_gate(work, requested.gate_lease, now=now)
+                _revalidate_page(connector, requested)
+            step.describe(transaction_outcome="committed", items=len(requested.items))
 
         released: list[bytes] = []
-        for item in requested.items:
-            descriptor = item.storage_object
-            raw = resolved[item.adapter_id].release(
-                descriptor.key,
-                bytes.fromhex(descriptor.sha256),
-                descriptor.size_bytes,
-                item.protection_token,
-            )
-            if type(raw) is not ArtifactReleaseStorageEvidence or not raw.released:
-                raise ArtifactReleaseUnavailableError(
-                    "artifact storage adapter did not acknowledge terminal release"
+        with database_phase(
+            "artifact_external_io",
+            page_items=len(requested.items),
+            attempted_items=0,
+            acknowledged_items=0,
+        ) as step:
+            for item in requested.items:
+                step.describe(attempted_items=len(released) + 1)
+                descriptor = item.storage_object
+                raw = resolved[item.adapter_id].release(
+                    descriptor.key,
+                    bytes.fromhex(descriptor.sha256),
+                    descriptor.size_bytes,
+                    item.protection_token,
                 )
-            released.append(item.protection_token)
+                if type(raw) is not ArtifactReleaseStorageEvidence or not raw.released:
+                    raise ArtifactReleaseUnavailableError(
+                        "artifact storage adapter did not acknowledge terminal release"
+                    )
+                released.append(item.protection_token)
+                step.describe(acknowledged_items=len(released))
         return ArtifactReleaseAcknowledgement(
             requested,
             tuple(released),
@@ -886,16 +899,19 @@ def _require_exclusive_gate(
     *,
     now: int | Callable[[], int],
 ) -> int:
-    locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
-    timestamp = require_int63(
-        now() if callable(now) else now, field="artifact release gate now"
-    )
-    current = locked.require_live(now=timestamp)
-    if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
-        raise ArtifactReleaseUnavailableError(
-            "artifact release requires the exact EXCLUSIVE maintenance gate"
+    with database_phase("gate_validate", resource="artifact") as step:
+        with database_phase("gate_lock", action="validate_artifact"):
+            locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
+        timestamp = require_int63(
+            now() if callable(now) else now, field="artifact release gate now"
         )
-    return timestamp
+        step.describe(lease_remaining_us=lease.lease_expires_at - timestamp)
+        current = locked.require_live(now=timestamp)
+        if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
+            raise ArtifactReleaseUnavailableError(
+                "artifact release requires the exact EXCLUSIVE maintenance gate"
+            )
+        return timestamp
 
 
 def _require_exclusive_lease_shape(lease: GateLease) -> None:

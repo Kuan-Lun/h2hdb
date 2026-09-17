@@ -54,6 +54,7 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, NoReturn, Protocol
 
+from .database_performance import database_phase
 from .domain import (
     SchemaEpochReport,
     SchemaProvisioningOutcome,
@@ -1089,14 +1090,16 @@ class SchemaEpochRunner:
                 )
 
             self._reject_unexpected_objects(existing_objects, allowed_objects)
-            for schema_slice in definition.slices:
-                for statement in schema_slice.statements:
-                    connector.execute(statement.sql)
-                # The provider checks every declared object and exact shape in
-                # this slice. Do not rescan the whole database after each DDL.
-                provider.validate_slice(connector, schema_slice)
+            with database_phase("schema_construction", slices=len(definition.slices)):
+                for schema_slice in definition.slices:
+                    for statement in schema_slice.statements:
+                        connector.execute(statement.sql)
+                    # The provider checks every declared object and exact shape in
+                    # this slice. Do not rescan the whole database after each DDL.
+                    provider.validate_slice(connector, schema_slice)
 
-            _execute_bootstrap_seeds(connector, definition.bootstrap_seeds)
+            with database_phase("bootstrap_install"):
+                _execute_bootstrap_seeds(connector, definition.bootstrap_seeds)
 
             obligation_ids = self._validate_ready_schema(
                 connector,
@@ -1181,22 +1184,23 @@ class SchemaEpochRunner:
         definition = provider.definition
         manifest_sha256 = definition.manifest_sha256
         allowed_objects = definition.expected_objects | {self._catalog.control_object}
-        existing_objects = self._catalog.list_objects(connector)
-        if self._catalog.control_object not in existing_objects:
-            raise SchemaEpochAdmissionError(
-                "Schema epoch 3 is not initialized: its control table is missing"
+        with database_phase("schema_admission"):
+            existing_objects = self._catalog.list_objects(connector)
+            if self._catalog.control_object not in existing_objects:
+                raise SchemaEpochAdmissionError(
+                    "Schema epoch 3 is not initialized: its control table is missing"
+                )
+            self._catalog.validate_control_table(connector)
+            self._assert_admissible_objects(connector, allowed_objects)
+            state = self._read_and_validate_control(
+                connector,
+                definition,
+                manifest_sha256,
             )
-        self._catalog.validate_control_table(connector)
-        self._assert_admissible_objects(connector, allowed_objects)
-        state = self._read_and_validate_control(
-            connector,
-            definition,
-            manifest_sha256,
-        )
-        if state != "READY":
-            raise SchemaEpochAdmissionError(
-                f"Schema epoch 3 is not READY (state={state!r})"
-            )
+            if state != "READY":
+                raise SchemaEpochAdmissionError(
+                    f"Schema epoch 3 is not READY (state={state!r})"
+                )
         obligation_ids = self._validate_ready_schema(
             connector,
             provider,
@@ -1336,52 +1340,58 @@ class SchemaEpochRunner:
         semantic_phase: SchemaSemanticValidationPhase,
     ) -> tuple[str, ...]:
         expected = definition.expected_objects | {self._catalog.control_object}
-        actual = self._assert_admissible_objects(connector, expected)
-        missing = expected - actual
-        if missing:
-            raise SchemaEpochValidationError(
-                f"The schema is missing manifest objects: {_format_objects(missing)}"
-            )
-        provider.validate_global(connector)
+        with database_phase("inventory_before", lifecycle=semantic_phase.value):
+            actual = self._assert_admissible_objects(connector, expected)
+            missing = expected - actual
+            if missing:
+                raise SchemaEpochValidationError(
+                    f"The schema is missing manifest objects: {_format_objects(missing)}"
+                )
+        with database_phase("global_structure", lifecycle=semantic_phase.value):
+            provider.validate_global(connector)
         expected_seed_ids = tuple(seed.seed_id for seed in definition.bootstrap_seeds)
         if validate_genesis:
-            reported_seed_ids = tuple(provider.validate_bootstrap_seeds(connector))
-            if reported_seed_ids != expected_seed_ids:
-                raise SchemaEpochValidationError(
-                    "Bootstrap validation reported seed IDs "
-                    f"{reported_seed_ids!r}, expected {expected_seed_ids!r}"
-                )
+            with database_phase("bootstrap_before", lifecycle=semantic_phase.value):
+                reported_seed_ids = tuple(provider.validate_bootstrap_seeds(connector))
+                if reported_seed_ids != expected_seed_ids:
+                    raise SchemaEpochValidationError(
+                        "Bootstrap validation reported seed IDs "
+                        f"{reported_seed_ids!r}, expected {expected_seed_ids!r}"
+                    )
         expected_obligation_ids = (
             definition.activation_semantic_obligation_ids
             if semantic_phase is SchemaSemanticValidationPhase.ACTIVATION
             else definition.ready_semantic_obligation_ids
         )
-        reported_ids = tuple(
-            provider.validate_semantics(
-                _ReadOnlySemanticConnector(connector), semantic_phase
-            )
-        )
-        if reported_ids != expected_obligation_ids:
-            raise SchemaEpochValidationError(
-                f"{semantic_phase.value} semantic validation reported obligation IDs "
-                f"{reported_ids!r}, expected "
-                f"{expected_obligation_ids!r}"
-            )
-        if validate_genesis:
-            repeated_seed_ids = tuple(provider.validate_bootstrap_seeds(connector))
-            if repeated_seed_ids != expected_seed_ids:
-                raise SchemaEpochValidationError(
-                    "Bootstrap rows changed during semantic validation: reported "
-                    f"{repeated_seed_ids!r}, expected {expected_seed_ids!r}"
+        with database_phase("semantics", lifecycle=semantic_phase.value):
+            reported_ids = tuple(
+                provider.validate_semantics(
+                    _ReadOnlySemanticConnector(connector), semantic_phase
                 )
+            )
+            if reported_ids != expected_obligation_ids:
+                raise SchemaEpochValidationError(
+                    f"{semantic_phase.value} semantic validation reported obligation IDs "
+                    f"{reported_ids!r}, expected "
+                    f"{expected_obligation_ids!r}"
+                )
+        if validate_genesis:
+            with database_phase("bootstrap_after", lifecycle=semantic_phase.value):
+                repeated_seed_ids = tuple(provider.validate_bootstrap_seeds(connector))
+                if repeated_seed_ids != expected_seed_ids:
+                    raise SchemaEpochValidationError(
+                        "Bootstrap rows changed during semantic validation: reported "
+                        f"{repeated_seed_ids!r}, expected {expected_seed_ids!r}"
+                    )
         # Validators are read-only by contract.  Re-check the closed world
         # immediately before READY so an accidental validator-side CREATE
         # cannot silently expand the schema.
-        actual_after_validation = self._catalog.list_objects(connector)
-        if actual_after_validation != expected:
-            raise SchemaEpochValidationError(
-                "The closed-world object set changed during final validation"
-            )
+        with database_phase("inventory_after", lifecycle=semantic_phase.value):
+            actual_after_validation = self._catalog.list_objects(connector)
+            if actual_after_validation != expected:
+                raise SchemaEpochValidationError(
+                    "The closed-world object set changed during final validation"
+                )
         return reported_ids
 
 

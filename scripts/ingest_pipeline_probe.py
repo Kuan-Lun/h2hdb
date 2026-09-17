@@ -153,7 +153,8 @@ class Observer:
     """Observe each SQL event once at its innermost performance scope.
 
     Internal hooks only observe real calls; all mutations use public facades.
-    A surrounding measure_sql receives calls outside facade performance scopes.
+    One inclusive measure_sql receives calls across all instrumentation families.
+    The step hook supplies validated labels and elapsed time, never SQL events.
     Nested stage summaries are never used as additive measurements.
     """
 
@@ -223,7 +224,7 @@ class Observer:
         query: str,
         read_rows: int,
     ) -> None:
-        self.observe(None, category, elapsed, query, read_rows)
+        self.observe(self.active, category, elapsed, query, read_rows)
 
     def observe(
         self,
@@ -280,19 +281,8 @@ class Observer:
 
     @contextmanager
     def installed(self) -> Iterator[None]:
-        original_record = PerformanceStep.record_sql_operation
         original_step = IngestPerformance.step
         observer = self
-
-        def record(
-            sample: PerformanceStep,
-            category: Literal["sql", "connection", "transaction"],
-            elapsed: float,
-            query: str,
-            rows: int,
-        ) -> None:
-            observer.observe(sample, category, elapsed, query, rows)
-            original_record(sample, category, elapsed, query, rows)
 
         @contextmanager
         def step(
@@ -323,9 +313,6 @@ class Observer:
                     observer.active = previous
 
         with ExitStack() as stack:
-            stack.enter_context(
-                patch.object(PerformanceStep, "record_sql_operation", record)
-            )
             stack.enter_context(patch.object(IngestPerformance, "step", step))
             for name in (
                 "prepare_source",
@@ -362,7 +349,7 @@ class Observer:
                         self.wrap_subcall(name, getattr(projection, name)),
                     )
                 )
-            stack.enter_context(measure_sql(self))
+            stack.enter_context(measure_sql(self, observe_nested=True))
             yield
 
     def report(self, *, query_limit: int | None = None) -> dict[str, Any]:
@@ -602,7 +589,7 @@ class AuditObserver(Observer):
                 stack.enter_context(
                     patch.object(owner, name, self.wrap(label, getattr(owner, name)))
                 )
-            stack.enter_context(measure_sql(self))
+            stack.enter_context(measure_sql(self, observe_nested=True))
             yield
 
     def finish(self, seconds: float) -> dict[str, Any]:

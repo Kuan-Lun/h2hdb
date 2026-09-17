@@ -9,6 +9,9 @@ from __future__ import annotations
 
 __all__ = ["VNextSchemaAdmin"]
 
+import logging
+
+from .database_performance import DatabasePerformance, database_phase
 from .domain import (
     SchemaEpochReadiness,
     SchemaEpochReport,
@@ -41,22 +44,37 @@ class VNextSchemaAdmin:
 
     def __init__(self, context: RepositoryContext) -> None:
         self._context = context
+        self._performance = DatabasePerformance(
+            logging.getLogger("h2hdb.database_performance"),
+            backend=context.sql_type,
+            level=int(context.config.logger.level),
+        )
 
     def initialize(self) -> SchemaProvisioningReport:
         """Provision epoch v3; an existing READY marker does not imply a full audit."""
 
-        resolved, _ = self._resolve_provider()
-        with self._context.SQLConnector() as connector:
-            return self._run(connector, resolved)
+        with self._performance.operation("schema_initialize") as sample:
+            with database_phase("provider_resolution"):
+                resolved, _ = self._resolve_provider()
+            with self._context.SQLConnector() as connector:
+                report = self._run(connector, resolved)
+            sample.describe(
+                result=report.outcome.value,
+                audit="activation" if report.activation_audit else "not_performed",
+            )
+            return report
 
     def check(self) -> SchemaEpochReport:
         """Fully validate an already-READY epoch without constructing it."""
 
-        resolved, definition = self._resolve_provider()
-        with self._context.SQLConnector() as connector:
-            with connector.read_transaction():
-                self._readiness_with_connector(connector, definition)
-                return self._validate_ready(connector, resolved)
+        with self._performance.operation("schema_check", audit="ready"):
+            with database_phase("provider_resolution"):
+                resolved, definition = self._resolve_provider()
+            with self._context.SQLConnector() as connector:
+                with connector.read_transaction():
+                    with database_phase("readiness_marker"):
+                        self._readiness_with_connector(connector, definition)
+                    return self._validate_ready(connector, resolved)
 
     def check_readiness(self) -> SchemaEpochReadiness:
         """Read the exact READY marker in O(1) database work.
