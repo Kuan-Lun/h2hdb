@@ -146,7 +146,7 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
         subjects = tuple(
             child
             for child in _children(validation)
-            if child.kind == module._CATALOG_CHILD_SUBJECT
+            if child.kind == module._CatalogChildKind.SUBJECT
         )
         assert len(subjects) == 128
         work = VNextUnitOfWork(connector, backend="sqlite")
@@ -155,7 +155,7 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
             publications = tuple(
                 child
                 for child in _children(validation)
-                if child.kind == module._CATALOG_CHILD_PUBLICATION
+                if child.kind == module._CatalogChildKind.PUBLICATION
             )
             with patch.object(
                 connector, "fetch_all", wraps=connector.fetch_all
@@ -268,7 +268,7 @@ def test_search_canonical_domain_and_partial_family_are_checked_in_batches(
         postings = tuple(
             child
             for child in _children(validation)
-            if child.kind == module._CATALOG_CHILD_SEARCH_POSTING
+            if child.kind == module._CatalogChildKind.SEARCH_POSTING
         )
         assert len(postings) > 1
         work = VNextUnitOfWork(connector, backend="sqlite")

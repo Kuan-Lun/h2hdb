@@ -39,7 +39,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from tempfile import TemporaryFile
-from typing import Any
+from typing import Any, Final
 
 from .database_clock import database_unix_microseconds
 from .sql_connector import SQLConnector
@@ -164,37 +164,43 @@ _ACCEPTED_SOURCE_MEMBERS = (
     "WHERE qualification.accepted = 1)"
 )
 
-_STAGE_CHANGED_GALLERY = b"changed_gallery"
-_STAGE_CHANGED_FILE_HASH = b"changed_file_hash"
-_STAGE_FILE_HASH_DECISION = b"file_hash_decision"
-_STAGE_VALIDATE_FILE_HASH = b"validate_file_hash_decision"
-_STAGE_IMPACTED_GALLERY = b"impacted_gallery"
-_STAGE_IMPACTED_CONTENT = b"impacted_content"
-_STAGE_CONTENT_CANDIDATE = b"content_owner_candidate"
-_STAGE_VALIDATE_CONTENT_CANDIDATE = b"validate_content_owner_candidate"
-_STAGE_CONTENT_OWNER = b"content_owner"
-_STAGE_VALIDATE_CONTENT_OWNER = b"validate_content_owner"
-_STAGE_IMPACTED_GID = b"impacted_gid"
-_STAGE_GID_CANDIDATE = b"gid_candidate"
-_STAGE_VALIDATE_GID_CANDIDATE = b"validate_gid_candidate"
-_STAGE_GID_WINNER = b"gid_winner"
-_STAGE_VALIDATE_GID_WINNER = b"validate_gid_winner"
+
+class _AnalysisStage:
+    """Qualified dispatch constants preserving their persisted scalar values."""
+
+    CHANGED_GALLERY: Final[bytes] = b"changed_gallery"
+    CHANGED_FILE_HASH: Final[bytes] = b"changed_file_hash"
+    FILE_HASH_DECISION: Final[bytes] = b"file_hash_decision"
+    VALIDATE_FILE_HASH: Final[bytes] = b"validate_file_hash_decision"
+    IMPACTED_GALLERY: Final[bytes] = b"impacted_gallery"
+    IMPACTED_CONTENT: Final[bytes] = b"impacted_content"
+    CONTENT_CANDIDATE: Final[bytes] = b"content_owner_candidate"
+    VALIDATE_CONTENT_CANDIDATE: Final[bytes] = b"validate_content_owner_candidate"
+    CONTENT_OWNER: Final[bytes] = b"content_owner"
+    VALIDATE_CONTENT_OWNER: Final[bytes] = b"validate_content_owner"
+    IMPACTED_GID: Final[bytes] = b"impacted_gid"
+    GID_CANDIDATE: Final[bytes] = b"gid_candidate"
+    VALIDATE_GID_CANDIDATE: Final[bytes] = b"validate_gid_candidate"
+    GID_WINNER: Final[bytes] = b"gid_winner"
+    VALIDATE_GID_WINNER: Final[bytes] = b"validate_gid_winner"
+
+
 _STAGES = (
-    _STAGE_CHANGED_GALLERY,
-    _STAGE_CHANGED_FILE_HASH,
-    _STAGE_FILE_HASH_DECISION,
-    _STAGE_VALIDATE_FILE_HASH,
-    _STAGE_IMPACTED_GALLERY,
-    _STAGE_IMPACTED_CONTENT,
-    _STAGE_CONTENT_CANDIDATE,
-    _STAGE_VALIDATE_CONTENT_CANDIDATE,
-    _STAGE_CONTENT_OWNER,
-    _STAGE_VALIDATE_CONTENT_OWNER,
-    _STAGE_IMPACTED_GID,
-    _STAGE_GID_CANDIDATE,
-    _STAGE_VALIDATE_GID_CANDIDATE,
-    _STAGE_GID_WINNER,
-    _STAGE_VALIDATE_GID_WINNER,
+    _AnalysisStage.CHANGED_GALLERY,
+    _AnalysisStage.CHANGED_FILE_HASH,
+    _AnalysisStage.FILE_HASH_DECISION,
+    _AnalysisStage.VALIDATE_FILE_HASH,
+    _AnalysisStage.IMPACTED_GALLERY,
+    _AnalysisStage.IMPACTED_CONTENT,
+    _AnalysisStage.CONTENT_CANDIDATE,
+    _AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
+    _AnalysisStage.CONTENT_OWNER,
+    _AnalysisStage.VALIDATE_CONTENT_OWNER,
+    _AnalysisStage.IMPACTED_GID,
+    _AnalysisStage.GID_CANDIDATE,
+    _AnalysisStage.VALIDATE_GID_CANDIDATE,
+    _AnalysisStage.GID_WINNER,
+    _AnalysisStage.VALIDATE_GID_WINNER,
 )
 
 _COMPONENT_FILE_HASH = b"file_hash_decision"
@@ -247,41 +253,81 @@ _STAGE_ISSUE_TOKEN = object()
 # checks the physical registry before creating or advancing any checkpoint;
 # callers can never introduce a stage, order, or cursor codec.
 _STAGE_REGISTRY: dict[bytes, tuple[bytes, bytes, bytes, bool]] = {
-    _STAGE_CHANGED_GALLERY: (b"01", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_CHANGED_FILE_HASH: (b"02", b"analysis_digest_v1", _CURSOR_DIGEST, False),
-    _STAGE_FILE_HASH_DECISION: (b"03", b"analysis_digest_v1", _CURSOR_DIGEST, False),
-    _STAGE_VALIDATE_FILE_HASH: (
+    _AnalysisStage.CHANGED_GALLERY: (
+        b"01",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.CHANGED_FILE_HASH: (
+        b"02",
+        b"analysis_digest_v1",
+        _CURSOR_DIGEST,
+        False,
+    ),
+    _AnalysisStage.FILE_HASH_DECISION: (
+        b"03",
+        b"analysis_digest_v1",
+        _CURSOR_DIGEST,
+        False,
+    ),
+    _AnalysisStage.VALIDATE_FILE_HASH: (
         b"04",
         b"analysis_digest_live_v1",
         _CURSOR_DIGEST,
         True,
     ),
-    _STAGE_IMPACTED_GALLERY: (b"05", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_IMPACTED_CONTENT: (b"06", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_CONTENT_CANDIDATE: (b"07", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_VALIDATE_CONTENT_CANDIDATE: (
+    _AnalysisStage.IMPACTED_GALLERY: (
+        b"05",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.IMPACTED_CONTENT: (
+        b"06",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.CONTENT_CANDIDATE: (
+        b"07",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.VALIDATE_CONTENT_CANDIDATE: (
         b"08",
         b"analysis_gallery_live_v1",
         _CURSOR_GALLERY,
         True,
     ),
-    _STAGE_CONTENT_OWNER: (b"09", b"analysis_digest_v1", _CURSOR_DIGEST, False),
-    _STAGE_VALIDATE_CONTENT_OWNER: (
+    _AnalysisStage.CONTENT_OWNER: (b"09", b"analysis_digest_v1", _CURSOR_DIGEST, False),
+    _AnalysisStage.VALIDATE_CONTENT_OWNER: (
         b"10",
         b"analysis_digest_live_v1",
         _CURSOR_DIGEST,
         True,
     ),
-    _STAGE_IMPACTED_GID: (b"11", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_GID_CANDIDATE: (b"12", b"analysis_gallery_v1", _CURSOR_GALLERY, False),
-    _STAGE_VALIDATE_GID_CANDIDATE: (
+    _AnalysisStage.IMPACTED_GID: (
+        b"11",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.GID_CANDIDATE: (
+        b"12",
+        b"analysis_gallery_v1",
+        _CURSOR_GALLERY,
+        False,
+    ),
+    _AnalysisStage.VALIDATE_GID_CANDIDATE: (
         b"13",
         b"analysis_gallery_live_v1",
         _CURSOR_GALLERY,
         True,
     ),
-    _STAGE_GID_WINNER: (b"14", b"analysis_gid_v1", _CURSOR_GID, False),
-    _STAGE_VALIDATE_GID_WINNER: (
+    _AnalysisStage.GID_WINNER: (b"14", b"analysis_gid_v1", _CURSOR_GID, False),
+    _AnalysisStage.VALIDATE_GID_WINNER: (
         b"15",
         b"analysis_gid_live_v1",
         _CURSOR_GID,
@@ -290,11 +336,11 @@ _STAGE_REGISTRY: dict[bytes, tuple[bytes, bytes, bytes, bool]] = {
 }
 _GALLERY_PREPARATION_STAGES = frozenset(
     {
-        _STAGE_IMPACTED_CONTENT,
-        _STAGE_CONTENT_CANDIDATE,
-        _STAGE_VALIDATE_CONTENT_CANDIDATE,
-        _STAGE_GID_CANDIDATE,
-        _STAGE_VALIDATE_GID_CANDIDATE,
+        _AnalysisStage.IMPACTED_CONTENT,
+        _AnalysisStage.CONTENT_CANDIDATE,
+        _AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
+        _AnalysisStage.GID_CANDIDATE,
+        _AnalysisStage.VALIDATE_GID_CANDIDATE,
     }
 )
 
@@ -648,7 +694,10 @@ class AnalysisStageIssue:
             raise ValueError("stage issue differs from its preparation authority")
         if not isinstance(self.file_decision_actual_keys, tuple):
             raise TypeError("stage issue actual keys must be an immutable tuple")
-        if self.stage != _STAGE_VALIDATE_FILE_HASH and self.file_decision_actual_keys:
+        if (
+            self.stage != _AnalysisStage.VALIDATE_FILE_HASH
+            and self.file_decision_actual_keys
+        ):
             raise ValueError("non-validation stage issue carries actual file keys")
         if self.stage is None:
             if any(
@@ -699,7 +748,7 @@ class AnalysisStageIssue:
             raise ValueError("analysis stage issue exceeds the 128-row cap")
         if len(self.file_decision_actual_keys) > limit + 1:
             raise ValueError("stage issue actual keys exceed the bounded lookahead")
-        if self.stage == _STAGE_VALIDATE_FILE_HASH:
+        if self.stage == _AnalysisStage.VALIDATE_FILE_HASH:
             assert self.checkpoint_cursor is not None
             previous_key, _live_count = _decode_cursor(
                 _CURSOR_DIGEST, self.checkpoint_cursor, live=True
@@ -1444,7 +1493,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_CHANGED_GALLERY,
+            stage=_AnalysisStage.CHANGED_GALLERY,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -1484,7 +1533,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_CHANGED_GALLERY,
+            stage=_AnalysisStage.CHANGED_GALLERY,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -1509,7 +1558,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_CHANGED_FILE_HASH,
+            stage=_AnalysisStage.CHANGED_FILE_HASH,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -1518,7 +1567,9 @@ class AnalysisRepository:
             _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_CHANGED_GALLERY)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.CHANGED_GALLERY
+        )
         last, _live_count = _decode_cursor(
             _CURSOR_DIGEST,
             checkpoint.cursor,
@@ -1546,7 +1597,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_CHANGED_FILE_HASH,
+            stage=_AnalysisStage.CHANGED_FILE_HASH,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_DIGEST, next_key),
@@ -1571,7 +1622,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_FILE_HASH_DECISION,
+            stage=_AnalysisStage.FILE_HASH_DECISION,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -1580,7 +1631,9 @@ class AnalysisRepository:
             _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_CHANGED_FILE_HASH)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.CHANGED_FILE_HASH
+        )
         last, _live_count = _decode_cursor(
             _CURSOR_DIGEST,
             checkpoint.cursor,
@@ -1609,7 +1662,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_FILE_HASH_DECISION,
+            stage=_AnalysisStage.FILE_HASH_DECISION,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_DIGEST, next_key),
@@ -1639,7 +1692,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_VALIDATE_FILE_HASH,
+            stage=_AnalysisStage.VALIDATE_FILE_HASH,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -1651,7 +1704,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_FILE_HASH_DECISION)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.FILE_HASH_DECISION
+        )
         _require_unsealed_component(
             work,
             authority.analysis_id,
@@ -1696,7 +1751,7 @@ class AnalysisRepository:
         result = _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_VALIDATE_FILE_HASH,
+            stage=_AnalysisStage.VALIDATE_FILE_HASH,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(
@@ -1826,7 +1881,7 @@ class AnalysisRepository:
 
         if (
             file_decision_validation is not None
-            and issue.stage != _STAGE_VALIDATE_FILE_HASH
+            and issue.stage != _AnalysisStage.VALIDATE_FILE_HASH
         ):
             raise AnalysisNotReadyError(
                 "file validation page supplied to another stage"
@@ -1834,7 +1889,7 @@ class AnalysisRepository:
 
         if (
             issue.replayed_result is not None
-            and issue.stage != _STAGE_VALIDATE_FILE_HASH
+            and issue.stage != _AnalysisStage.VALIDATE_FILE_HASH
         ):
             authority = _authorize_analysis(
                 work,
@@ -1857,74 +1912,83 @@ class AnalysisRepository:
             "max_rows": issue.page_limit,
             "now": now,
         }
-        if issue.stage == _STAGE_CHANGED_GALLERY:
-            result = AnalysisRepository.process_changed_gallery_batch(work, **common)
-        elif issue.stage == _STAGE_CHANGED_FILE_HASH:
-            result = AnalysisRepository.process_changed_file_hash_batch(work, **common)
-        elif issue.stage == _STAGE_FILE_HASH_DECISION:
-            result = AnalysisRepository.process_file_hash_decision_batch(work, **common)
-        elif issue.stage == _STAGE_VALIDATE_FILE_HASH:
-            if file_decision_validation is None:
-                raise AnalysisNotReadyError(
-                    "file validation requires its prepared page"
+        match issue.stage:
+            case _AnalysisStage.CHANGED_GALLERY:
+                result = AnalysisRepository.process_changed_gallery_batch(
+                    work, **common
                 )
-            result = AnalysisRepository.validate_file_hash_decision_batch(
-                work, preparation=file_decision_validation, **common
-            )
-        elif issue.stage == _STAGE_IMPACTED_GALLERY:
-            result = AnalysisRepository.process_impacted_gallery_batch(work, **common)
-        elif issue.stage == _STAGE_IMPACTED_CONTENT:
-            result = AnalysisRepository.process_impacted_content_batch(
-                work,
-                preparations=_require_preparation_kind(
-                    exact_preparations, AnalysisGalleryPreparation
-                ),
-                **common,
-            )
-        elif issue.stage == _STAGE_CONTENT_CANDIDATE:
-            result = AnalysisRepository.process_content_owner_candidate_batch(
-                work,
-                preparations=_require_preparation_kind(
-                    exact_preparations, AnalysisGalleryPreparation
-                ),
-                **common,
-            )
-        elif issue.stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
-            result = AnalysisRepository.validate_content_owner_candidate_batch(
-                work,
-                preparations=_require_preparation_kind(
-                    exact_preparations, AnalysisGalleryPreparation
-                ),
-                **common,
-            )
-        elif issue.stage == _STAGE_CONTENT_OWNER:
-            result = AnalysisRepository.process_content_owner_batch(work, **common)
-        elif issue.stage == _STAGE_VALIDATE_CONTENT_OWNER:
-            result = AnalysisRepository.validate_content_owner_batch(work, **common)
-        elif issue.stage == _STAGE_IMPACTED_GID:
-            result = AnalysisRepository.process_impacted_gid_batch(work, **common)
-        elif issue.stage == _STAGE_GID_CANDIDATE:
-            result = AnalysisRepository.process_gid_candidate_batch(
-                work,
-                preparations=_require_preparation_kind(
-                    exact_preparations, AnalysisGidPreparation
-                ),
-                **common,
-            )
-        elif issue.stage == _STAGE_VALIDATE_GID_CANDIDATE:
-            result = AnalysisRepository.validate_gid_candidate_batch(
-                work,
-                preparations=_require_preparation_kind(
-                    exact_preparations, AnalysisGidPreparation
-                ),
-                **common,
-            )
-        elif issue.stage == _STAGE_GID_WINNER:
-            result = AnalysisRepository.process_gid_winner_batch(work, **common)
-        elif issue.stage == _STAGE_VALIDATE_GID_WINNER:
-            result = AnalysisRepository.validate_gid_winner_batch(work, **common)
-        else:
-            raise AnalysisCorruptionError("issued analysis stage is not executable")
+            case _AnalysisStage.CHANGED_FILE_HASH:
+                result = AnalysisRepository.process_changed_file_hash_batch(
+                    work, **common
+                )
+            case _AnalysisStage.FILE_HASH_DECISION:
+                result = AnalysisRepository.process_file_hash_decision_batch(
+                    work, **common
+                )
+            case _AnalysisStage.VALIDATE_FILE_HASH:
+                if file_decision_validation is None:
+                    raise AnalysisNotReadyError(
+                        "file validation requires its prepared page"
+                    )
+                result = AnalysisRepository.validate_file_hash_decision_batch(
+                    work, preparation=file_decision_validation, **common
+                )
+            case _AnalysisStage.IMPACTED_GALLERY:
+                result = AnalysisRepository.process_impacted_gallery_batch(
+                    work, **common
+                )
+            case _AnalysisStage.IMPACTED_CONTENT:
+                result = AnalysisRepository.process_impacted_content_batch(
+                    work,
+                    preparations=_require_preparation_kind(
+                        exact_preparations, AnalysisGalleryPreparation
+                    ),
+                    **common,
+                )
+            case _AnalysisStage.CONTENT_CANDIDATE:
+                result = AnalysisRepository.process_content_owner_candidate_batch(
+                    work,
+                    preparations=_require_preparation_kind(
+                        exact_preparations, AnalysisGalleryPreparation
+                    ),
+                    **common,
+                )
+            case _AnalysisStage.VALIDATE_CONTENT_CANDIDATE:
+                result = AnalysisRepository.validate_content_owner_candidate_batch(
+                    work,
+                    preparations=_require_preparation_kind(
+                        exact_preparations, AnalysisGalleryPreparation
+                    ),
+                    **common,
+                )
+            case _AnalysisStage.CONTENT_OWNER:
+                result = AnalysisRepository.process_content_owner_batch(work, **common)
+            case _AnalysisStage.VALIDATE_CONTENT_OWNER:
+                result = AnalysisRepository.validate_content_owner_batch(work, **common)
+            case _AnalysisStage.IMPACTED_GID:
+                result = AnalysisRepository.process_impacted_gid_batch(work, **common)
+            case _AnalysisStage.GID_CANDIDATE:
+                result = AnalysisRepository.process_gid_candidate_batch(
+                    work,
+                    preparations=_require_preparation_kind(
+                        exact_preparations, AnalysisGidPreparation
+                    ),
+                    **common,
+                )
+            case _AnalysisStage.VALIDATE_GID_CANDIDATE:
+                result = AnalysisRepository.validate_gid_candidate_batch(
+                    work,
+                    preparations=_require_preparation_kind(
+                        exact_preparations, AnalysisGidPreparation
+                    ),
+                    **common,
+                )
+            case _AnalysisStage.GID_WINNER:
+                result = AnalysisRepository.process_gid_winner_batch(work, **common)
+            case _AnalysisStage.VALIDATE_GID_WINNER:
+                result = AnalysisRepository.validate_gid_winner_batch(work, **common)
+            case _:
+                raise AnalysisCorruptionError("issued analysis stage is not executable")
         if (
             result.analysis_id != issue.analysis_id
             or result.stage != issue.stage
@@ -1960,7 +2024,9 @@ class AnalysisRepository:
         with connector.read_transaction():
             work = VNextUnitOfWork(connector, backend=backend)
             run = _load_file_validation_authority(work, authority)
-            _require_stage_complete(work, run.analysis_id, _STAGE_FILE_HASH_DECISION)
+            _require_stage_complete(
+                work, run.analysis_id, _AnalysisStage.FILE_HASH_DECISION
+            )
         plan = build_file_decision_validation_plan(
             authority,
             _iter_file_validation_source(connector, authority.build_id, progress),
@@ -1990,7 +2056,7 @@ class AnalysisRepository:
         if not isinstance(issue, AnalysisStageIssue):
             raise TypeError("issue must be AnalysisStageIssue")
         issue.__post_init__()
-        if issue.stage != _STAGE_VALIDATE_FILE_HASH:
+        if issue.stage != _AnalysisStage.VALIDATE_FILE_HASH:
             raise AnalysisNotReadyError("file validation preparation has another stage")
         if not isinstance(plan, AnalysisFileDecisionValidationPlan):
             raise TypeError("plan must be AnalysisFileDecisionValidationPlan")
@@ -2087,7 +2153,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_IMPACTED_GALLERY,
+            stage=_AnalysisStage.IMPACTED_GALLERY,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2130,7 +2196,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_IMPACTED_GALLERY,
+            stage=_AnalysisStage.IMPACTED_GALLERY,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -2163,7 +2229,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_IMPACTED_CONTENT,
+            stage=_AnalysisStage.IMPACTED_CONTENT,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2177,7 +2243,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_GALLERY)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.IMPACTED_GALLERY
+        )
         last, _live_count = _decode_cursor(
             _CURSOR_GALLERY,
             checkpoint.cursor,
@@ -2268,7 +2336,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_IMPACTED_CONTENT,
+            stage=_AnalysisStage.IMPACTED_CONTENT,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -2294,7 +2362,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_CONTENT_CANDIDATE,
+            stage=_AnalysisStage.CONTENT_CANDIDATE,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2308,7 +2376,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_CONTENT)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.IMPACTED_CONTENT
+        )
         last, _live_count = _decode_cursor(
             _CURSOR_GALLERY,
             checkpoint.cursor,
@@ -2365,7 +2435,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_CONTENT_CANDIDATE,
+            stage=_AnalysisStage.CONTENT_CANDIDATE,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -2391,7 +2461,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_VALIDATE_CONTENT_CANDIDATE,
+            stage=_AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2405,7 +2475,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_CONTENT_CANDIDATE)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.CONTENT_CANDIDATE
+        )
         _require_unsealed_component(
             work,
             authority.analysis_id,
@@ -2481,7 +2553,7 @@ class AnalysisRepository:
         return _finish_component_validation(
             work,
             authority=authority,
-            stage=_STAGE_VALIDATE_CONTENT_CANDIDATE,
+            stage=_AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
             component=_COMPONENT_CONTENT_CANDIDATE,
             batch_key=batch_key,
             checkpoint=checkpoint,
@@ -2516,7 +2588,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_CONTENT_OWNER,
+            stage=_AnalysisStage.CONTENT_OWNER,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2559,7 +2631,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_CONTENT_OWNER,
+            stage=_AnalysisStage.CONTENT_OWNER,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_DIGEST, next_key),
@@ -2584,7 +2656,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_VALIDATE_CONTENT_OWNER,
+            stage=_AnalysisStage.VALIDATE_CONTENT_OWNER,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2593,7 +2665,9 @@ class AnalysisRepository:
             _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_CONTENT_OWNER)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.CONTENT_OWNER
+        )
         _require_unsealed_component(
             work,
             authority.analysis_id,
@@ -2651,7 +2725,7 @@ class AnalysisRepository:
         return _finish_component_validation(
             work,
             authority=authority,
-            stage=_STAGE_VALIDATE_CONTENT_OWNER,
+            stage=_AnalysisStage.VALIDATE_CONTENT_OWNER,
             component=_COMPONENT_CONTENT_OWNER,
             batch_key=batch_key,
             checkpoint=checkpoint,
@@ -2686,7 +2760,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_IMPACTED_GID,
+            stage=_AnalysisStage.IMPACTED_GID,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2764,7 +2838,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_IMPACTED_GID,
+            stage=_AnalysisStage.IMPACTED_GID,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -2790,7 +2864,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_GID_CANDIDATE,
+            stage=_AnalysisStage.GID_CANDIDATE,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2804,7 +2878,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_GID)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.IMPACTED_GID
+        )
         last, _live_count = _decode_cursor(
             _CURSOR_GALLERY,
             checkpoint.cursor,
@@ -2859,7 +2935,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_GID_CANDIDATE,
+            stage=_AnalysisStage.GID_CANDIDATE,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GALLERY, next_key),
@@ -2885,7 +2961,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_VALIDATE_GID_CANDIDATE,
+            stage=_AnalysisStage.VALIDATE_GID_CANDIDATE,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -2899,7 +2975,9 @@ class AnalysisRepository:
             )
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_GID_CANDIDATE)
+        _require_stage_complete(
+            work, authority.analysis_id, _AnalysisStage.GID_CANDIDATE
+        )
         _require_unsealed_component(
             work,
             authority.analysis_id,
@@ -2979,7 +3057,7 @@ class AnalysisRepository:
         return _finish_component_validation(
             work,
             authority=authority,
-            stage=_STAGE_VALIDATE_GID_CANDIDATE,
+            stage=_AnalysisStage.VALIDATE_GID_CANDIDATE,
             component=_COMPONENT_GID_CANDIDATE,
             batch_key=batch_key,
             checkpoint=checkpoint,
@@ -3014,7 +3092,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_GID_WINNER,
+            stage=_AnalysisStage.GID_WINNER,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -3062,7 +3140,7 @@ class AnalysisRepository:
         return _commit_batch(
             work,
             authority=authority,
-            stage=_STAGE_GID_WINNER,
+            stage=_AnalysisStage.GID_WINNER,
             batch_key=batch_key,
             checkpoint=checkpoint,
             cursor=_encode_cursor(_CURSOR_GID, next_key),
@@ -3087,7 +3165,7 @@ class AnalysisRepository:
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=analysis_id,
-            stage=_STAGE_VALIDATE_GID_WINNER,
+            stage=_AnalysisStage.VALIDATE_GID_WINNER,
             batch_key=batch_key,
             max_rows=max_rows,
             now=now,
@@ -3096,7 +3174,7 @@ class AnalysisRepository:
             _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
-        _require_stage_complete(work, authority.analysis_id, _STAGE_GID_WINNER)
+        _require_stage_complete(work, authority.analysis_id, _AnalysisStage.GID_WINNER)
         _require_unsealed_component(
             work,
             authority.analysis_id,
@@ -3153,7 +3231,7 @@ class AnalysisRepository:
         return _finish_component_validation(
             work,
             authority=authority,
-            stage=_STAGE_VALIDATE_GID_WINNER,
+            stage=_AnalysisStage.VALIDATE_GID_WINNER,
             component=_COMPONENT_GID_WINNER,
             batch_key=batch_key,
             checkpoint=checkpoint,
@@ -3630,36 +3708,37 @@ def _issued_gallery_memberships(
         checkpoint.cursor,
         live=stage
         in {
-            _STAGE_VALIDATE_CONTENT_CANDIDATE,
-            _STAGE_VALIDATE_GID_CANDIDATE,
+            _AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
+            _AnalysisStage.VALIDATE_GID_CANDIDATE,
         },
     )
     after = None if last is None else int.from_bytes(last, "big")
-    if stage in {
-        _STAGE_IMPACTED_CONTENT,
-        _STAGE_CONTENT_CANDIDATE,
-        _STAGE_GID_CANDIDATE,
-    }:
-        rows = _workset_gallery_rows(
-            work,
-            authority.analysis_id,
-            after=after,
-            limit=checkpoint.page_limit + 1,
-        )
-    elif stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
-        rows = _content_candidate_validation_keys(
-            work,
-            authority,
-            after=after,
-            limit=checkpoint.page_limit + 1,
-        )
-    else:
-        rows = _gid_candidate_validation_keys(
-            work,
-            authority,
-            after=after,
-            limit=checkpoint.page_limit + 1,
-        )
+    match stage:
+        case (
+            _AnalysisStage.IMPACTED_CONTENT
+            | _AnalysisStage.CONTENT_CANDIDATE
+            | _AnalysisStage.GID_CANDIDATE
+        ):
+            rows = _workset_gallery_rows(
+                work,
+                authority.analysis_id,
+                after=after,
+                limit=checkpoint.page_limit + 1,
+            )
+        case _AnalysisStage.VALIDATE_CONTENT_CANDIDATE:
+            rows = _content_candidate_validation_keys(
+                work,
+                authority,
+                after=after,
+                limit=checkpoint.page_limit + 1,
+            )
+        case _:
+            rows = _gid_candidate_validation_keys(
+                work,
+                authority,
+                after=after,
+                limit=checkpoint.page_limit + 1,
+            )
     selected = rows[: checkpoint.page_limit]
     gallery_ids = tuple(
         require_positive_int63(row[0], field="issued preparation gallery_id")
@@ -5229,11 +5308,11 @@ def _require_exact_component_seals(work: VNextUnitOfWork, analysis_id: bytes) ->
             "baseline analysis is not sealed in all five components"
         )
     stage_by_component = {
-        _COMPONENT_FILE_HASH: _STAGE_VALIDATE_FILE_HASH,
-        _COMPONENT_CONTENT_CANDIDATE: _STAGE_VALIDATE_CONTENT_CANDIDATE,
-        _COMPONENT_CONTENT_OWNER: _STAGE_VALIDATE_CONTENT_OWNER,
-        _COMPONENT_GID_CANDIDATE: _STAGE_VALIDATE_GID_CANDIDATE,
-        _COMPONENT_GID_WINNER: _STAGE_VALIDATE_GID_WINNER,
+        _COMPONENT_FILE_HASH: _AnalysisStage.VALIDATE_FILE_HASH,
+        _COMPONENT_CONTENT_CANDIDATE: _AnalysisStage.VALIDATE_CONTENT_CANDIDATE,
+        _COMPONENT_CONTENT_OWNER: _AnalysisStage.VALIDATE_CONTENT_OWNER,
+        _COMPONENT_GID_CANDIDATE: _AnalysisStage.VALIDATE_GID_CANDIDATE,
+        _COMPONENT_GID_WINNER: _AnalysisStage.VALIDATE_GID_WINNER,
     }
     for component in actual:
         if not _component_is_sealed(work, analysis_id, stage_by_component[component]):
@@ -5521,7 +5600,7 @@ def _issued_file_decision_actual_keys(
     cursor: bytes,
     page_limit: int,
 ) -> tuple[bytes, ...]:
-    if stage != _STAGE_VALIDATE_FILE_HASH:
+    if stage != _AnalysisStage.VALIDATE_FILE_HASH:
         return ()
     after, _live_count = _decode_cursor(_CURSOR_DIGEST, cursor, live=True)
     return tuple(
@@ -5901,53 +5980,55 @@ def _validate_batch_replay(
     exact_preparations: tuple[_GalleryPreparation | None, ...] = ()
     content_impact_page: _ContentImpactPage | None = None
     gid_impact_page: _GidImpactPage | None = None
-    if replay.stage == _STAGE_IMPACTED_CONTENT:
-        gallery_ids = tuple(
-            require_positive_int63(row[0], field="replayed impacted-content gallery_id")
-            for row in selected
-        )
-        content_impact_page = _load_content_impact_page(
-            work,
-            authority,
-            gallery_ids,
-        )
-        exact_preparations = _require_validation_preparations(
-            work,
-            authority,
-            selected,
-            preparations,
-            kind=AnalysisGalleryPreparation,
-            memberships=content_impact_page.current_observations,
-        )
-    elif replay.stage in {
-        _STAGE_CONTENT_CANDIDATE,
-        _STAGE_VALIDATE_CONTENT_CANDIDATE,
-    }:
-        exact_preparations = _require_validation_preparations(
-            work,
-            authority,
-            selected,
-            preparations,
-            kind=AnalysisGalleryPreparation,
-        )
-    elif replay.stage in {_STAGE_GID_CANDIDATE, _STAGE_VALIDATE_GID_CANDIDATE}:
-        exact_preparations = _require_validation_preparations(
-            work,
-            authority,
-            selected,
-            preparations,
-            kind=AnalysisGidPreparation,
-        )
-    elif replay.stage == _STAGE_IMPACTED_GID:
-        gallery_ids = tuple(
-            require_positive_int63(row[0], field="replayed impacted-GID gallery_id")
-            for row in selected
-        )
-        gid_impact_page = _load_gid_impact_page(work, authority, gallery_ids)
-    elif preparations:
-        raise AnalysisNotReadyError(
-            "analysis replay received preparations for a scalar stage"
-        )
+    match replay.stage:
+        case _AnalysisStage.IMPACTED_CONTENT:
+            gallery_ids = tuple(
+                require_positive_int63(
+                    row[0], field="replayed impacted-content gallery_id"
+                )
+                for row in selected
+            )
+            content_impact_page = _load_content_impact_page(
+                work,
+                authority,
+                gallery_ids,
+            )
+            exact_preparations = _require_validation_preparations(
+                work,
+                authority,
+                selected,
+                preparations,
+                kind=AnalysisGalleryPreparation,
+                memberships=content_impact_page.current_observations,
+            )
+        case (
+            _AnalysisStage.CONTENT_CANDIDATE | _AnalysisStage.VALIDATE_CONTENT_CANDIDATE
+        ):
+            exact_preparations = _require_validation_preparations(
+                work,
+                authority,
+                selected,
+                preparations,
+                kind=AnalysisGalleryPreparation,
+            )
+        case _AnalysisStage.GID_CANDIDATE | _AnalysisStage.VALIDATE_GID_CANDIDATE:
+            exact_preparations = _require_validation_preparations(
+                work,
+                authority,
+                selected,
+                preparations,
+                kind=AnalysisGidPreparation,
+            )
+        case _AnalysisStage.IMPACTED_GID:
+            gallery_ids = tuple(
+                require_positive_int63(row[0], field="replayed impacted-GID gallery_id")
+                for row in selected
+            )
+            gid_impact_page = _load_gid_impact_page(work, authority, gallery_ids)
+        case _ if preparations:
+            raise AnalysisNotReadyError(
+                "analysis replay received preparations for a scalar stage"
+            )
     live_count = _require_replay_page_materialized(
         work,
         authority,
@@ -6002,83 +6083,87 @@ def _replay_page_rows(
     limit: int,
 ) -> list[tuple[Any, ...]]:
     integer_after = None if after is None else int.from_bytes(after, "big")
-    if stage == _STAGE_CHANGED_GALLERY:
-        return _changed_gallery_rows(
-            work,
-            authority,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage == _STAGE_CHANGED_FILE_HASH:
-        return _changed_file_hash_rows(work, authority, after=after, limit=limit)
-    if stage == _STAGE_FILE_HASH_DECISION:
-        return _decision_work_rows(work, authority, after=after, limit=limit)
-    if stage == _STAGE_VALIDATE_FILE_HASH:
-        raise AnalysisCorruptionError(
-            "file validation replay requires its prepared page"
-        )
-    if stage == _STAGE_IMPACTED_GALLERY:
-        return _impacted_gallery_rows(
-            work,
-            authority,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage in {
-        _STAGE_IMPACTED_CONTENT,
-        _STAGE_CONTENT_CANDIDATE,
-        _STAGE_IMPACTED_GID,
-        _STAGE_GID_CANDIDATE,
-    }:
-        return _workset_gallery_rows(
-            work,
-            authority.analysis_id,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
-        return _content_candidate_validation_keys(
-            work,
-            authority,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage == _STAGE_CONTENT_OWNER:
-        return _workset_content_rows(
-            work,
-            authority.analysis_id,
-            after=after,
-            limit=limit,
-        )
-    if stage == _STAGE_VALIDATE_CONTENT_OWNER:
-        return _content_owner_validation_keys(
-            work,
-            authority,
-            after=after,
-            limit=limit,
-        )
-    if stage == _STAGE_VALIDATE_GID_CANDIDATE:
-        return _gid_candidate_validation_keys(
-            work,
-            authority,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage == _STAGE_GID_WINNER:
-        return _workset_gid_rows(
-            work,
-            authority.analysis_id,
-            after=integer_after,
-            limit=limit,
-        )
-    if stage == _STAGE_VALIDATE_GID_WINNER:
-        return _gid_winner_validation_keys(
-            work,
-            authority,
-            after=integer_after,
-            limit=limit,
-        )
-    raise AnalysisCorruptionError("analysis receipt names an unregistered stage")
+    match stage:
+        case _AnalysisStage.CHANGED_GALLERY:
+            return _changed_gallery_rows(
+                work,
+                authority,
+                after=integer_after,
+                limit=limit,
+            )
+        case _AnalysisStage.CHANGED_FILE_HASH:
+            return _changed_file_hash_rows(work, authority, after=after, limit=limit)
+        case _AnalysisStage.FILE_HASH_DECISION:
+            return _decision_work_rows(work, authority, after=after, limit=limit)
+        case _AnalysisStage.VALIDATE_FILE_HASH:
+            raise AnalysisCorruptionError(
+                "file validation replay requires its prepared page"
+            )
+        case _AnalysisStage.IMPACTED_GALLERY:
+            return _impacted_gallery_rows(
+                work,
+                authority,
+                after=integer_after,
+                limit=limit,
+            )
+        case (
+            _AnalysisStage.IMPACTED_CONTENT
+            | _AnalysisStage.CONTENT_CANDIDATE
+            | _AnalysisStage.IMPACTED_GID
+            | _AnalysisStage.GID_CANDIDATE
+        ):
+            return _workset_gallery_rows(
+                work,
+                authority.analysis_id,
+                after=integer_after,
+                limit=limit,
+            )
+        case _AnalysisStage.VALIDATE_CONTENT_CANDIDATE:
+            return _content_candidate_validation_keys(
+                work,
+                authority,
+                after=integer_after,
+                limit=limit,
+            )
+        case _AnalysisStage.CONTENT_OWNER:
+            return _workset_content_rows(
+                work,
+                authority.analysis_id,
+                after=after,
+                limit=limit,
+            )
+        case _AnalysisStage.VALIDATE_CONTENT_OWNER:
+            return _content_owner_validation_keys(
+                work,
+                authority,
+                after=after,
+                limit=limit,
+            )
+        case _AnalysisStage.VALIDATE_GID_CANDIDATE:
+            return _gid_candidate_validation_keys(
+                work,
+                authority,
+                after=integer_after,
+                limit=limit,
+            )
+        case _AnalysisStage.GID_WINNER:
+            return _workset_gid_rows(
+                work,
+                authority.analysis_id,
+                after=integer_after,
+                limit=limit,
+            )
+        case _AnalysisStage.VALIDATE_GID_WINNER:
+            return _gid_winner_validation_keys(
+                work,
+                authority,
+                after=integer_after,
+                limit=limit,
+            )
+        case _:
+            raise AnalysisCorruptionError(
+                "analysis receipt names an unregistered stage"
+            )
 
 
 def _require_replay_keyed_page_exact(
@@ -6090,62 +6175,63 @@ def _require_replay_keyed_page_exact(
     selected: Sequence[tuple[Any, ...]],
     limit: int,
 ) -> None:
-    if stage == _STAGE_CHANGED_GALLERY:
-        boundary = 0 if after is None else int.from_bytes(after, "big")
-        if selected:
-            end = require_positive_int63(
-                selected[-1][0],
-                field="replayed changed-gallery end",
-            )
-            rows = work.connector.fetch_all(
-                "SELECT gallery_id, change_kind "
-                "FROM catalog_analysis_changed_galleries "
-                "WHERE analysis_id = %s AND gallery_id > %s AND gallery_id <= %s "
-                "ORDER BY gallery_id LIMIT %s",
-                (analysis_id, boundary, end, limit),
-            )
-        else:
-            rows = work.connector.fetch_all(
-                "SELECT gallery_id, change_kind "
-                "FROM catalog_analysis_changed_galleries "
-                "WHERE analysis_id = %s AND gallery_id > %s "
-                "ORDER BY gallery_id LIMIT %s",
-                (analysis_id, boundary, limit),
-            )
-        if rows != list(selected):
-            raise AnalysisCorruptionError(
-                "changed-gallery materialization differs from its exact page"
-            )
-        return
-    if stage not in {_STAGE_CHANGED_FILE_HASH, _STAGE_IMPACTED_GALLERY}:
-        return
-    if stage == _STAGE_CHANGED_FILE_HASH:
-        table = "catalog_analysis_changed_file_hashes"
-        column = "file_sha256"
-        parameters: list[Any] = [analysis_id]
-        predicates = ["analysis_id = %s"]
-        if after is not None:
-            predicates.append("file_sha256 > %s")
-            parameters.append(require_digest32(after, field="replayed hash start"))
-        if selected:
-            predicates.append("file_sha256 <= %s")
-            parameters.append(
-                require_digest32(selected[-1][0], field="replayed hash end")
-            )
-    else:
-        table = "catalog_analysis_impacted_galleries"
-        column = "gallery_id"
-        boundary = 0 if after is None else int.from_bytes(after, "big")
-        parameters = [analysis_id, boundary]
-        predicates = ["analysis_id = %s", "gallery_id > %s"]
-        if selected:
-            predicates.append("gallery_id <= %s")
-            parameters.append(
-                require_positive_int63(
+    match stage:
+        case _AnalysisStage.CHANGED_GALLERY:
+            boundary = 0 if after is None else int.from_bytes(after, "big")
+            if selected:
+                end = require_positive_int63(
                     selected[-1][0],
-                    field="replayed impacted-gallery end",
+                    field="replayed changed-gallery end",
                 )
-            )
+                rows = work.connector.fetch_all(
+                    "SELECT gallery_id, change_kind "
+                    "FROM catalog_analysis_changed_galleries "
+                    "WHERE analysis_id = %s AND gallery_id > %s AND gallery_id <= %s "
+                    "ORDER BY gallery_id LIMIT %s",
+                    (analysis_id, boundary, end, limit),
+                )
+            else:
+                rows = work.connector.fetch_all(
+                    "SELECT gallery_id, change_kind "
+                    "FROM catalog_analysis_changed_galleries "
+                    "WHERE analysis_id = %s AND gallery_id > %s "
+                    "ORDER BY gallery_id LIMIT %s",
+                    (analysis_id, boundary, limit),
+                )
+            if rows != list(selected):
+                raise AnalysisCorruptionError(
+                    "changed-gallery materialization differs from its exact page"
+                )
+            return
+        case _AnalysisStage.CHANGED_FILE_HASH:
+            table = "catalog_analysis_changed_file_hashes"
+            column = "file_sha256"
+            parameters: list[Any] = [analysis_id]
+            predicates = ["analysis_id = %s"]
+            if after is not None:
+                predicates.append("file_sha256 > %s")
+                parameters.append(require_digest32(after, field="replayed hash start"))
+            if selected:
+                predicates.append("file_sha256 <= %s")
+                parameters.append(
+                    require_digest32(selected[-1][0], field="replayed hash end")
+                )
+        case _AnalysisStage.IMPACTED_GALLERY:
+            table = "catalog_analysis_impacted_galleries"
+            column = "gallery_id"
+            boundary = 0 if after is None else int.from_bytes(after, "big")
+            parameters = [analysis_id, boundary]
+            predicates = ["analysis_id = %s", "gallery_id > %s"]
+            if selected:
+                predicates.append("gallery_id <= %s")
+                parameters.append(
+                    require_positive_int63(
+                        selected[-1][0],
+                        field="replayed impacted-gallery end",
+                    )
+                )
+        case _:
+            return
     parameters.append(limit)
     rows = work.connector.fetch_all(
         f"SELECT {column} FROM {table} WHERE "
@@ -6171,166 +6257,170 @@ def _require_replay_page_materialized(
     content_impact_page: _ContentImpactPage | None = None,
     gid_impact_page: _GidImpactPage | None = None,
 ) -> int:
-    if stage == _STAGE_CHANGED_GALLERY:
-        for raw_gallery, change_kind in selected:
-            gallery = require_positive_int63(
-                raw_gallery,
-                field="replayed changed gallery_id",
-            )
-            if work.connector.fetch_one(
-                "SELECT change_kind FROM catalog_analysis_changed_galleries "
-                "WHERE analysis_id = %s AND gallery_id = %s",
-                (authority.analysis_id, gallery),
-            ) != (change_kind,):
-                raise AnalysisCorruptionError(
-                    "changed-gallery page differs from its materialization"
+    match stage:
+        case _AnalysisStage.CHANGED_GALLERY:
+            for raw_gallery, change_kind in selected:
+                gallery = require_positive_int63(
+                    raw_gallery,
+                    field="replayed changed gallery_id",
                 )
-        return live_count
-    if stage == _STAGE_CHANGED_FILE_HASH:
-        _require_replay_key_rows(
-            work,
-            authority.analysis_id,
-            selected,
-            table="catalog_analysis_changed_file_hashes",
-            key_column="file_sha256",
-            digest=True,
-        )
-        return live_count
-    if stage in {_STAGE_FILE_HASH_DECISION, _STAGE_VALIDATE_FILE_HASH}:
-        validated = _require_file_decision_page(
-            work,
-            authority,
-            tuple(
-                require_digest32(row[0], field="replayed decision file_sha256")
-                for row in selected
-            ),
-            require_delta=stage == _STAGE_FILE_HASH_DECISION,
-        )
-        if stage == _STAGE_VALIDATE_FILE_HASH:
-            live_count = _sum_int63(
-                live_count, validated, field="replayed file-decision live row count"
+                if work.connector.fetch_one(
+                    "SELECT change_kind FROM catalog_analysis_changed_galleries "
+                    "WHERE analysis_id = %s AND gallery_id = %s",
+                    (authority.analysis_id, gallery),
+                ) != (change_kind,):
+                    raise AnalysisCorruptionError(
+                        "changed-gallery page differs from its materialization"
+                    )
+            return live_count
+        case _AnalysisStage.CHANGED_FILE_HASH:
+            _require_replay_key_rows(
+                work,
+                authority.analysis_id,
+                selected,
+                table="catalog_analysis_changed_file_hashes",
+                key_column="file_sha256",
+                digest=True,
             )
-        return live_count
-    if stage == _STAGE_IMPACTED_GALLERY:
-        _require_replay_key_rows(
-            work,
-            authority.analysis_id,
-            selected,
-            table="catalog_analysis_impacted_galleries",
-            key_column="gallery_id",
-            digest=False,
-        )
-        return live_count
-    if stage == _STAGE_IMPACTED_CONTENT:
-        if content_impact_page is None:
-            raise AnalysisCorruptionError("content replay lost page authority")
-        _require_replay_impacted_content(
-            work,
-            authority,
-            after=after,
-            selected=selected,
-            preparations=_require_preparation_kind(
-                preparations, AnalysisGalleryPreparation
-            ),
-            impact_page=content_impact_page,
-        )
-        return live_count
-    if stage in {
-        _STAGE_CONTENT_CANDIDATE,
-        _STAGE_VALIDATE_CONTENT_CANDIDATE,
-    }:
-        for row, preparation in zip(
-            selected,
-            _require_preparation_kind(preparations, AnalysisGalleryPreparation),
-            strict=True,
-        ):
-            gallery_id = require_positive_int63(
-                row[0],
-                field="replayed content candidate gallery_id",
-            )
-            content_candidate = _require_replay_content_candidate(
+            return live_count
+        case _AnalysisStage.FILE_HASH_DECISION | _AnalysisStage.VALIDATE_FILE_HASH:
+            validated = _require_file_decision_page(
                 work,
                 authority,
-                gallery_id,
-                preparation,
+                tuple(
+                    require_digest32(row[0], field="replayed decision file_sha256")
+                    for row in selected
+                ),
+                require_delta=stage == _AnalysisStage.FILE_HASH_DECISION,
             )
-            if (
-                stage == _STAGE_VALIDATE_CONTENT_CANDIDATE
-                and content_candidate is not None
+            if stage == _AnalysisStage.VALIDATE_FILE_HASH:
+                live_count = _sum_int63(
+                    live_count, validated, field="replayed file-decision live row count"
+                )
+            return live_count
+        case _AnalysisStage.IMPACTED_GALLERY:
+            _require_replay_key_rows(
+                work,
+                authority.analysis_id,
+                selected,
+                table="catalog_analysis_impacted_galleries",
+                key_column="gallery_id",
+                digest=False,
+            )
+            return live_count
+        case _AnalysisStage.IMPACTED_CONTENT:
+            if content_impact_page is None:
+                raise AnalysisCorruptionError("content replay lost page authority")
+            _require_replay_impacted_content(
+                work,
+                authority,
+                after=after,
+                selected=selected,
+                preparations=_require_preparation_kind(
+                    preparations, AnalysisGalleryPreparation
+                ),
+                impact_page=content_impact_page,
+            )
+            return live_count
+        case (
+            _AnalysisStage.CONTENT_CANDIDATE | _AnalysisStage.VALIDATE_CONTENT_CANDIDATE
+        ):
+            for row, preparation in zip(
+                selected,
+                _require_preparation_kind(preparations, AnalysisGalleryPreparation),
+                strict=True,
             ):
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="replayed content-candidate live row count",
+                gallery_id = require_positive_int63(
+                    row[0],
+                    field="replayed content candidate gallery_id",
                 )
-        return live_count
-    if stage in {_STAGE_CONTENT_OWNER, _STAGE_VALIDATE_CONTENT_OWNER}:
-        for row in selected:
-            content = require_digest32(row[0], field="replayed content-owner key")
-            owner = _require_replay_content_owner(
+                content_candidate = _require_replay_content_candidate(
+                    work,
+                    authority,
+                    gallery_id,
+                    preparation,
+                )
+                if (
+                    stage == _AnalysisStage.VALIDATE_CONTENT_CANDIDATE
+                    and content_candidate is not None
+                ):
+                    live_count = _sum_int63(
+                        live_count,
+                        1,
+                        field="replayed content-candidate live row count",
+                    )
+            return live_count
+        case _AnalysisStage.CONTENT_OWNER | _AnalysisStage.VALIDATE_CONTENT_OWNER:
+            for row in selected:
+                content = require_digest32(row[0], field="replayed content-owner key")
+                owner = _require_replay_content_owner(
+                    work,
+                    authority,
+                    content,
+                )
+                if stage == _AnalysisStage.VALIDATE_CONTENT_OWNER and owner is not None:
+                    live_count = _sum_int63(
+                        live_count,
+                        1,
+                        field="replayed content-owner live row count",
+                    )
+            return live_count
+        case _AnalysisStage.IMPACTED_GID:
+            if gid_impact_page is None:
+                raise AnalysisCorruptionError("GID replay lost page authority")
+            _require_replay_impacted_gid(
                 work,
                 authority,
-                content,
+                after=after,
+                selected=selected,
+                impact_page=gid_impact_page,
             )
-            if stage == _STAGE_VALIDATE_CONTENT_OWNER and owner is not None:
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="replayed content-owner live row count",
+            return live_count
+        case _AnalysisStage.GID_CANDIDATE | _AnalysisStage.VALIDATE_GID_CANDIDATE:
+            for row, gid_preparation in zip(
+                selected,
+                _require_preparation_kind(preparations, AnalysisGidPreparation),
+                strict=True,
+            ):
+                gallery_id = require_positive_int63(
+                    row[0],
+                    field="replayed GID candidate gallery_id",
                 )
-        return live_count
-    if stage == _STAGE_IMPACTED_GID:
-        if gid_impact_page is None:
-            raise AnalysisCorruptionError("GID replay lost page authority")
-        _require_replay_impacted_gid(
-            work,
-            authority,
-            after=after,
-            selected=selected,
-            impact_page=gid_impact_page,
-        )
-        return live_count
-    if stage in {_STAGE_GID_CANDIDATE, _STAGE_VALIDATE_GID_CANDIDATE}:
-        for row, gid_preparation in zip(
-            selected,
-            _require_preparation_kind(preparations, AnalysisGidPreparation),
-            strict=True,
-        ):
-            gallery_id = require_positive_int63(
-                row[0],
-                field="replayed GID candidate gallery_id",
-            )
-            gid_candidate = _require_replay_gid_candidate(
-                work,
-                authority,
-                gallery_id,
-                gid_preparation,
-            )
-            if stage == _STAGE_VALIDATE_GID_CANDIDATE and gid_candidate is not None:
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="replayed GID-candidate live row count",
+                gid_candidate = _require_replay_gid_candidate(
+                    work,
+                    authority,
+                    gallery_id,
+                    gid_preparation,
                 )
-        return live_count
-    if stage in {_STAGE_GID_WINNER, _STAGE_VALIDATE_GID_WINNER}:
-        for row in selected:
-            gid = require_positive_int63(row[0], field="replayed GID winner key")
-            winner = _require_replay_gid_winner(
-                work,
-                authority,
-                gid,
-            )
-            if stage == _STAGE_VALIDATE_GID_WINNER and winner is not None:
-                live_count = _sum_int63(
-                    live_count,
-                    1,
-                    field="replayed GID-winner live row count",
+                if (
+                    stage == _AnalysisStage.VALIDATE_GID_CANDIDATE
+                    and gid_candidate is not None
+                ):
+                    live_count = _sum_int63(
+                        live_count,
+                        1,
+                        field="replayed GID-candidate live row count",
+                    )
+            return live_count
+        case _AnalysisStage.GID_WINNER | _AnalysisStage.VALIDATE_GID_WINNER:
+            for row in selected:
+                gid = require_positive_int63(row[0], field="replayed GID winner key")
+                winner = _require_replay_gid_winner(
+                    work,
+                    authority,
+                    gid,
                 )
-        if not selected:
-            _require_complete_gid_winner_keyspace(work, authority.analysis_id)
-        return live_count
-    raise AnalysisCorruptionError("analysis replay stage is not registered")
+                if stage == _AnalysisStage.VALIDATE_GID_WINNER and winner is not None:
+                    live_count = _sum_int63(
+                        live_count,
+                        1,
+                        field="replayed GID-winner live row count",
+                    )
+            if not selected:
+                _require_complete_gid_winner_keyspace(work, authority.analysis_id)
+            return live_count
+        case _:
+            raise AnalysisCorruptionError("analysis replay stage is not registered")
 
 
 def _require_replay_key_rows(
@@ -7212,14 +7302,15 @@ def _require_preparation_kind[
 ) -> tuple[Preparation | None, ...]:
     exact: list[Preparation | None] = []
     for preparation in preparations:
-        if preparation is None:
-            exact.append(None)
-        elif isinstance(preparation, kind):
-            exact.append(preparation)
-        else:
-            raise AnalysisNotReadyError(
-                "gallery preparation capability belongs to another stage family"
-            )
+        match preparation:
+            case None:
+                exact.append(None)
+            case kind():
+                exact.append(preparation)
+            case _:
+                raise AnalysisNotReadyError(
+                    "gallery preparation capability belongs to another stage family"
+                )
     return tuple(exact)
 
 
@@ -9116,11 +9207,11 @@ def _component_is_sealed(
     stage: bytes,
 ) -> bool:
     component = {
-        _STAGE_VALIDATE_FILE_HASH: _COMPONENT_FILE_HASH,
-        _STAGE_VALIDATE_CONTENT_CANDIDATE: _COMPONENT_CONTENT_CANDIDATE,
-        _STAGE_VALIDATE_CONTENT_OWNER: _COMPONENT_CONTENT_OWNER,
-        _STAGE_VALIDATE_GID_CANDIDATE: _COMPONENT_GID_CANDIDATE,
-        _STAGE_VALIDATE_GID_WINNER: _COMPONENT_GID_WINNER,
+        _AnalysisStage.VALIDATE_FILE_HASH: _COMPONENT_FILE_HASH,
+        _AnalysisStage.VALIDATE_CONTENT_CANDIDATE: _COMPONENT_CONTENT_CANDIDATE,
+        _AnalysisStage.VALIDATE_CONTENT_OWNER: _COMPONENT_CONTENT_OWNER,
+        _AnalysisStage.VALIDATE_GID_CANDIDATE: _COMPONENT_GID_CANDIDATE,
+        _AnalysisStage.VALIDATE_GID_WINNER: _COMPONENT_GID_WINNER,
     }.get(stage)
     if component is None:
         return False

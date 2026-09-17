@@ -2503,36 +2503,37 @@ def _spool_planned_members(
                 minimum=4,
                 maximum=8,
             )
-            if role == b"metadata":
-                if any(value is not None for value in row[5:8]):
-                    raise ArtifactPreparationConflictError(
-                        "metadata unexpectedly participates in spam decisions"
-                    )
-                member_role = identity.ArtifactMemberSourceRole.METADATA
-                metadata_count += 1
-            elif role == b"page":
-                member_role = identity.ArtifactMemberSourceRole.PAGE
-                if _excluded_from_scalars(
-                    row[5:8],
-                    spam_artist_threshold=spam_artist_threshold,
-                    spam_occurrence_threshold=spam_occurrence_threshold,
-                ):
+            match role:
+                case b"metadata":
+                    if any(value is not None for value in row[5:8]):
+                        raise ArtifactPreparationConflictError(
+                            "metadata unexpectedly participates in spam decisions"
+                        )
+                    member_role = identity.ArtifactMemberSourceRole.METADATA
+                    metadata_count += 1
+                case b"page":
+                    member_role = identity.ArtifactMemberSourceRole.PAGE
+                    if _excluded_from_scalars(
+                        row[5:8],
+                        spam_artist_threshold=spam_artist_threshold,
+                        spam_occurrence_threshold=spam_occurrence_threshold,
+                    ):
+                        position += 1
+                        after = file_no
+                        continue
+                    page_count += 1
+                    if page_count > 4096:
+                        raise ArtifactPreparationNotReadyError(
+                            "artifact render plan exceeds 4096 PAGE members"
+                        )
+                case b"other":
                     position += 1
                     after = file_no
                     continue
-                page_count += 1
-                if page_count > 4096:
-                    raise ArtifactPreparationNotReadyError(
-                        "artifact render plan exceeds 4096 PAGE members"
+                case _:
+                    raise ArtifactPreparationConflictError(
+                        "adapter-issued source role is not registered"
                     )
-            elif role == b"other":
-                position += 1
-                after = file_no
-                continue
-            else:
-                raise ArtifactPreparationConflictError(
-                    "adapter-issued source role is not registered"
-                )
             entry = identity.ArtifactMemberPlanEntry(
                 file_no,
                 name,
@@ -3593,48 +3594,49 @@ def _gallery_diff_keys(
 ) -> tuple[bytes, ...]:
     revision = mutation.candidate.reserved_revision
     base = None if mutation.base_catalog is None else mutation.base_catalog.revision
-    if kind == "NEW":
-        if base is None:
-            query = (
-                "SELECT publication_key FROM catalog_publications "
-                "WHERE revision = %s AND publication_key > %s "
-                "ORDER BY publication_key LIMIT 128"
+    match kind:
+        case "NEW":
+            if base is None:
+                query = (
+                    "SELECT publication_key FROM catalog_publications "
+                    "WHERE revision = %s AND publication_key > %s "
+                    "ORDER BY publication_key LIMIT 128"
+                )
+                parameters: tuple[Any, ...] = (revision, after)
+            else:
+                query = (
+                    "SELECT current.publication_key FROM catalog_publications current "
+                    "LEFT JOIN catalog_publications old ON old.revision = %s "
+                    "AND old.publication_key = current.publication_key "
+                    "WHERE current.revision = %s AND current.publication_key > %s "
+                    "AND old.publication_key IS NULL "
+                    "ORDER BY current.publication_key LIMIT 128"
+                )
+                parameters = (base, revision, after)
+        case "CHANGED":
+            if base is None:
+                return ()
+            query = _EXACT_CHANGED_ITEM_QUERY
+            parameters = (
+                mutation.candidate.display_title_policy_id,
+                base,
+                revision,
+                after,
             )
-            parameters: tuple[Any, ...] = (revision, after)
-        else:
+        case "REMOVED":
+            if base is None:
+                return ()
             query = (
-                "SELECT current.publication_key FROM catalog_publications current "
-                "LEFT JOIN catalog_publications old ON old.revision = %s "
-                "AND old.publication_key = current.publication_key "
-                "WHERE current.revision = %s AND current.publication_key > %s "
-                "AND old.publication_key IS NULL "
-                "ORDER BY current.publication_key LIMIT 128"
+                "SELECT old.publication_key FROM catalog_publications old "
+                "LEFT JOIN catalog_publications current ON current.revision = %s "
+                "AND current.publication_key = old.publication_key "
+                "WHERE old.revision = %s AND old.publication_key > %s "
+                "AND current.publication_key IS NULL "
+                "ORDER BY old.publication_key LIMIT 128"
             )
-            parameters = (base, revision, after)
-    elif kind == "CHANGED":
-        if base is None:
-            return ()
-        query = _EXACT_CHANGED_ITEM_QUERY
-        parameters = (
-            mutation.candidate.display_title_policy_id,
-            base,
-            revision,
-            after,
-        )
-    elif kind == "REMOVED":
-        if base is None:
-            return ()
-        query = (
-            "SELECT old.publication_key FROM catalog_publications old "
-            "LEFT JOIN catalog_publications current ON current.revision = %s "
-            "AND current.publication_key = old.publication_key "
-            "WHERE old.revision = %s AND old.publication_key > %s "
-            "AND current.publication_key IS NULL "
-            "ORDER BY old.publication_key LIMIT 128"
-        )
-        parameters = (revision, base, after)
-    else:
-        raise ValueError("gallery diff kind is not registered")
+            parameters = (revision, base, after)
+        case _:
+            raise ValueError("gallery diff kind is not registered")
     rows = work.connector.fetch_all(query, parameters)
     return tuple(
         require_digest32(row[0], field="gallery diff publication_key") for row in rows
@@ -5501,31 +5503,32 @@ def _expected_render_entries(
                 raise ArtifactPreparationNotReadyError(
                     "artifact source byte count exceeds int63"
                 )
-            if role == b"metadata":
-                if any(value is not None for value in row[5:8]):
-                    raise ArtifactPreparationConflictError(
-                        "metadata unexpectedly participates in spam decisions"
-                    )
-                metadata_count += 1
-                member_role = identity.ArtifactMemberSourceRole.METADATA
-            elif role == b"page":
-                if _excluded_from_scalars(
-                    row[5:8],
-                    spam_artist_threshold=authority.spam_artist_threshold,
-                    spam_occurrence_threshold=authority.spam_occurrence_threshold,
-                ):
+            match role:
+                case b"metadata":
+                    if any(value is not None for value in row[5:8]):
+                        raise ArtifactPreparationConflictError(
+                            "metadata unexpectedly participates in spam decisions"
+                        )
+                    metadata_count += 1
+                    member_role = identity.ArtifactMemberSourceRole.METADATA
+                case b"page":
+                    if _excluded_from_scalars(
+                        row[5:8],
+                        spam_artist_threshold=authority.spam_artist_threshold,
+                        spam_occurrence_threshold=authority.spam_occurrence_threshold,
+                    ):
+                        after = file_no
+                        source_count += 1
+                        continue
+                    member_role = identity.ArtifactMemberSourceRole.PAGE
+                case b"other":
                     after = file_no
                     source_count += 1
                     continue
-                member_role = identity.ArtifactMemberSourceRole.PAGE
-            elif role == b"other":
-                after = file_no
-                source_count += 1
-                continue
-            else:
-                raise ArtifactPreparationConflictError(
-                    "adapter-issued artifact source role is not registered"
-                )
+                case _:
+                    raise ArtifactPreparationConflictError(
+                        "adapter-issued artifact source role is not registered"
+                    )
             entries.append(
                 identity.ArtifactMemberPlanEntry(
                     file_no,

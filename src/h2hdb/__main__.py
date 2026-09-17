@@ -23,33 +23,34 @@ def main(argv: Sequence[str] | None = None) -> None:
         _route_database_diagnostics(logger, level=int(config.logger.level)),
         closing(VNextDatabaseAdminFacade(config)) as database,
     ):
-        if args.command == "migrate":
-            provisioned = database.initialize()
-            audit = (
-                "activation_full"
-                if provisioned.activation_audit is not None
-                else "not_performed; use check for a full READY audit"
-            )
-            logger.info(
-                "H2HDB schema provisioned: "
-                f"outcome={provisioned.outcome.value}, epoch={provisioned.epoch}, "
-                f"version={provisioned.schema_version}, state={provisioned.state}, "
-                f"audit={audit}."
-            )
-        elif args.command == "check":
-            report = database.check()
-            logger.info(
-                "H2HDB schema is valid: "
-                f"epoch={report.epoch}, version={report.schema_version}, "
-                f"state={report.state}."
-            )
-        else:
-            readiness = database.check_readiness()
-            logger.info(
-                "H2HDB database is ready: "
-                f"epoch={readiness.epoch}, version={readiness.schema_version}, "
-                f"manifest={readiness.manifest_sha256}."
-            )
+        match args.command:
+            case "migrate":
+                provisioned = database.initialize()
+                audit = (
+                    "activation_full"
+                    if provisioned.activation_audit is not None
+                    else "not_performed; use check for a full READY audit"
+                )
+                logger.info(
+                    "H2HDB schema provisioned: "
+                    f"outcome={provisioned.outcome.value}, epoch={provisioned.epoch}, "
+                    f"version={provisioned.schema_version}, state={provisioned.state}, "
+                    f"audit={audit}."
+                )
+            case "check":
+                report = database.check()
+                logger.info(
+                    "H2HDB schema is valid: "
+                    f"epoch={report.epoch}, version={report.schema_version}, "
+                    f"state={report.state}."
+                )
+            case _:
+                readiness = database.check_readiness()
+                logger.info(
+                    "H2HDB database is ready: "
+                    f"epoch={readiness.epoch}, version={readiness.schema_version}, "
+                    f"manifest={readiness.manifest_sha256}."
+                )
 
 
 if __name__ == "__main__":

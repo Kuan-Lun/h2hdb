@@ -93,14 +93,15 @@ class _ReadOnlyArchive:
 
     def seek(self, offset: int, whence: int = 0) -> int:
         self._require_open()
-        if whence == 0:
-            target = offset
-        elif whence == 1:
-            target = self._delegate.tell() + offset
-        elif whence == 2:
-            target = self._size + offset
-        else:
-            raise ValueError("invalid seek whence")
+        match whence:
+            case 0:
+                target = offset
+            case 1:
+                target = self._delegate.tell() + offset
+            case 2:
+                target = self._size + offset
+            case _:
+                raise ValueError("invalid seek whence")
         if target < 0 or target > self._size:
             raise ValueError("acquisition archive seek is outside the sealed object")
         return self._delegate.seek(target)

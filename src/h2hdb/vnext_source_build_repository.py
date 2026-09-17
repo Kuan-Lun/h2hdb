@@ -2794,13 +2794,14 @@ def _lock_build_context(
     created_at = build.created_at
     if working != (build_id, created_at):
         raise SourceBuildNotReadyError("source build is not the exact working root")
-    if state == "OPEN":
-        if build.sealed_at is not None:
-            raise SourceBuildConflictError("OPEN source build has sealed_at")
-    elif allow_sealed and state == "SEALED":
-        require_int63(build.sealed_at, field="source build sealed_at")
-    else:
-        raise SourceBuildNotReadyError("source build is not writable")
+    match state:
+        case "OPEN":
+            if build.sealed_at is not None:
+                raise SourceBuildConflictError("OPEN source build has sealed_at")
+        case "SEALED" if allow_sealed:
+            require_int63(build.sealed_at, field="source build sealed_at")
+        case _:
+            raise SourceBuildNotReadyError("source build is not writable")
     return scope, policy, state, created_at
 
 
@@ -4517,48 +4518,49 @@ def _is_exact_retired_sealed_source_build(
         raise SourceBuildConflictError(
             "retired source build analysis family is missing or changed"
         )
-    if family.state == "COMPLETE":
-        # A policy-mismatch retirement leaves the analysis COMPLETE: it is an
-        # immutable terminal fact.  A published analysis can also outlive its
-        # commit while a successor still needs its incremental baseline.
-        # Neither case may retire a build with a retained durable commit.
-        if _analysis_has_durable_commit(connector, analysis_id=analysis_id):
-            return False
-        _require_compacted_source_publication(
-            connector,
-            analysis_id=analysis_id,
-            current_receipt_id=current_receipt_id,
-        )
-        blockers: tuple[tuple[str, str, bytes, str], ...] = ()
-        label_prefix = "COMPLETE"
-    elif family.state == "ABANDONED":
-        if family.completed_at is not None:
-            raise SourceBuildConflictError(
-                "ABANDONED source build analysis retained a completion time"
+    match family.state:
+        case "COMPLETE":
+            # A policy-mismatch retirement leaves the analysis COMPLETE: it is an
+            # immutable terminal fact.  A published analysis can also outlive its
+            # commit while a successor still needs its incremental baseline.
+            # Neither case may retire a build with a retained durable commit.
+            if _analysis_has_durable_commit(connector, analysis_id=analysis_id):
+                return False
+            _require_compacted_source_publication(
+                connector,
+                analysis_id=analysis_id,
+                current_receipt_id=current_receipt_id,
             )
-        blockers = (
-            (
-                _ANALYSIS_SNAPSHOT_MANIFEST_TABLE,
-                "analysis_id",
-                analysis_id,
-                "snapshot manifest",
-            ),
-            (
-                _PUBLICATION_CANDIDATE_TABLE,
-                "analysis_id",
-                analysis_id,
-                "publication candidate",
-            ),
-            (
-                _SOURCE_REVISION_PROVENANCE_TABLE,
-                "analysis_id",
-                analysis_id,
-                "source revision provenance",
-            ),
-        )
-        label_prefix = "ABANDONED"
-    else:
-        return False
+            blockers: tuple[tuple[str, str, bytes, str], ...] = ()
+            label_prefix = "COMPLETE"
+        case "ABANDONED":
+            if family.completed_at is not None:
+                raise SourceBuildConflictError(
+                    "ABANDONED source build analysis retained a completion time"
+                )
+            blockers = (
+                (
+                    _ANALYSIS_SNAPSHOT_MANIFEST_TABLE,
+                    "analysis_id",
+                    analysis_id,
+                    "snapshot manifest",
+                ),
+                (
+                    _PUBLICATION_CANDIDATE_TABLE,
+                    "analysis_id",
+                    analysis_id,
+                    "publication candidate",
+                ),
+                (
+                    _SOURCE_REVISION_PROVENANCE_TABLE,
+                    "analysis_id",
+                    analysis_id,
+                    "source revision provenance",
+                ),
+            )
+            label_prefix = "ABANDONED"
+        case _:
+            return False
     for table, column, value, label in blockers:
         if connector.fetch_one(
             f"SELECT 1 FROM {table} WHERE {column} = %s LIMIT 1",
@@ -5714,20 +5716,21 @@ def _validate_existing_handoff(
         (build.scope_key, build.manifest_policy_id),
         (scope, manifest_policy_id),
     )
-    if build.state == "OPEN":
-        if build.sealed_at is not None:
-            raise SourceBuildConflictError("replayed OPEN build has sealed_at")
-    elif build.state == "SEALED":
-        require_int63(build.sealed_at, field="replayed build sealed_at")
-        try:
-            manifest = load_build_manifest_family(connector, build_id=build_id)
-        except ManifestFamilyCollisionError as error:
-            raise SourceBuildConflictError(str(error)) from error
-        if manifest is None:
-            raise SourceBuildConflictError("replayed SEALED build has no manifest")
-        manifest.__post_init__()
-    else:
-        raise SourceBuildConflictError("replayed source build is ABANDONED")
+    match build.state:
+        case "OPEN":
+            if build.sealed_at is not None:
+                raise SourceBuildConflictError("replayed OPEN build has sealed_at")
+        case "SEALED":
+            require_int63(build.sealed_at, field="replayed build sealed_at")
+            try:
+                manifest = load_build_manifest_family(connector, build_id=build_id)
+            except ManifestFamilyCollisionError as error:
+                raise SourceBuildConflictError(str(error)) from error
+            if manifest is None:
+                raise SourceBuildConflictError("replayed SEALED build has no manifest")
+            manifest.__post_init__()
+        case _:
+            raise SourceBuildConflictError("replayed source build is ABANDONED")
     channel = connector.fetch_one(
         "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
         (build_id,),

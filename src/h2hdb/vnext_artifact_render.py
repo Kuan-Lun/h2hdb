@@ -247,14 +247,15 @@ class _ReadOnlySlice:
     def seek(self, offset: int, whence: int = 0) -> int:
         with self._delegate_lock:
             self._require_open()
-            if whence == 0:
-                position = offset
-            elif whence == 1:
-                position = self._position + offset
-            elif whence == 2:
-                position = self._length + offset
-            else:
-                raise ValueError("invalid seek whence")
+            match whence:
+                case 0:
+                    position = offset
+                case 1:
+                    position = self._position + offset
+                case 2:
+                    position = self._length + offset
+                case _:
+                    raise ValueError("invalid seek whence")
             if position < 0 or position > self._length:
                 raise ValueError("verified artifact source seek is outside its extent")
             self._position = position

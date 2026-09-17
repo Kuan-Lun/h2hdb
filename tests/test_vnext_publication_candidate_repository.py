@@ -2230,7 +2230,7 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         module._catalog_child_kind_rows(
             work,
             revision=1,
-            kind=module._CATALOG_CHILD_CONTRIBUTOR,
+            kind=module._CatalogChildKind.CONTRIBUTOR,
             after_key=b"k" * 32,
             after_subkey=(7).to_bytes(8, "big"),
             limit=128,
@@ -2248,7 +2248,7 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         module._catalog_child_kind_rows(
             work,
             revision=1,
-            kind=module._CATALOG_CHILD_ARTIFACT,
+            kind=module._CatalogChildKind.ARTIFACT,
             after_key=b"k" * 32,
             after_subkey=b"",
             limit=128,

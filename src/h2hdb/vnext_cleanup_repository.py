@@ -2118,21 +2118,22 @@ def _indirect_spec(
 
 
 def _encode_static_scalar(value: _StaticScalar) -> bytes:
-    if isinstance(value, bool):
-        raise CleanupCorruptionError("cleanup cursor contains a boolean key")
-    if isinstance(value, int):
-        integer = require_int63(value, field="cleanup static cursor integer")
-        return b"i" + integer.to_bytes(8, "big")
-    if isinstance(value, bytes):
-        payload = require_bounded_bytes(
-            value, field="cleanup static cursor bytes", maximum=1024
-        )
-        return b"b" + len(payload).to_bytes(2, "big") + payload
-    if isinstance(value, str):
-        payload = value.encode("utf-8", errors="strict")
-        if len(payload) > 1024:
-            raise CleanupCorruptionError("cleanup static text cursor is too large")
-        return b"s" + len(payload).to_bytes(2, "big") + payload
+    match value:
+        case bool():
+            raise CleanupCorruptionError("cleanup cursor contains a boolean key")
+        case int():
+            integer = require_int63(value, field="cleanup static cursor integer")
+            return b"i" + integer.to_bytes(8, "big")
+        case bytes():
+            payload = require_bounded_bytes(
+                value, field="cleanup static cursor bytes", maximum=1024
+            )
+            return b"b" + len(payload).to_bytes(2, "big") + payload
+        case str():
+            payload = value.encode("utf-8", errors="strict")
+            if len(payload) > 1024:
+                raise CleanupCorruptionError("cleanup static text cursor is too large")
+            return b"s" + len(payload).to_bytes(2, "big") + payload
     raise CleanupCorruptionError("cleanup cursor contains an unsupported key type")
 
 
@@ -2705,15 +2706,18 @@ def _static_values(row: Sequence[object]) -> tuple[_StaticScalar, ...]:
     for value in row:
         if isinstance(value, bool) or not isinstance(value, (bytes, int, str)):
             raise CleanupCorruptionError("cleanup selected an invalid key value")
-        if isinstance(value, int):
-            require_int63(value, field="cleanup selected integer key")
-        elif isinstance(value, bytes):
-            require_bounded_bytes(
-                value, field="cleanup selected byte key", maximum=1024
-            )
-        else:
-            if len(value.encode("utf-8", errors="strict")) > 1024:
-                raise CleanupCorruptionError("cleanup selected text key is too large")
+        match value:
+            case int():
+                require_int63(value, field="cleanup selected integer key")
+            case bytes():
+                require_bounded_bytes(
+                    value, field="cleanup selected byte key", maximum=1024
+                )
+            case _:
+                if len(value.encode("utf-8", errors="strict")) > 1024:
+                    raise CleanupCorruptionError(
+                        "cleanup selected text key is too large"
+                    )
         values.append(value)
     return tuple(values)
 
@@ -3218,26 +3222,29 @@ def _publication_commit_mutator(phase: str) -> _Mutator:
                 phase=phase,
                 cursor=cursor,
             )
-        if phase == "PCOM_EVENT":
-            return _run_publication_commit_event_phase(operation, cursor)
-        if phase == "PCOM_COMMIT_EFFECT_ROOT":
-            return _run_publication_commit_effect_root_phase(operation, cursor)
-        if phase == "PCOM_PREPARATION_BINDING":
-            eligibility = _PUBLICATION_COMMIT_AFTER_BUILD_BASE_ELIGIBILITY
-        elif phase == "PCOM_PREPARATION_BATCH":
-            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BINDING_ELIGIBILITY
-        elif phase == "PCOM_PREPARATION_CHECKPOINT":
-            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BATCH_ELIGIBILITY
-        elif phase == "PCOM_PREPARATION":
-            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_CHECKPOINT_ELIGIBILITY
-        elif phase == "PCOM_FINALIZATION_MARKER":
-            eligibility = _PUBLICATION_COMMIT_AFTER_EVENT_ELIGIBILITY
-        elif phase == "PCOM_FINALIZATION_BATCH":
-            eligibility = _PUBLICATION_COMMIT_AFTER_MARKER_ELIGIBILITY
-        elif phase == "PCOM_FINALIZATION_CHECKPOINT":
-            eligibility = _PUBLICATION_COMMIT_AFTER_COMPOUND_ROOT_ELIGIBILITY
-        else:
-            eligibility = _PUBLICATION_COMMIT_AFTER_CHECKPOINT_ELIGIBILITY
+        match phase:
+            case "PCOM_EVENT":
+                return _run_publication_commit_event_phase(operation, cursor)
+            case "PCOM_COMMIT_EFFECT_ROOT":
+                return _run_publication_commit_effect_root_phase(operation, cursor)
+            case "PCOM_PREPARATION_BINDING":
+                eligibility = _PUBLICATION_COMMIT_AFTER_BUILD_BASE_ELIGIBILITY
+            case "PCOM_PREPARATION_BATCH":
+                eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BINDING_ELIGIBILITY
+            case "PCOM_PREPARATION_CHECKPOINT":
+                eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BATCH_ELIGIBILITY
+            case "PCOM_PREPARATION":
+                eligibility = (
+                    _PUBLICATION_COMMIT_AFTER_PREPARATION_CHECKPOINT_ELIGIBILITY
+                )
+            case "PCOM_FINALIZATION_MARKER":
+                eligibility = _PUBLICATION_COMMIT_AFTER_EVENT_ELIGIBILITY
+            case "PCOM_FINALIZATION_BATCH":
+                eligibility = _PUBLICATION_COMMIT_AFTER_MARKER_ELIGIBILITY
+            case "PCOM_FINALIZATION_CHECKPOINT":
+                eligibility = _PUBLICATION_COMMIT_AFTER_COMPOUND_ROOT_ELIGIBILITY
+            case _:
+                eligibility = _PUBLICATION_COMMIT_AFTER_CHECKPOINT_ELIGIBILITY
         return _run_static_phase(
             operation,
             cursor,
@@ -3526,18 +3533,21 @@ def _validate_publication_commit_event_row(
     event_type = _as_text(row[2], field="PCOM EVENT event_type")
     removed_event_id = row[3]
     deletion_event_id = row[4]
-    if event_type == "REMOVED_GID":
-        if removed_event_id != event_id or deletion_event_id is not None:
+    match event_type:
+        case "REMOVED_GID":
+            if removed_event_id != event_id or deletion_event_id is not None:
+                raise CleanupCorruptionError(
+                    "PCOM EVENT lacks its exact REMOVED_GID subtype"
+                )
+        case "DELETION_CONSUMPTION":
+            if deletion_event_id != event_id or removed_event_id is not None:
+                raise CleanupCorruptionError(
+                    "PCOM EVENT lacks its exact DELETION_CONSUMPTION subtype"
+                )
+        case _:
             raise CleanupCorruptionError(
-                "PCOM EVENT lacks its exact REMOVED_GID subtype"
+                "PCOM EVENT type is outside the closed registry"
             )
-    elif event_type == "DELETION_CONSUMPTION":
-        if deletion_event_id != event_id or removed_event_id is not None:
-            raise CleanupCorruptionError(
-                "PCOM EVENT lacks its exact DELETION_CONSUMPTION subtype"
-            )
-    else:
-        raise CleanupCorruptionError("PCOM EVENT type is outside the closed registry")
     return _PublicationCommitEventCandidate(
         receipt_id,
         preparation_id,

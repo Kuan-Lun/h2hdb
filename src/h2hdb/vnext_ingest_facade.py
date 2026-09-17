@@ -860,30 +860,31 @@ class VNextIngestFacade:
                 local_action = _SourceAction.LOCATOR_SEAL
         elif action is _SourceAction.STAGING_FIND:
             pending = issued._payload
-            if isinstance(pending, GalleryStagingPendingRetirement):
-                payload = pending.seal
-                local_action = (
-                    _SourceAction.STAGING_RETIRE
-                    if pending.acknowledged
-                    else _SourceAction.STAGING_RECOVER
-                )
-            elif pending is None:
-                payload = None
-                local_action = _SourceAction.STAGING_COMPLETE
-            else:
-                if not isinstance(pending, PendingSourceGallery):
-                    raise RuntimeError("pending source gallery receipt is invalid")
-                decoded_locator = source._plan._decode_locator(
-                    pending.position,
-                    pending.locator_sha256,
-                )
-                observation = source._snapshot.open_gallery(
-                    position=pending.position,
-                    locator_sha256=pending.locator_sha256,
-                    locator_components=decoded_locator,
-                )
-                payload = (pending, decoded_locator, observation)
-                local_action = _SourceAction.STAGING_SELECT
+            match pending:
+                case GalleryStagingPendingRetirement():
+                    payload = pending.seal
+                    local_action = (
+                        _SourceAction.STAGING_RETIRE
+                        if pending.acknowledged
+                        else _SourceAction.STAGING_RECOVER
+                    )
+                case None:
+                    payload = None
+                    local_action = _SourceAction.STAGING_COMPLETE
+                case _:
+                    if not isinstance(pending, PendingSourceGallery):
+                        raise RuntimeError("pending source gallery receipt is invalid")
+                    decoded_locator = source._plan._decode_locator(
+                        pending.position,
+                        pending.locator_sha256,
+                    )
+                    observation = source._snapshot.open_gallery(
+                        position=pending.position,
+                        locator_sha256=pending.locator_sha256,
+                        locator_components=decoded_locator,
+                    )
+                    payload = (pending, decoded_locator, observation)
+                    local_action = _SourceAction.STAGING_SELECT
         elif action is _SourceAction.STAGING_RETIRE:
             if machine.staging_seal is None:
                 raise RuntimeError("terminal gallery staging seal is absent")
@@ -2429,13 +2430,14 @@ def _resume_staging_machine(
         ):
             raise RuntimeError("gallery match advanced before component completion")
         return
-    if progress.match_state == "OPEN":
-        machine.match_previous_operation_id = progress.match_latest_operation_id
-        machine.action = _SourceAction.MATCH
-        return
-    if progress.match_state == "COMPLETE":
-        machine.action = _SourceAction.STAGING_SEAL
-        return
+    match progress.match_state:
+        case "OPEN":
+            machine.match_previous_operation_id = progress.match_latest_operation_id
+            machine.action = _SourceAction.MATCH
+            return
+        case "COMPLETE":
+            machine.action = _SourceAction.STAGING_SEAL
+            return
     raise RuntimeError("gallery match progress state is invalid")
 
 

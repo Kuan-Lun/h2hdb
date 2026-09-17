@@ -920,30 +920,31 @@ class VNextIngestPublication:
                 )
         if receipt is None:
             return None
-        if receipt.state == "DB_COMMITTED":
-            action = _Action.LIBRARY_ACTIVATION
-            payload: object = _LibraryActivationWork(
-                receipt.receipt_id,
-                receipt.revision,
-            )
-            if receipt.receipt_id in self.__activation_ready:
-                action, payload = self.__issue_finalization(
-                    gate=gate,
-                    receipt_id=receipt.receipt_id,
-                    now=now,
+        match receipt.state:
+            case "DB_COMMITTED":
+                action = _Action.LIBRARY_ACTIVATION
+                payload: object = _LibraryActivationWork(
+                    receipt.receipt_id,
+                    receipt.revision,
                 )
-            else:
-                checkpoint = self.__activation_checkpoints.get(receipt.receipt_id)
-                if checkpoint is not None:
-                    payload = replace(
-                        cast(_LibraryActivationWork, payload),
-                        checkpoint=checkpoint,
+                if receipt.receipt_id in self.__activation_ready:
+                    action, payload = self.__issue_finalization(
+                        gate=gate,
+                        receipt_id=receipt.receipt_id,
+                        now=now,
                     )
-        elif receipt.state == "PUBLISHED":
-            action = _Action.RECOVERY_COMPLETE
-            payload = receipt
-        else:  # pragma: no cover - PublicationCommitReceipt rejects this first
-            raise RuntimeError("publication recovery receipt has an invalid state")
+                else:
+                    checkpoint = self.__activation_checkpoints.get(receipt.receipt_id)
+                    if checkpoint is not None:
+                        payload = replace(
+                            cast(_LibraryActivationWork, payload),
+                            checkpoint=checkpoint,
+                        )
+            case "PUBLISHED":
+                action = _Action.RECOVERY_COMPLETE
+                payload = receipt
+            case _:  # pragma: no cover - PublicationCommitReceipt rejects this first
+                raise RuntimeError("publication recovery receipt has an invalid state")
 
         with self.__publication_plan_lock:
             self.__require_open()
@@ -1726,49 +1727,42 @@ def _issue_database_action(
         return _Action.COMMIT_PUBLICATION, candidate
 
     batch_key = secrets.token_bytes(32)
-    if first_open == b"BUILD_SELECTION":
-        return _Action.BUILD_SELECTION, _CandidateWork(candidate, batch_key)
-    if first_open == b"VALIDATE_SELECTION":
-        return _Action.VALIDATE_SELECTION, _CandidateWork(candidate, batch_key)
-    if first_open in {
-        b"BUILD_CATALOG_PROJECTION",
-        b"VALIDATE_CATALOG_PROJECTION",
-    }:
-        authority = (
-            PublicationCandidateRepository._issue_projection_authority_authorized(
-                work,
-                candidate_id=candidate,
-                generation=generation,
-                now=now,
-                validate_artifact_policy=True,
+    match first_open:
+        case b"BUILD_SELECTION":
+            return _Action.BUILD_SELECTION, _CandidateWork(candidate, batch_key)
+        case b"VALIDATE_SELECTION":
+            return _Action.VALIDATE_SELECTION, _CandidateWork(candidate, batch_key)
+        case b"BUILD_CATALOG_PROJECTION" | b"VALIDATE_CATALOG_PROJECTION":
+            authority = (
+                PublicationCandidateRepository._issue_projection_authority_authorized(
+                    work,
+                    candidate_id=candidate,
+                    generation=generation,
+                    now=now,
+                    validate_artifact_policy=True,
+                )
             )
-        )
-        action = (
-            _Action.BUILD_CATALOG
-            if first_open == b"BUILD_CATALOG_PROJECTION"
-            else _Action.VALIDATE_CATALOG
-        )
-        return action, _CandidateWork(candidate, batch_key, authority)
-    if first_open in {
-        b"BUILD_ARTIFACT_INPUT",
-        b"VALIDATE_ARTIFACT_INPUT_DELTA",
-    }:
-        input_authority = (
-            ArtifactPreparationRepository._issue_input_projection_authority_authorized(
+            action = (
+                _Action.BUILD_CATALOG
+                if first_open == b"BUILD_CATALOG_PROJECTION"
+                else _Action.VALIDATE_CATALOG
+            )
+            return action, _CandidateWork(candidate, batch_key, authority)
+        case b"BUILD_ARTIFACT_INPUT" | b"VALIDATE_ARTIFACT_INPUT_DELTA":
+            input_authority = ArtifactPreparationRepository._issue_input_projection_authority_authorized(
                 work,
                 candidate_id=candidate,
                 generation=generation,
                 now=now,
             )
-        )
-        action = (
-            _Action.BUILD_ARTIFACT_INPUT
-            if first_open == b"BUILD_ARTIFACT_INPUT"
-            else _Action.VALIDATE_ARTIFACT_INPUT
-        )
-        return action, _CandidateWork(candidate, batch_key, input_authority)
-    if first_open == b"BUILD_ARTIFACT_DELTA_OPERATION":
-        return _Action.BUILD_ARTIFACT_DELTA, _CandidateWork(candidate, batch_key)
+            action = (
+                _Action.BUILD_ARTIFACT_INPUT
+                if first_open == b"BUILD_ARTIFACT_INPUT"
+                else _Action.VALIDATE_ARTIFACT_INPUT
+            )
+            return action, _CandidateWork(candidate, batch_key, input_authority)
+        case b"BUILD_ARTIFACT_DELTA_OPERATION":
+            return _Action.BUILD_ARTIFACT_DELTA, _CandidateWork(candidate, batch_key)
     if first_open == b"VALIDATE_PREPARED_ARTIFACT":
         special = _issue_artifact_or_operational(
             work,
@@ -3296,12 +3290,15 @@ def _advance_result(action: _Action, outcome: object) -> VNextIngestAdvanceResul
     rows = 0
     terminal = action in {_Action.RECOVERY_COMPLETE, _Action.COMPLETE}
     replayed = bool(getattr(outcome, "replayed", False))
-    if isinstance(outcome, PublicationCandidateBatch):
-        rows = outcome.row_count
-    elif hasattr(outcome, "row_count"):
-        rows = require_int63(getattr(outcome, "row_count"), field="publication rows")
-    elif isinstance(outcome, _LibraryActivationPrepared):
-        rows = outcome.processed_rows
+    match outcome:
+        case PublicationCandidateBatch():
+            rows = outcome.row_count
+        case _ if hasattr(outcome, "row_count"):
+            rows = require_int63(
+                getattr(outcome, "row_count"), field="publication rows"
+            )
+        case _LibraryActivationPrepared():
+            rows = outcome.processed_rows
     return VNextIngestAdvanceResult(phase, rows, terminal, replayed)
 
 

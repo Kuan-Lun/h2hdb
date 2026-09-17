@@ -16,12 +16,14 @@ class EnvironmentPlaceholderError(ValueError):
 def resolve_environment_placeholders(value: object) -> object:
     """Resolve exact ``${ENV_NAME}`` strings recursively without mutating input."""
 
-    if isinstance(value, dict):
-        return {
-            key: resolve_environment_placeholders(item) for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [resolve_environment_placeholders(item) for item in value]
+    match value:
+        case dict():
+            return {
+                key: resolve_environment_placeholders(item)
+                for key, item in value.items()
+            }
+        case list():
+            return [resolve_environment_placeholders(item) for item in value]
     if not isinstance(value, str):
         return value
     if not (value.startswith("${") and value.endswith("}")):

@@ -491,29 +491,30 @@ def _top_level_sql_words(statement: str) -> tuple[str, ...] | None:
     length = len(statement)
     while index < length:
         character = statement[index]
-        if character in {"'", '"', "`"}:
-            quote = character
-            index += 1
-            while index < length:
-                if statement[index] == quote:
-                    if index + 1 < length and statement[index + 1] == quote:
+        match character:
+            case "'" | '"' | "`":
+                quote = character
+                index += 1
+                while index < length:
+                    if statement[index] == quote:
+                        if index + 1 < length and statement[index + 1] == quote:
+                            index += 2
+                            continue
+                        index += 1
+                        break
+                    if statement[index] == "\\":
                         index += 2
-                        continue
-                    index += 1
-                    break
-                if statement[index] == "\\":
-                    index += 2
+                    else:
+                        index += 1
                 else:
-                    index += 1
-            else:
-                return None
-            continue
-        if character == "[":
-            closing = statement.find("]", index + 1)
-            if closing < 0:
-                return None
-            index = closing + 1
-            continue
+                    return None
+                continue
+            case "[":
+                closing = statement.find("]", index + 1)
+                if closing < 0:
+                    return None
+                index = closing + 1
+                continue
         if statement.startswith("--", index):
             newline = statement.find("\n", index + 2)
             index = length if newline < 0 else newline + 1
@@ -524,16 +525,17 @@ def _top_level_sql_words(statement: str) -> tuple[str, ...] | None:
                 return None
             index = closing + 2
             continue
-        if character == "(":
-            depth += 1
-            index += 1
-            continue
-        if character == ")":
-            depth -= 1
-            if depth < 0:
-                return None
-            index += 1
-            continue
+        match character:
+            case "(":
+                depth += 1
+                index += 1
+                continue
+            case ")":
+                depth -= 1
+                if depth < 0:
+                    return None
+                index += 1
+                continue
         if character.isascii() and (character.isalpha() or character == "_"):
             end = index + 1
             while (
@@ -1613,12 +1615,13 @@ def _closing_parenthesis(value: str, opening: int) -> int | None:
                 continue
             inside_quote = not inside_quote
         elif not inside_quote:
-            if character == "(":
-                depth += 1
-            elif character == ")":
-                depth -= 1
-                if depth == 0:
-                    return position
+            match character:
+                case "(":
+                    depth += 1
+                case ")":
+                    depth -= 1
+                    if depth == 0:
+                        return position
         position += 1
     return None
 

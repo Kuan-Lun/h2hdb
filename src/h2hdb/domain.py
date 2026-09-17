@@ -3156,12 +3156,13 @@ class VNextLibraryActivationCursor:
 
     def to_bytes(self) -> bytes:
         self.__post_init__()
-        if self.resource_kind is CatalogResourceKind.ACQUISITION:
-            kind_tag = b"\x00"
-        elif self.resource_kind is CatalogResourceKind.THUMBNAIL:
-            kind_tag = b"\x01"
-        else:  # pragma: no cover - __post_init__ rejects forged values first
-            raise ValueError("library activation cursor kind is not registered")
+        match self.resource_kind:
+            case CatalogResourceKind.ACQUISITION:
+                kind_tag = b"\x00"
+            case CatalogResourceKind.THUMBNAIL:
+                kind_tag = b"\x01"
+            case _:  # pragma: no cover - __post_init__ rejects forged values first
+                raise ValueError("library activation cursor kind is not registered")
         return self.publication_key + kind_tag
 
     @classmethod
@@ -3170,12 +3171,13 @@ class VNextLibraryActivationCursor:
             raise ValueError(
                 "library activation cursor encoding must contain exactly 33 bytes"
             )
-        if value[32] == 0:
-            kind = CatalogResourceKind.ACQUISITION
-        elif value[32] == 1:
-            kind = CatalogResourceKind.THUMBNAIL
-        else:
-            raise ValueError("library activation cursor kind tag is not registered")
+        match value[32]:
+            case 0:
+                kind = CatalogResourceKind.ACQUISITION
+            case 1:
+                kind = CatalogResourceKind.THUMBNAIL
+            case _:
+                raise ValueError("library activation cursor kind tag is not registered")
         cursor = cls(value[:32], kind)
         if cursor.to_bytes() != value:
             raise ValueError("library activation cursor encoding is not canonical")
@@ -3387,19 +3389,22 @@ class VNextIngestPage[IngestItemT]:
             raise ValueError("a terminal ingest page cannot expose next_after")
         if not self.terminal and self.next_after is None:
             raise ValueError("a nonterminal ingest page requires next_after")
-        if isinstance(self.next_after, int):
-            require_int63(self.next_after, field="ingest page next_after")
-        elif isinstance(self.next_after, bytes):
-            require_bounded_bytes(
-                self.next_after,
-                field="ingest page next_after",
-                minimum=1,
-                maximum=255,
-            )
-        elif isinstance(self.next_after, tuple):
-            encode_source_relative_locator(self.next_after)
-        elif self.next_after is not None:
-            raise TypeError("ingest page next_after has an unsupported cursor type")
+        match self.next_after:
+            case int():
+                require_int63(self.next_after, field="ingest page next_after")
+            case bytes():
+                require_bounded_bytes(
+                    self.next_after,
+                    field="ingest page next_after",
+                    minimum=1,
+                    maximum=255,
+                )
+            case tuple():
+                encode_source_relative_locator(self.next_after)
+            case None:
+                pass
+            case _:
+                raise TypeError("ingest page next_after has an unsupported cursor type")
 
 
 @dataclass(frozen=True, slots=True)

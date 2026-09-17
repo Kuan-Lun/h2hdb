@@ -1269,108 +1269,120 @@ class GalleryObservationMetadataDecoder:
 
     def _accept_fixed(self, value: bytes) -> None:
         phase = self._phase
-        if phase == "PREFIX":
-            if value != _GALLERY_OBSERVATION_METADATA_PREFIX:
-                raise ByteDomainError("gallery observation metadata has wrong prefix")
-            self._phase = "VERSION"
-        elif phase == "VERSION":
-            if (
-                int.from_bytes(value, "big")
-                != GALLERY_OBSERVATION_METADATA_CODEC_VERSION
-            ):
-                raise IntegerDomainError("metadata codec_version is not registered")
-            self._phase = "GID"
-        elif phase == "GID":
-            self._gid = _require_positive_int63(
-                int.from_bytes(value, "big"), field_name="gid"
-            )
-            self._phase = "TITLE_TAG"
-        elif phase.endswith("_TAG"):
-            expected = {"TITLE_TAG": 1, "COMMENT_TAG": 2, "ACCOUNT_TAG": 3}[phase]
-            if value != bytes((expected,)):
-                raise ByteDomainError("metadata field tag is unknown or out of order")
-            self._phase = phase.removesuffix("_TAG") + "_LENGTH"
-        elif phase.endswith("_LENGTH"):
-            index = {"TITLE_LENGTH": 0, "COMMENT_LENGTH": 1, "ACCOUNT_LENGTH": 2}[phase]
-            length = _require_int63(
-                int.from_bytes(value, "big"), field_name="metadata text length"
-            )
-            self._text_lengths[index] = length
-            self._remaining_text_bytes = length
-            self._utf8_tail = b""
-            text_phase = ("TITLE_TEXT", "COMMENT_TEXT", "ACCOUNT_TEXT")[index]
-            if length:
-                self._phase = text_phase
-            else:
-                self._phase = {
-                    "TITLE_TEXT": "COMMENT_TAG",
-                    "COMMENT_TEXT": "ACCOUNT_TAG",
-                    "ACCOUNT_TEXT": "UPLOAD_TIME",
-                }[text_phase]
-        elif phase == "UPLOAD_TIME":
-            self._upload_time = _require_int63(
-                int.from_bytes(value, "big"), field_name="upload_time"
-            )
-            self._phase = "DOWNLOAD_TIME"
-        elif phase == "DOWNLOAD_TIME":
-            self._download_time = _require_int63(
-                int.from_bytes(value, "big"), field_name="download_time"
-            )
-            self._phase = "MODIFIED_TIME"
-        elif phase == "MODIFIED_TIME":
-            self._modified_time = _require_int63(
-                int.from_bytes(value, "big"), field_name="modified_time"
-            )
-            self._phase = "SCAN_VERSION"
-        elif phase == "SCAN_VERSION":
-            self._scan_version = _require_positive_uint(
-                int.from_bytes(value, "big"),
-                bits=32,
-                field_name="scan_observation_version",
-            )
-            self._phase = "SOURCE_FILE_COUNT"
-        elif phase == "SOURCE_FILE_COUNT":
-            self._source_file_count = _require_int63(
-                int.from_bytes(value, "big"), field_name="source_file_count"
-            )
-            self._phase = "PAGE_COUNT_PRESENCE"
-        elif phase == "PAGE_COUNT_PRESENCE":
-            if value == b"\x00":
-                self._page_count = None
+        match phase:
+            case "PREFIX":
+                if value != _GALLERY_OBSERVATION_METADATA_PREFIX:
+                    raise ByteDomainError(
+                        "gallery observation metadata has wrong prefix"
+                    )
+                self._phase = "VERSION"
+            case "VERSION":
+                if (
+                    int.from_bytes(value, "big")
+                    != GALLERY_OBSERVATION_METADATA_CODEC_VERSION
+                ):
+                    raise IntegerDomainError("metadata codec_version is not registered")
+                self._phase = "GID"
+            case "GID":
+                self._gid = _require_positive_int63(
+                    int.from_bytes(value, "big"), field_name="gid"
+                )
+                self._phase = "TITLE_TAG"
+            case _ if phase.endswith("_TAG"):
+                expected = {"TITLE_TAG": 1, "COMMENT_TAG": 2, "ACCOUNT_TAG": 3}[phase]
+                if value != bytes((expected,)):
+                    raise ByteDomainError(
+                        "metadata field tag is unknown or out of order"
+                    )
+                self._phase = phase.removesuffix("_TAG") + "_LENGTH"
+            case _ if phase.endswith("_LENGTH"):
+                index = {"TITLE_LENGTH": 0, "COMMENT_LENGTH": 1, "ACCOUNT_LENGTH": 2}[
+                    phase
+                ]
+                length = _require_int63(
+                    int.from_bytes(value, "big"), field_name="metadata text length"
+                )
+                self._text_lengths[index] = length
+                self._remaining_text_bytes = length
+                self._utf8_tail = b""
+                text_phase = ("TITLE_TEXT", "COMMENT_TEXT", "ACCOUNT_TEXT")[index]
+                if length:
+                    self._phase = text_phase
+                else:
+                    self._phase = {
+                        "TITLE_TEXT": "COMMENT_TAG",
+                        "COMMENT_TEXT": "ACCOUNT_TAG",
+                        "ACCOUNT_TEXT": "UPLOAD_TIME",
+                    }[text_phase]
+            case "UPLOAD_TIME":
+                self._upload_time = _require_int63(
+                    int.from_bytes(value, "big"), field_name="upload_time"
+                )
+                self._phase = "DOWNLOAD_TIME"
+            case "DOWNLOAD_TIME":
+                self._download_time = _require_int63(
+                    int.from_bytes(value, "big"), field_name="download_time"
+                )
+                self._phase = "MODIFIED_TIME"
+            case "MODIFIED_TIME":
+                self._modified_time = _require_int63(
+                    int.from_bytes(value, "big"), field_name="modified_time"
+                )
+                self._phase = "SCAN_VERSION"
+            case "SCAN_VERSION":
+                self._scan_version = _require_positive_uint(
+                    int.from_bytes(value, "big"),
+                    bits=32,
+                    field_name="scan_observation_version",
+                )
+                self._phase = "SOURCE_FILE_COUNT"
+            case "SOURCE_FILE_COUNT":
+                self._source_file_count = _require_int63(
+                    int.from_bytes(value, "big"), field_name="source_file_count"
+                )
+                self._phase = "PAGE_COUNT_PRESENCE"
+            case "PAGE_COUNT_PRESENCE":
+                match value:
+                    case b"\x00":
+                        self._page_count = None
+                        self._phase = "QUAL_POLICY"
+                    case b"\x01":
+                        self._phase = "PAGE_COUNT"
+                    case _:
+                        raise ByteDomainError("page_count presence must be zero or one")
+            case "PAGE_COUNT":
+                self._page_count = _require_uint(
+                    int.from_bytes(value, "big"),
+                    bits=32,
+                    field_name="page_count",
+                )
                 self._phase = "QUAL_POLICY"
-            elif value == b"\x01":
-                self._phase = "PAGE_COUNT"
-            else:
-                raise ByteDomainError("page_count presence must be zero or one")
-        elif phase == "PAGE_COUNT":
-            self._page_count = _require_uint(
-                int.from_bytes(value, "big"),
-                bits=32,
-                field_name="page_count",
-            )
-            self._phase = "QUAL_POLICY"
-        elif phase == "QUAL_POLICY":
-            self._qualification_policy_sha256 = value
-            self._phase = "QUAL_ACCEPTED"
-        elif phase == "QUAL_ACCEPTED":
-            if value not in {b"\x00", b"\x01"}:
-                raise ByteDomainError("qualification accepted must be zero or one")
-            self._accepted = value == b"\x01"
-            self._phase = "QUAL_REASON"
-        elif phase == "QUAL_REASON":
-            reason = value.rstrip(b"\x00")
-            if b"\x00" in reason:
-                raise ByteDomainError("qualification reason padding is not canonical")
-            self._qualification_reason = reason
-            self._phase = "QUAL_SOURCE"
-        elif phase == "QUAL_SOURCE":
-            length = value[0]
-            if any(value[1 + length :]):
-                raise ByteDomainError("qualification source padding is not canonical")
-            self._qualification_source_name = value[1 : 1 + length]
-            self._phase = "DONE"
-        else:  # pragma: no cover - closed phase registry
-            raise AssertionError("unreachable metadata decoder phase")
+            case "QUAL_POLICY":
+                self._qualification_policy_sha256 = value
+                self._phase = "QUAL_ACCEPTED"
+            case "QUAL_ACCEPTED":
+                if value not in {b"\x00", b"\x01"}:
+                    raise ByteDomainError("qualification accepted must be zero or one")
+                self._accepted = value == b"\x01"
+                self._phase = "QUAL_REASON"
+            case "QUAL_REASON":
+                reason = value.rstrip(b"\x00")
+                if b"\x00" in reason:
+                    raise ByteDomainError(
+                        "qualification reason padding is not canonical"
+                    )
+                self._qualification_reason = reason
+                self._phase = "QUAL_SOURCE"
+            case "QUAL_SOURCE":
+                length = value[0]
+                if any(value[1 + length :]):
+                    raise ByteDomainError(
+                        "qualification source padding is not canonical"
+                    )
+                self._qualification_source_name = value[1 : 1 + length]
+                self._phase = "DONE"
+            case _:  # pragma: no cover - closed phase registry
+                raise AssertionError("unreachable metadata decoder phase")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3216,47 +3228,48 @@ def _consume_source_relative_locator_parts(
                 continue
             value = bytes(carry)
             carry.clear()
-            if phase == "VERSION":
-                version = int.from_bytes(value, "big")
-                if version != SOURCE_LOCATOR_CODEC_VERSION:
-                    raise IntegerDomainError(
-                        f"codec_version {version} is not registered"
+            match phase:
+                case "VERSION":
+                    version = int.from_bytes(value, "big")
+                    if version != SOURCE_LOCATOR_CODEC_VERSION:
+                        raise IntegerDomainError(
+                            f"codec_version {version} is not registered"
+                        )
+                    phase = "COUNT"
+                case "COUNT":
+                    component_count = int.from_bytes(value, "big")
+                    if component_count == 0:
+                        raise ByteDomainError(
+                            "source relative locator must contain a component"
+                        )
+                    phase = "LENGTH"
+                case "LENGTH":
+                    segment_size = int.from_bytes(value, "big")
+                    if not 1 <= segment_size <= 255:
+                        raise ByteDomainError(
+                            "source locator component length must be in [1, 255]"
+                        )
+                    phase = "SEGMENT"
+                case _:
+                    try:
+                        component = value.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as error:
+                        raise ByteDomainError(
+                            "source locator component must be exact UTF-8"
+                        ) from error
+                    validated = _validate_utf8_leaf(
+                        component,
+                        field_name="source locator component",
+                        maximum_bytes=255,
                     )
-                phase = "COUNT"
-            elif phase == "COUNT":
-                component_count = int.from_bytes(value, "big")
-                if component_count == 0:
-                    raise ByteDomainError(
-                        "source relative locator must contain a component"
-                    )
-                phase = "LENGTH"
-            elif phase == "LENGTH":
-                segment_size = int.from_bytes(value, "big")
-                if not 1 <= segment_size <= 255:
-                    raise ByteDomainError(
-                        "source locator component length must be in [1, 255]"
-                    )
-                phase = "SEGMENT"
-            else:
-                try:
-                    component = value.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ByteDomainError(
-                        "source locator component must be exact UTF-8"
-                    ) from error
-                validated = _validate_utf8_leaf(
-                    component,
-                    field_name="source locator component",
-                    maximum_bytes=255,
-                )
-                if validated != value:  # pragma: no cover - strict UTF-8 is unique
-                    raise ByteDomainError(
-                        "source locator component is not canonical UTF-8"
-                    )
-                if collect_components:
-                    components.append(component)
-                emitted += 1
-                phase = "DONE" if emitted == component_count else "LENGTH"
+                    if validated != value:  # pragma: no cover - strict UTF-8 is unique
+                        raise ByteDomainError(
+                            "source locator component is not canonical UTF-8"
+                        )
+                    if collect_components:
+                        components.append(component)
+                    emitted += 1
+                    phase = "DONE" if emitted == component_count else "LENGTH"
     if phase != "DONE" or carry:
         raise ByteDomainError("source locator payload is truncated")
     receipt = SourceRelativeLocatorValidationReceipt(
@@ -3682,36 +3695,39 @@ def _consume_source_root_parts(
                 continue
             value = bytes(carry)
             carry.clear()
-            if phase == "VERSION":
-                version = int.from_bytes(value, "big")
-                if version != SOURCE_ROOT_CODEC_VERSION:
-                    raise IntegerDomainError(
-                        f"codec_version {version} is not registered"
-                    )
-                phase = "COUNT"
-            elif phase == "COUNT":
-                component_count = int.from_bytes(value, "big")
-                phase = "DONE" if component_count == 0 else "LENGTH"
-            elif phase == "LENGTH":
-                segment_size = int.from_bytes(value, "big")
-                if not 1 <= segment_size <= 255:
-                    raise ByteDomainError(
-                        "source root segment length must be in [1, 255]"
-                    )
-                phase = "SEGMENT"
-            else:
-                try:
-                    segment = value.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ByteDomainError(
-                        "source root segment must be strict UTF-8"
-                    ) from error
-                if _validate_source_root_segment(segment) != value:
-                    raise ByteDomainError("source root segment is not canonical UTF-8")
-                if collect_components:
-                    components.append(segment)
-                emitted += 1
-                phase = "DONE" if emitted == component_count else "LENGTH"
+            match phase:
+                case "VERSION":
+                    version = int.from_bytes(value, "big")
+                    if version != SOURCE_ROOT_CODEC_VERSION:
+                        raise IntegerDomainError(
+                            f"codec_version {version} is not registered"
+                        )
+                    phase = "COUNT"
+                case "COUNT":
+                    component_count = int.from_bytes(value, "big")
+                    phase = "DONE" if component_count == 0 else "LENGTH"
+                case "LENGTH":
+                    segment_size = int.from_bytes(value, "big")
+                    if not 1 <= segment_size <= 255:
+                        raise ByteDomainError(
+                            "source root segment length must be in [1, 255]"
+                        )
+                    phase = "SEGMENT"
+                case _:
+                    try:
+                        segment = value.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as error:
+                        raise ByteDomainError(
+                            "source root segment must be strict UTF-8"
+                        ) from error
+                    if _validate_source_root_segment(segment) != value:
+                        raise ByteDomainError(
+                            "source root segment is not canonical UTF-8"
+                        )
+                    if collect_components:
+                        components.append(segment)
+                    emitted += 1
+                    phase = "DONE" if emitted == component_count else "LENGTH"
     if phase != "DONE" or carry:
         raise ByteDomainError("source root payload is truncated")
     return (
@@ -4109,12 +4125,13 @@ def decode_gallery_observation_metadata(payload: bytes) -> GalleryObservationMet
     scan_version, offset = _take_uint(encoded, offset, 4, "scan_observation_version")
     source_file_count, offset = _take_uint(encoded, offset, 8, "source_file_count")
     presence, offset = _take_uint(encoded, offset, 1, "page_count presence")
-    if presence == 0:
-        page_count = None
-    elif presence == 1:
-        page_count, offset = _take_uint(encoded, offset, 4, "page_count")
-    else:
-        raise ByteDomainError("page_count presence must be exactly zero or one")
+    match presence:
+        case 0:
+            page_count = None
+        case 1:
+            page_count, offset = _take_uint(encoded, offset, 4, "page_count")
+        case _:
+            raise ByteDomainError("page_count presence must be exactly zero or one")
     if offset + 353 != len(encoded):
         raise ByteDomainError("gallery observation metadata contains trailing bytes")
     return GalleryObservationMetadata(
