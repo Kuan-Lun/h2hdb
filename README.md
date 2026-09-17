@@ -480,12 +480,104 @@ thresholds both apply; ordinary diagnostic clock, recorder, or handler failures
 do not change commit or retry results. Operation labels come from the
 orchestrator's validated state, without diagnostic inspection of caller handles.
 
+### Audit and current-only cleanup diagnostics
+
+Full schema audits and current-only cleanup use the standard
+`h2hdb.database_performance` logger and the application's handlers. Records have
+the prefix `database_performance`, a space, and JSON with `schema=1`.
+The core CLI automatically routes these records through its configured console
+and optional file logger, using the same `logger.level` setting.
+The default INFO level records completed operations, failures, the five retained phases
+with the highest exclusive elapsed time, and periodic snapshots of a long
+operation's active phase. A full `schema_check` also announces its start.
+Quick `check_readiness()` probes produce no performance records. Successful
+`schema_initialize` calls that only admit an existing READY marker and idle
+cleanup probes are DEBUG-only unless they last at least the reporting interval.
+
+Set the core configuration's `logger.level` to `"DEBUG"` to add completed phase
+records and query fingerprint statistics; an ingest configuration nests this
+under `core.logger.level`. Both the core setting and application handler level
+must admit DEBUG. This adds diagnostics without changing schema validation,
+cleanup bounds, or lease duration. The operation names distinguish
+`schema_initialize`, `schema_check`, and `current_only_cleanup`.
+
+| Record detail | Meaning |
+| --- | --- |
+| `labels.audit`, `labels.result` | Initialization distinguishes `activation` from `not_performed`, with `created`, `resumed`, or `already_ready`; a full check is `ready` |
+| `phase=semantic_validator` | `labels.validator` is the exact semantic obligation ID; `labels.lifecycle` distinguishes `BUILDING_TO_READY` from `READY_REVALIDATION` |
+| Structural phases | Provider resolution, schema admission, inventories before/after validation, global structure, and activation-only bootstrap work |
+| `phase=cleanup_batch` | Target, shard, cycle generation, logical row limit, and transaction result for one batch |
+| `phase=cleanup_phase` | Inner checkpoint phase and attempted logical rows; these observations alone do not establish a committed deletion |
+| `phase=gate_lock` | Elapsed lock acquisition; enclosing claim, renewal, release, or validation records report `lease_remaining_us` from the same fresh post-lock clock used for authorization |
+| `query_top` | At DEBUG, the five retained query-statistic entries with the highest total time, including the `other` bucket when applicable, with counts, total/maximum seconds, and returned rows |
+
+`sql_calls`, `sql_seconds`, `read_rows`, connection counters, and transaction
+boundary counters include nested phases. Sum the `exclusive_*` counters instead
+when reconciling separate phases; the root operation also retains its own
+exclusive work. `elapsed_seconds` includes nested elapsed time, while
+`exclusive_seconds` subtracts it. Elapsed time outside connector calls includes
+Python work, scratch I/O, adapter work, and scheduling; it is not a CPU sample.
+SQL duration is measured at the client and can include server execution, lock
+waits, and transport. It cannot separate those causes. Returned rows do not
+measure examined rows, and `execute_many` remains one connector call.
+
+`transaction_outcome=committed` and `committed_logical_rows` are recorded only
+after the transaction context returns successfully. Inner
+`attempted_logical_rows` can describe work subsequently rolled back. A lost
+COMMIT response remains `unconfirmed` even if the server committed; use the
+durable checkpoint on retry to resolve it. Logical rows are workflow keys,
+not the total physical child rows deleted. Telemetry is never a lease,
+publication receipt, or proof of cleanup completion.
+
+SQL observers only update memory. Completed phase records wait for the outer
+operation to release its connector and transaction. A separate process-wide
+daemon emits roughly 60-second progress snapshots without using the operation's
+database connection or running handlers on its transaction thread. A blocked
+SQL call contributes to SQL totals only when it returns; the active phase's
+elapsed time continues to show the wait. Correlate by `operation_id` and order
+by `sequence`: a sampled heartbeat can reach the handler after a later terminal
+record. A delayed or failed handler can delay or omit a heartbeat, so it is not
+a liveness guarantee or a cancellation deadline.
+
+Each operation retains at most 256 completed phase records, prioritizing failures
+and long phases, and reports `omitted_phase_records`; discarded phase details
+do not discard operation totals. Nesting is capped at 64 with `omitted_depth`.
+Query statistics retain the first 64 distinct fingerprints per span and combine
+later unseen fingerprints into `other`. `query_top` ranks those retained entries;
+it is not a global top-five query ranking when the fingerprint capacity is
+exceeded. One daemon tracks at most 64 simultaneous operations; exhausted
+heartbeat registration capacity is explicitly labelled. SQL templates, parameters,
+credentials, owner tokens, and exception messages are not logged. Use the installed source
+and the fingerprint calculation above to identify a query template.
+
+### Performance investigations
+
 Performance investigations use disposable synthetic data before changing runtime
 behavior. The checkout-only probes below measure the production implementation;
 they do not accept an existing database or server address. MariaDB runs use a
 private MariaDB 10.11.11 Testcontainer. They are manual tools, not additional
 merge gates or production-load tests:
 
+- `scripts/investigate-maintenance-performance.py` records the new production
+  audit/cleanup diagnostics while independently counting physical connector calls.
+  It checks exact SQL/returned-row totals and retained fingerprint counts against
+  the operation records. Source staging is observed through the test driver's
+  action boundaries; it is not part of the new production audit/cleanup logger.
+  `--group all --repeats 2` covers gallery/page row windows around 128, shared tag
+  counts, raw comments near 32/64 KiB, retained history, policy compaction, and
+  natural analysis depths 0 through 16 followed by compaction. Raw comment sizes
+  are not encoded source canonical sizes or evidence of cache-budget occupancy.
+  Each revision checks publication facts, three full audits, cleanup DONE and
+  the next ingest claim; a final full READY audit checks the state after cleanup.
+  Repeated source fixtures and unchanged audit repeats must retain their exact
+  SQL counts. `--level warning`, `info`, and `debug` support controlled logger
+  comparisons; fast read-only DONE probes intentionally omit INFO records.
+  Memory adapters omit producer-marker reuse, filesystem work and actual archive
+  rendering. The in-memory log sink excludes remote/disk handler latency.
+  Reports retain all measured query groups within a hard budget, deduplicate SQL
+  templates in `sql_texts`, and save measured source bytes beside the JSON in a
+  `.sources` directory. Budget overflow invalidates the run. These finite
+  measurements do not establish NAS latency or universal complexity bounds.
 - `scripts/ingest_pipeline_probe.py` varies one source-shape dimension at a time
   and measures source preparation/persistence, analysis, and catalog publication.
   It verifies published results and a full READY audit. In-memory adapters and
@@ -512,9 +604,11 @@ merge gates or production-load tests:
   is not analysis-overlay depth; it records SQLite query plans or MariaDB
   ANALYZE/EXPLAIN and handler counters.
 
-For example, run a controlled source-shape matrix and an idle-maintenance case:
+For example, start with the maintenance baseline, then run source and idle cases:
 
 ```sh
+.venv/bin/python scripts/investigate-maintenance-performance.py \
+  --backend sqlite --group baseline --repeats 2 --output /tmp/maintenance-sqlite.json
 .venv/bin/python scripts/ingest_pipeline_probe.py \
   --backend sqlite --vary all --repeats 3 --output /tmp/pipeline-sqlite.json
 .venv/bin/python scripts/ingest_growth_cleanup_probe.py \
