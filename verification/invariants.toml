@@ -3260,6 +3260,83 @@ path = "verification/lean/AnalysisPreparationCost.lean"
 symbol = "first_marker_scout_never_reads_tail"
 
 [[evidence]]
+id = "lean.performance.publication-cleanup-batch"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Publication cleanup constructs ordered key chunks from the computed 64-key and 900-bind capacity, including the locking LIMIT bind. Positive admitted shapes preserve every key in order, construct bounded nonempty chunks, fit locking and exact-delete bindings, emit exactly two client SQL calls per chunk, and derive a total mutation-query bound from the constructed trace. Independent cycles repeat the actual trace additively."
+assumptions = ["Inputs are already selected, deduplicated, lock-ordered exact keys. Positive capacity and a fitting fixed predicate are query-shape admission, not an assumed cost bound. The projection covers only opted-in single-table CATALOG_PUBLICATION mutation statements; selection, cursor, terminal, gate, receipt, checkpoint and transaction work are separate. SQL semantics, physical lock order, Python refinement, query plans, rows examined, server resources and elapsed time are not proved."]
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "constructed_chunks_preserve_every_key"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "constructed_pages_are_bounded"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "constructed_pages_are_nonempty"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "admitted_lock_query_fits_bind_budget"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "exact_delete_fits_bind_budget"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "exactly_two_queries_per_constructed_chunk"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "mutation_queries_have_derived_batch_bound"
+[[evidence.location]]
+path = "verification/lean/PublicationCleanupBatch.lean"
+symbol = "repeated_cycles_repeat_actual_mutation_work"
+
+[[evidence]]
+id = "integration.performance.publication-cleanup-batch"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "supporting"
+claim = "Real SQLite publication cleanup phases compare physical connector SQL calls with executed Lean mutation traces, separately budgeting candidate selection, cursor coverage and terminal probes. The deep matrix covers 63/64/65 and 255/256/257 rows and the widest publication key with 256 frozen roots and 900 actual lock-query bindings under a 999-variable connection limit. Three freshly frozen cleanup cycles repeat their SQL costs. Historical payload is removed while current-revision rows remain."
+assumptions = ["Finite deterministic SQLite evidence does not establish universal Python/SQL refinement, NAS latency, query plans or a whole-cleanup wall-time bound. Focused generated-schema fixtures omit unrelated source/publication families during setup, then enforce foreign keys for production cleanup; they do not claim a complete READY audit. Full gate, checkpoint and receipt work is executed but is not included in the mutation theorem. Large cases require the manual deep/cleanup-acceptance profile."]
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_runtime_capacity_matches_constructed_model"
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_publication_phase_sql_matches_lean_at_both_batch_boundaries"
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_maximum_frozen_roots_and_widest_publication_keys_fit_actual_sql_budget"
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_fresh_cleanup_cycles_repeat_the_same_sql_cost_without_cached_authority"
+
+[[evidence]]
+id = "integration.performance.mariadb-publication-cleanup-batch"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "supporting"
+claim = "Live MariaDB publication cleanup compares the same production-phase SQL call counts with executed Lean traces at 63/64/65 and 255/256/257 logical rows, including 256 frozen roots and the widest publication primary key with 900 actual locking-read bindings. Historical rows are deleted and current-revision rows remain."
+assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required for these manual deep cases; skips and the bounded release receipt do not attest their execution. Focused generated-schema fixtures omit unrelated source/publication families during setup, then enforce foreign keys during cleanup, and do not claim a complete READY audit. Finite client statement counts do not prove query plans, lock acquisition order, server work, NAS timing or universal refinement."]
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_publication_phase_sql_matches_lean_at_both_batch_boundaries"
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_maximum_frozen_roots_and_widest_publication_keys_fit_actual_sql_budget"
+
+[[evidence]]
+id = "fault.performance.publication-cleanup-cost-oracle"
+layer = "fault"
+strength = "negative_control"
+directness = "supporting"
+claim = "The same real-phase SQL cost oracle rejects both executing the production exact-key helper once per row and adding one actual connector query per row, even though historical deletion and current-revision retention still succeed. The positive control runs the unmodified production path against the same executable Lean trace."
+assumptions = ["These are finite targeted performance mutations, not exhaustive performance testing or safety proofs. Failure rollback, changed retention, stale fencing and response loss are covered separately by cleanup safety evidence."]
+[[evidence.location]]
+path = "tests/test_publication_cleanup_costs.py"
+symbol = "test_cost_oracle_rejects_real_per_row_regression_despite_correct_deletion"
+
+[[evidence]]
 id = "integration.performance.sqlite-costs"
 layer = "integration"
 strength = "sqlite_integration"
@@ -4126,11 +4203,11 @@ integration = { status = "covered", evidence = ["integration.operational.sqlite-
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain", "lean.operational.mariadb-lease-pool", "lean.data.analysis-bounded-preparation", "lean.data.canonical-atomic-batch", "lean.performance.ready-cache-cost", "lean.performance.ready-cache-thresholds", "lean.performance.analysis-preparation-cost"] }
+lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain", "lean.operational.mariadb-lease-pool", "lean.data.analysis-bounded-preparation", "lean.data.canonical-atomic-batch", "lean.performance.ready-cache-cost", "lean.performance.ready-cache-thresholds", "lean.performance.analysis-preparation-cost", "lean.performance.publication-cleanup-batch"] }
 tla = { status = "covered", evidence = ["tla.preparation-drain.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.superseded-drainage", "runtime.production.mariadb-lease-pool", "runtime.production.analysis-bounded-preparation", "runtime.production.canonical-atomic-batch"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage", "fault.production.mariadb-lease-pool", "fault.production.canonical-atomic-batch", "fault.performance.cost-oracles"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch", "integration.performance.sqlite-costs"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage", "fault.production.mariadb-lease-pool", "fault.production.canonical-atomic-batch", "fault.performance.cost-oracles", "fault.performance.publication-cleanup-cost-oracle"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch", "integration.performance.sqlite-costs", "integration.performance.publication-cleanup-batch", "integration.performance.mariadb-publication-cleanup-batch"] }
 
 [[invariant]]
 id = "h2hdb.operational.queue-history.v1"

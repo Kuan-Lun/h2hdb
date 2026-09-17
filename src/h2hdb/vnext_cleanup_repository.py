@@ -71,6 +71,11 @@ _MAX_FROZEN_ROOT_KEY_BYTES = 260
 # current spec needs at most 256 two-column roots plus three shard parameters.
 _MAX_TERMINAL_PROBE_SPECS = 8
 _MAX_TERMINAL_PROBE_BINDS = 900
+# A SQL page is smaller than the durable transaction budget. Its exact-key
+# grid must fit alongside the frozen-root and retention predicates, including
+# on SQLite connections limited to 999 bound parameters.
+_MAX_STATIC_DELETE_KEYS = 64
+_MAX_STATIC_DELETE_BINDS = 900
 _CLEANUP_ALGORITHM_VERSION = 2
 _EMPTY_CURSOR = b""
 
@@ -1923,6 +1928,7 @@ class _StaticDeleteSpec:
     extra_predicate: str = "1 = 1"
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None
+    batch_exact_primary_keys: bool = False
 
     def __post_init__(self) -> None:
         for metadata in (
@@ -1933,6 +1939,12 @@ class _StaticDeleteSpec:
                 raise RuntimeError(
                     "cleanup compound-delete metadata must cover every statement"
                 )
+        if self.batch_exact_primary_keys and (
+            self.delete_sql != (_delete_sql(self.table, self.primary_key),)
+            or self.delete_parameter_indexes is not None
+            or self.delete_allowed_affected is not None
+        ):
+            raise RuntimeError("batched cleanup requires one exact primary-key delete")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2049,6 +2061,7 @@ def _owned_spec(
     delete_sql: tuple[str, ...] | None = None,
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
+    batch_exact_primary_keys: bool = False,
 ) -> _StaticDeleteSpec:
     if owner_key is None:
         owner_key = root_key
@@ -2072,6 +2085,7 @@ def _owned_spec(
         extra_predicate=extra_predicate,
         delete_parameter_indexes=delete_parameter_indexes,
         delete_allowed_affected=delete_allowed_affected,
+        batch_exact_primary_keys=batch_exact_primary_keys,
     )
 
 
@@ -2084,6 +2098,7 @@ def _indirect_spec(
     delete_sql: tuple[str, ...] | None = None,
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
+    batch_exact_primary_keys: bool = False,
 ) -> _StaticDeleteSpec:
     safe_table = _identifier(table)
     return _StaticDeleteSpec(
@@ -2098,6 +2113,7 @@ def _indirect_spec(
         extra_predicate=extra_predicate,
         delete_parameter_indexes=delete_parameter_indexes,
         delete_allowed_affected=delete_allowed_affected,
+        batch_exact_primary_keys=batch_exact_primary_keys,
     )
 
 
@@ -2702,6 +2718,112 @@ def _static_values(row: Sequence[object]) -> tuple[_StaticScalar, ...]:
     return tuple(values)
 
 
+def _static_delete_page_size(*, fixed_binds: int, key_arity: int) -> int:
+    """Bound a lock grid independently of the enclosing cleanup transaction."""
+
+    if fixed_binds < 0 or key_arity < 1:
+        raise CleanupCorruptionError("cleanup batch query shape is invalid")
+    # One additional bind bounds even a malformed join to N + 1 returned rows.
+    capacity = (_MAX_STATIC_DELETE_BINDS - fixed_binds - 1) // key_arity
+    if capacity < 1:
+        raise CleanupCorruptionError("cleanup batch predicates exceed the bind budget")
+    return min(_MAX_STATIC_DELETE_KEYS, capacity)
+
+
+def _delete_static_key_page(
+    work: VNextUnitOfWork,
+    *,
+    plan: _StaticTargetPlan,
+    spec: _StaticDeleteSpec,
+    phase: str,
+    index: int,
+    candidates: tuple[tuple[_StaticScalar, ...], ...],
+    frozen_predicate: str,
+    fixed_parameters: tuple[object, ...],
+    eligibility: str | None,
+) -> None:
+    """Revalidate and lock one exact set before one primary-key DELETE.
+
+    The exclusive maintenance gate already excludes supported writers. The
+    locking read still repeats every eligibility, shard, frozen-root and spec
+    predicate; its complete result must equal the selected keys. A derived
+    ordinal preserves result and logical lock-key order for variable-length
+    keys; it does not assert an optimizer's physical lock acquisition order.
+    Only single-table, one-row-per-primary-key specs opt into this contract.
+    """
+
+    root_arity = len(plan.root_key)
+    columns = tuple(f"r.{column}" for column in plan.root_key) + tuple(
+        f"c.{column}" for column in spec.primary_key
+    )
+    maximum = _static_delete_page_size(
+        fixed_binds=len(fixed_parameters), key_arity=len(columns)
+    )
+    if not spec.batch_exact_primary_keys or not 1 <= len(candidates) <= maximum:
+        raise CleanupCorruptionError("cleanup exact-key page exceeds its contract")
+    if any(len(candidate) != len(columns) for candidate in candidates):
+        raise CleanupCorruptionError("cleanup batch key arity drifted")
+    primary_keys = tuple(candidate[root_arity:] for candidate in candidates)
+    if len(set(primary_keys)) != len(primary_keys):
+        raise CleanupCorruptionError("cleanup exact-key page repeats a primary key")
+    lock_keys = tuple(
+        encode_lock_key("cleanup-static", plan.kind.value, phase, index, *candidate)
+        for candidate in candidates
+    )
+    if tuple(sorted(set(lock_keys))) != lock_keys:
+        raise CleanupCorruptionError("cleanup exact-key page is not in lock order")
+
+    grid: list[str] = []
+    grid_parameters: list[_StaticScalar] = []
+    for ordinal, candidate in enumerate(candidates):
+        expressions = [f"{ordinal} AS cleanup_order"]
+        for position, value in enumerate(candidate):
+            expression = (
+                work.connector.binary_parameter_expression(len(value))
+                if isinstance(value, bytes) and len(value) in {16, 32}
+                else "%s"
+            )
+            expressions.append(f"{expression} AS cleanup_key_{position}")
+            grid_parameters.append(value)
+        grid.append("SELECT " + ", ".join(expressions))
+    join = " AND ".join(
+        f"{column} = requested.cleanup_key_{position}"
+        for position, column in enumerate(columns)
+    )
+    eligible = plan.eligibility if eligibility is None else eligibility
+    query = (
+        f"SELECT {', '.join(columns)} FROM {spec.source} "
+        f"JOIN ({' UNION ALL '.join(grid)}) AS requested ON {join} "
+        f"WHERE ({eligible}) AND ({spec.extra_predicate}) "
+        f"AND ({_static_shard_sql(plan)}) AND ({frozen_predicate}) "
+        "ORDER BY requested.cleanup_order LIMIT %s"
+    )
+    locked = work.lock_rows(
+        LockRank.CHILD,
+        lock_keys,
+        query,
+        (*grid_parameters, *fixed_parameters, len(candidates) + 1),
+    )
+    if tuple(_static_values(row) for row in locked) != candidates:
+        raise CleanupRetentionBlockedError(
+            f"{plan.kind.value} cleanup batch changed or gained a retention root"
+        )
+
+    predicate = " AND ".join(f"{column} = %s" for column in spec.primary_key)
+    statement = f"DELETE FROM {spec.table} WHERE " + " OR ".join(
+        f"({predicate})" for _ in primary_keys
+    )
+    affected = work.connector.execute_affected(
+        statement,
+        tuple(value for primary in primary_keys for value in primary),
+    )
+    # A complete PK matches at most one row. After exact set validation, this
+    # equality establishes that every selected row was removed; any short or
+    # unexpected count aborts the enclosing transaction and its checkpoint.
+    if affected != len(primary_keys):
+        raise CleanupUnavailableError(f"{plan.kind.value} cleanup batch changed")
+
+
 def _run_static_phase(
     operation: _CleanupOperation,
     cursor: bytes,
@@ -2786,6 +2908,38 @@ def _run_static_phase(
                     ),
                 )
             )
+            if spec.batch_exact_primary_keys:
+                fixed_parameters = policy + shard + frozen_parameters
+                page_size = _static_delete_page_size(
+                    fixed_binds=len(fixed_parameters), key_arity=ordered_arity
+                )
+                unique_candidates: list[tuple[_StaticScalar, ...]] = []
+                for candidate in candidates_by_lock:
+                    primary = candidate[len(plan.root_key) :]
+                    if primary not in deleted_primary_keys:
+                        unique_candidates.append(candidate)
+                        deleted_primary_keys.add(primary)
+                for start in range(0, len(unique_candidates), page_size):
+                    page = tuple(unique_candidates[start : start + page_size])
+                    _delete_static_key_page(
+                        work,
+                        plan=plan,
+                        spec=spec,
+                        phase=phase,
+                        index=index,
+                        candidates=page,
+                        frozen_predicate=frozen_predicate,
+                        fixed_parameters=fixed_parameters,
+                        eligibility=eligibility,
+                    )
+                    deleted.extend(_encode_static_cursor(index, key) for key in page)
+                after = candidates[-1]
+                next_cursor = _encode_static_cursor(index, after)
+                if len(candidates) < remaining or len(
+                    deleted
+                ) - deleted_before_page < len(candidates):
+                    break
+                continue
             for candidate in candidates_by_lock:
                 root = candidate[: len(plan.root_key)]
                 primary = candidate[len(plan.root_key) :]
@@ -4757,7 +4911,7 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     key = ("revision", "publication_key")
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
-        return _owned_spec(table, pk, root, key)
+        return _owned_spec(table, pk, root, key, batch_exact_primary_keys=True)
 
     storage = _indirect_spec(
         "catalog_publication_storage",
@@ -4765,6 +4919,7 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "catalog_publication_storage AS c "
         "JOIN catalog_publication_occurrence_identities AS r "
         "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
+        batch_exact_primary_keys=True,
     )
     download_time = _indirect_spec(
         "catalog_publication_download_times",
@@ -4772,6 +4927,7 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "catalog_publication_download_times AS c "
         "JOIN catalog_publication_occurrence_identities AS r "
         "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
+        batch_exact_primary_keys=True,
     )
     tag_directory = _indirect_spec(
         "catalog_tag_directory_order",
@@ -4787,6 +4943,7 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "JOIN catalog_publication_occurrence_identities AS r "
         "ON r.revision = first_publication.revision "
         "AND r.publication_key = first_publication.publication_key",
+        batch_exact_primary_keys=True,
     )
 
     return {

@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-17T10:19:54+00:00",
+  "checked_at": "2026-09-17T13:21:27+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.6",
+  "project_version": "0.39.7",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 13 direct Python/Node manifest entries for Core 0.39.6 against current public registry metadata. All candidates are unchanged from the reviewed Core 0.39.5 audit, satisfy existing constraints, and Python candidate distributions declare Python 3.14 support. No dependency manifest change is required. The only installed direct dependency behind the candidate is live Ruff 0.16.7 versus 0.16.8; the prior official Ruff 0.16.8 release-note review remains applicable (https://github.com/astral-sh/ruff/releases/tag/0.16.8), including enabled UP rule changes. uv pip check reports 36 compatible packages and npm ls is clean. Runtime regression and exact-tree release evidence are reported separately; this receipt does not claim those checks. Isolated Ruff 0.16.8 was rechecked against the final task source; repository no-cache lint and format checks pass.",
+    "note": "Reviewed all 13 direct Python/Node entries for Core 0.39.7 against current public registry metadata. Candidates and the dependency manifest are unchanged from the reviewed Core 0.39.6 receipt; all candidates satisfy the existing bounds and Python distributions declare Python 3.14 support. The previous official Ruff 0.16.8 release-note review remains applicable (https://github.com/astral-sh/ruff/releases/tag/0.16.8), including enabled UP rules. No dependency constraints changed. uv pip check reports 36 compatible installed packages and npm ls is clean. Isolated Ruff 0.16.8 whole-tree lint and format checks passed on all 331 Python files. Runtime and exact-tree release evidence are reported separately; this receipt does not claim those checks.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

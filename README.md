@@ -529,6 +529,16 @@ durable checkpoint on retry to resolve it. Logical rows are workflow keys,
 not the total physical child rows deleted. Telemetry is never a lease,
 publication receipt, or proof of cleanup completion.
 
+Publication cleanup batches single-table primary-key work within the existing
+256-logical-row transaction limit. Each SQL sub-batch locks and independently
+revalidates at most 64 selected keys, then deletes that exact set with an exact
+affected-row check. The lock query retains all reachability, frozen-root, shard,
+and relation predicates. Its key grid and predicates together use at most 900
+bound parameters; a wider predicate reduces the sub-batch size. Checkpoint,
+receipt, replay and child-first phase order remain transaction-owned. Other
+cleanup targets retain their own deletion contracts, including compound and
+optional-child checks; this is not a blanket replacement of those checks.
+
 SQL observers only update memory. Completed phase records wait for the outer
 operation to release its connector and transaction. A separate process-wide
 daemon emits roughly 60-second progress snapshots without using the operation's
