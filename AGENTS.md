@@ -284,6 +284,12 @@ Schema變更依序進行：
 - TLC只窮舉所選有限 constants的 reachable states。Lean theorem只對明列的
   mathematical inputs與 assumptions無界成立，不自行證明 Python、SQL、
   transaction或 filesystem effects refine模型。
+- 效能調查先明列成本單位、輸入維度、預期界限與反例，再作優化結論。
+  快取或分頁成本測試須包含容量前、容量上、容量後及重複循環；成本模型須
+  與實際執行計數對照，並用故意退化的實作驗證測試能拒絕它。
+  形式模型成立、有限實作案例通過、效能目標達成與部署環境實測是不同結論，
+  必須分開回報。已知違反的目標不得改寫為已達成；未執行、skip或缺少必要
+  尺度的證據不得當作調查完成。模型不得僅以假設包裝其聲稱證明的成本界限。
 
 ## Architecture and transaction rules
 
