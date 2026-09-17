@@ -1740,10 +1740,16 @@ def test_ready_accepts_exact_nonempty_discovery_projection(tmp_path: Path) -> No
         connector.close()
 
 
-def test_ready_canonical_cache_is_exact_bounded_and_evictable() -> None:
+def test_ready_canonical_cache_is_exact_bounded_and_evictable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budget = 3 * (catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES + 32)
+    monkeypatch.setattr(
+        catalog_refinement, "_CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES", budget
+    )
     cache = catalog_refinement._CanonicalValidationCache()
     domains: list[tuple[bytes, bytes, bytes]] = []
-    for index in range(catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES + 1):
+    for index in range(4):
         digest = index.to_bytes(32, "big")
         domain = b"source_title_utf8_v1"
         payload = f"payload-{index}".encode()
@@ -1754,13 +1760,15 @@ def test_ready_canonical_cache_is_exact_bounded_and_evictable() -> None:
             byte_count=len(payload),
         )
         domains.append((digest, domain, payload))
+        assert cache._charged_byte_count <= budget
 
     assert cache.open(domains[0][0], domains[0][1]) is None
     latest = cache.open(domains[-1][0], domains[-1][1])
     assert latest is not None
     latest_spool, latest_count = latest
     assert latest_count == len(domains[-1][2])
-    assert latest_spool.read() == domains[-1][2]
+    with latest_spool:
+        assert latest_spool.read() == domains[-1][2]
 
     oversized = b"x" * (
         catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES + 1

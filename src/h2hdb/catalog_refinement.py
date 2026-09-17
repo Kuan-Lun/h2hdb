@@ -77,12 +77,13 @@ from .vnext_state_machine_contract import validate_catalog_state_machine_contrac
 
 type SemanticValidator = Callable[[SQLConnector], None]
 
-_CANONICAL_VALIDATION_CACHE_MAX_ENTRIES = 128
 _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES = 64 * 1024
-_CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES = (
-    _CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
-    * _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES
-)
+_CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+# Logical admission charge for the bounded digest/domain key, tuple, bytes
+# headers, and OrderedDict bookkeeping. This is not a Python allocator/RSS
+# measurement. Charging even an empty payload bounds the retained entry count
+# by MAX_TOTAL_BYTES // ENTRY_BYTES, without evicting tiny values at 128 keys.
+_CANONICAL_VALIDATION_CACHE_ENTRY_BYTES = 512
 
 
 class BuiltinSemanticRegistryError(RuntimeError):
@@ -3989,10 +3990,11 @@ class _CanonicalValidationCache:
     """Bound successful canonical reads to one READY-audit snapshot.
 
     The caller owns this cache for exactly one discovery refinement pass inside
-    the schema validator's read transaction.  Values too large for the fixed
-    memory budget retain the original streaming path, and eviction only
-    removes an optimization: a later access validates the canonical tree
-    again.
+    the schema validator's read transaction. Each retained value consumes its
+    exact payload length plus a fixed bookkeeping charge; one shared budget
+    therefore bounds both bytes and entry count. Values too large to admit
+    retain the streaming path. Eviction only removes an optimization: a later
+    access validates the canonical tree again.
     """
 
     __slots__ = ("_byte_count", "_values")
@@ -4000,6 +4002,13 @@ class _CanonicalValidationCache:
     def __init__(self) -> None:
         self._values: OrderedDict[tuple[bytes, bytes], bytes] = OrderedDict()
         self._byte_count = 0
+
+    @property
+    def _charged_byte_count(self) -> int:
+        return (
+            self._byte_count
+            + len(self._values) * _CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
+        )
 
     def open(
         self,
@@ -4021,7 +4030,17 @@ class _CanonicalValidationCache:
         *,
         byte_count: int,
     ) -> None:
-        if byte_count > _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES:
+        if byte_count < 0:
+            raise CatalogSemanticValidationError(
+                "validated canonical spool changed before bounded caching"
+            )
+        charge = byte_count + _CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
+        if (
+            byte_count > _CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES
+            or charge > _CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES
+            or len(value_sha256) != 32
+            or not 1 <= len(expected_domain) <= 64
+        ):
             return
         spool.seek(0)
         payload = spool.read(byte_count + 1)
@@ -4035,8 +4054,7 @@ class _CanonicalValidationCache:
         if previous is not None:
             self._byte_count -= len(previous)
         while self._values and (
-            len(self._values) >= _CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
-            or self._byte_count + byte_count
+            self._charged_byte_count + charge
             > _CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES
         ):
             _evicted_key, evicted = self._values.popitem(last=False)

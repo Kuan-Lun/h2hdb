@@ -519,6 +519,9 @@ class AuditObserver(Observer):
             metric["max_resident_bytes"] = max(
                 metric["max_resident_bytes"], cache._byte_count
             )
+            metric["max_resident_charged_bytes"] = max(
+                metric["max_resident_charged_bytes"], cache._charged_byte_count
+            )
 
         return measured_open, measured_remember
 
@@ -615,11 +618,12 @@ class AuditObserver(Observer):
             "observed_distinct_validated_keys": len(self.cache_values),
             "observed_distinct_validated_bytes": sum(self.cache_values.values()),
             "observation_key_budget": self.cache_key_budget,
-            "runtime_max_entries": catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES,
+            "runtime_max_entries": cache_entry_capacity(),
+            "runtime_entry_charge_bytes": catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES,
             "runtime_max_value_bytes": catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES,
             "runtime_max_total_bytes": catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES,
             "domains": dict(self.cache_metrics),
-            "notes": "Read-only observation of original cache decisions during this full READY audit. Distinct identity is (canonical digest, domain), shared across cache instances; bytes count each successfully validated identity once, including values too large for admission. Domain eviction counts name the insertion causing eviction, not the evicted domain. Resident maxima cover the whole cache at each domain's insertion and must not be added. Instrumentation does not persist cached values or alter admission, LRU order, capacity or validation decisions.",
+            "notes": "Read-only observation of original cache decisions during this full READY audit. Distinct identity is (canonical digest, domain), shared across cache instances; bytes count each successfully validated identity once, including values too large for admission. Total runtime budget includes payload and the fixed per-entry bookkeeping charge; runtime_max_entries is the derived upper bound for empty values, not an independent entry cap. Charged bytes are logical accounting, not process RSS. Domain eviction counts name the insertion causing eviction, not the evicted domain. Resident maxima cover the whole cache at each domain's insertion and must not be added. Instrumentation does not persist cached values or alter admission, LRU order, capacity or validation decisions.",
         }
         result["notes"] = (
             "SQL is attributed once to the innermost active validator. Operation seconds are exclusive of nested validator scopes. Provider resolution and schema structure are separate; outside covers control admission, closed-world inventories and transaction handling. Full READY does not execute BUILDING-only bootstrap validators. Top 64 query details are retained; all event counts and operation totals are complete. These timings include measurement overhead and follow hot pipeline/oracle reads, not a cold startup audit."
@@ -909,6 +913,14 @@ def run_case(
     }
 
 
+def cache_entry_capacity() -> int:
+    """Derive the empty-value entry bound from the shared charged budget."""
+    return (
+        catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES
+        // catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
+    )
+
+
 def audit_cache_comparison(
     config: CoreConfig,
     expected: tuple[MemoryGallery, ...],
@@ -917,7 +929,11 @@ def audit_cache_comparison(
     measure: Callable[[str], dict[str, Any]],
 ) -> dict[str, Any]:
     """A/B/A full audits on the same private, already-published fixture."""
-    original = catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    original_charge = catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
+    original = cache_entry_capacity()
+    control_charge = (
+        catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES // 512
+    )
 
     def validators(report: dict[str, Any]) -> dict[str, int]:
         return {
@@ -928,22 +944,36 @@ def audit_cache_comparison(
 
     expected_validators = validators(baseline)
     audits = [
-        {"label": "A_baseline", "entry_capacity": original, "measurements": baseline}
+        {
+            "label": "A_baseline",
+            "entry_capacity": original,
+            "entry_charge_bytes": original_charge,
+            "measurements": baseline,
+        }
     ]
-    for label, capacity in (("B_capacity512", 512), ("A_restored", original)):
+    for label, charge in (
+        ("B_capacity512", control_charge),
+        ("A_restored", original_charge),
+    ):
         if verify_publication(config, expected) != oracle:
             raise RuntimeError("cache control changed the published oracle")
         with patch.object(
-            catalog_refinement, "_CANONICAL_VALIDATION_CACHE_MAX_ENTRIES", capacity
+            catalog_refinement, "_CANONICAL_VALIDATION_CACHE_ENTRY_BYTES", charge
         ):
+            capacity = cache_entry_capacity()
             report = measure("ready_audit_" + label)
         if validators(report) != expected_validators:
             raise RuntimeError("cache control changed the full READY validator set")
         audits.append(
-            {"label": label, "entry_capacity": capacity, "measurements": report}
+            {
+                "label": label,
+                "entry_capacity": capacity,
+                "entry_charge_bytes": charge,
+                "measurements": report,
+            }
         )
-    if catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES != original:
-        raise RuntimeError("cache control failed to restore the entry capacity")
+    if catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES != original_charge:
+        raise RuntimeError("cache control failed to restore the entry charge")
     if verify_publication(config, expected) != oracle:
         raise RuntimeError("cache control changed the published oracle")
     return {
@@ -952,7 +982,7 @@ def audit_cache_comparison(
         "same_ready_validator_calls": expected_validators,
         "restored_entry_capacity": original,
         "audits": audits,
-        "notes": "Counterfactual dev-only capacity patch on one private published database, not a runtime optimization. All original validators run; value and total byte caps remain unchanged. Each full audit creates fresh snapshot-local caches; repeated order can still warm database/file-system caches. Oracle reads and server snapshots are outside each audit timer. No database facts are modified by this experiment.",
+        "notes": "Counterfactual dev-only bookkeeping-charge patch on one private published database. Entry capacities are derived empty-value upper bounds; nonempty values reduce actual capacity. All original validators run; per-value and total charged byte budgets remain unchanged. Each full audit creates fresh snapshot-local caches; repeated order can still warm database/file-system caches. Oracle reads and server snapshots are outside each audit timer. No database facts are modified by this experiment.",
     }
 
 
@@ -1034,7 +1064,7 @@ def write_report(output: Path, report: dict[str, Any]) -> None:
 
 def source_provenance() -> dict[str, Any]:
     files = sorted((ROOT / "src" / "h2hdb").rglob("*.py")) + [
-        Path(__file__),
+        Path(__file__).resolve(),
         ROOT / "tests" / "vnext_pipeline.py",
         ROOT / "tests" / "vnext_fault_harness.py",
         ROOT / "pyproject.toml",
@@ -1169,7 +1199,7 @@ def main() -> None:
     parser.add_argument(
         "--audit-cache-control",
         action="store_true",
-        help="Private fixture only: compare full READY audits at original/512/original cache entry caps; byte caps stay fixed",
+        help="Private fixture only: compare original/512/original derived cache entry ceilings by varying bookkeeping charge; byte budgets stay fixed",
     )
     parser.add_argument(
         "--vary",

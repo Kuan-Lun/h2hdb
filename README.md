@@ -549,9 +549,13 @@ These additional queries have their own cost. Keep diagnostic and ordinary
 timings distinct, and serialize benchmarks when comparing wall time.
 
 The pipeline probe's `--audit-cache-control` performs three complete READY audits
-on the same privately published fixture: the original 128-entry canonical cache,
-a 512-entry control, then the restored 128-entry cache. The 64 KiB per-value and
-8 MiB total byte limits stay fixed. Every pass runs the original validators and
+on the same privately published fixture: the current canonical cache, a control
+with a derived 512-entry ceiling, then the restored current cache. The control
+increases the per-entry bookkeeping charge; the 64 KiB per-value and 8 MiB total
+charged-byte budgets stay fixed. The production charge is 512 bytes plus each
+payload, giving an empty-value ceiling of 16,384 entries; nonempty values reduce
+that ceiling. Charged bytes are logical accounting, not measured process RSS.
+Every pass runs the original validators and
 checks the same public catalog result. This isolates cache eviction costs without
 changing production configuration or accepting an existing database. Cache
 hit/miss/eviction counters observe the original decisions without changing LRU

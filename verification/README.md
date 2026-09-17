@@ -167,9 +167,9 @@ The performance evidence has three distinct parts:
 
 | Contract | Formal scope | Implementation evidence |
 | --- | --- | --- |
-| READY cache capacity and read costs | State-threaded LRU transitions, logical payload bytes, entry/byte bounds, and miss counts | `tests/test_ready_audit_cache_cost.py` compares the executable Lean model with the actual Python cache and counts real SQLite validation statements |
-| Repeated working sets | Explicit finite capacity-boundary traces, separate from general theorems | Repeated reads below, at, and above 128 entries, including 127, 128, 129, and 256 distinct keys |
-| GID marker preparation | Ordered marker scans, early exit, independent stages, and additive query costs | `tests/test_analysis_preparation_cost.py` measures the real preparation path across tag and gallery dimensions |
+| READY cache capacity and read costs | State-threaded LRU transitions, charged-byte bounds, derived entry bound, and miss counts | `tests/test_ready_audit_cache_cost.py` compares the executable Lean model with the actual Python cache and counts real SQLite validation statements |
+| Repeated working sets | Arbitrary retained-key traces incur zero validations; finite cold-start regressions supplement this theorem | Three laps at 127, 128, 129, 256, 486, and 1,024 distinct keys; separate charged-budget boundary cases |
+| GID preparation | A distinct preparation kind omits canonical tag reads while content preparation retains marker validation | `tests/test_analysis_preparation_cost.py` measures both real GID stages across gallery/tag dimensions; `tests/test_gid_preparation.py` rejects corrupt metadata and forged capabilities |
 
 For valid single-leaf canonical values in the tested SQL implementation, each
 cache miss performs three validation queries. This is a shape-specific count,
@@ -178,20 +178,32 @@ bypass, failed validation, LRU touches, byte limits, and separate snapshot
 caches require their own cases. Logical payload-byte bounds do not bound
 Python object overhead, process RSS, physical I/O, or database-server memory.
 
-The current 128-entry LRU still misses on every read of a cyclic 129-key
-working set. For two independent GID preparation stages, a uniform fixture
-with `g` galleries and `t` visited, non-marker, single-leaf tags performs
-`6*g*t` canonical-value queries. This excludes tag-list queries and other
-preparation work. Early marker matches change the visited prefix. These are
-cost characterizations of known inefficiencies, not successful optimization
-budgets. In particular, the desired claims that repeated reads cost only one
-validation per distinct value, or that GID preparation is independent of
-unneeded tag payloads, are **not established for the current runtime**.
+The READY cache now charges `512 + payload bytes` per admitted value against
+one 8 MiB budget, deriving an upper bound of 16,384 entries even for empty
+payloads. Admission also bounds the digest/domain key and bypasses oversized
+or individually unaffordable values. The independent 128-entry limit has been
+removed. Tiny cyclic 129-key workloads now incur 129 misses across three laps,
+instead of 387. Once every accessed key is resident, the model proves zero
+misses for arbitrary trace length and order by preservation of the entry set.
+It does not assume or prove that an arbitrary cold working set fits the budget.
+Full 64 KiB values occupy 127 slots under the charged budget; workloads larger
+than the actual budget can still thrash, as a separate counterexample shows.
+
+GID preparation now has its own immutable capability containing only the
+required identity and authority. It completely validates sealed metadata and
+qualification, exact-compares normalized GID, and independently repeats that
+work during validation. It does not build content plans or read canonical tag
+values or the separate title value. The canonical tag query budget is zero for
+both GID stages, including marker and multi-leaf tag inputs. Content stages
+still validate their marker dependencies. Metadata-stream pages can grow with
+encoded input bytes, so zero canonical tag queries does not imply constant total
+SQL or constant elapsed time. Content and GID commits reject the wrong
+capability, stale generation, changed membership and mismatched durable GID.
 
 The default merge tests exercise cost oracles with deliberately inefficient
-negative controls: preserving returned bytes while always missing must violate
-the retained-working-set budget, and an extra SQL statement must violate the
-measured scan contract. Comparing actual Lean execution with Python avoids
+negative controls: always missing or restoring independent 128/512-entry caps
+must violate the retained-working-set budget, and restoring a GID marker scan
+must violate the zero-tag-query contract. Comparing actual Lean execution with Python avoids
 treating the presence of a theorem name as refinement evidence. The Lean gate
 checks the proofs separately; finite conformance traces do not prove universal
 Python/SQL refinement. These files are part of the existing bounded merge
@@ -206,7 +218,7 @@ Run the focused implementation evidence with:
 ```bash
 .venv/bin/python -m pytest -n 0 \
   tests/test_ready_audit_cache_cost.py \
-  tests/test_analysis_preparation_cost.py
+  tests/test_analysis_preparation_cost.py tests/test_gid_preparation.py
 ```
 
 Before reporting a performance investigation complete, state its cost unit,

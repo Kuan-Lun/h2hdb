@@ -1111,8 +1111,17 @@ def _run_prepared_gallery_stage(
         analysis_id,
         now=start_now,
     )
+    prepare = (
+        AnalysisRepository.prepare_gid_gallery
+        if method
+        in {
+            AnalysisRepository.process_gid_candidate_batch,
+            AnalysisRepository.validate_gid_candidate_batch,
+        }
+        else AnalysisRepository.prepare_gallery
+    )
     preparations = tuple(
-        AnalysisRepository.prepare_gallery(
+        prepare(
             connector,
             backend="sqlite",
             authority=authority,
@@ -1123,6 +1132,9 @@ def _run_prepared_gallery_stage(
     try:
         if upload_content:
             for offset, preparation in enumerate(preparations):
+                assert isinstance(
+                    preparation, analysis_module.AnalysisGalleryPreparation
+                )
                 assert preparation.content_upload_plan is not None
                 _put_canonical_plan(
                     connector,
@@ -1209,7 +1221,8 @@ def _run_prepared_gallery_stage(
         return first, terminal
     finally:
         for preparation in preparations:
-            preparation.close()
+            if isinstance(preparation, analysis_module.AnalysisGalleryPreparation):
+                preparation.close()
 
 
 def _run_removed_gallery_stage(
