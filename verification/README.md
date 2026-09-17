@@ -98,7 +98,7 @@ The layers prove different things and are not interchangeable.
   scalar-versus-batched canonical hydration equivalence, bounded ordered
   contributor/subject keyset hydration, ingest-facade close/cache ownership,
   canonical selector and catalog connector-layout equivalence, stable-head discovery-bundle
-  equivalence, snapshot-scoped READY-audit cache equivalence and hard bounds,
+  equivalence, snapshot-scoped READY-audit cache result equivalence,
   bounded-bootstrap result/replay equivalence, bounded preparation-drainage
   page arithmetic (hard-bounded pages, a strictly decreasing measure, exactly
   `ceil(n/128)` committed pages, a strictly advancing durable position, and
@@ -153,6 +153,77 @@ their assumptions. TLC exhausts only the finite constants in the selected
 configuration. Neither tool proves that Python, SQL, a filesystem, or an
 external codec implements the model; executable refinement and fault tests are
 separate requirements.
+
+## Performance cost contracts
+
+Correct results and bounded storage do not establish efficient execution.
+`ReadyAuditCanonicalCache.lean` now includes an always-miss cache that satisfies
+its semantic-equivalence theorem. The former capacity theorem merely projected
+assumed bounds from the input structure; those fields and that theorem have
+been removed. Concrete storage and cost transitions live in
+`lean/ReadyAuditCacheCost.lean` instead.
+
+The performance evidence has three distinct parts:
+
+| Contract | Formal scope | Implementation evidence |
+| --- | --- | --- |
+| READY cache capacity and read costs | State-threaded LRU transitions, logical payload bytes, entry/byte bounds, and miss counts | `tests/test_ready_audit_cache_cost.py` compares the executable Lean model with the actual Python cache and counts real SQLite validation statements |
+| Repeated working sets | Explicit finite capacity-boundary traces, separate from general theorems | Repeated reads below, at, and above 128 entries, including 127, 128, 129, and 256 distinct keys |
+| GID marker preparation | Ordered marker scans, early exit, independent stages, and additive query costs | `tests/test_analysis_preparation_cost.py` measures the real preparation path across tag and gallery dimensions |
+
+For valid single-leaf canonical values in the tested SQL implementation, each
+cache miss performs three validation queries. This is a shape-specific count,
+not a bound for arbitrary canonical trees. Larger values, oversized-value
+bypass, failed validation, LRU touches, byte limits, and separate snapshot
+caches require their own cases. Logical payload-byte bounds do not bound
+Python object overhead, process RSS, physical I/O, or database-server memory.
+
+The current 128-entry LRU still misses on every read of a cyclic 129-key
+working set. For two independent GID preparation stages, a uniform fixture
+with `g` galleries and `t` visited, non-marker, single-leaf tags performs
+`6*g*t` canonical-value queries. This excludes tag-list queries and other
+preparation work. Early marker matches change the visited prefix. These are
+cost characterizations of known inefficiencies, not successful optimization
+budgets. In particular, the desired claims that repeated reads cost only one
+validation per distinct value, or that GID preparation is independent of
+unneeded tag payloads, are **not established for the current runtime**.
+
+The default merge tests exercise cost oracles with deliberately inefficient
+negative controls: preserving returned bytes while always missing must violate
+the retained-working-set budget, and an extra SQL statement must violate the
+measured scan contract. Comparing actual Lean execution with Python avoids
+treating the presence of a theorem name as refinement evidence. The Lean gate
+checks the proofs separately; finite conformance traces do not prove universal
+Python/SQL refinement. These files are part of the existing bounded merge
+profile, not a second release gate.
+The supporting cost evidence is indexed under bounded work in
+`invariants.toml`, so missing theorem or test references fail the existing
+coverage check. It does not strengthen that obligation into a global latency
+or efficiency guarantee or change the production boundary described below.
+
+Run the focused implementation evidence with:
+
+```bash
+.venv/bin/python -m pytest -n 0 \
+  tests/test_ready_audit_cache_cost.py \
+  tests/test_analysis_preparation_cost.py
+```
+
+Before reporting a performance investigation complete, state its cost unit,
+input dimensions, predicted relationship, exercised capacity boundaries,
+negative control, and unmeasured conditions. Report model proof, finite runtime
+conformance, achievement of the desired budget, and deployment measurements
+separately. These local tests do not establish NAS wall time, MariaDB execution
+plans, or full-pipeline speedup. The manual pipeline probe supplies separate
+cross-backend and full-READY evidence; deployment evidence remains necessary
+for deployment-specific claims. A passing characterization test cannot close
+an optimization target that it demonstrates is still violated.
+
+When an optimization changes the algorithm, update the executable cost model
+and its correspondence tests together, retain the independent result and
+corruption oracles, and demonstrate the improved budget. Exact characterization
+counts intentionally require review when the algorithm changes; retaining the
+current inefficient counts is not a compatibility requirement.
 
 ## Identity and bounded payloads
 
@@ -288,21 +359,17 @@ still references it.
 ## Honest production boundary
 
 The strict closed-world coverage command (`scripts/verify-formal.py coverage`)
-still exits nonzero. Exactly four evidence layers remain blocked, all describing
-one missing production workflow: current-only maintenance does not yet drive an
-abandoned candidate's protected artifacts through the external adapter's
-terminal tombstone acknowledgement and then into database cleanup. The
-repository-level bounded release protocol and its SQLite fault/integration
-tests exist, but automatically deleting external bytes is intentionally not
-wired without explicit product authorization.
+currently passes: the evidence index has no blocked layers. This checks the
+declared production-evidence contract and symbol references; it does not execute
+every referenced test or establish deployment readiness by itself. In
+particular, adding supporting cost evidence does not turn finite SQL tests into
+a proof of production latency or optimized total work.
 
-The four layers are fault and integration evidence for
-`h2hdb.operational.maintenance-gate.v1` and
-`h2hdb.operational.cleanup-reachability.v1`. `scripts/check-full.sh` therefore
-runs the `--validate-only` contract gate, which proves that the evidence index
-is well formed and every cited symbol resolves, rather than claiming the strict
-production-readiness gate passed. Plain `coverage` remains the strict bar and
-fails while those four layers are blocked.
+`scripts/check-full.sh` runs the `--validate-only` contract gate. That mode
+validates metadata while reporting any declared production blockers; plain
+`coverage` additionally fails if blockers exist. The executable index and the
+command output are authoritative. The former documentation of four blocked
+maintenance/cleanup layers no longer described the index and has been removed.
 
 The end-to-end workflow and liveness evidence runs only through the public
 facades on a fresh temporary database per case. The fault matrices are

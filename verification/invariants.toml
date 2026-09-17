@@ -3117,6 +3117,103 @@ path = "verification/lean/AnalysisBoundedPreparation.lean"
 symbol = "decision_page_with_rejection_sentinel_logical_bytes_bounded"
 
 [[evidence]]
+id = "lean.performance.ready-cache-cost"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Concrete LRU extraction, trimming and insertion preserve entry and logical payload-byte bounds from an empty cache for every access sequence. Misses are at most reads, and an independently accumulated fixed per-miss SQL cost equals cost times misses. This is not a retained-working-set efficiency guarantee."
+assumptions = ["Keys abstract complete digest/domain pairs and byte lengths describe successfully validated immutable payloads. Limits have positive entry capacity and per-value bytes no greater than total bytes; production constants discharge these conditions. Fixed SQL multiplication applies only when every miss has that exact SQL cost; Python refinement, arbitrary canonical trees, RSS, query plans and wall time are outside this theorem."]
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "remember_preserves_capacity"
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "production_trace_capacity"
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "trace_validation_units_le_reads"
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "fixed_cost_sql_is_cost_times_misses"
+
+[[evidence]]
+id = "lean.performance.ready-cache-thresholds"
+layer = "lean"
+strength = "generated_decidable_check"
+directness = "supporting"
+claim = "Kernel-evaluated finite traces of three cyclic laps have 127, 128 and 387 misses for working sets of 127, 128 and 129 keys. The last is a counterexample to unconditional one-validation-per-distinct-key efficiency, not an optimized cost budget."
+assumptions = ["All modeled values occupy one byte, validate successfully and use the production 128-entry limit. These are explicit finite witnesses, not a general cyclic-LRU theorem or a Python implementation proof."]
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "finite_127_three_laps_warm"
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "finite_128_three_laps_warm"
+[[evidence.location]]
+path = "verification/lean/ReadyAuditCacheCost.lean"
+symbol = "finite_129_three_laps_thrash"
+
+[[evidence]]
+id = "lean.performance.analysis-preparation-cost"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Constructed single-leaf marker-read traces cost three SQL calls per visited tag. Batching preserves total trace work, early matches limit the visited prefix, and two independent GID stages cost six times galleries times tags for uniform no-marker inputs. Positive tag cost contradicts the desired tag-independent budget; this characterizes an existing inefficiency."
+assumptions = ["Each visited value has one descriptor, one page and one parent-edge query. The two modeled stages do not share validation state. Tag-list and other preparation queries are excluded; Python/SQL correspondence is finite evidence, and arbitrary tree shapes, query plans and NAS timing are not proved."]
+[[evidence.location]]
+path = "verification/lean/AnalysisPreparationCost.lean"
+symbol = "marker_scan_counts_actual_visits"
+[[evidence.location]]
+path = "verification/lean/AnalysisPreparationCost.lean"
+symbol = "first_marker_stops_later_reads"
+[[evidence.location]]
+path = "verification/lean/AnalysisPreparationCost.lean"
+symbol = "bounded_batches_do_not_remove_total_work"
+[[evidence.location]]
+path = "verification/lean/AnalysisPreparationCost.lean"
+symbol = "two_gid_stages_have_six_queries_per_gallery_tag"
+
+[[evidence]]
+id = "integration.performance.sqlite-costs"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "supporting"
+claim = "Executable Lean cache transitions are compared with actual Python states and an independent recency oracle. Fresh SQLite fixtures measure real canonical validation SQL at 127/128/129/256 cyclic working sets and real GID preparation across gallery/tag dimensions, with separate early-marker, multi-leaf and failure regimes."
+assumptions = ["This is finite deterministic implementation evidence, not universal refinement or a NAS/MariaDB query-plan or latency result. Characterization counts must change with a reviewed algorithm change; they do not establish that the desired optimization budget is met."]
+[[evidence.location]]
+path = "tests/test_ready_audit_cache_cost.py"
+symbol = "test_lean_cost_execution_matches_runtime_and_independent_recency_oracle"
+[[evidence.location]]
+path = "tests/test_ready_audit_cache_cost.py"
+symbol = "test_real_sql_single_leaf_cost_tracks_threshold_misses"
+[[evidence.location]]
+path = "tests/test_ready_audit_cache_cost.py"
+symbol = "test_real_sql_failure_and_multileaf_bypass_are_separate_cost_regimes"
+[[evidence.location]]
+path = "tests/test_analysis_preparation_cost.py"
+symbol = "test_gid_preparation_sql_matches_constructed_lean_trace"
+[[evidence.location]]
+path = "tests/test_analysis_preparation_cost.py"
+symbol = "test_marker_early_exit_matches_lean_visited_prefix"
+[[evidence.location]]
+path = "tests/test_analysis_preparation_cost.py"
+symbol = "test_single_leaf_cost_scope_ends_at_canonical_chunk_boundary"
+
+[[evidence]]
+id = "fault.performance.cost-oracles"
+layer = "fault"
+strength = "negative_control"
+directness = "supporting"
+claim = "The same retained-set cost oracle accepts the real cache and rejects an always-miss cache despite correct authoritative bytes. Injecting an extra real SQL statement after a successful marker scan preserves its result but fails the SQL-count correspondence oracle."
+assumptions = ["These are finite targeted negative controls, not exhaustive performance mutation testing."]
+[[evidence.location]]
+path = "tests/test_ready_audit_cache_cost.py"
+symbol = "test_cost_oracle_rejects_always_miss_despite_correct_returned_payloads"
+[[evidence.location]]
+path = "tests/test_analysis_preparation_cost.py"
+symbol = "test_sql_cost_correspondence_rejects_an_extra_real_query"
+
+[[evidence]]
 id = "runtime.production.analysis-bounded-preparation"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
@@ -3900,11 +3997,11 @@ integration = { status = "covered", evidence = ["integration.operational.sqlite-
 [[invariant]]
 id = "h2hdb.operational.bounded-work.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
-lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain", "lean.operational.mariadb-lease-pool", "lean.data.analysis-bounded-preparation", "lean.data.canonical-atomic-batch"] }
+lean = { status = "covered", evidence = ["lean.operational.all-bcnf", "lean.operational.preparation-drain", "lean.operational.mariadb-lease-pool", "lean.data.analysis-bounded-preparation", "lean.data.canonical-atomic-batch", "lean.performance.ready-cache-cost", "lean.performance.ready-cache-thresholds", "lean.performance.analysis-preparation-cost"] }
 tla = { status = "covered", evidence = ["tla.preparation-drain.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.bounded-work", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.cleanup", "runtime.production.superseded-drainage", "runtime.production.mariadb-lease-pool", "runtime.production.analysis-bounded-preparation", "runtime.production.canonical-atomic-batch"] }
-fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage", "fault.production.mariadb-lease-pool", "fault.production.canonical-atomic-batch"] }
-integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch"] }
+fault = { status = "covered", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.cleanup", "fault.pipeline.statement-matrix", "fault.pipeline.identity-corruption", "fault.production.superseded-drainage", "fault.production.mariadb-lease-pool", "fault.production.canonical-atomic-batch", "fault.performance.cost-oracles"] }
+integration = { status = "covered", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows", "integration.live-mariadb.pipeline", "integration.sqlite.superseded-drainage", "integration.pipeline.bounded-drainage", "integration.live-mariadb.bounded-drainage", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch", "integration.performance.sqlite-costs"] }
 
 [[invariant]]
 id = "h2hdb.operational.queue-history.v1"
