@@ -30,6 +30,7 @@ from vnext_pipeline import (
 
 from h2hdb import CoreConfig, DatabaseConfig, VNextIngestFacade
 from h2hdb import vnext_analysis_repository as analysis_repository
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_repository import (
@@ -108,12 +109,13 @@ class _GidSample:
 def _observe_gid_preparation(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    unnecessary_marker_scan: bool = False,
+    unnecessary_marker_scan: Literal["helper", "wrapper"] | None = None,
 ) -> Iterator[list[_GidSample]]:
     samples: list[_GidSample] = []
     active_stage: bytes | None = None
     prepare = VNextIngestAnalysisOrchestrator._prepare_gallery_work
-    gid_prepare = analysis_repository._prepare_gid_gallery
+    gid_prepare = analysis_repository.AnalysisRepository.prepare_gid_gallery
+    gid_prepare_facts = analysis_repository._prepare_gid_gallery
 
     def prepare_gallery(
         owner: VNextIngestAnalysisOrchestrator, issue: AnalysisStageIssue
@@ -128,21 +130,44 @@ def _observe_gid_preparation(
         finally:
             active_stage = previous
 
-    def inspect_gid(
+    def prepare_gid_facts(
         work: VNextUnitOfWork,
         run: analysis_repository._RunAuthority,
         gallery_id: int,
         authority: AnalysisPreparationAuthority,
     ) -> AnalysisGidPreparation:
+        prepared = gid_prepare_facts(work, run, gallery_id, authority)
+        if unnecessary_marker_scan == "helper":
+            analysis_repository._gallery_has_already_uploaded_marker(
+                work, gallery_id, prepared.observation_id
+            )
+        return prepared
+
+    def inspect_gid(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        authority: AnalysisPreparationAuthority,
+        gallery_id: int,
+    ) -> AnalysisGidPreparation:
         assert active_stage in GID_STAGES
         assert active_stage is not None
         counter = _SQLCounter()
+        # Observe the complete repository entry point so a scan moved outside
+        # its facts helper cannot escape the same zero-tag-query contract.
         with measure_sql(counter):
-            prepared = gid_prepare(work, run, gallery_id, authority)
-            if unnecessary_marker_scan:
-                analysis_repository._gallery_has_already_uploaded_marker(
-                    work, gallery_id, prepared.observation_id
-                )
+            prepared = gid_prepare(
+                connector,
+                backend=backend,
+                authority=authority,
+                gallery_id=gallery_id,
+            )
+            if unnecessary_marker_scan == "wrapper":
+                with connector.read_transaction():
+                    work = VNextUnitOfWork(connector, backend=backend)
+                    analysis_repository._gallery_has_already_uploaded_marker(
+                        work, gallery_id, prepared.observation_id
+                    )
         samples.append(_GidSample(active_stage, gallery_id, tuple(counter.queries)))
         return prepared
 
@@ -150,7 +175,12 @@ def _observe_gid_preparation(
         patch.setattr(
             VNextIngestAnalysisOrchestrator, "_prepare_gallery_work", prepare_gallery
         )
-        patch.setattr(analysis_repository, "_prepare_gid_gallery", inspect_gid)
+        patch.setattr(analysis_repository, "_prepare_gid_gallery", prepare_gid_facts)
+        patch.setattr(
+            analysis_repository.AnalysisRepository,
+            "prepare_gid_gallery",
+            staticmethod(inspect_gid),
+        )
         yield samples
 
 
@@ -256,12 +286,16 @@ def test_gid_preparation_ignores_marker_position(
     _assert_cost(samples, galleries=1, canonical_cost=model_costs["uniform", 1, 3])
 
 
+@pytest.mark.parametrize("location", ["helper", "wrapper"])
 def test_sql_cost_correspondence_rejects_an_extra_real_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int, int], int],
+    location: Literal["helper", "wrapper"],
 ) -> None:
-    with _observe_gid_preparation(monkeypatch, unnecessary_marker_scan=True) as samples:
+    with _observe_gid_preparation(
+        monkeypatch, unnecessary_marker_scan=location
+    ) as samples:
         _run_source_analysis(tmp_path, galleries=1, tags=("tag-0",))
     with pytest.raises(AssertionError, match="canonical SQL cost differs"):
         _assert_cost(samples, galleries=1, canonical_cost=model_costs["uniform", 1, 1])
