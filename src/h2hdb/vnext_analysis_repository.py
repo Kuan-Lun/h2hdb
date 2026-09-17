@@ -88,6 +88,7 @@ from .vnext_canonical_value_family import (
 from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
+    load_and_validate_single_page_canonical_values,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -212,6 +213,8 @@ ANALYSIS_COMPONENTS = frozenset(
 )
 
 _MAX_BATCH_ROWS = 128
+_MARKER_TAG_BATCH_ROWS = 128
+_TAG_VALUE_DOMAIN = b"tag_value_utf8_v1"
 _MAX_OVERLAY_DEPTH = 16
 _CURSOR_VERSION = 1
 _CURSOR_GALLERY = b"G"
@@ -4104,44 +4107,92 @@ def _gallery_has_already_uploaded_marker(
     gallery_id: int,
     observation_id: int,
 ) -> bool:
-    rows = work.connector.fetch_all(
-        "SELECT term.tag_value_sha256 "
-        "FROM catalog_gallery_observation_tags AS observed "
-        "JOIN catalog_tag_terms AS term ON term.tag_id = observed.tag_id "
-        "WHERE observed.gallery_id = %s AND observed.observation_id = %s "
-        "ORDER BY observed.position",
-        (gallery_id, observation_id),
-    )
-    for (raw_value,) in rows:
-        value = require_digest32(raw_value, field="tag value_sha256")
-        position = 0
-        matched = True
-
-        def consume(part: bytes) -> None:
-            nonlocal position, matched
-            for byte in part:
-                folded = byte + 32 if 65 <= byte <= 90 else byte
-                if (
-                    position >= len(ANALYSIS_ALREADY_UPLOADED_MARKER)
-                    or folded != ANALYSIS_ALREADY_UPLOADED_MARKER[position]
-                ):
-                    matched = False
-                position += 1
-
-        receipt = CanonicalValueRepository.stream_and_validate(
-            work,
-            value_sha256=value,
-            consume_provisional=consume,
+    after_position = -1
+    scouting = True
+    while True:
+        rows = work.connector.fetch_all(
+            "SELECT observed.position, term.tag_value_sha256 "
+            "FROM catalog_gallery_observation_tags AS observed "
+            "JOIN catalog_tag_terms AS term ON term.tag_id = observed.tag_id "
+            "WHERE observed.gallery_id = %s AND observed.observation_id = %s "
+            "AND observed.position > %s ORDER BY observed.position LIMIT %s",
+            (
+                gallery_id,
+                observation_id,
+                after_position,
+                1 if scouting else _MARKER_TAG_BATCH_ROWS,
+            ),
         )
-        if receipt.digest_domain != b"tag_value_utf8_v1":
-            raise AnalysisCorruptionError(
-                "tag canonical stream has the wrong digest domain"
-            )
-        if receipt.byte_count != position:
-            raise AnalysisCorruptionError("tag canonical stream count changed")
-        if matched and position == len(ANALYSIS_ALREADY_UPLOADED_MARKER):
-            return True
-    return False
+        if not rows:
+            return False
+        payloads = {}
+        if not scouting:
+            try:
+                payloads = load_and_validate_single_page_canonical_values(
+                    work.connector,
+                    references=tuple(
+                        (raw_value, _TAG_VALUE_DOMAIN) for _, raw_value in rows
+                    ),
+                )
+            except (
+                CanonicalValueCollisionError,
+                CanonicalValueNotReadyError,
+                TypeError,
+                ValueError,
+            ):
+                # Prefetch is provisional: a corrupt later tag must not defeat a
+                # valid earlier marker. Revalidate this bounded page in its original
+                # order, exposing any fault only when that tag is actually visited.
+                # SQL/transport failures and cancellation are deliberately not caught.
+                payloads = {}
+        for _, raw_value in rows:
+            value = require_digest32(raw_value, field="tag value_sha256")
+            payload = payloads.get((value, _TAG_VALUE_DOMAIN))
+            if payload is not None:
+                matched = payload.lower() == ANALYSIS_ALREADY_UPLOADED_MARKER
+            else:
+                matched = _streamed_tag_has_already_uploaded_marker(work, value)
+            if matched:
+                return True
+        if not scouting and len(rows) < _MARKER_TAG_BATCH_ROWS:
+            return False
+        # A cursor is needed only after the whole page has been visited. In
+        # particular, never inspect a tail position after finding the marker.
+        after_position = require_int63(rows[-1][0], field="tag position")
+        # Probe only the first tag separately so a first-position marker never
+        # reads a large valid tail. All remaining work uses bounded batches.
+        scouting = False
+
+
+def _streamed_tag_has_already_uploaded_marker(
+    work: VNextUnitOfWork, value: bytes
+) -> bool:
+    position = 0
+    matched = True
+
+    def consume(part: bytes) -> None:
+        nonlocal position, matched
+        for byte in part:
+            folded = byte + 32 if 65 <= byte <= 90 else byte
+            if (
+                position >= len(ANALYSIS_ALREADY_UPLOADED_MARKER)
+                or folded != ANALYSIS_ALREADY_UPLOADED_MARKER[position]
+            ):
+                matched = False
+            position += 1
+
+    receipt = CanonicalValueRepository.stream_and_validate(
+        work,
+        value_sha256=value,
+        consume_provisional=consume,
+    )
+    if receipt.digest_domain != _TAG_VALUE_DOMAIN:
+        raise AnalysisCorruptionError(
+            "tag canonical stream has the wrong digest domain"
+        )
+    if receipt.byte_count != position:
+        raise AnalysisCorruptionError("tag canonical stream count changed")
+    return matched and position == len(ANALYSIS_ALREADY_UPLOADED_MARKER)
 
 
 def _require_snapshot_canonical_identity(
