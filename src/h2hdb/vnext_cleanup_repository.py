@@ -32,6 +32,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from .database_performance import database_phase
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -669,20 +670,33 @@ class VNextCleanupRepository:
             raise CleanupCorruptionError("OPEN cleanup cycle lacks a checkpoint")
         results: list[CleanupBatchResult] = []
         for _phase in _STRATEGIES[requested.target_kind].phases:
-            if requested.target_kind is CleanupTargetKind.PUBLICATION_COMMIT and (
-                checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
-            ):
-                _require_publication_commit_post_compound_transition(
+            with database_phase(
+                "cleanup_phase",
+                target=requested.target_kind.value,
+                shard=requested.shard_no,
+                phase=checkpoint.phase,
+                checkpoint_generation=checkpoint.generation,
+                attempted_logical_rows=None,
+            ) as step:
+                if requested.target_kind is CleanupTargetKind.PUBLICATION_COMMIT and (
+                    checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
+                ):
+                    _require_publication_commit_post_compound_transition(
+                        operation,
+                        phase=checkpoint.phase,
+                        cursor=checkpoint.cursor,
+                    )
+                result, next_checkpoint = _advance_checkpoint(
                     operation,
-                    phase=checkpoint.phase,
-                    cursor=checkpoint.cursor,
+                    checkpoint,
+                    CleanupBatchCommand(secrets.token_bytes(32), checkpoint.generation),
+                    timestamp=timestamp,
                 )
-            result, next_checkpoint = _advance_checkpoint(
-                operation,
-                checkpoint,
-                CleanupBatchCommand(secrets.token_bytes(32), checkpoint.generation),
-                timestamp=timestamp,
-            )
+                step.describe(
+                    attempted_logical_rows=result.row_count,
+                    phase_complete=result.phase_complete,
+                    cycle_complete=result.cycle_complete,
+                )
             results.append(result)
             if result.row_count or result.cycle_complete:
                 return tuple(results)
@@ -1028,12 +1042,17 @@ def _require_exclusive_gate(
     # Current-only orchestration supplies its clock, so database/lock waits
     # cannot leave the next operation authorized by a stale sampled time.
     # Explicit repository commands retain their deterministic event timestamp.
-    locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
-    timestamp = require_int63(now() if callable(now) else now, field="cleanup gate now")
-    current = locked.require_live(now=timestamp)
-    if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
-        raise CleanupUnavailableError("cleanup requires the exact EXCLUSIVE gate")
-    return timestamp
+    with database_phase("gate_validate") as step:
+        with database_phase("gate_lock", action="validate"):
+            locked = MaintenanceGateRepository.lock_for_renewal(work, lease)
+        timestamp = require_int63(
+            now() if callable(now) else now, field="cleanup gate now"
+        )
+        step.describe(lease_remaining_us=lease.lease_expires_at - timestamp)
+        current = locked.require_live(now=timestamp)
+        if current.mode != GateMode.EXCLUSIVE or current.slots != tuple(range(64)):
+            raise CleanupUnavailableError("cleanup requires the exact EXCLUSIVE gate")
+        return timestamp
 
 
 def _cleanup_id(kind: CleanupTargetKind, shard_no: int, generation: int) -> bytes:

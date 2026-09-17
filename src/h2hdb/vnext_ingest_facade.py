@@ -35,6 +35,11 @@ from time import time_ns
 from typing import TypeVar
 
 from .config_loader import CoreConfig
+from .database_performance import (
+    DatabasePerformance,
+    DatabaseSpan,
+    database_phase,
+)
 from .domain import (
     VNextIngestAdvanceResult,
     VNextIngestCompletionReceipt,
@@ -405,6 +410,7 @@ class VNextIngestFacade:
         "__clock",
         "__closed",
         "__context",
+        "__database_performance",
         "__lifecycle_lock",
         "__publication",
         "__performance",
@@ -424,6 +430,11 @@ class VNextIngestFacade:
         self.__context = context
         self.__performance = IngestPerformance(
             logging.getLogger("h2hdb.ingest_performance"),
+            backend=context.sql_type,
+            level=int(config.logger.level),
+        )
+        self.__database_performance = DatabasePerformance(
+            logging.getLogger("h2hdb.database_performance"),
             backend=context.sql_type,
             level=int(config.logger.level),
         )
@@ -1579,18 +1590,47 @@ class VNextIngestFacade:
             lease_duration_microseconds,
             field="current-only maintenance lease_duration_microseconds",
         )
+        with self.__database_performance.operation(
+            "current_only_cleanup",
+            lease_duration_us=duration,
+            max_batches=_CURRENT_ONLY_BATCHES_PER_ATTEMPT,
+        ) as performance:
+            outcome = self.__drain_current_only_maintenance(
+                duration,
+                performance=performance,
+                artifact_release_adapters=artifact_release_adapters,
+            )
+            performance.describe(outcome=outcome.value)
+            return outcome
+
+    def __drain_current_only_maintenance(
+        self,
+        duration: int,
+        *,
+        performance: DatabaseSpan,
+        artifact_release_adapters: Mapping[bytes, ArtifactReleaseAdapter] | None,
+    ) -> VNextCurrentOnlyMaintenanceOutcome:
+        committed_logical_rows = 0
+        performance.describe(committed_batches=0, committed_logical_rows=0)
         cycle_cutoff_at = require_int63(
             self.__clock(), field="current-only maintenance cycle cutoff"
         )
         with self.__context.SQLConnector() as connector:
-            with connector.read_transaction():
-                maintenance_state = (
-                    VNextCleanupRepository.current_only_maintenance_state(
-                        VNextUnitOfWork(connector, backend=self.__backend),
-                        cycle_cutoff_at=cycle_cutoff_at,
+            with database_phase(
+                "initial_state", transaction_outcome="unconfirmed"
+            ) as step:
+                with connector.read_transaction():
+                    maintenance_state = (
+                        VNextCleanupRepository.current_only_maintenance_state(
+                            VNextUnitOfWork(connector, backend=self.__backend),
+                            cycle_cutoff_at=cycle_cutoff_at,
+                        )
                     )
+                step.describe(
+                    transaction_outcome="committed", state=maintenance_state.value
                 )
             if maintenance_state is CatalogPublicationMaintenanceState.DONE:
+                performance.describe(quiet=True)
                 return VNextCurrentOnlyMaintenanceOutcome.DONE
             if (
                 maintenance_state is CatalogPublicationMaintenanceState.BLOCKED
@@ -1599,16 +1639,22 @@ class VNextIngestFacade:
                 return VNextCurrentOnlyMaintenanceOutcome.BLOCKED
 
             try:
-                with connector.transaction():
-                    claim = MaintenanceGateRepository.lock_exclusive_claim(
-                        VNextUnitOfWork(connector, backend=self.__backend)
-                    )
-                    lease = claim.grant(
-                        now=require_int63(
+                with database_phase(
+                    "gate_claim", transaction_outcome="unconfirmed"
+                ) as step:
+                    with connector.transaction():
+                        with database_phase("gate_lock", action="claim"):
+                            claim = MaintenanceGateRepository.lock_exclusive_claim(
+                                VNextUnitOfWork(connector, backend=self.__backend)
+                            )
+                        timestamp = require_int63(
                             self.__clock(), field="current-only maintenance claim now"
-                        ),
-                        lease_duration=duration,
-                    )
+                        )
+                        lease = claim.grant(now=timestamp, lease_duration=duration)
+                        step.describe(
+                            lease_remaining_us=lease.lease_expires_at - timestamp
+                        )
+                    step.describe(transaction_outcome="committed")
             except MaintenanceGateTokenCollisionError:
                 raise
             except MaintenanceGateUnavailableError:
@@ -1630,6 +1676,7 @@ class VNextIngestFacade:
                 )
                 if released_artifact_page:
                     progressed = True
+                    performance.describe(committed_artifact_pages=1)
                     outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
                 else:
                     advanced_batches = 0
@@ -1653,6 +1700,15 @@ class VNextIngestFacade:
                             )
                             advanced_batches += 1
                             progressed = True
+                            committed_logical_rows += sum(
+                                result.row_count
+                                for result in results
+                                if not result.replayed
+                            )
+                            performance.describe(
+                                committed_batches=advanced_batches,
+                                committed_logical_rows=committed_logical_rows,
+                            )
                             if results[-1].cycle_complete:
                                 break
                         if not results[-1].cycle_complete:
@@ -1704,28 +1760,41 @@ class VNextIngestFacade:
     ) -> bool:
         """Release one bounded orphan page across the database/I/O boundary."""
 
-        with connector.transaction():
-            page = ArtifactReleaseRepository.issue_page(
-                VNextUnitOfWork(connector, backend=self.__backend),
-                gate_lease=lease,
-                page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
-                now=self.__clock,
-            )
+        with database_phase(
+            "artifact_issue", transaction_outcome="unconfirmed"
+        ) as step:
+            with connector.transaction():
+                page = ArtifactReleaseRepository.issue_page(
+                    VNextUnitOfWork(connector, backend=self.__backend),
+                    gate_lease=lease,
+                    page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
+                    now=self.__clock,
+                )
+            step.describe(transaction_outcome="committed", terminal=page.terminal)
         if page.terminal:
             return False
 
-        acknowledgement = ArtifactReleaseRepository.release_page(
-            connector,
-            backend=self.__backend,
-            page=page,
-            adapters=artifact_release_adapters,
-            now=self.__clock,
-        )
-        with connector.transaction():
-            ArtifactReleaseRepository.commit_page(
-                VNextUnitOfWork(connector, backend=self.__backend),
-                acknowledgement=acknowledgement,
+        with database_phase("artifact_release"):
+            acknowledgement = ArtifactReleaseRepository.release_page(
+                connector,
+                backend=self.__backend,
+                page=page,
+                adapters=artifact_release_adapters,
                 now=self.__clock,
+            )
+        with database_phase(
+            "artifact_acknowledge", transaction_outcome="unconfirmed"
+        ) as step:
+            with connector.transaction():
+                receipt = ArtifactReleaseRepository.commit_page(
+                    VNextUnitOfWork(connector, backend=self.__backend),
+                    acknowledgement=acknowledgement,
+                    now=self.__clock,
+                )
+            step.describe(
+                transaction_outcome="committed",
+                committed_items=receipt.transitioned_count,
+                replayed=receipt.replayed,
             )
         return True
 
@@ -1736,14 +1805,16 @@ class VNextIngestFacade:
         *,
         cycle_cutoff_at: int,
     ) -> CatalogPublicationMaintenanceState:
-        with connector.transaction():
-            work = VNextUnitOfWork(connector, backend=self.__backend)
-            state = VNextCleanupRepository.current_only_maintenance_state(
-                work,
-                cycle_cutoff_at=cycle_cutoff_at,
-                gate_lease=lease,
-                now=self.__clock,
-            )
+        with database_phase("final_state", transaction_outcome="unconfirmed") as step:
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend=self.__backend)
+                state = VNextCleanupRepository.current_only_maintenance_state(
+                    work,
+                    cycle_cutoff_at=cycle_cutoff_at,
+                    gate_lease=lease,
+                    now=self.__clock,
+                )
+            step.describe(transaction_outcome="committed", state=state.value)
         return state
 
     def __next_current_only_cycle(
@@ -1753,14 +1824,18 @@ class VNextIngestFacade:
         *,
         cycle_cutoff_at: int,
     ) -> CleanupCycle | None:
-        with connector.transaction():
-            work = VNextUnitOfWork(connector, backend=self.__backend)
-            cycle = VNextCleanupRepository.next_current_only_cycle(
-                work,
-                gate_lease=lease,
-                cycle_cutoff_at=cycle_cutoff_at,
-                now=self.__clock,
-            )
+        with database_phase("next_cycle", transaction_outcome="unconfirmed") as step:
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend=self.__backend)
+                cycle = VNextCleanupRepository.next_current_only_cycle(
+                    work,
+                    gate_lease=lease,
+                    cycle_cutoff_at=cycle_cutoff_at,
+                    now=self.__clock,
+                )
+            step.describe(transaction_outcome="committed", found=cycle is not None)
+            if cycle is not None:
+                step.describe(target=cycle.target_kind.value, shard=cycle.shard_no)
         return cycle
 
     def __advance_current_only_shard(
@@ -1770,13 +1845,30 @@ class VNextIngestFacade:
         *,
         cycle: CleanupCycle,
     ) -> tuple[CleanupBatchResult, ...]:
-        with connector.transaction():
-            work = VNextUnitOfWork(connector, backend=self.__backend)
-            result = VNextCleanupRepository.advance_current_only_cycle(
-                work,
-                gate_lease=lease,
-                cycle=cycle,
-                now=self.__clock,
+        with database_phase(
+            "cleanup_batch",
+            target=cycle.target_kind.value,
+            shard=cycle.shard_no,
+            cycle_generation=cycle.cycle_generation,
+            max_logical_rows=cycle.max_rows_per_transaction,
+            transaction_outcome="unconfirmed",
+            committed_logical_rows=0,
+        ) as step:
+            with connector.transaction():
+                work = VNextUnitOfWork(connector, backend=self.__backend)
+                result = VNextCleanupRepository.advance_current_only_cycle(
+                    work,
+                    gate_lease=lease,
+                    cycle=cycle,
+                    now=self.__clock,
+                )
+            step.describe(
+                transaction_outcome="committed",
+                committed_logical_rows=sum(
+                    item.row_count for item in result if not item.replayed
+                ),
+                phases=len(result),
+                cycle_complete=result[-1].cycle_complete,
             )
         return result
 
@@ -1787,7 +1879,7 @@ class VNextIngestFacade:
         *,
         duration: int,
     ) -> GateLease:
-        """Renew near half-life; each following transaction rechecks live authority.
+        """Renew near half-life; following transactions recheck live authority.
 
         This is only renewal scheduling, never an authorization cache. An expired
         lease cannot be revived, and each bounded operation must still acquire
@@ -1800,29 +1892,38 @@ class VNextIngestFacade:
         )
         if lease.lease_expires_at - now > duration // 2:
             return lease
-        with connector.transaction():
-            locked = MaintenanceGateRepository.lock_for_renewal(
-                VNextUnitOfWork(connector, backend=self.__backend), lease
-            )
-            return locked.renew(
-                now=require_int63(
+        with database_phase("gate_renew", transaction_outcome="unconfirmed") as step:
+            with connector.transaction():
+                with database_phase("gate_lock", action="renew"):
+                    locked = MaintenanceGateRepository.lock_for_renewal(
+                        VNextUnitOfWork(connector, backend=self.__backend), lease
+                    )
+                timestamp = require_int63(
                     self.__clock(), field="current-only maintenance locked renewal now"
-                ),
-                lease_duration=duration,
-            )
+                )
+                step.describe(lease_remaining_us=lease.lease_expires_at - timestamp)
+                renewed = locked.renew(now=timestamp, lease_duration=duration)
+                step.describe(
+                    renewed_lease_remaining_us=renewed.lease_expires_at - timestamp
+                )
+            step.describe(transaction_outcome="committed")
+        return renewed
 
     def __release_current_only_lease(
         self, connector: SQLConnector, lease: GateLease
     ) -> None:
-        with connector.transaction():
-            locked = MaintenanceGateRepository.lock_for_renewal(
-                VNextUnitOfWork(connector, backend=self.__backend), lease
-            )
-            locked.release(
-                now=require_int63(
+        with database_phase("gate_release", transaction_outcome="unconfirmed") as step:
+            with connector.transaction():
+                with database_phase("gate_lock", action="release"):
+                    locked = MaintenanceGateRepository.lock_for_renewal(
+                        VNextUnitOfWork(connector, backend=self.__backend), lease
+                    )
+                timestamp = require_int63(
                     self.__clock(), field="current-only maintenance release now"
                 )
-            )
+                step.describe(lease_remaining_us=lease.lease_expires_at - timestamp)
+                locked.release(now=timestamp)
+            step.describe(transaction_outcome="committed")
 
     def __release_current_only_after_failure(
         self,

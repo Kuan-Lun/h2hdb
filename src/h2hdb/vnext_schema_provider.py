@@ -31,6 +31,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._generated_vnext_schema import ARTIFACT
+from .database_performance import database_phase
 from .schema_epoch import (
     SchemaCreateStatement,
     SchemaEpochDefinition,
@@ -317,7 +318,10 @@ class GeneratedVNextSchemaProvider:
                 raise SchemaEpochValidationError(
                     f"No executable validator for semantic obligation {obligation_id!r}"
                 )
-            validator(connector)
+            with database_phase(
+                "semantic_validator", validator=obligation_id, lifecycle=phase.value
+            ):
+                validator(connector)
             completed.append(obligation_id)
         return tuple(completed)
 
