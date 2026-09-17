@@ -18,12 +18,13 @@ _EPOCH_TABLE = "h2hdb_schema_epoch"
 
 
 def _stored_binary(value: object) -> bytes:
-    if isinstance(value, memoryview):
-        return value.tobytes()
-    if isinstance(value, bytearray):
-        return bytes(value)
-    if isinstance(value, bytes):
-        return value
+    match value:
+        case memoryview():
+            return value.tobytes()
+        case bytearray():
+            return bytes(value)
+        case bytes():
+            return value
     raise TypeError("stored storage instance UUID is not binary")
 
 

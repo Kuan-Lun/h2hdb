@@ -70,26 +70,27 @@ class _Statistics:
     def record(
         self, category: str, elapsed: float, fingerprint: str | None, rows: int
     ) -> None:
-        if category == "sql":
-            self.counters.sql_calls += 1
-            self.counters.sql_seconds += elapsed
-            self.counters.read_rows += rows
-            if fingerprint is not None:
-                if (
-                    fingerprint not in self.queries
-                    and len(self.queries) >= _QUERY_LIMIT
-                ):
-                    fingerprint = "other"
-                statistics = self.queries.get(fingerprint)
-                if statistics is None:
-                    statistics = self.queries[fingerprint] = SQLQueryStatistics()
-                statistics.record(elapsed, rows)
-        elif category == "connection":
-            self.counters.connection_calls += 1
-            self.counters.connection_seconds += elapsed
-        else:
-            self.counters.transaction_calls += 1
-            self.counters.transaction_seconds += elapsed
+        match category:
+            case "sql":
+                self.counters.sql_calls += 1
+                self.counters.sql_seconds += elapsed
+                self.counters.read_rows += rows
+                if fingerprint is not None:
+                    if (
+                        fingerprint not in self.queries
+                        and len(self.queries) >= _QUERY_LIMIT
+                    ):
+                        fingerprint = "other"
+                    statistics = self.queries.get(fingerprint)
+                    if statistics is None:
+                        statistics = self.queries[fingerprint] = SQLQueryStatistics()
+                    statistics.record(elapsed, rows)
+            case "connection":
+                self.counters.connection_calls += 1
+                self.counters.connection_seconds += elapsed
+            case _:
+                self.counters.transaction_calls += 1
+                self.counters.transaction_seconds += elapsed
 
     def snapshot(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self.counters)

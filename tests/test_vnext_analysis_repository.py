@@ -1894,58 +1894,59 @@ def _seed_abandoned_replay_blocker(
     analysis_id: bytes,
     build_id: bytes,
 ) -> None:
-    if blocker == "publication_candidate":
-        connector.execute(
-            "INSERT INTO catalog_publication_candidates "
-            "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
-            "display_title_policy_id, artifacts_required, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (b"C" * 16, analysis_id, 77, 1, 1, 0, 42),
-        )
-        return
-    if blocker == "source_revision_provenance":
-        source_revision = 77
-        snapshot_manifest_sha256 = b"V" * 32
-        _canonical_identity(
-            connector,
-            snapshot_manifest_sha256,
-            domain=b"source_snapshot_manifest_v1",
-            serial=977,
-        )
-        seed_snapshot_manifest(
-            connector,
-            snapshot_manifest_sha256=snapshot_manifest_sha256,
-            gallery_count=2,
-            file_count=0,
-            byte_count=0,
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_descriptors "
-            "(source_revision, channel, snapshot_manifest_sha256) "
-            "VALUES (%s, %s, %s)",
-            (source_revision, b"default", snapshot_manifest_sha256),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_provenance "
-            "(source_revision, analysis_id) VALUES (%s, %s)",
-            (source_revision, analysis_id),
-        )
-        return
-    if blocker == "operational_preparation":
-        preparation_id = b"P" * 16
-        connector.execute(
-            "INSERT INTO operational_operational_event_streams "
-            "(preparation_id, created_at) VALUES (%s, %s)",
-            (preparation_id, 42),
-        )
-        connector.execute(
-            "INSERT INTO operational_operational_preparations "
-            "(preparation_id, build_id, deletion_request_generation, "
-            "operational_policy_id, state, prepared_at, completed_at) "
-            "VALUES (%s, %s, 0, 1, 'OPEN', %s, NULL)",
-            (preparation_id, build_id, 42),
-        )
-        return
+    match blocker:
+        case "publication_candidate":
+            connector.execute(
+                "INSERT INTO catalog_publication_candidates "
+                "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+                "display_title_policy_id, artifacts_required, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (b"C" * 16, analysis_id, 77, 1, 1, 0, 42),
+            )
+            return
+        case "source_revision_provenance":
+            source_revision = 77
+            snapshot_manifest_sha256 = b"V" * 32
+            _canonical_identity(
+                connector,
+                snapshot_manifest_sha256,
+                domain=b"source_snapshot_manifest_v1",
+                serial=977,
+            )
+            seed_snapshot_manifest(
+                connector,
+                snapshot_manifest_sha256=snapshot_manifest_sha256,
+                gallery_count=2,
+                file_count=0,
+                byte_count=0,
+            )
+            connector.execute(
+                "INSERT INTO catalog_source_revision_descriptors "
+                "(source_revision, channel, snapshot_manifest_sha256) "
+                "VALUES (%s, %s, %s)",
+                (source_revision, b"default", snapshot_manifest_sha256),
+            )
+            connector.execute(
+                "INSERT INTO catalog_source_revision_provenance "
+                "(source_revision, analysis_id) VALUES (%s, %s)",
+                (source_revision, analysis_id),
+            )
+            return
+        case "operational_preparation":
+            preparation_id = b"P" * 16
+            connector.execute(
+                "INSERT INTO operational_operational_event_streams "
+                "(preparation_id, created_at) VALUES (%s, %s)",
+                (preparation_id, 42),
+            )
+            connector.execute(
+                "INSERT INTO operational_operational_preparations "
+                "(preparation_id, build_id, deletion_request_generation, "
+                "operational_policy_id, state, prepared_at, completed_at) "
+                "VALUES (%s, %s, 0, 1, 'OPEN', %s, NULL)",
+                (preparation_id, build_id, 42),
+            )
+            return
     raise AssertionError(f"unknown replay blocker: {blocker}")
 
 
@@ -2838,31 +2839,32 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
             max_rows=128,
         )
         with connector.transaction():
-            if corruption == "omitted":
-                connector.execute(
-                    "DELETE FROM catalog_a_file_decision_shadow_seals "
-                    "WHERE analysis_id = %s AND file_sha256 = %s",
-                    (run.analysis_id, first),
-                )
-            elif corruption == "extra":
-                extra = b"z" * 32
-                connector.execute(
-                    "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
-                    "VALUES (%s, 1)",
-                    (extra,),
-                )
-                connector.execute(
-                    "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
-                    "(analysis_id, file_sha256) VALUES (%s, %s)",
-                    (run.analysis_id, extra),
-                )
-            else:
-                connector.execute(
-                    "UPDATE catalog_a_file_decision_shadow_occurrences "
-                    "SET occurrence_count = occurrence_count + 1 "
-                    "WHERE analysis_id = %s AND file_sha256 = %s",
-                    (run.analysis_id, first),
-                )
+            match corruption:
+                case "omitted":
+                    connector.execute(
+                        "DELETE FROM catalog_a_file_decision_shadow_seals "
+                        "WHERE analysis_id = %s AND file_sha256 = %s",
+                        (run.analysis_id, first),
+                    )
+                case "extra":
+                    extra = b"z" * 32
+                    connector.execute(
+                        "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
+                        "VALUES (%s, 1)",
+                        (extra,),
+                    )
+                    connector.execute(
+                        "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
+                        "(analysis_id, file_sha256) VALUES (%s, %s)",
+                        (run.analysis_id, extra),
+                    )
+                case _:
+                    connector.execute(
+                        "UPDATE catalog_a_file_decision_shadow_occurrences "
+                        "SET occurrence_count = occurrence_count + 1 "
+                        "WHERE analysis_id = %s AND file_sha256 = %s",
+                        (run.analysis_id, first),
+                    )
         with (
             pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"),
             file_validation_pages(

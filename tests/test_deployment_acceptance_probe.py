@@ -600,11 +600,12 @@ def test_broken_setup_fails_before_application_instead_of_being_ignored(
     invalid: str,
 ) -> None:
     environment = _environment(tmp_path / "missing")
-    if invalid == "relative":
-        environment["H2HDB_ACCEPTANCE_PROBE_DIR"] = "."
-    elif invalid == "control_without_probe":
-        del environment["H2HDB_ACCEPTANCE_PROBE_DIR"]
-        environment["H2HDB_ACCEPTANCE_CONTROL_DIR"] = str(tmp_path)
+    match invalid:
+        case "relative":
+            environment["H2HDB_ACCEPTANCE_PROBE_DIR"] = "."
+        case "control_without_probe":
+            del environment["H2HDB_ACCEPTANCE_PROBE_DIR"]
+            environment["H2HDB_ACCEPTANCE_CONTROL_DIR"] = str(tmp_path)
     result = _run("print('APPLICATION_MUST_NOT_START')", tmp_path, environment)
     assert result.returncode != 0
     assert "APPLICATION_MUST_NOT_START" not in result.stdout

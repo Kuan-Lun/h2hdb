@@ -206,30 +206,33 @@ def test_marker_evidence_changes_invalidate_only_the_changed_gallery(
     _turn(db_config, source, library)
     source.deep_reads.clear()
     marker = source.observe_completion_marker(target.locator)
-    if change in {"mtime", "ctime", "device", "inode"}:
-        values = [
-            marker.file.device,
-            marker.file.inode,
-            marker.file.modified_ns,
-            marker.file.changed_ns,
-        ]
-        values[{"device": 0, "inode": 1, "mtime": 2, "ctime": 3}[change]] += 1
-        source.marker_stats[target.locator] = (
-            values[0],
-            values[1],
-            values[2],
-            values[3],
-        )
-    elif change in {"hash", "size"}:
-        contents = target.files[METADATA_NAME]
-        replacement = (
-            contents.replace(b"Title", b"TITLE")
-            if change == "hash"
-            else contents + b"\n"
-        )
-        source.put(replace(target, files={**target.files, METADATA_NAME: replacement}))
-    else:
-        source.observation_version += 1
+    match change:
+        case "mtime" | "ctime" | "device" | "inode":
+            values = [
+                marker.file.device,
+                marker.file.inode,
+                marker.file.modified_ns,
+                marker.file.changed_ns,
+            ]
+            values[{"device": 0, "inode": 1, "mtime": 2, "ctime": 3}[change]] += 1
+            source.marker_stats[target.locator] = (
+                values[0],
+                values[1],
+                values[2],
+                values[3],
+            )
+        case "hash" | "size":
+            contents = target.files[METADATA_NAME]
+            replacement = (
+                contents.replace(b"Title", b"TITLE")
+                if change == "hash"
+                else contents + b"\n"
+            )
+            source.put(
+                replace(target, files={**target.files, METADATA_NAME: replacement})
+            )
+        case _:
+            source.observation_version += 1
     if change != "version":
         source.forbidden_reads.add(untouched.locator)
 

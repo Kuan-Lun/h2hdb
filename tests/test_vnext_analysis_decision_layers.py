@@ -223,18 +223,19 @@ def test_corrupt_result_rows_fail_closed(
         else (analysis, _KEYS[1], analysis)
     )
     rows = [row, second]
-    if fault == "shape":
-        rows[0] = row[:-1]
-    elif fault == "analysis":
-        rows[0] = (b"z" * 16, *row[1:])
-    elif fault == "key":
-        rows[0] = (analysis, b"z" * 32, *row[2:])
-    elif fault == "bytes":
-        rows[0] = (bytearray(analysis), *row[1:])
-    elif fault == "duplicate":
-        rows = [row, row]
-    elif fault == "overflow":
-        rows = [row] * 3
+    match fault:
+        case "shape":
+            rows[0] = row[:-1]
+        case "analysis":
+            rows[0] = (b"z" * 16, *row[1:])
+        case "key":
+            rows[0] = (analysis, b"z" * 32, *row[2:])
+        case "bytes":
+            rows[0] = (bytearray(analysis), *row[1:])
+        case "duplicate":
+            rows = [row, row]
+        case "overflow":
+            rows = [row] * 3
     with (
         patch.object(connector, "fetch_all", return_value=rows),
         pytest.raises(AnalysisFamilyCollisionError),

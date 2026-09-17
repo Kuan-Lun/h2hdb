@@ -495,61 +495,64 @@ def _view_dependencies(relation: Mapping[str, Any]) -> tuple[str, ...]:
     if not isinstance(raw_view, dict):
         return ()
     pattern = _required_string(raw_view, "pattern", "view")
-    if pattern == "nearest_ancestor_overlay":
-        return tuple(
-            _required_string(raw_view, field, "view")
-            for field in (
-                "ancestry_relation",
-                "shadow_relation",
-                "tombstone_relation",
+    match pattern:
+        case "nearest_ancestor_overlay":
+            return tuple(
+                _required_string(raw_view, field, "view")
+                for field in (
+                    "ancestry_relation",
+                    "shadow_relation",
+                    "tombstone_relation",
+                )
             )
-        )
-    if pattern == "sealed_vertical_family":
-        return (
-            _required_string(raw_view, "anchor_relation", "view"),
-            _required_string(raw_view, "seal_relation", "view"),
-            *(
-                _required_string(member, "relation", "vertical view member")
-                for member in _tables(raw_view.get("members"), "vertical view members")
-            ),
-        )
-    if pattern == "revision_generation_baseline":
-        return (
-            _required_string(raw_view, "base_relation", "view"),
-            _required_string(raw_view, "mapping_relation", "view"),
-        )
-    if pattern == "revision_generation_head":
-        return (
-            _required_string(raw_view, "revision_relation", "view"),
-            _required_string(raw_view, "time_relation", "view"),
-            _required_string(raw_view, "mapping_relation", "view"),
-        )
-    if pattern in {
-        "analysis_ancestry_endpoint",
-        "analysis_gid_winner_keyset",
-        "artifact_delta_old",
-        "artifact_delta_new",
-        "build_manifest_projection",
-        "analysis_impacted_gid_projection",
-        "analysis_impacted_gid_provenance_projection",
-        "batch_receipt_derived",
-        "catalog_publication_occurrence_identity",
-        "catalog_publication_projection",
-        "catalog_publication_title_projection",
-        "gallery_observation_metadata_projection",
-        "publication_selection_occurrence_identity",
-        "publication_selection_projection",
-        "publication_commit_activation",
-        "publication_commit_baseline",
-        "publication_commit_generation",
-        "publication_commit_head",
-        "publication_commit_head_projection",
-        "publication_commit_published_descriptor",
-        "publication_candidate_projection",
-        "publication_receipt",
-        "lifecycle_projection",
-    }:
-        return _strings(raw_view.get("source_relations"), "view source_relations")
+        case "sealed_vertical_family":
+            return (
+                _required_string(raw_view, "anchor_relation", "view"),
+                _required_string(raw_view, "seal_relation", "view"),
+                *(
+                    _required_string(member, "relation", "vertical view member")
+                    for member in _tables(
+                        raw_view.get("members"), "vertical view members"
+                    )
+                ),
+            )
+        case "revision_generation_baseline":
+            return (
+                _required_string(raw_view, "base_relation", "view"),
+                _required_string(raw_view, "mapping_relation", "view"),
+            )
+        case "revision_generation_head":
+            return (
+                _required_string(raw_view, "revision_relation", "view"),
+                _required_string(raw_view, "time_relation", "view"),
+                _required_string(raw_view, "mapping_relation", "view"),
+            )
+        case (
+            "analysis_ancestry_endpoint"
+            | "analysis_gid_winner_keyset"
+            | "artifact_delta_old"
+            | "artifact_delta_new"
+            | "build_manifest_projection"
+            | "analysis_impacted_gid_projection"
+            | "analysis_impacted_gid_provenance_projection"
+            | "batch_receipt_derived"
+            | "catalog_publication_occurrence_identity"
+            | "catalog_publication_projection"
+            | "catalog_publication_title_projection"
+            | "gallery_observation_metadata_projection"
+            | "publication_selection_occurrence_identity"
+            | "publication_selection_projection"
+            | "publication_commit_activation"
+            | "publication_commit_baseline"
+            | "publication_commit_generation"
+            | "publication_commit_head"
+            | "publication_commit_head_projection"
+            | "publication_commit_published_descriptor"
+            | "publication_candidate_projection"
+            | "publication_receipt"
+            | "lifecycle_projection"
+        ):
+            return _strings(raw_view.get("source_relations"), "view source_relations")
     raise ValueError(f"unsupported physical view pattern {pattern!r}")
 
 
@@ -562,69 +565,80 @@ def _render_view(
     if not isinstance(raw_view, dict):
         raise ValueError(f"view relation {relation.get('name')!r} lacks view metadata")
     pattern = _required_string(raw_view, "pattern", "view")
-    if pattern == "nearest_ancestor_overlay":
-        return _render_overlay_view(relation, relations, backend)
-    if pattern == "sealed_vertical_family":
-        return _render_sealed_vertical_view(relation, relations, backend)
-    if pattern == "revision_generation_baseline":
-        return _render_revision_generation_baseline_view(relation, relations, backend)
-    if pattern == "revision_generation_head":
-        return _render_revision_generation_head_view(relation, relations, backend)
-    if pattern == "analysis_ancestry_endpoint":
-        return _render_analysis_ancestry_endpoint_view(relation, relations, backend)
-    if pattern == "analysis_gid_winner_keyset":
-        return _render_analysis_gid_winner_keyset_view(relation, relations, backend)
-    if pattern == "artifact_delta_old":
-        return _render_artifact_delta_old_view(relation, relations, backend)
-    if pattern == "artifact_delta_new":
-        return _render_artifact_delta_new_view(relation, relations, backend)
-    if pattern == "build_manifest_projection":
-        return _render_build_manifest_projection_view(relation, relations, backend)
-    if pattern in {
-        "publication_selection_occurrence_identity",
-        "catalog_publication_occurrence_identity",
-    }:
-        return _render_occurrence_identity_view(relation, relations, backend)
-    if pattern == "publication_selection_projection":
-        return _render_publication_selection_view(relation, relations, backend)
-    if pattern == "catalog_publication_projection":
-        return _render_catalog_publication_view(relation, relations, backend)
-    if pattern == "catalog_publication_title_projection":
-        return _render_catalog_publication_title_view(relation, relations, backend)
-    if pattern == "analysis_impacted_gid_provenance_projection":
-        return _render_analysis_impacted_gid_provenance_view(
-            relation, relations, backend
-        )
-    if pattern == "analysis_impacted_gid_projection":
-        return _render_analysis_impacted_gid_view(relation, relations, backend)
-    if pattern == "gallery_observation_metadata_projection":
-        return _render_gallery_observation_metadata_view(relation, relations, backend)
-    if pattern == "batch_receipt_derived":
-        return _render_batch_receipt_view(relation, relations, backend)
-    if pattern == "publication_candidate_projection":
-        return _render_publication_candidate_projection_view(
-            relation, relations, backend
-        )
-    if pattern == "publication_commit_baseline":
-        return _render_publication_commit_baseline_view(relation, relations, backend)
-    if pattern == "publication_commit_published_descriptor":
-        return _render_publication_commit_published_descriptor_view(
-            relation, relations, backend
-        )
-    if pattern == "publication_commit_generation":
-        return _render_publication_commit_generation_view(relation, relations, backend)
-    if pattern == "publication_commit_head":
-        return _render_publication_commit_head_view(relation, relations, backend)
-    if pattern == "publication_commit_head_projection":
-        return _render_publication_commit_head_projection_view(
-            relation, relations, backend
-        )
-    if pattern == "publication_receipt":
-        return _render_publication_receipt_view(relation, relations, backend)
-    if pattern == "publication_commit_activation":
-        return _render_publication_commit_activation_view(relation, relations, backend)
-    if pattern == "lifecycle_projection":
-        return _render_lifecycle_projection_view(relation, relations, backend)
+    match pattern:
+        case "nearest_ancestor_overlay":
+            return _render_overlay_view(relation, relations, backend)
+        case "sealed_vertical_family":
+            return _render_sealed_vertical_view(relation, relations, backend)
+        case "revision_generation_baseline":
+            return _render_revision_generation_baseline_view(
+                relation, relations, backend
+            )
+        case "revision_generation_head":
+            return _render_revision_generation_head_view(relation, relations, backend)
+        case "analysis_ancestry_endpoint":
+            return _render_analysis_ancestry_endpoint_view(relation, relations, backend)
+        case "analysis_gid_winner_keyset":
+            return _render_analysis_gid_winner_keyset_view(relation, relations, backend)
+        case "artifact_delta_old":
+            return _render_artifact_delta_old_view(relation, relations, backend)
+        case "artifact_delta_new":
+            return _render_artifact_delta_new_view(relation, relations, backend)
+        case "build_manifest_projection":
+            return _render_build_manifest_projection_view(relation, relations, backend)
+        case (
+            "publication_selection_occurrence_identity"
+            | "catalog_publication_occurrence_identity"
+        ):
+            return _render_occurrence_identity_view(relation, relations, backend)
+        case "publication_selection_projection":
+            return _render_publication_selection_view(relation, relations, backend)
+        case "catalog_publication_projection":
+            return _render_catalog_publication_view(relation, relations, backend)
+        case "catalog_publication_title_projection":
+            return _render_catalog_publication_title_view(relation, relations, backend)
+        case "analysis_impacted_gid_provenance_projection":
+            return _render_analysis_impacted_gid_provenance_view(
+                relation, relations, backend
+            )
+        case "analysis_impacted_gid_projection":
+            return _render_analysis_impacted_gid_view(relation, relations, backend)
+        case "gallery_observation_metadata_projection":
+            return _render_gallery_observation_metadata_view(
+                relation, relations, backend
+            )
+        case "batch_receipt_derived":
+            return _render_batch_receipt_view(relation, relations, backend)
+        case "publication_candidate_projection":
+            return _render_publication_candidate_projection_view(
+                relation, relations, backend
+            )
+        case "publication_commit_baseline":
+            return _render_publication_commit_baseline_view(
+                relation, relations, backend
+            )
+        case "publication_commit_published_descriptor":
+            return _render_publication_commit_published_descriptor_view(
+                relation, relations, backend
+            )
+        case "publication_commit_generation":
+            return _render_publication_commit_generation_view(
+                relation, relations, backend
+            )
+        case "publication_commit_head":
+            return _render_publication_commit_head_view(relation, relations, backend)
+        case "publication_commit_head_projection":
+            return _render_publication_commit_head_projection_view(
+                relation, relations, backend
+            )
+        case "publication_receipt":
+            return _render_publication_receipt_view(relation, relations, backend)
+        case "publication_commit_activation":
+            return _render_publication_commit_activation_view(
+                relation, relations, backend
+            )
+        case "lifecycle_projection":
+            return _render_lifecycle_projection_view(relation, relations, backend)
     raise ValueError(f"unsupported physical view pattern {pattern!r}")
 
 
@@ -2802,23 +2816,26 @@ def _bootstrap_contracts(
 def _seed_parameters(seed: Mapping[str, Any]) -> tuple[int | str | bytes, ...]:
     result: list[int | str | bytes] = []
     for _attribute, _value_type, encoding, parameter in seed["value"]:
-        if encoding == "hex":
-            if not isinstance(parameter, str):
-                raise ValueError(f"bootstrap seed {seed['id']!r} hex value is not text")
-            try:
-                result.append(bytes.fromhex(parameter))
-            except ValueError as error:
-                raise ValueError(
-                    f"bootstrap seed {seed['id']!r} has invalid hexadecimal bytes"
-                ) from error
-        elif encoding == "utf8":
-            if not isinstance(parameter, str):
-                raise ValueError(
-                    f"bootstrap seed {seed['id']!r} UTF-8 value is not text"
-                )
-            result.append(parameter.encode("utf-8"))
-        else:
-            result.append(parameter)
+        match encoding:
+            case "hex":
+                if not isinstance(parameter, str):
+                    raise ValueError(
+                        f"bootstrap seed {seed['id']!r} hex value is not text"
+                    )
+                try:
+                    result.append(bytes.fromhex(parameter))
+                except ValueError as error:
+                    raise ValueError(
+                        f"bootstrap seed {seed['id']!r} has invalid hexadecimal bytes"
+                    ) from error
+            case "utf8":
+                if not isinstance(parameter, str):
+                    raise ValueError(
+                        f"bootstrap seed {seed['id']!r} UTF-8 value is not text"
+                    )
+                result.append(parameter.encode("utf-8"))
+            case _:
+                result.append(parameter)
     return tuple(result)
 
 
@@ -3212,36 +3229,37 @@ def _provider_payload() -> dict[str, Any]:
             relation_kind = str(relation.get("kind", "table"))
             table_name = str(relation["table"])
             statements: list[tuple[str, str, str, str]] = []
-            if relation_kind == "view":
-                sql = _render_view(relation, combined, backend)
-                statements.append(
-                    (f"create:view:{table_name}", "view", table_name, sql)
-                )
-            elif relation_kind == "table":
-                sql = _render_table(relation, combined, backend)
-                statements.append(
-                    (f"create:table:{table_name}", "table", table_name, sql)
-                )
-                # SQLite exposes each explicit index as a top-level sqlite_master
-                # object.  MariaDB does not retain enough metadata to distinguish
-                # inline required indexes from indexes owned/created for PK, UK,
-                # and FK constraints, so its epoch catalog deliberately treats
-                # every index as part of the owning table shape instead.
-                if backend == "sqlite":
-                    for index in _required_indexes(relation):
-                        index_name = str(index["name"])
-                        statements.append(
-                            (
-                                f"create:index:{index_name}",
-                                "index",
-                                index_name,
-                                _render_index(relation, index, backend),
+            match relation_kind:
+                case "view":
+                    sql = _render_view(relation, combined, backend)
+                    statements.append(
+                        (f"create:view:{table_name}", "view", table_name, sql)
+                    )
+                case "table":
+                    sql = _render_table(relation, combined, backend)
+                    statements.append(
+                        (f"create:table:{table_name}", "table", table_name, sql)
+                    )
+                    # SQLite exposes each explicit index as a top-level sqlite_master
+                    # object.  MariaDB does not retain enough metadata to distinguish
+                    # inline required indexes from indexes owned/created for PK, UK,
+                    # and FK constraints, so its epoch catalog deliberately treats
+                    # every index as part of the owning table shape instead.
+                    if backend == "sqlite":
+                        for index in _required_indexes(relation):
+                            index_name = str(index["name"])
+                            statements.append(
+                                (
+                                    f"create:index:{index_name}",
+                                    "index",
+                                    index_name,
+                                    _render_index(relation, index, backend),
+                                )
                             )
-                        )
-            else:
-                raise ValueError(
-                    f"unsupported physical relation kind {relation_kind!r}"
-                )
+                case _:
+                    raise ValueError(
+                        f"unsupported physical relation kind {relation_kind!r}"
+                    )
             slices.append((f"relation:{relation_name}", tuple(statements)))
             relations_metadata.append(_relation_metadata(relation, combined, backend))
         statement_objects = [

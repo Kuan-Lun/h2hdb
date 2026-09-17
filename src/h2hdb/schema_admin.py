@@ -135,12 +135,13 @@ class VNextSchemaAdmin:
         from .vnext_schema_provider import GeneratedVNextSchemaProvider
 
         resolved: SchemaEpochProvider
-        if self._context.sql_type == "sqlite":
-            resolved = GeneratedVNextSchemaProvider("sqlite")
-        elif self._context.sql_type == "mariadb":
-            resolved = GeneratedVNextSchemaProvider("mariadb")
-        else:
-            raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
+        match self._context.sql_type:
+            case "sqlite":
+                resolved = GeneratedVNextSchemaProvider("sqlite")
+            case "mariadb":
+                resolved = GeneratedVNextSchemaProvider("mariadb")
+            case _:
+                raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
         # Definition validation (including generated-artifact blockers) must
         # finish before a connector is opened or any database state is touched.
         return resolved, resolved.definition
@@ -148,10 +149,11 @@ class VNextSchemaAdmin:
     def _run(
         self, connector: SQLConnector, provider: SchemaEpochProvider
     ) -> SchemaProvisioningReport:
-        if self._context.sql_type == "sqlite":
-            return run_sqlite_schema_epoch(connector, provider)
-        if self._context.sql_type == "mariadb":
-            return run_mariadb_schema_epoch(connector, provider)
+        match self._context.sql_type:
+            case "sqlite":
+                return run_sqlite_schema_epoch(connector, provider)
+            case "mariadb":
+                return run_mariadb_schema_epoch(connector, provider)
         raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
 
     def _validate_ready(
@@ -159,10 +161,11 @@ class VNextSchemaAdmin:
         connector: SQLConnector,
         provider: SchemaEpochProvider,
     ) -> SchemaEpochReport:
-        if self._context.sql_type == "sqlite":
-            return validate_sqlite_schema_epoch(connector, provider)
-        if self._context.sql_type == "mariadb":
-            return validate_mariadb_schema_epoch(connector, provider)
+        match self._context.sql_type:
+            case "sqlite":
+                return validate_sqlite_schema_epoch(connector, provider)
+            case "mariadb":
+                return validate_mariadb_schema_epoch(connector, provider)
         raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
 
     @staticmethod

@@ -1221,16 +1221,17 @@ def test_every_candidate_mapping_dispatches_work_as_a_keyword(
         assert seen["now"] == 10
         assert seen["gate_lease"] is gate
         assert seen["ingest_turn"] is coordinated.ingest_turn
-        if action in {
-            publication._Action.BUILD_CATALOG,
-            publication._Action.BUILD_ARTIFACT_INPUT,
-        }:
-            assert seen["plan"] is payload
-        elif action in {
-            publication._Action.VALIDATE_CATALOG,
-            publication._Action.VALIDATE_ARTIFACT_INPUT,
-        }:
-            assert seen["validation"] is payload
+        match action:
+            case (
+                publication._Action.BUILD_CATALOG
+                | publication._Action.BUILD_ARTIFACT_INPUT
+            ):
+                assert seen["plan"] is payload
+            case (
+                publication._Action.VALIDATE_CATALOG
+                | publication._Action.VALIDATE_ARTIFACT_INPUT
+            ):
+                assert seen["validation"] is payload
 
 
 def test_restart_after_storage_protect_reissues_same_durable_intent(

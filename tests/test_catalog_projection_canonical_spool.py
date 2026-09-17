@@ -110,14 +110,15 @@ def test_bounded_scalar_reuse_rejects_digest_collision_or_truncated_spool(
         )
         monkeypatch.setattr(identity, "canonical_value_digest", lambda *_: digest)
         value = b"first"
-        if corruption == "domain":
-            domain = "contributor_name_utf8_v1"
-        elif corruption == "length":
-            value = b"longer"
-        elif corruption == "bytes":
-            value = b"other"
-        else:
-            payload.truncate(1)
+        match corruption:
+            case "domain":
+                domain = "contributor_name_utf8_v1"
+            case "length":
+                value = b"longer"
+            case "bytes":
+                value = b"other"
+            case _:
+                payload.truncate(1)
         with pytest.raises(
             projection.PublicationCandidateConflictError,
             match="collides|truncated",

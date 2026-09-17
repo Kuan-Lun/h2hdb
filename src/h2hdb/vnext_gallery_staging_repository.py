@@ -1428,22 +1428,23 @@ class GalleryObservationStagingRepository:
             now=timestamp,
             allow_terminal_sealed_build=True,
         )
-        if header.state in {"RETIRING_SEALED", "RETIRING_REUSED"}:
-            raise GalleryStagingRetiredError(
-                "the terminal staging was acknowledged for retirement"
-            )
-        if header.state in {"SEALED", "REUSED"}:
-            replay = _validate_seal_replay(work, current, header)
-            if completion_marker is not None:
-                bind_completion_marker(
-                    work.connector,
-                    build_id=replay.build_id,
-                    gallery_id=replay.gallery_id,
-                    observation_id=replay.observation_id,
-                    observation_identity_sha256=replay.observation_identity_sha256,
-                    marker=completion_marker,
+        match header.state:
+            case "RETIRING_SEALED" | "RETIRING_REUSED":
+                raise GalleryStagingRetiredError(
+                    "the terminal staging was acknowledged for retirement"
                 )
-            return replay
+            case "SEALED" | "REUSED":
+                replay = _validate_seal_replay(work, current, header)
+                if completion_marker is not None:
+                    bind_completion_marker(
+                        work.connector,
+                        build_id=replay.build_id,
+                        gallery_id=replay.gallery_id,
+                        observation_id=replay.observation_id,
+                        observation_identity_sha256=replay.observation_identity_sha256,
+                        marker=completion_marker,
+                    )
+                return replay
         if header.state != "OPEN":
             raise GalleryStagingNotReadyError("staging is not OPEN")
 
@@ -2231,20 +2232,21 @@ def _retirement_primary_key(
             raise GalleryStagingConflictError(
                 f"{spec.table} retirement key has an invalid domain"
             )
-        if isinstance(value, bytes):
-            require_bounded_bytes(
-                value,
-                field=f"{spec.table} retirement key",
-                maximum=255,
-            )
-        elif isinstance(value, int):
-            require_int63(value, field=f"{spec.table} retirement key")
-        else:
-            require_bounded_bytes(
-                value.encode("utf-8", errors="strict"),
-                field=f"{spec.table} retirement text key",
-                maximum=255,
-            )
+        match value:
+            case bytes():
+                require_bounded_bytes(
+                    value,
+                    field=f"{spec.table} retirement key",
+                    maximum=255,
+                )
+            case int():
+                require_int63(value, field=f"{spec.table} retirement key")
+            case _:
+                require_bounded_bytes(
+                    value.encode("utf-8", errors="strict"),
+                    field=f"{spec.table} retirement text key",
+                    maximum=255,
+                )
         output.append(value)
     return tuple(output)
 
@@ -6180,21 +6182,22 @@ def _request_operation_id(frame: bytes) -> tuple[bytes, bytes]:
         raise GalleryStagingConflictError("request frame version is unknown")
     subtype = frame[prefix_end + 4 : prefix_end + 5]
     offset = prefix_end + 5 + 16 + 16 + 8 * 4
-    if subtype == b"P":
-        # component, level, start cursor, start processed bytes, terminal
-        offset += 1 + 1 + 8 + 8 + 1
-        offset = _skip_optional_digest(frame, offset)
-        operation, _previous, _end = _decode_attempt_at(frame, offset)
-        return subtype, operation
-    if subtype == b"M":
-        cursor_size, offset = _take_frame_uint32(frame, offset)
-        offset += cursor_size + 8 + 1
-        offset = _skip_optional_digest(frame, offset)
-        body_size, offset = _take_frame_uint32(frame, offset)
-        if offset + body_size != len(frame):
-            raise GalleryStagingConflictError("match request body has invalid EOF")
-        operation, _previous, _end = _decode_attempt_at(frame, offset)
-        return subtype, operation
+    match subtype:
+        case b"P":
+            # component, level, start cursor, start processed bytes, terminal
+            offset += 1 + 1 + 8 + 8 + 1
+            offset = _skip_optional_digest(frame, offset)
+            operation, _previous, _end = _decode_attempt_at(frame, offset)
+            return subtype, operation
+        case b"M":
+            cursor_size, offset = _take_frame_uint32(frame, offset)
+            offset += cursor_size + 8 + 1
+            offset = _skip_optional_digest(frame, offset)
+            body_size, offset = _take_frame_uint32(frame, offset)
+            if offset + body_size != len(frame):
+                raise GalleryStagingConflictError("match request body has invalid EOF")
+            operation, _previous, _end = _decode_attempt_at(frame, offset)
+            return subtype, operation
     raise GalleryStagingConflictError("request subtype has no public operation token")
 
 

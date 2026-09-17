@@ -29,25 +29,26 @@ def _call_malformed(
     facade: VNextIngestFacade, operation: str, malformed: object
 ) -> object:
     foreign = cast(Any, malformed)
-    if operation == "analysis_issue":
-        return facade.issue_analysis_step(foreign, foreign)
-    if operation == "analysis_prepare":
-        return facade.prepare_analysis_step(foreign, foreign)
-    if operation == "analysis_commit":
-        return facade.commit_analysis_step(foreign, foreign)
-    if operation == "publication_issue":
-        return facade.issue_publication_step(foreign, foreign)
-    if operation == "publication_prepare":
-        return facade.prepare_publication_step(
-            foreign,
-            artifact_adapters={},
-            finalization_adapters={},
-            library_activation=foreign,
-        )
-    if operation == "publication_commit":
-        return facade.commit_publication_step(foreign, foreign)
-    if operation == "publication_recovery":
-        return facade.try_issue_publication_recovery_step(foreign)
+    match operation:
+        case "analysis_issue":
+            return facade.issue_analysis_step(foreign, foreign)
+        case "analysis_prepare":
+            return facade.prepare_analysis_step(foreign, foreign)
+        case "analysis_commit":
+            return facade.commit_analysis_step(foreign, foreign)
+        case "publication_issue":
+            return facade.issue_publication_step(foreign, foreign)
+        case "publication_prepare":
+            return facade.prepare_publication_step(
+                foreign,
+                artifact_adapters={},
+                finalization_adapters={},
+                library_activation=foreign,
+            )
+        case "publication_commit":
+            return facade.commit_publication_step(foreign, foreign)
+        case "publication_recovery":
+            return facade.try_issue_publication_recovery_step(foreign)
     raise AssertionError(f"unexpected test operation: {operation}")
 
 

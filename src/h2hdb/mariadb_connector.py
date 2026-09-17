@@ -425,24 +425,31 @@ class MariaDBConnector(SQLConnector):
     def _parameter_literal_upper_bound(cls, value: Any, encoding: str) -> int:
         if isinstance(value, Enum):
             return cls._parameter_literal_upper_bound(value.value, encoding)
-        if value is None:
-            payload_size = len(b"NULL")
-        elif isinstance(value, bool):
-            payload_size = 1
-        elif isinstance(value, str):
-            payload_size = len(value.encode(encoding))
-        elif isinstance(value, (bytes, bytearray)):
-            payload_size = len(value)
-        elif isinstance(
-            value,
-            (int, float, Decimal, datetime, date, time, timedelta, struct_time),
-        ):
-            payload_size = len(str(value).encode(encoding))
-        else:
-            raise DatabaseConfigurationError(
-                "Cannot safely estimate a MariaDB batch parameter of type "
-                f"{type(value).__name__}"
-            )
+        match value:
+            case None:
+                payload_size = len(b"NULL")
+            case bool():
+                payload_size = 1
+            case str():
+                payload_size = len(value.encode(encoding))
+            case bytes() | bytearray():
+                payload_size = len(value)
+            case (
+                int()
+                | float()
+                | Decimal()
+                | datetime()
+                | date()
+                | time()
+                | timedelta()
+                | struct_time()
+            ):
+                payload_size = len(str(value).encode(encoding))
+            case _:
+                raise DatabaseConfigurationError(
+                    "Cannot safely estimate a MariaDB batch parameter of type "
+                    f"{type(value).__name__}"
+                )
 
         # Connector/Python can at most double the encoded payload while SQL
         # escaping it. The fixed reserve covers quotes and type prefixes.

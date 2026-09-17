@@ -773,24 +773,25 @@ def test_corrupt_resource_authority_fails_closed(
         )
         connector.execute("PRAGMA foreign_keys = OFF")
         try:
-            if corruption == "token":
-                connector.execute(
-                    "UPDATE catalog_prepared_artifacts SET protection_token = %s "
-                    "WHERE candidate_id = %s AND publication_key = %s",
-                    (b"z" * 32, candidate_id, publication),
-                )
-            elif corruption == "segment":
-                connector.execute(
-                    "UPDATE catalog_storage_object_key_segments "
-                    "SET key_segment = %s WHERE segment_position = 0",
-                    (b"changed",),
-                )
-            else:
-                connector.execute(
-                    "DELETE FROM catalog_prepared_resource_blob "
-                    "WHERE candidate_id = %s AND publication_key = %s",
-                    (candidate_id, publication),
-                )
+            match corruption:
+                case "token":
+                    connector.execute(
+                        "UPDATE catalog_prepared_artifacts SET protection_token = %s "
+                        "WHERE candidate_id = %s AND publication_key = %s",
+                        (b"z" * 32, candidate_id, publication),
+                    )
+                case "segment":
+                    connector.execute(
+                        "UPDATE catalog_storage_object_key_segments "
+                        "SET key_segment = %s WHERE segment_position = 0",
+                        (b"changed",),
+                    )
+                case _:
+                    connector.execute(
+                        "DELETE FROM catalog_prepared_resource_blob "
+                        "WHERE candidate_id = %s AND publication_key = %s",
+                        (candidate_id, publication),
+                    )
         finally:
             connector.execute("PRAGMA foreign_keys = ON")
         gate = _exclusive(connector)

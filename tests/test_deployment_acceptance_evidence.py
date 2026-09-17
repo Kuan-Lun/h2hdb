@@ -90,15 +90,16 @@ def test_reader_never_follows_symlinks(source: Path, linked: str) -> None:
     (outside / "secret").write_bytes(b"host bytes must not enter evidence")
     directory = source
     name = "secret"
-    if linked == "leaf":
-        (source / name).symlink_to(outside / name)
-    elif linked == "root":
-        directory = source.parent / "linked"
-        directory.symlink_to(outside, target_is_directory=True)
-    else:
-        link = source.parent / "linked"
-        link.symlink_to(source.parent, target_is_directory=True)
-        directory = link / "outside"
+    match linked:
+        case "leaf":
+            (source / name).symlink_to(outside / name)
+        case "root":
+            directory = source.parent / "linked"
+            directory.symlink_to(outside, target_is_directory=True)
+        case _:
+            link = source.parent / "linked"
+            link.symlink_to(source.parent, target_is_directory=True)
+            directory = link / "outside"
     with pytest.raises(evidence.EvidenceError):
         evidence.read_evidence_bytes(directory, name)
 

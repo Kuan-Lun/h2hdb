@@ -1617,64 +1617,67 @@ def test_compacted_snapshot_recurrence_rejects_corruption_without_writes(
             _upload(connector, gate, retry, root_plan, now=42)
             connector.execute("PRAGMA foreign_keys = OFF")
             try:
-                if corruption == "descriptor-digest":
-                    connector.execute(
-                        "UPDATE catalog_source_revision_descriptors "
-                        "SET snapshot_manifest_sha256 = %s WHERE source_revision = 1",
-                        (b"x" * 32,),
-                    )
-                elif corruption == "descriptor-channel":
-                    connector.execute(
-                        "UPDATE catalog_source_revision_descriptors "
-                        "SET channel = %s WHERE source_revision = 1",
-                        (b"foreign",),
-                    )
-                elif corruption == "missing-descriptor":
-                    connector.execute(
-                        "DELETE FROM catalog_source_revision_descriptors "
-                        "WHERE source_revision = 1"
-                    )
-                elif corruption == "missing-snapshot-binding":
-                    connector.execute(
-                        "DELETE FROM catalog_analysis_snapshot_manifest "
-                        "WHERE analysis_id = %s",
-                        (analysis,),
-                    )
-                elif corruption == "missing-completion":
-                    connector.execute(
-                        "DELETE FROM catalog_analysis_run_completed_ats "
-                        "WHERE analysis_id = %s",
-                        (analysis,),
-                    )
-                elif corruption == "future-source-revision":
-                    for table in (
-                        "catalog_source_revision_descriptors",
-                        "catalog_source_revision_provenance",
-                    ):
+                match corruption:
+                    case "descriptor-digest":
                         connector.execute(
-                            f"UPDATE {table} SET source_revision = 3 "
+                            "UPDATE catalog_source_revision_descriptors "
+                            "SET snapshot_manifest_sha256 = %s WHERE source_revision = 1",
+                            (b"x" * 32,),
+                        )
+                    case "descriptor-channel":
+                        connector.execute(
+                            "UPDATE catalog_source_revision_descriptors "
+                            "SET channel = %s WHERE source_revision = 1",
+                            (b"foreign",),
+                        )
+                    case "missing-descriptor":
+                        connector.execute(
+                            "DELETE FROM catalog_source_revision_descriptors "
                             "WHERE source_revision = 1"
                         )
-                elif corruption == "unfinalized-current-head":
-                    connector.execute(
-                        "DELETE FROM catalog_publication_commit_finalizations "
-                        "WHERE receipt_id = %s",
-                        (b"\x02" * 16,),
-                    )
-                else:
-                    state = "OPEN" if corruption == "open-preparation" else "COMPLETE"
-                    connector.execute(
-                        "INSERT INTO operational_operational_preparations "
-                        "(preparation_id, build_id, operational_policy_id, "
-                        "deletion_request_generation, state, prepared_at, completed_at) "
-                        "VALUES (%s, %s, 1, 0, %s, 40, %s)",
-                        (
-                            b"p" * 16,
-                            retired_build,
-                            state,
-                            None if state == "OPEN" else 41,
-                        ),
-                    )
+                    case "missing-snapshot-binding":
+                        connector.execute(
+                            "DELETE FROM catalog_analysis_snapshot_manifest "
+                            "WHERE analysis_id = %s",
+                            (analysis,),
+                        )
+                    case "missing-completion":
+                        connector.execute(
+                            "DELETE FROM catalog_analysis_run_completed_ats "
+                            "WHERE analysis_id = %s",
+                            (analysis,),
+                        )
+                    case "future-source-revision":
+                        for table in (
+                            "catalog_source_revision_descriptors",
+                            "catalog_source_revision_provenance",
+                        ):
+                            connector.execute(
+                                f"UPDATE {table} SET source_revision = 3 "
+                                "WHERE source_revision = 1"
+                            )
+                    case "unfinalized-current-head":
+                        connector.execute(
+                            "DELETE FROM catalog_publication_commit_finalizations "
+                            "WHERE receipt_id = %s",
+                            (b"\x02" * 16,),
+                        )
+                    case _:
+                        state = (
+                            "OPEN" if corruption == "open-preparation" else "COMPLETE"
+                        )
+                        connector.execute(
+                            "INSERT INTO operational_operational_preparations "
+                            "(preparation_id, build_id, operational_policy_id, "
+                            "deletion_request_generation, state, prepared_at, completed_at) "
+                            "VALUES (%s, %s, 1, 0, %s, 40, %s)",
+                            (
+                                b"p" * 16,
+                                retired_build,
+                                state,
+                                None if state == "OPEN" else 41,
+                            ),
+                        )
             finally:
                 connector.execute("PRAGMA foreign_keys = ON")
             before = tuple(connector.connection.iterdump())

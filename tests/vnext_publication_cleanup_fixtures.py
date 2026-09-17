@@ -140,49 +140,50 @@ def seed_publication_cleanup(
                         if variable_keys is not None
                         else b"artist"
                     )
-                    if phase == "CP_STORAGE":
-                        connector.execute(
-                            "INSERT INTO catalog_title_search_postings "
-                            "(revision, value_sha256, publication_key) "
-                            "VALUES (%s, %s, %s)",
-                            (revision, value, PUBLICATION_KEY),
-                        )
-                    elif phase == "CP_SUBJECT":
-                        connector.execute(
-                            "INSERT INTO catalog_subjects "
-                            "(revision, publication_key, position, tag_id) "
-                            "VALUES (%s, %s, %s, %s)",
-                            (revision, PUBLICATION_KEY, position, position + 1),
-                        )
-                    elif phase == "CP_CONTRIBUTOR":
-                        connector.execute(
-                            "INSERT INTO catalog_contributors "
-                            "(revision, publication_key, contributor_name_sha256, "
-                            "role, position) VALUES (%s, %s, %s, %s, %s)",
-                            (revision, PUBLICATION_KEY, value, variable, position),
-                        )
-                    elif phase == "CP_ORDER":
-                        if revision == 1:
+                    match phase:
+                        case "CP_STORAGE":
                             connector.execute(
-                                "INSERT INTO catalog_tag_terms "
-                                "(tag_id, namespace, tag_value_sha256) "
+                                "INSERT INTO catalog_title_search_postings "
+                                "(revision, value_sha256, publication_key) "
                                 "VALUES (%s, %s, %s)",
-                                (position + 1, variable, value),
+                                (revision, value, PUBLICATION_KEY),
                             )
-                        connector.execute(
-                            "INSERT INTO catalog_tag_directory_order "
-                            "(revision, namespace, position, tag_value_sha256) "
-                            "VALUES (%s, %s, %s, %s)",
-                            (revision, variable, position, value),
-                        )
-                        connector.execute(
-                            "INSERT INTO catalog_tag_publication_order "
-                            "(revision, tag_id, position, publication_key) "
-                            "VALUES (%s, %s, 0, %s)",
-                            (revision, position + 1, PUBLICATION_KEY),
-                        )
-                    else:
-                        raise AssertionError(f"unsupported test phase {phase}")
+                        case "CP_SUBJECT":
+                            connector.execute(
+                                "INSERT INTO catalog_subjects "
+                                "(revision, publication_key, position, tag_id) "
+                                "VALUES (%s, %s, %s, %s)",
+                                (revision, PUBLICATION_KEY, position, position + 1),
+                            )
+                        case "CP_CONTRIBUTOR":
+                            connector.execute(
+                                "INSERT INTO catalog_contributors "
+                                "(revision, publication_key, contributor_name_sha256, "
+                                "role, position) VALUES (%s, %s, %s, %s, %s)",
+                                (revision, PUBLICATION_KEY, value, variable, position),
+                            )
+                        case "CP_ORDER":
+                            if revision == 1:
+                                connector.execute(
+                                    "INSERT INTO catalog_tag_terms "
+                                    "(tag_id, namespace, tag_value_sha256) "
+                                    "VALUES (%s, %s, %s)",
+                                    (position + 1, variable, value),
+                                )
+                            connector.execute(
+                                "INSERT INTO catalog_tag_directory_order "
+                                "(revision, namespace, position, tag_value_sha256) "
+                                "VALUES (%s, %s, %s, %s)",
+                                (revision, variable, position, value),
+                            )
+                            connector.execute(
+                                "INSERT INTO catalog_tag_publication_order "
+                                "(revision, tag_id, position, publication_key) "
+                                "VALUES (%s, %s, 0, %s)",
+                                (revision, position + 1, PUBLICATION_KEY),
+                            )
+                        case _:
+                            raise AssertionError(f"unsupported test phase {phase}")
             for ordinal in range(1, root_count):
                 publication_key = bytes((201,)) + ordinal.to_bytes(31, "big")
                 connector.execute(

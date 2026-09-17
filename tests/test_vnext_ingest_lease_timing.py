@@ -48,50 +48,51 @@ def _delay_once(
             fired.append(point)
             clock.now += seconds * _SECOND
 
-    if point == "maintenance":
-        original_probe = VNextCleanupRepository.current_only_maintenance_state
+    match point:
+        case "maintenance":
+            original_probe = VNextCleanupRepository.current_only_maintenance_state
 
-        def probe(*args: Any, **kwargs: Any) -> Any:
-            result = original_probe(*args, **kwargs)
-            advance()
-            return result
-
-        monkeypatch.setattr(
-            VNextCleanupRepository,
-            "current_only_maintenance_state",
-            staticmethod(probe),
-        )
-    elif point in {"connect", "commit"}:
-        with closing(open_connector(config)) as connector:
-            connector_type = type(connector)
-        original_boundary = getattr(connector_type, point)
-
-        def boundary(self: SQLConnector) -> None:
-            original_boundary(self)
-            advance()
-
-        monkeypatch.setattr(connector_type, point, boundary)
-    else:
-        expected_rank = {
-            "gate": LockRank.MAINTENANCE_GATE,
-            "download": LockRank.DOWNLOAD_FENCE,
-            "ingest": LockRank.INGEST_FENCE,
-        }[point]
-        original_lock = VNextUnitOfWork.lock_row
-
-        def lock(
-            self: VNextUnitOfWork,
-            rank: LockRank,
-            key: bytes,
-            query: str,
-            data: tuple[Any, ...] = (),
-        ) -> tuple[Any, ...]:
-            result = original_lock(self, rank, key, query, data)
-            if rank is expected_rank:
+            def probe(*args: Any, **kwargs: Any) -> Any:
+                result = original_probe(*args, **kwargs)
                 advance()
-            return result
+                return result
 
-        monkeypatch.setattr(VNextUnitOfWork, "lock_row", lock)
+            monkeypatch.setattr(
+                VNextCleanupRepository,
+                "current_only_maintenance_state",
+                staticmethod(probe),
+            )
+        case "connect" | "commit":
+            with closing(open_connector(config)) as connector:
+                connector_type = type(connector)
+            original_boundary = getattr(connector_type, point)
+
+            def boundary(self: SQLConnector) -> None:
+                original_boundary(self)
+                advance()
+
+            monkeypatch.setattr(connector_type, point, boundary)
+        case _:
+            expected_rank = {
+                "gate": LockRank.MAINTENANCE_GATE,
+                "download": LockRank.DOWNLOAD_FENCE,
+                "ingest": LockRank.INGEST_FENCE,
+            }[point]
+            original_lock = VNextUnitOfWork.lock_row
+
+            def lock(
+                self: VNextUnitOfWork,
+                rank: LockRank,
+                key: bytes,
+                query: str,
+                data: tuple[Any, ...] = (),
+            ) -> tuple[Any, ...]:
+                result = original_lock(self, rank, key, query, data)
+                if rank is expected_rank:
+                    advance()
+                return result
+
+            monkeypatch.setattr(VNextUnitOfWork, "lock_row", lock)
     return fired
 
 

@@ -989,16 +989,17 @@ def _canonical(value: object) -> object:
             item.name: _canonical(getattr(value, item.name))
             for item in dataclasses.fields(value)
         }
-    if isinstance(value, datetime):
-        return "<datetime>"
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, bytes):
-        return value.hex()
-    if isinstance(value, (tuple, list)):
-        return [_canonical(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): _canonical(item) for key, item in sorted(value.items())}
+    match value:
+        case datetime():
+            return "<datetime>"
+        case Enum():
+            return value.value
+        case bytes():
+            return value.hex()
+        case tuple() | list():
+            return [_canonical(item) for item in value]
+        case Mapping():
+            return {str(key): _canonical(item) for key, item in sorted(value.items())}
     return value
 
 

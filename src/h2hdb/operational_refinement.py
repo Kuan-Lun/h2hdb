@@ -594,16 +594,17 @@ def _as_int(
 
 
 def _as_bytes(value: object, *, label: str, length: int | None = None) -> bytes:
-    if isinstance(value, memoryview):
-        result = value.tobytes()
-    elif isinstance(value, bytearray):
-        result = bytes(value)
-    elif isinstance(value, bytes):
-        result = value
-    else:
-        raise OperationalSemanticValidationError(
-            f"operational READY {label} is not binary"
-        )
+    match value:
+        case memoryview():
+            result = value.tobytes()
+        case bytearray():
+            result = bytes(value)
+        case bytes():
+            result = value
+        case _:
+            raise OperationalSemanticValidationError(
+                f"operational READY {label} is not binary"
+            )
     if length is not None and len(result) != length:
         raise OperationalSemanticValidationError(
             f"operational READY {label} is not {length} bytes"
@@ -1437,31 +1438,36 @@ def _cleanup_jobs(
                 "operational READY cleanup_id is duplicated"
             )
 
-        if state == "OPEN":
-            if (
-                completed_at is not None
-                or final_chain is not None
-                or final_deleted is not None
-            ):
-                raise OperationalSemanticValidationError(
-                    "operational READY OPEN cleanup has terminal authority"
+        match state:
+            case "OPEN":
+                if (
+                    completed_at is not None
+                    or final_chain is not None
+                    or final_deleted is not None
+                ):
+                    raise OperationalSemanticValidationError(
+                        "operational READY OPEN cleanup has terminal authority"
+                    )
+            case "COMPLETE":
+                if completed_at is None or final_chain is None or final_deleted is None:
+                    raise OperationalSemanticValidationError(
+                        "operational READY COMPLETE cleanup lacks replay authority"
+                    )
+                completed_timestamp = _as_int(
+                    completed_at, label="cleanup completed_at"
                 )
-        elif state == "COMPLETE":
-            if completed_at is None or final_chain is None or final_deleted is None:
+                if completed_timestamp < _as_int(
+                    created_at, label="cleanup created_at"
+                ):
+                    raise OperationalSemanticValidationError(
+                        "operational READY cleanup completion predates creation"
+                    )
+                _as_bytes(final_chain, label="cleanup final chain", length=32)
+                _as_int(final_deleted, label="cleanup final deleted count")
+            case _:
                 raise OperationalSemanticValidationError(
-                    "operational READY COMPLETE cleanup lacks replay authority"
+                    "operational READY cleanup job state is invalid"
                 )
-            completed_timestamp = _as_int(completed_at, label="cleanup completed_at")
-            if completed_timestamp < _as_int(created_at, label="cleanup created_at"):
-                raise OperationalSemanticValidationError(
-                    "operational READY cleanup completion predates creation"
-                )
-            _as_bytes(final_chain, label="cleanup final chain", length=32)
-            _as_int(final_deleted, label="cleanup final deleted count")
-        else:
-            raise OperationalSemanticValidationError(
-                "operational READY cleanup job state is invalid"
-            )
         result[cleanup_id] = _CleanupJob(
             cleanup_id=cleanup_id,
             target_key=target_key,

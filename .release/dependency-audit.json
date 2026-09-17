@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-17T13:21:27+00:00",
+  "checked_at": "2026-09-17T14:39:00+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.7",
+  "project_version": "0.39.8",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 13 direct Python/Node entries for Core 0.39.7 against current public registry metadata. Candidates and the dependency manifest are unchanged from the reviewed Core 0.39.6 receipt; all candidates satisfy the existing bounds and Python distributions declare Python 3.14 support. The previous official Ruff 0.16.8 release-note review remains applicable (https://github.com/astral-sh/ruff/releases/tag/0.16.8), including enabled UP rules. No dependency constraints changed. uv pip check reports 36 compatible installed packages and npm ls is clean. Isolated Ruff 0.16.8 whole-tree lint and format checks passed on all 331 Python files. Runtime and exact-tree release evidence are reported separately; this receipt does not claim those checks.",
+    "note": "Reviewed all 13 direct Python/Node dependency entries for Core 0.39.8 against fresh public PyPI/npm metadata, including candidates outside declared bounds. Candidates and the dependency manifest are unchanged from the reviewed 0.39.7 receipt; all candidates satisfy existing bounds and Python packages declare Python 3.14 support. The existing official Ruff 0.16.8 release-note review remains applicable (https://github.com/astral-sh/ruff/releases/tag/0.16.8). Installed Ruff 0.16.8 in the repository-local environment; whole-tree Ruff lint and format checks pass. uv pip check and npm ls are clean. The 293 focused codec, identity, MariaDB connector, and performance telemetry tests passed; the exact-tree full gate and manual backend/deployment acceptance are separate evidence. No dependency constraints changed. The runtime change uses equivalent structural pattern dispatch; generated provider provenance changes, while both backend SchemaEpochDefinitions, DDL, bootstrap seeds, semantic obligations and READY marker checksums compare equal to the previous release. This patch release accounts for changed shipped runtime/provider artifacts and does not require a data migration.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

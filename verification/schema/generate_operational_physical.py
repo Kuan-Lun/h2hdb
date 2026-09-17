@@ -505,26 +505,27 @@ def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
             }
         )
     )
-    if attribute == "request_bytes":
-        return attribute, nullable, "BLOB", "BLOB"
-    if attribute == "fixed_carry":
-        return attribute, nullable, "BLOB", "VARBINARY(255)"
-    if attribute == "qualification_policy_sha256":
-        return attribute, nullable, "BLOB", "BINARY(32)"
-    if attribute == "accepted":
-        return attribute, nullable, "INTEGER", "TINYINT UNSIGNED"
-    if attribute == "qualification_reason":
-        return attribute, nullable, "BLOB", "VARBINARY(64)"
-    if attribute == "qualification_source_name":
-        return attribute, nullable, "BLOB", "VARBINARY(255)"
-    if attribute == "utf8_tail":
-        return attribute, nullable, "BLOB", "VARBINARY(3)"
-    if attribute == "component":
-        return attribute, nullable, "BLOB", "VARBINARY(9)"
-    if attribute == "frozen_root_key":
-        return attribute, nullable, "BLOB", "VARBINARY(260)"
-    if attribute in {"file_page_sha256", "directory_page_sha256"}:
-        return attribute, nullable, "BLOB", "BINARY(32)"
+    match attribute:
+        case "request_bytes":
+            return attribute, nullable, "BLOB", "BLOB"
+        case "fixed_carry":
+            return attribute, nullable, "BLOB", "VARBINARY(255)"
+        case "qualification_policy_sha256":
+            return attribute, nullable, "BLOB", "BINARY(32)"
+        case "accepted":
+            return attribute, nullable, "INTEGER", "TINYINT UNSIGNED"
+        case "qualification_reason":
+            return attribute, nullable, "BLOB", "VARBINARY(64)"
+        case "qualification_source_name":
+            return attribute, nullable, "BLOB", "VARBINARY(255)"
+        case "utf8_tail":
+            return attribute, nullable, "BLOB", "VARBINARY(3)"
+        case "component":
+            return attribute, nullable, "BLOB", "VARBINARY(9)"
+        case "frozen_root_key":
+            return attribute, nullable, "BLOB", "VARBINARY(260)"
+        case "file_page_sha256" | "directory_page_sha256":
+            return attribute, nullable, "BLOB", "BINARY(32)"
     if (
         relation == "gallery_observation_staging_page_request"
         and attribute == "start_cursor"
@@ -898,40 +899,41 @@ def _bootstrap_seeds(
             raise ValueError(f"bootstrap seed {seed_id!r} portable columns drift")
         expected_values: tuple[object, ...] | None
         expected_types: tuple[str, ...]
-        if relation_name == "revision_allocator":
-            expected_values = (expected_allocator_rows.get(seed_id), 1, 0)
-            expected_types = ("ascii_enum", "uint64", "unix_microseconds")
-        elif relation_name == "identity_allocator":
-            expected_values = (
-                expected_identity_allocator_rows.get(seed_id),
-                1,
-                0,
-            )
-            expected_types = (
-                "ascii_enum",
-                "uint64",
-                "unix_microseconds",
-            )
-        elif relation_name in {
-            "deletion_request_generation",
-            "deletion_request_generation_head",
-            "gallery_observation_staging_request_budget",
-        }:
-            singleton_row = (
-                expected_deletion_generation_rows | expected_request_budget_rows
-            ).get(seed_id)
-            if singleton_row is None or singleton_row[0] != relation_name:
-                expected_values = None
-                expected_types = ()
-            else:
-                expected_values = singleton_row[1]
-                expected_types = singleton_row[2]
-        elif relation_name == "cleanup_target_kind":
-            expected_values = expected_target_rows.get(seed_id)
-            expected_types = ("ascii_enum",)
-        else:
-            expected_values = expected_phase_rows.get(seed_id)
-            expected_types = ("ascii_enum", "ascii_enum", "uint64")
+        match relation_name:
+            case "revision_allocator":
+                expected_values = (expected_allocator_rows.get(seed_id), 1, 0)
+                expected_types = ("ascii_enum", "uint64", "unix_microseconds")
+            case "identity_allocator":
+                expected_values = (
+                    expected_identity_allocator_rows.get(seed_id),
+                    1,
+                    0,
+                )
+                expected_types = (
+                    "ascii_enum",
+                    "uint64",
+                    "unix_microseconds",
+                )
+            case (
+                "deletion_request_generation"
+                | "deletion_request_generation_head"
+                | "gallery_observation_staging_request_budget"
+            ):
+                singleton_row = (
+                    expected_deletion_generation_rows | expected_request_budget_rows
+                ).get(seed_id)
+                if singleton_row is None or singleton_row[0] != relation_name:
+                    expected_values = None
+                    expected_types = ()
+                else:
+                    expected_values = singleton_row[1]
+                    expected_types = singleton_row[2]
+            case "cleanup_target_kind":
+                expected_values = expected_target_rows.get(seed_id)
+                expected_types = ("ascii_enum",)
+            case _:
+                expected_values = expected_phase_rows.get(seed_id)
+                expected_types = ("ascii_enum", "ascii_enum", "uint64")
         actual_values = tuple(
             cell.get("text", cell.get("integer")) for cell in raw_cells
         )
@@ -1510,276 +1512,283 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 f"{attribute} IS NULL OR {attribute} >= 0 AND {attribute} <= 4294967295",
             )
         )
-    if name == "identity_allocator":
-        checks.extend(
-            [
-                (
-                    "ck_identity_allocator_next_portable",
-                    "next_id >= 1 AND next_id <= 9223372036854775807",
-                    "next_id >= 1 AND next_id <= 9223372036854775807",
-                ),
-                (
-                    "ck_identity_allocator_stream",
-                    "stream IN ('GALLERY', 'TAG', 'POLICY')",
-                    "stream IN ('GALLERY', 'TAG', 'POLICY')",
-                ),
-            ]
-        )
-    if name == "gallery_observation_allocator":
-        checks.extend(
-            [
-                (
-                    "ck_gallery_observation_allocator_next_portable",
-                    "next_observation_id >= 1 AND "
-                    "next_observation_id <= 9223372036854775807",
-                    "next_observation_id >= 1 AND "
-                    "next_observation_id <= 9223372036854775807",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging":
-        checks.extend(
-            [
-                (
-                    "ck_gallery_observation_staging_identity_portable",
-                    "gallery_id >= 1 AND gallery_id <= 9223372036854775807 "
-                    "AND observation_id >= 1 AND "
-                    "observation_id <= 9223372036854775807",
-                    "gallery_id >= 1 AND gallery_id <= 9223372036854775807 "
-                    "AND observation_id >= 1 AND "
-                    "observation_id <= 9223372036854775807",
-                ),
-                (
-                    "ck_gallery_observation_staging_state_time",
-                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
-                    "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
-                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
-                    "AND terminal_byte_count IS NULL OR "
-                    "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
-                    "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
-                    "AND terminal_byte_count IS NOT NULL "
-                    "AND sealed_at >= created_at)",
-                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
-                    "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
-                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
-                    "AND terminal_byte_count IS NULL OR "
-                    "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
-                    "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
-                    "AND terminal_byte_count IS NOT NULL "
-                    "AND sealed_at >= created_at)",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_request_budget":
-        checks.append(
-            (
-                "ck_gallery_observation_staging_request_budget_count",
-                "retained_request_count >= 0 AND retained_request_count <= 1500000",
-                "retained_request_count >= 0 AND retained_request_count <= 1500000",
+    match name:
+        case "identity_allocator":
+            checks.extend(
+                [
+                    (
+                        "ck_identity_allocator_next_portable",
+                        "next_id >= 1 AND next_id <= 9223372036854775807",
+                        "next_id >= 1 AND next_id <= 9223372036854775807",
+                    ),
+                    (
+                        "ck_identity_allocator_stream",
+                        "stream IN ('GALLERY', 'TAG', 'POLICY')",
+                        "stream IN ('GALLERY', 'TAG', 'POLICY')",
+                    ),
+                ]
             )
-        )
-    if name == "gallery_observation_staging_claim":
-        checks.append(
-            (
-                "ck_gallery_observation_staging_claim_generation_portable",
-                "ingest_generation <= 9223372036854775807 AND "
-                "claim_generation <= 9223372036854775807",
-                "ingest_generation <= 9223372036854775807 AND "
-                "claim_generation <= 9223372036854775807",
+        case "gallery_observation_allocator":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_allocator_next_portable",
+                        "next_observation_id >= 1 AND "
+                        "next_observation_id <= 9223372036854775807",
+                        "next_observation_id >= 1 AND "
+                        "next_observation_id <= 9223372036854775807",
+                    ),
+                ]
             )
-        )
-    if name == "gallery_observation_staging_checkpoint":
-        checks.extend(
-            [
-                (
-                    _identifier(f"ck_{name}_component"),
-                    "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
-                    "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
-                ),
-                (
-                    _identifier(f"ck_{name}_level"),
-                    "level <= 8",
-                    "level <= 8",
-                ),
-            ]
-        )
-        checks.extend(
-            [
-                (
-                    "ck_gallery_observation_staging_checkpoint_state",
-                    "state IN ('OPEN', 'COMPLETE')",
-                    "state IN ('OPEN', 'COMPLETE')",
-                ),
-                (
-                    "ck_gallery_observation_staging_checkpoint_regular_count",
-                    "regular_count <= cursor AND "
-                    "(component = X'4449524543544F5259' AND level = 0 OR "
-                    "regular_count = 0)",
-                    "regular_count <= `cursor` AND "
-                    "(component = X'4449524543544F5259' AND level = 0 OR "
-                    "regular_count = 0)",
-                ),
-                (
-                    "ck_gallery_observation_staging_checkpoint_byte_count",
-                    "(component = X'46494C45' AND level = 0 OR "
-                    "processed_byte_count = 0)",
-                    "(component = X'46494C45' AND level = 0 OR "
-                    "processed_byte_count = 0)",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_receipt":
-        checks.append(
-            (
-                "ck_gallery_observation_staging_receipt_byte_count",
-                "(component = X'46494C45' AND level = 0 AND "
-                "next_processed_byte_count >= start_processed_byte_count OR "
-                "(component != X'46494C45' OR level != 0) AND "
-                "start_processed_byte_count = 0 AND "
-                "next_processed_byte_count = 0)",
-                "(component = X'46494C45' AND level = 0 AND "
-                "next_processed_byte_count >= start_processed_byte_count OR "
-                "(component <> X'46494C45' OR level <> 0) AND "
-                "start_processed_byte_count = 0 AND "
-                "next_processed_byte_count = 0)",
+        case "gallery_observation_staging":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_identity_portable",
+                        "gallery_id >= 1 AND gallery_id <= 9223372036854775807 "
+                        "AND observation_id >= 1 AND "
+                        "observation_id <= 9223372036854775807",
+                        "gallery_id >= 1 AND gallery_id <= 9223372036854775807 "
+                        "AND observation_id >= 1 AND "
+                        "observation_id <= 9223372036854775807",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_state_time",
+                        "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
+                        "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
+                        "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
+                        "AND terminal_byte_count IS NULL OR "
+                        "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
+                        "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
+                        "AND terminal_byte_count IS NOT NULL "
+                        "AND sealed_at >= created_at)",
+                        "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
+                        "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
+                        "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
+                        "AND terminal_byte_count IS NULL OR "
+                        "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
+                        "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
+                        "AND terminal_byte_count IS NOT NULL "
+                        "AND sealed_at >= created_at)",
+                    ),
+                ]
             )
-        )
-    if name == "gallery_observation_staging_frontier":
-        checks.extend(
-            [
+        case "gallery_observation_staging_request_budget":
+            checks.append(
                 (
-                    "ck_gallery_observation_staging_frontier_coordinate",
-                    "position <= 254",
-                    "position <= 254",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_request_chunk":
-        checks.extend(
-            [
+                    "ck_gallery_observation_staging_request_budget_count",
+                    "retained_request_count >= 0 AND retained_request_count <= 1500000",
+                    "retained_request_count >= 0 AND retained_request_count <= 1500000",
+                )
+            )
+        case "gallery_observation_staging_claim":
+            checks.append(
                 (
-                    "ck_gallery_observation_staging_request_chunk_bytes_bounded",
-                    "length(request_bytes) >= 1 AND length(request_bytes) <= 32768",
-                    "octet_length(request_bytes) >= 1 AND octet_length(request_bytes) <= 32768",
-                ),
+                    "ck_gallery_observation_staging_claim_generation_portable",
+                    "ingest_generation <= 9223372036854775807 AND "
+                    "claim_generation <= 9223372036854775807",
+                    "ingest_generation <= 9223372036854775807 AND "
+                    "claim_generation <= 9223372036854775807",
+                )
+            )
+        case "gallery_observation_staging_checkpoint":
+            checks.extend(
+                [
+                    (
+                        _identifier(f"ck_{name}_component"),
+                        "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
+                        "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
+                    ),
+                    (
+                        _identifier(f"ck_{name}_level"),
+                        "level <= 8",
+                        "level <= 8",
+                    ),
+                ]
+            )
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_checkpoint_state",
+                        "state IN ('OPEN', 'COMPLETE')",
+                        "state IN ('OPEN', 'COMPLETE')",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_checkpoint_regular_count",
+                        "regular_count <= cursor AND "
+                        "(component = X'4449524543544F5259' AND level = 0 OR "
+                        "regular_count = 0)",
+                        "regular_count <= `cursor` AND "
+                        "(component = X'4449524543544F5259' AND level = 0 OR "
+                        "regular_count = 0)",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_checkpoint_byte_count",
+                        "(component = X'46494C45' AND level = 0 OR "
+                        "processed_byte_count = 0)",
+                        "(component = X'46494C45' AND level = 0 OR "
+                        "processed_byte_count = 0)",
+                    ),
+                ]
+            )
+        case "gallery_observation_staging_receipt":
+            checks.append(
                 (
-                    "ck_gallery_observation_staging_request_chunk_position",
-                    "position <= 2",
-                    "position <= 2",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_page_request":
-        checks.extend(
-            [
+                    "ck_gallery_observation_staging_receipt_byte_count",
+                    "(component = X'46494C45' AND level = 0 AND "
+                    "next_processed_byte_count >= start_processed_byte_count OR "
+                    "(component != X'46494C45' OR level != 0) AND "
+                    "start_processed_byte_count = 0 AND "
+                    "next_processed_byte_count = 0)",
+                    "(component = X'46494C45' AND level = 0 AND "
+                    "next_processed_byte_count >= start_processed_byte_count OR "
+                    "(component <> X'46494C45' OR level <> 0) AND "
+                    "start_processed_byte_count = 0 AND "
+                    "next_processed_byte_count = 0)",
+                )
+            )
+        case "gallery_observation_staging_frontier":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_frontier_coordinate",
+                        "position <= 254",
+                        "position <= 254",
+                    ),
+                ]
+            )
+        case "gallery_observation_staging_request_chunk":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_request_chunk_bytes_bounded",
+                        "length(request_bytes) >= 1 AND length(request_bytes) <= 32768",
+                        "octet_length(request_bytes) >= 1 AND octet_length(request_bytes) <= 32768",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_request_chunk_position",
+                        "position <= 2",
+                        "position <= 2",
+                    ),
+                ]
+            )
+        case "gallery_observation_staging_page_request":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_page_request_coordinate",
+                        "level <= 8 AND start_cursor <= 9223372036854775807 AND "
+                        "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
+                        "level <= 8 AND start_cursor <= 9223372036854775807 AND "
+                        "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_page_request_terminal",
+                        "terminal IN (0, 1)",
+                        "terminal IN (0, 1)",
+                    ),
+                ]
+            )
+        case "gallery_observation_staging_match_checkpoint":
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_match_checkpoint_state",
+                        "state IN ('OPEN', 'COMPLETE')",
+                        "state IN ('OPEN', 'COMPLETE')",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_match_checkpoint_cursor_bounded",
+                        "length(file_cursor_bytes) <= 2048",
+                        "octet_length(file_cursor_bytes) <= 2048",
+                    ),
+                    (
+                        "ck_gallery_observation_staging_match_checkpoint_portable",
+                        "matched_count <= 9223372036854775807",
+                        "matched_count <= 9223372036854775807",
+                    ),
+                ]
+            )
+        case "gallery_observation_staging_match_request":
+            checks.append(
                 (
-                    "ck_gallery_observation_staging_page_request_coordinate",
-                    "level <= 8 AND start_cursor <= 9223372036854775807 AND "
-                    "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
-                    "level <= 8 AND start_cursor <= 9223372036854775807 AND "
-                    "component IN (X'46494C45', X'544147', X'4449524543544F5259', X'4D45544144415441')",
-                ),
-                (
-                    "ck_gallery_observation_staging_page_request_terminal",
+                    "ck_gallery_observation_staging_match_request_terminal",
                     "terminal IN (0, 1)",
                     "terminal IN (0, 1)",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_match_checkpoint":
-        checks.extend(
-            [
-                (
-                    "ck_gallery_observation_staging_match_checkpoint_state",
-                    "state IN ('OPEN', 'COMPLETE')",
-                    "state IN ('OPEN', 'COMPLETE')",
-                ),
-                (
-                    "ck_gallery_observation_staging_match_checkpoint_cursor_bounded",
-                    "length(file_cursor_bytes) <= 2048",
-                    "octet_length(file_cursor_bytes) <= 2048",
-                ),
-                (
-                    "ck_gallery_observation_staging_match_checkpoint_portable",
-                    "matched_count <= 9223372036854775807",
-                    "matched_count <= 9223372036854775807",
-                ),
-            ]
-        )
-    if name == "gallery_observation_staging_match_request":
-        checks.append(
-            (
-                "ck_gallery_observation_staging_match_request_terminal",
-                "terminal IN (0, 1)",
-                "terminal IN (0, 1)",
+                )
             )
-        )
-    if name == "gallery_observation_staging_metadata_parser":
-        metadata_phases = (
-            "PREFIX",
-            "VERSION",
-            "GID",
-            "TITLE_TAG",
-            "TITLE_LENGTH",
-            "TITLE",
-            "COMMENT_TAG",
-            "COMMENT_LENGTH",
-            "COMMENT",
-            "UPLOAD_ACCOUNT_TAG",
-            "UPLOAD_ACCOUNT_LENGTH",
-            "UPLOAD_ACCOUNT",
-            "UPLOAD_TIME",
-            "DOWNLOAD_TIME",
-            "MODIFIED_TIME",
-            "SCAN_VERSION",
-            "SOURCE_FILE_COUNT",
-            "PAGE_COUNT_PRESENCE",
-            "PAGE_COUNT",
-            "QUAL_POLICY",
-            "QUAL_ACCEPTED",
-            "QUAL_REASON",
-            "QUAL_SOURCE",
-            "DONE",
-        )
-        phase_expression = (
-            "phase IN (" + ", ".join(f"'{value}'" for value in metadata_phases) + ")"
-        )
-        checks.extend(
-            [
+        case "gallery_observation_staging_metadata_parser":
+            metadata_phases = (
+                "PREFIX",
+                "VERSION",
+                "GID",
+                "TITLE_TAG",
+                "TITLE_LENGTH",
+                "TITLE",
+                "COMMENT_TAG",
+                "COMMENT_LENGTH",
+                "COMMENT",
+                "UPLOAD_ACCOUNT_TAG",
+                "UPLOAD_ACCOUNT_LENGTH",
+                "UPLOAD_ACCOUNT",
+                "UPLOAD_TIME",
+                "DOWNLOAD_TIME",
+                "MODIFIED_TIME",
+                "SCAN_VERSION",
+                "SOURCE_FILE_COUNT",
+                "PAGE_COUNT_PRESENCE",
+                "PAGE_COUNT",
+                "QUAL_POLICY",
+                "QUAL_ACCEPTED",
+                "QUAL_REASON",
+                "QUAL_SOURCE",
+                "DONE",
+            )
+            phase_expression = (
+                "phase IN ("
+                + ", ".join(f"'{value}'" for value in metadata_phases)
+                + ")"
+            )
+            checks.extend(
+                [
+                    (
+                        "ck_gallery_observation_staging_metadata_parser_phase",
+                        phase_expression,
+                        phase_expression,
+                    ),
+                    (
+                        "ck_gallery_observation_staging_metadata_parser_carry_bounded",
+                        "length(fixed_carry) <= 255 AND length(utf8_tail) <= 3",
+                        "octet_length(fixed_carry) <= 255 AND octet_length(utf8_tail) <= 3",
+                    ),
+                ]
+            )
+        case "cleanup_target_kind" | "cleanup_phase":
+            with LOGICAL.open("rb") as stream:
+                logical = tomllib.load(stream)
+            values = (
+                [str(target["target_kind"]) for target in logical["cleanup_target"]]
+                if name == "cleanup_target_kind"
+                else [
+                    str(phase["phase"])
+                    for target in logical["cleanup_target"]
+                    for phase in target["phases"]
+                ]
+            )
+            attribute = "target_kind" if name == "cleanup_target_kind" else "phase"
+            quoted = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
+            expression = f"{attribute} IN ({quoted})"
+            checks.append(
+                (_identifier(f"ck_{name}_{attribute}_registry"), expression, expression)
+            )
+        case "cleanup_sweep_target":
+            checks.append(
                 (
-                    "ck_gallery_observation_staging_metadata_parser_phase",
-                    phase_expression,
-                    phase_expression,
-                ),
-                (
-                    "ck_gallery_observation_staging_metadata_parser_carry_bounded",
-                    "length(fixed_carry) <= 255 AND length(utf8_tail) <= 3",
-                    "octet_length(fixed_carry) <= 255 AND octet_length(utf8_tail) <= 3",
-                ),
-            ]
-        )
-    if name in {"cleanup_target_kind", "cleanup_phase"}:
-        with LOGICAL.open("rb") as stream:
-            logical = tomllib.load(stream)
-        values = (
-            [str(target["target_kind"]) for target in logical["cleanup_target"]]
-            if name == "cleanup_target_kind"
-            else [
-                str(phase["phase"])
-                for target in logical["cleanup_target"]
-                for phase in target["phases"]
-            ]
-        )
-        attribute = "target_kind" if name == "cleanup_target_kind" else "phase"
-        quoted = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
-        expression = f"{attribute} IN ({quoted})"
-        checks.append(
-            (_identifier(f"ck_{name}_{attribute}_registry"), expression, expression)
-        )
-    if name == "cleanup_sweep_target":
-        checks.append(
-            ("ck_cleanup_sweep_target_shard_bound", "shard_no < 256", "shard_no < 256")
-        )
+                    "ck_cleanup_sweep_target_shard_bound",
+                    "shard_no < 256",
+                    "shard_no < 256",
+                )
+            )
     if "cycle_generation" in attributes:
         checks.append(
             (

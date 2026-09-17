@@ -392,10 +392,11 @@ def _require_sample_history(
             "Concurrent downloads exposed an unexpected archive or revision"
         )
     for sample in verified:
-        if sample["revision"] == old.revision:
-            _require_sample(sample, old)
-        elif sample["revision"] == final.revision:
-            _require_sample(sample, final)
+        match sample["revision"]:
+            case old.revision:
+                _require_sample(sample, old)
+            case final.revision:
+                _require_sample(sample, final)
 
 
 def main(argv: list[str] | None = None) -> int:

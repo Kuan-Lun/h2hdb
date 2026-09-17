@@ -75,10 +75,11 @@ _PUBLICATION_ACTIVITIES = {
 
 
 def activity(pipeline: str, operation: str) -> str:
-    if pipeline == "analysis":
-        return _ANALYSIS_ACTIVITIES.get(operation, "processing analysis work")
-    if pipeline == "publication":
-        return _PUBLICATION_ACTIVITIES.get(operation, "processing publication work")
+    match pipeline:
+        case "analysis":
+            return _ANALYSIS_ACTIVITIES.get(operation, "processing analysis work")
+        case "publication":
+            return _PUBLICATION_ACTIVITIES.get(operation, "processing publication work")
     return "processing ingest work"
 
 

@@ -39,21 +39,22 @@ def test_tag_browse_rechecks_head_in_a_fresh_transaction(
     facade = VNextCatalogFacade(_config(Path("unused"), backend="mariadb"))
 
     def read() -> None:
-        if family == "publications":
-            page = facade.list_tag_publications(
-                subject=CatalogTagFilter(namespace="artist", value="Example"),
-            )
-            assert page.publications == ()
-            assert page.revision.revision == 7
-        elif family == "directory":
-            tags = facade.list_tag_values(namespace="artist")
-            assert tags.values == ()
-            assert tags.revision.revision == 7
-        else:
-            bundle = facade.list_tag_values_with_publications(namespace="artist")
-            assert bundle.page.values == ()
-            assert bundle.publications == ()
-            assert bundle.page.revision.revision == 7
+        match family:
+            case "publications":
+                page = facade.list_tag_publications(
+                    subject=CatalogTagFilter(namespace="artist", value="Example"),
+                )
+                assert page.publications == ()
+                assert page.revision.revision == 7
+            case "directory":
+                tags = facade.list_tag_values(namespace="artist")
+                assert tags.values == ()
+                assert tags.revision.revision == 7
+            case _:
+                bundle = facade.list_tag_values_with_publications(namespace="artist")
+                assert bundle.page.values == ()
+                assert bundle.publications == ()
+                assert bundle.page.revision.revision == 7
 
     if advance:
         with pytest.raises(CatalogReadError, match="head advanced") as failure:

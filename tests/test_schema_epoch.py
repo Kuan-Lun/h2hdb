@@ -140,22 +140,23 @@ class FakeProvider:
             self.slice_hook(schema_slice)
         if self.slice_error is not None:
             raise self.slice_error
-        if schema_slice.slice_id == "identity":
-            assert _table_columns(connector, PARENT.name) == (
-                ("parent_id", "INTEGER", 1, 1),
-                ("payload", "BLOB", 1, 0),
-                ("payload_version", "INTEGER", 1, 0),
-            )
-        elif schema_slice.slice_id == "membership":
-            assert _table_columns(connector, CHILD.name) == (
-                ("child_id", "INTEGER", 1, 1),
-                ("parent_id", "INTEGER", 1, 0),
-                ("digest", "BLOB", 1, 0),
-            )
-            indexes = connector.fetch_all("PRAGMA index_list(vnext_epoch_children)")
-            assert CHILD_INDEX.name in {str(row[1]) for row in indexes}
-        else:  # pragma: no cover - protects future fake-provider edits
-            raise AssertionError(f"Unknown test slice: {schema_slice.slice_id}")
+        match schema_slice.slice_id:
+            case "identity":
+                assert _table_columns(connector, PARENT.name) == (
+                    ("parent_id", "INTEGER", 1, 1),
+                    ("payload", "BLOB", 1, 0),
+                    ("payload_version", "INTEGER", 1, 0),
+                )
+            case "membership":
+                assert _table_columns(connector, CHILD.name) == (
+                    ("child_id", "INTEGER", 1, 1),
+                    ("parent_id", "INTEGER", 1, 0),
+                    ("digest", "BLOB", 1, 0),
+                )
+                indexes = connector.fetch_all("PRAGMA index_list(vnext_epoch_children)")
+                assert CHILD_INDEX.name in {str(row[1]) for row in indexes}
+            case _:  # pragma: no cover - protects future fake-provider edits
+                raise AssertionError(f"Unknown test slice: {schema_slice.slice_id}")
 
     def validate_global(self, connector: SQLConnector) -> None:
         if self.global_error is not None:

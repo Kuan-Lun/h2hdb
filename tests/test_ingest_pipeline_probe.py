@@ -437,14 +437,15 @@ def test_cli_refuses_existing_output_without_changing_it(
     output = tmp_path / "report.json"
     original = b'{"status":"existing evidence"}\n'
     target = tmp_path / "target.json"
-    if kind == "file":
-        output.write_bytes(original)
-    elif kind == "directory":
-        output.mkdir()
-    else:
-        if kind == "symlink":
-            target.write_bytes(original)
-        output.symlink_to(target)
+    match kind:
+        case "file":
+            output.write_bytes(original)
+        case "directory":
+            output.mkdir()
+        case _:
+            if kind == "symlink":
+                target.write_bytes(original)
+            output.symlink_to(target)
     execute = Mock()
     monkeypatch.setattr(probe, "execute", execute)
     monkeypatch.setattr(
@@ -454,16 +455,17 @@ def test_cli_refuses_existing_output_without_changing_it(
         probe.main()
     assert error.value.code == 2
     execute.assert_not_called()
-    if kind == "file":
-        assert output.read_bytes() == original
-    elif kind == "directory":
-        assert output.is_dir()
-    else:
-        assert output.is_symlink()
-        if kind == "symlink":
-            assert target.read_bytes() == original
-        else:
-            assert not target.exists()
+    match kind:
+        case "file":
+            assert output.read_bytes() == original
+        case "directory":
+            assert output.is_dir()
+        case _:
+            assert output.is_symlink()
+            if kind == "symlink":
+                assert target.read_bytes() == original
+            else:
+                assert not target.exists()
 
 
 @pytest.mark.parametrize(

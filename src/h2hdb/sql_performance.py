@@ -173,10 +173,11 @@ class _MeasuredConnector(SQLConnector):
         rows = 0
         try:
             result = action()
-            if isinstance(result, list):
-                rows = len(result)
-            elif isinstance(result, tuple) and result:
-                rows = 1
+            match result:
+                case list():
+                    rows = len(result)
+                case tuple() if result:
+                    rows = 1
             return result
         finally:
             finished_observers = [

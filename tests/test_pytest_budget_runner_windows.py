@@ -12,8 +12,12 @@ from types import ModuleType
 from typing import Any, cast
 
 import pytest
+import pytest_process_pid
+from pytest_process_pid import publish_pid, wait_for_pid
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="requires Windows Job Objects")
+requires_windows = pytest.mark.skipif(
+    os.name != "nt", reason="requires Windows Job Objects"
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run-pytest.py"
@@ -34,11 +38,13 @@ def _load_runner(name: str) -> ModuleType:
 def _tree_command(pid_path: Path, *, leader_exits: bool) -> tuple[str, ...]:
     script = (
         "import os,pathlib,subprocess,sys,time;"
+        f"sys.path.insert(0,{str(Path(__file__).resolve().parent)!r});"
+        "from pytest_process_pid import publish_pid;"
         "child=subprocess.Popen((sys.executable,'-c',"
         f"'import time;time.sleep({_CHILD_SLEEP_SECONDS})'),"
         "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
         "stderr=subprocess.DEVNULL);"
-        "pathlib.Path(sys.argv[1]).write_text(str(child.pid),encoding='ascii');"
+        "publish_pid(pathlib.Path(sys.argv[1]),child.pid);"
         + ("os._exit(0)" if leader_exits else f"time.sleep({_CHILD_SLEEP_SECONDS})")
     )
     return sys.executable, "-c", script, str(pid_path)
@@ -65,14 +71,6 @@ def _process_is_running(pid: int) -> bool:
         return int(kernel32.WaitForSingleObject(handle, 0)) == 0x00000102
     finally:
         kernel32.CloseHandle(handle)
-
-
-def _wait_for_path(path: Path) -> None:
-    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
-    while not path.is_file():
-        if time.monotonic() >= deadline:
-            pytest.fail(f"process fixture did not publish {path}")
-        time.sleep(0.02)
 
 
 def _wait_for_process_exit(pid: int) -> None:
@@ -128,6 +126,172 @@ def _force_pid_cleanup(pid: int | None) -> None:
     )
 
 
+@pytest.mark.parametrize("partial", ("", "123"), ids=("empty", "valid-prefix"))
+def test_pid_publication_hides_incomplete_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    partial: str,
+) -> None:
+    pid_path = tmp_path / "child.pid"
+    expected_pid = 12345
+
+    def staged_write(path: Path, payload: str, *, encoding: str) -> int:
+        with path.open("w", encoding=encoding) as stream:
+            stream.write(partial)
+            stream.flush()
+            assert path.read_text(encoding=encoding) == partial
+            # Even a prefix that int() would accept must remain unpublished.
+            with pytest.raises(TimeoutError, match="did not publish"):
+                wait_for_pid(pid_path, timeout=0)
+            stream.write(payload[len(partial) :])
+            stream.flush()
+            assert not pid_path.exists()
+        return len(payload)
+
+    monkeypatch.setattr(Path, "write_text", staged_write)
+
+    publish_pid(pid_path, expected_pid)
+
+    assert wait_for_pid(pid_path, timeout=0) == expected_pid
+    assert list(tmp_path.iterdir()) == [pid_path]
+
+
+def test_pid_publication_failure_does_not_publish_partial_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid_path = tmp_path / "child.pid"
+
+    def failing_write(path: Path, payload: str, *, encoding: str) -> int:
+        with path.open("w", encoding=encoding) as stream:
+            stream.write(payload[:2])
+            stream.flush()
+            raise OSError("injected partial write failure")
+
+    monkeypatch.setattr(Path, "write_text", failing_write)
+
+    with pytest.raises(OSError, match="injected partial write failure"):
+        publish_pid(pid_path, 12345)
+
+    assert not pid_path.exists()
+    assert not list(tmp_path.iterdir())
+
+
+def test_pid_publication_rename_failure_cleans_temporary_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid_path = tmp_path / "child.pid"
+
+    def failing_replace(path: Path, target: Path) -> Path:
+        assert path.read_text(encoding="ascii") == "12345"
+        assert target == pid_path
+        raise PermissionError("injected rename failure")
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    with pytest.raises(PermissionError, match="injected rename failure"):
+        publish_pid(pid_path, 12345)
+
+    assert not pid_path.exists()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("pid", (0, -1, True))
+def test_pid_publication_requires_positive_integer(tmp_path: Path, pid: int) -> None:
+    with pytest.raises(ValueError, match="positive PID"):
+        publish_pid(tmp_path / "child.pid", pid)
+    assert not list(tmp_path.iterdir())
+
+
+def test_pid_wait_reads_complete_publication_after_missing_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid_path = tmp_path / "child.pid"
+    pauses: list[float] = []
+
+    def publish_on_poll(delay: float) -> None:
+        pauses.append(delay)
+        publish_pid(pid_path, 12345)
+
+    monkeypatch.setattr(pytest_process_pid, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(pytest_process_pid, "sleep", publish_on_poll)
+
+    assert wait_for_pid(pid_path, timeout=1) == 12345
+    assert pauses == [0.02]
+
+
+def test_pid_publication_works_across_process_boundary(tmp_path: Path) -> None:
+    pid_path = tmp_path / "subprocess.pid"
+    command = (
+        sys.executable,
+        "-c",
+        "import os,pathlib,sys;"
+        "sys.path.insert(0,sys.argv[1]);"
+        "from pytest_process_pid import publish_pid;"
+        "publish_pid(pathlib.Path(sys.argv[2]),os.getpid());"
+        "print(os.getpid())",
+        str(Path(__file__).resolve().parent),
+        str(pid_path),
+    )
+
+    completed = subprocess.run(
+        command,
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_PROCESS_WAIT_SECONDS,
+    )
+
+    assert wait_for_pid(pid_path, timeout=0) == int(completed.stdout)
+    assert list(tmp_path.iterdir()) == [pid_path]
+
+
+def test_pid_wait_missing_publication_obeys_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    now = 0.0
+    pauses: list[float] = []
+
+    def advance_clock(delay: float) -> None:
+        nonlocal now
+        pauses.append(delay)
+        now += delay
+
+    monkeypatch.setattr(pytest_process_pid, "monotonic", lambda: now)
+    monkeypatch.setattr(pytest_process_pid, "sleep", advance_clock)
+
+    with pytest.raises(TimeoutError, match="did not publish"):
+        wait_for_pid(tmp_path / "missing.pid", timeout=0.03)
+
+    assert pauses == pytest.approx([0.02, 0.01])
+    assert now == pytest.approx(0.03)
+
+
+@pytest.mark.parametrize(
+    "payload", (b"", b"0", b"-1", b"+1", b"01", b"12\n", b"x", b"\xff")
+)
+def test_pid_wait_rejects_malformed_publication_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    pid_path = tmp_path / "malformed.pid"
+    pid_path.write_bytes(payload)
+
+    def unexpected_retry(_delay: float) -> None:
+        pytest.fail("malformed published data must fail without retrying")
+
+    monkeypatch.setattr(pytest_process_pid, "sleep", unexpected_retry)
+
+    with pytest.raises(ValueError):
+        wait_for_pid(pid_path, timeout=1)
+
+
+@requires_windows
 def test_windows_timeout_terminates_parent_and_descendant(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -146,13 +310,13 @@ def test_windows_timeout_terminates_parent_and_descendant(
         assert (
             runner.run_profile("merge", budget_seconds=8.0) == runner.TIMEOUT_EXIT_CODE
         )
-        _wait_for_path(pid_path)
-        child_pid = int(pid_path.read_text(encoding="ascii"))
+        child_pid = wait_for_pid(pid_path, timeout=_PROCESS_WAIT_SECONDS)
         _wait_for_process_exit(child_pid)
     finally:
         _force_pid_cleanup(child_pid)
 
 
+@requires_windows
 def test_windows_normal_leader_exit_cleans_descendant_and_fails_gate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -172,13 +336,13 @@ def test_windows_normal_leader_exit_cleans_descendant_and_fails_gate(
             runner.main(["merge", "--budget-seconds", "10"])
             == runner.TERMINATION_FAILED_EXIT_CODE
         )
-        _wait_for_path(pid_path)
-        child_pid = int(pid_path.read_text(encoding="ascii"))
+        child_pid = wait_for_pid(pid_path, timeout=_PROCESS_WAIT_SECONDS)
         _wait_for_process_exit(child_pid)
     finally:
         _force_pid_cleanup(child_pid)
 
 
+@requires_windows
 def test_windows_ctrl_break_cleans_owned_tree(tmp_path: Path) -> None:
     pid_path = tmp_path / "break-child.pid"
     child_pid: int | None = None
@@ -193,8 +357,7 @@ def test_windows_ctrl_break_cleans_owned_tree(tmp_path: Path) -> None:
         creationflags=creation_flag,
     )
     try:
-        _wait_for_path(pid_path)
-        child_pid = int(pid_path.read_text(encoding="ascii"))
+        child_pid = wait_for_pid(pid_path, timeout=_PROCESS_WAIT_SECONDS)
         process.send_signal(ctrl_break)
         assert process.wait(timeout=_PROCESS_WAIT_SECONDS) == 128 + sigbreak
         _wait_for_process_exit(child_pid)
@@ -203,6 +366,7 @@ def test_windows_ctrl_break_cleans_owned_tree(tmp_path: Path) -> None:
         _force_pid_cleanup(child_pid)
 
 
+@requires_windows
 def test_windows_forced_runner_exit_uses_kill_on_job_close(tmp_path: Path) -> None:
     pid_path = tmp_path / "forced-child.pid"
     child_pid: int | None = None
@@ -215,8 +379,7 @@ def test_windows_forced_runner_exit_uses_kill_on_job_close(tmp_path: Path) -> No
         creationflags=creation_flag,
     )
     try:
-        _wait_for_path(pid_path)
-        child_pid = int(pid_path.read_text(encoding="ascii"))
+        child_pid = wait_for_pid(pid_path, timeout=_PROCESS_WAIT_SECONDS)
         process.terminate()
         process.wait(timeout=_PROCESS_WAIT_SECONDS)
         _wait_for_process_exit(child_pid)
@@ -225,6 +388,7 @@ def test_windows_forced_runner_exit_uses_kill_on_job_close(tmp_path: Path) -> No
         _force_pid_cleanup(child_pid)
 
 
+@requires_windows
 def test_windows_real_venv_redirector_keeps_job_ownership(tmp_path: Path) -> None:
     venv = tmp_path / "venv"
     subprocess.run(
@@ -266,6 +430,7 @@ raise SystemExit(runner.main(["merge", "--budget-seconds", "10"]))
     )
 
 
+@requires_windows
 def test_windows_failed_first_phase_never_starts_second_phase(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -292,8 +457,7 @@ def test_windows_failed_first_phase_never_starts_second_phase(
             runner.main(["merge", "--budget-seconds", "15"])
             == runner.TERMINATION_FAILED_EXIT_CODE
         )
-        _wait_for_path(pid_path)
-        child_pid = int(pid_path.read_text(encoding="ascii"))
+        child_pid = wait_for_pid(pid_path, timeout=_PROCESS_WAIT_SECONDS)
         _wait_for_process_exit(child_pid)
         assert not second_phase_marker.exists()
         assert (first_phase, second_phase) == runner.MERGE_PHASES

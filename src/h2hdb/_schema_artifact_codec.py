@@ -549,177 +549,178 @@ def _preflight_pickle(raw: bytes) -> None:
                 raise SchemaArtifactCodecError(
                     "schema artifact contains a repeated pickle protocol opcode"
                 )
-            if name == "PROTO":
-                continue
-            if name == "FRAME":
-                frame_count += 1
-                if (
-                    frame_count > _MAX_SCHEMA_ARTIFACT_FRAMES
-                    or type(argument) is not int
-                    or argument < 0
-                    or argument > MAX_SCHEMA_ARTIFACT_BYTES
-                ):
+            match name:
+                case "PROTO":
+                    continue
+                case "FRAME":
+                    frame_count += 1
+                    if (
+                        frame_count > _MAX_SCHEMA_ARTIFACT_FRAMES
+                        or type(argument) is not int
+                        or argument < 0
+                        or argument > MAX_SCHEMA_ARTIFACT_BYTES
+                    ):
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle frame is outside its bound"
+                        )
+                    continue
+                case "MARK":
+                    stack.append(_ABSTRACT_MARK)
+                    if len(stack) > MAX_SCHEMA_ARTIFACT_NODES:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle stack exceeds its bound"
+                        )
+                    continue
+                case "NONE" | "NEWFALSE" | "NEWTRUE":
+                    stack.append(_AbstractValue(name.casefold()))
+                    constructed_nodes += 1
+                case "BININT" | "BININT1" | "BININT2" | "LONG1" | "LONG4":
+                    if type(argument) is not int:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle integer argument is invalid"
+                        )
+                    _validate_integer(argument)
+                    stack.append(_AbstractValue("int"))
+                    constructed_nodes += 1
+                case "SHORT_BINUNICODE" | "BINUNICODE" | "BINUNICODE8":
+                    if type(argument) is not str:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle string argument is invalid"
+                        )
+                    _validate_unicode(argument)
+                    encoded_size = len(argument.encode("utf-8"))
+                    if encoded_size > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle string exceeds its bound"
+                        )
+                    stack.append(
+                        _AbstractValue(
+                            "str", weight=encoded_size + 1, string_value=argument
+                        )
+                    )
+                    constructed_nodes += 1
+                case "SHORT_BINBYTES" | "BINBYTES" | "BINBYTES8":
+                    if type(argument) is not bytes:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle bytes argument is invalid"
+                        )
+                    if len(argument) > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle bytes value exceeds its bound"
+                        )
+                    stack.append(_AbstractValue("bytes", weight=len(argument) + 1))
+                    constructed_nodes += 1
+                case "EMPTY_LIST":
+                    stack.append(_AbstractValue("list", contains_mutable=True))
+                    constructed_nodes += 1
+                case "EMPTY_DICT":
+                    stack.append(_AbstractValue("dict", contains_mutable=True))
+                    constructed_nodes += 1
+                case "EMPTY_TUPLE":
+                    stack.append(_AbstractValue("tuple"))
+                    constructed_nodes += 1
+                case "TUPLE1" | "TUPLE2" | "TUPLE3":
+                    item_count = int(name[-1])
+                    result, added = _new_abstract_tuple(
+                        _pop_abstract_values(stack, item_count, context=name)
+                    )
+                    stack.append(result)
+                    work_bytes += added
+                    constructed_nodes += 1
+                case "TUPLE":
+                    result, added = _new_abstract_tuple(
+                        _pop_abstract_mark(stack, context=name)
+                    )
+                    stack.append(result)
+                    work_bytes += added
+                    constructed_nodes += 1
+                case "MEMOIZE":
+                    if not stack:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle stack underflow in MEMOIZE"
+                        )
+                    if len(memo) >= MAX_SCHEMA_ARTIFACT_NODES:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle memo exceeds its bound"
+                        )
+                    memo.append(_require_abstract_value(stack[-1], context=name))
+                case "BINGET" | "LONG_BINGET":
+                    if type(argument) is not int or not 0 <= argument < len(memo):
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle memo reference is invalid"
+                        )
+                    referenced = memo[argument]
+                    if referenced.contains_mutable:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle aliases a mutable container"
+                        )
+                    stack.append(referenced)
+                case "APPEND":
+                    child = _pop_abstract_values(stack, 1, context=name)[0]
+                    if not stack:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle stack underflow in APPEND"
+                        )
+                    target = _require_abstract_value(stack[-1], context=name)
+                    if target.kind != "list":
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle APPEND target is not a list"
+                        )
+                    work_bytes += _extend_abstract_container(target, [child])
+                case "APPENDS":
+                    children = _pop_abstract_mark(stack, context=name)
+                    if not stack:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle stack underflow in APPENDS"
+                        )
+                    target = _require_abstract_value(stack[-1], context=name)
+                    if target.kind != "list":
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle APPENDS target is not a list"
+                        )
+                    work_bytes += _extend_abstract_container(target, children)
+                case "SETITEM":
+                    key, value = _pop_abstract_values(stack, 2, context=name)
+                    if not stack:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle stack underflow in SETITEM"
+                        )
+                    target = _require_abstract_value(stack[-1], context=name)
+                    if target.kind != "dict":
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle SETITEM target is not a dictionary"
+                        )
+                    work_bytes += _append_abstract_dictionary_item(target, key, value)
+                case "SETITEMS":
+                    items = _pop_abstract_mark(stack, context=name)
+                    if not stack or len(items) % 2:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle SETITEMS stack is malformed"
+                        )
+                    target = _require_abstract_value(stack[-1], context=name)
+                    if target.kind != "dict":
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle SETITEMS target is not a dictionary"
+                        )
+                    for index in range(0, len(items), 2):
+                        work_bytes += _append_abstract_dictionary_item(
+                            target, items[index], items[index + 1]
+                        )
+                case "STOP":
+                    if len(stack) != 1:
+                        raise SchemaArtifactCodecError(
+                            "schema artifact pickle does not leave exactly one root"
+                        )
+                    root = _require_abstract_value(stack[0], context=name)
+                    if root.kind != "dict":
+                        raise SchemaArtifactCodecError(
+                            "schema artifact root must be a dictionary with string keys"
+                        )
+                    stop_position = position
+                case _:  # pragma: no cover - the allowlist and VM must evolve together
                     raise SchemaArtifactCodecError(
-                        "schema artifact pickle frame is outside its bound"
+                        f"schema artifact pickle opcode {name!r} has no abstract rule"
                     )
-                continue
-            if name == "MARK":
-                stack.append(_ABSTRACT_MARK)
-                if len(stack) > MAX_SCHEMA_ARTIFACT_NODES:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle stack exceeds its bound"
-                    )
-                continue
-            if name in {"NONE", "NEWFALSE", "NEWTRUE"}:
-                stack.append(_AbstractValue(name.casefold()))
-                constructed_nodes += 1
-            elif name in {"BININT", "BININT1", "BININT2", "LONG1", "LONG4"}:
-                if type(argument) is not int:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle integer argument is invalid"
-                    )
-                _validate_integer(argument)
-                stack.append(_AbstractValue("int"))
-                constructed_nodes += 1
-            elif name in {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8"}:
-                if type(argument) is not str:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle string argument is invalid"
-                    )
-                _validate_unicode(argument)
-                encoded_size = len(argument.encode("utf-8"))
-                if encoded_size > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle string exceeds its bound"
-                    )
-                stack.append(
-                    _AbstractValue(
-                        "str", weight=encoded_size + 1, string_value=argument
-                    )
-                )
-                constructed_nodes += 1
-            elif name in {"SHORT_BINBYTES", "BINBYTES", "BINBYTES8"}:
-                if type(argument) is not bytes:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle bytes argument is invalid"
-                    )
-                if len(argument) > _MAX_SCHEMA_ARTIFACT_SCALAR_BYTES:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle bytes value exceeds its bound"
-                    )
-                stack.append(_AbstractValue("bytes", weight=len(argument) + 1))
-                constructed_nodes += 1
-            elif name == "EMPTY_LIST":
-                stack.append(_AbstractValue("list", contains_mutable=True))
-                constructed_nodes += 1
-            elif name == "EMPTY_DICT":
-                stack.append(_AbstractValue("dict", contains_mutable=True))
-                constructed_nodes += 1
-            elif name == "EMPTY_TUPLE":
-                stack.append(_AbstractValue("tuple"))
-                constructed_nodes += 1
-            elif name in {"TUPLE1", "TUPLE2", "TUPLE3"}:
-                item_count = int(name[-1])
-                result, added = _new_abstract_tuple(
-                    _pop_abstract_values(stack, item_count, context=name)
-                )
-                stack.append(result)
-                work_bytes += added
-                constructed_nodes += 1
-            elif name == "TUPLE":
-                result, added = _new_abstract_tuple(
-                    _pop_abstract_mark(stack, context=name)
-                )
-                stack.append(result)
-                work_bytes += added
-                constructed_nodes += 1
-            elif name == "MEMOIZE":
-                if not stack:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle stack underflow in MEMOIZE"
-                    )
-                if len(memo) >= MAX_SCHEMA_ARTIFACT_NODES:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle memo exceeds its bound"
-                    )
-                memo.append(_require_abstract_value(stack[-1], context=name))
-            elif name in {"BINGET", "LONG_BINGET"}:
-                if type(argument) is not int or not 0 <= argument < len(memo):
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle memo reference is invalid"
-                    )
-                referenced = memo[argument]
-                if referenced.contains_mutable:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle aliases a mutable container"
-                    )
-                stack.append(referenced)
-            elif name == "APPEND":
-                child = _pop_abstract_values(stack, 1, context=name)[0]
-                if not stack:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle stack underflow in APPEND"
-                    )
-                target = _require_abstract_value(stack[-1], context=name)
-                if target.kind != "list":
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle APPEND target is not a list"
-                    )
-                work_bytes += _extend_abstract_container(target, [child])
-            elif name == "APPENDS":
-                children = _pop_abstract_mark(stack, context=name)
-                if not stack:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle stack underflow in APPENDS"
-                    )
-                target = _require_abstract_value(stack[-1], context=name)
-                if target.kind != "list":
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle APPENDS target is not a list"
-                    )
-                work_bytes += _extend_abstract_container(target, children)
-            elif name == "SETITEM":
-                key, value = _pop_abstract_values(stack, 2, context=name)
-                if not stack:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle stack underflow in SETITEM"
-                    )
-                target = _require_abstract_value(stack[-1], context=name)
-                if target.kind != "dict":
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle SETITEM target is not a dictionary"
-                    )
-                work_bytes += _append_abstract_dictionary_item(target, key, value)
-            elif name == "SETITEMS":
-                items = _pop_abstract_mark(stack, context=name)
-                if not stack or len(items) % 2:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle SETITEMS stack is malformed"
-                    )
-                target = _require_abstract_value(stack[-1], context=name)
-                if target.kind != "dict":
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle SETITEMS target is not a dictionary"
-                    )
-                for index in range(0, len(items), 2):
-                    work_bytes += _append_abstract_dictionary_item(
-                        target, items[index], items[index + 1]
-                    )
-            elif name == "STOP":
-                if len(stack) != 1:
-                    raise SchemaArtifactCodecError(
-                        "schema artifact pickle does not leave exactly one root"
-                    )
-                root = _require_abstract_value(stack[0], context=name)
-                if root.kind != "dict":
-                    raise SchemaArtifactCodecError(
-                        "schema artifact root must be a dictionary with string keys"
-                    )
-                stop_position = position
-            else:  # pragma: no cover - the allowlist and VM must evolve together
-                raise SchemaArtifactCodecError(
-                    f"schema artifact pickle opcode {name!r} has no abstract rule"
-                )
             if constructed_nodes > MAX_SCHEMA_ARTIFACT_NODES:
                 raise SchemaArtifactCodecError(
                     "schema artifact exceeds the maximum encoded node count"

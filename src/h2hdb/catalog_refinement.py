@@ -1594,12 +1594,13 @@ def _validate_static_catalog_contract() -> None:
 
 
 def _as_bytes(value: object, *, field: str) -> bytes:
-    if isinstance(value, memoryview):
-        return value.tobytes()
-    if isinstance(value, bytearray):
-        return bytes(value)
-    if isinstance(value, bytes):
-        return value
+    match value:
+        case memoryview():
+            return value.tobytes()
+        case bytearray():
+            return bytes(value)
+        case bytes():
+            return value
     raise CatalogSemanticValidationError(f"{field} is not exact binary data")
 
 
@@ -2368,64 +2369,65 @@ def _require_open_pcom_compound_retirement(
     receipts = frozenset(authorities)
     retired: frozenset[bytes]
     expected_orphan_anchors: frozenset[bytes]
-    if phase_order == 9:
-        if phase != "PCOM_COMMIT_EFFECT_ROOT":
-            raise CatalogSemanticValidationError(
-                "OPEN PCOM compound phase/order disagrees"
+    match phase_order:
+        case 9:
+            if phase != "PCOM_COMMIT_EFFECT_ROOT":
+                raise CatalogSemanticValidationError(
+                    "OPEN PCOM compound phase/order disagrees"
+                )
+            if not cursor:
+                return frozenset(), frozenset()
+            cursor_receipt, cursor_primary, cursor_preparation = (
+                _decode_pcom_compound_cursor(cursor)
             )
-        if not cursor:
-            return frozenset(), frozenset()
-        cursor_receipt, cursor_primary, cursor_preparation = (
-            _decode_pcom_compound_cursor(cursor)
-        )
-        cursor_authority = authorities.get(cursor_receipt)
-        if (
-            cursor_receipt != cursor_primary
-            or cursor_authority is None
-            or cursor_authority.preparation_id != cursor_preparation
-        ):
-            raise CatalogSemanticValidationError(
-                "OPEN PCOM compound cursor is outside its frozen root set"
-            )
-        retired = frozenset(
-            receipt_id for receipt_id in receipts if receipt_id <= cursor_receipt
-        )
-        expected_orphan_anchors = retired
-    elif phase_order == 10:
-        if phase != "PCOM_FINALIZATION_CHECKPOINT":
-            raise CatalogSemanticValidationError(
-                "OPEN PCOM checkpoint phase/order disagrees"
-            )
-        retired = receipts
-        expected_orphan_anchors = receipts
-    elif phase_order == 11:
-        if phase != "PCOM_ANCHOR":
-            raise CatalogSemanticValidationError(
-                "OPEN PCOM anchor phase/order disagrees"
-            )
-        retired = receipts
-        expected_orphan_anchors = receipts
-        if cursor:
-            if not _pcom_static_cursor_covers_pair(
-                cursor,
-                receipt_id=cursor[7:23] if len(cursor) == 42 else b"",
-                frozen_receipts=receipts,
+            cursor_authority = authorities.get(cursor_receipt)
+            if (
+                cursor_receipt != cursor_primary
+                or cursor_authority is None
+                or cursor_authority.preparation_id != cursor_preparation
             ):
                 raise CatalogSemanticValidationError(
-                    "OPEN PCOM anchor cursor is malformed"
+                    "OPEN PCOM compound cursor is outside its frozen root set"
                 )
-            cursor_receipt = cursor[7:23]
-            if cursor_receipt not in retired:
-                raise CatalogSemanticValidationError(
-                    "OPEN PCOM anchor cursor is outside its frozen roots"
-                )
-            expected_orphan_anchors = frozenset(
-                receipt_id for receipt_id in retired if receipt_id > cursor_receipt
+            retired = frozenset(
+                receipt_id for receipt_id in receipts if receipt_id <= cursor_receipt
             )
-    else:
-        raise CatalogSemanticValidationError(
-            "OPEN PCOM compound retirement is outside phases 9 through 11"
-        )
+            expected_orphan_anchors = retired
+        case 10:
+            if phase != "PCOM_FINALIZATION_CHECKPOINT":
+                raise CatalogSemanticValidationError(
+                    "OPEN PCOM checkpoint phase/order disagrees"
+                )
+            retired = receipts
+            expected_orphan_anchors = receipts
+        case 11:
+            if phase != "PCOM_ANCHOR":
+                raise CatalogSemanticValidationError(
+                    "OPEN PCOM anchor phase/order disagrees"
+                )
+            retired = receipts
+            expected_orphan_anchors = receipts
+            if cursor:
+                if not _pcom_static_cursor_covers_pair(
+                    cursor,
+                    receipt_id=cursor[7:23] if len(cursor) == 42 else b"",
+                    frozen_receipts=receipts,
+                ):
+                    raise CatalogSemanticValidationError(
+                        "OPEN PCOM anchor cursor is malformed"
+                    )
+                cursor_receipt = cursor[7:23]
+                if cursor_receipt not in retired:
+                    raise CatalogSemanticValidationError(
+                        "OPEN PCOM anchor cursor is outside its frozen roots"
+                    )
+                expected_orphan_anchors = frozenset(
+                    receipt_id for receipt_id in retired if receipt_id > cursor_receipt
+                )
+        case _:
+            raise CatalogSemanticValidationError(
+                "OPEN PCOM compound retirement is outside phases 9 through 11"
+            )
     return retired, expected_orphan_anchors
 
 
@@ -6069,30 +6071,33 @@ def _validated_open_publication_generation_transition(
         index, root_generation, primary_generation = (
             _decode_publication_generation_cursor(cursor)
         )
-        if index == 0:
-            if (
-                root_generation != primary_generation
-                or root_generation not in frozen[1:]
-            ):
-                raise CatalogSemanticValidationError(
-                    "OPEN PG_EDGE cursor is outside its internal frozen edges"
+        match index:
+            case 0:
+                if (
+                    root_generation != primary_generation
+                    or root_generation not in frozen[1:]
+                ):
+                    raise CatalogSemanticValidationError(
+                        "OPEN PG_EDGE cursor is outside its internal frozen edges"
+                    )
+                missing_edges = frozenset(
+                    generation
+                    for generation in frozen[1:]
+                    if generation <= root_generation
                 )
-            missing_edges = frozenset(
-                generation for generation in frozen[1:] if generation <= root_generation
-            )
-        elif index == 1:
-            if (
-                root_generation != frozen[-1]
-                or primary_generation != boundary_successor
-            ):
+            case 1:
+                if (
+                    root_generation != frozen[-1]
+                    or primary_generation != boundary_successor
+                ):
+                    raise CatalogSemanticValidationError(
+                        "OPEN PG_EDGE boundary cursor is outside its frozen prefix"
+                    )
+                missing_edges = internal_edges | {boundary_successor}
+            case _:
                 raise CatalogSemanticValidationError(
-                    "OPEN PG_EDGE boundary cursor is outside its frozen prefix"
+                    "OPEN PG_EDGE cursor names an unknown relation"
                 )
-            missing_edges = internal_edges | {boundary_successor}
-        else:
-            raise CatalogSemanticValidationError(
-                "OPEN PG_EDGE cursor names an unknown relation"
-            )
         return _OpenPublicationGenerationTransition(
             frozen[0], frozenset(), missing_edges
         )
@@ -6155,14 +6160,15 @@ def _validate_publication_generation_nodes(
                     expected = transition.canonical_floor
                 else:
                     expected = generation
-                    if floor is None:
-                        valid_floor = generation == 0
-                    elif floor == 1:
-                        # Generation zero cannot become cleanup-eligible while the
-                        # genesis publication commit remains retained.
-                        valid_floor = generation == 0
-                    else:
-                        valid_floor = generation <= floor
+                    match floor:
+                        case None:
+                            valid_floor = generation == 0
+                        case 1:
+                            # Generation zero cannot become cleanup-eligible while the
+                            # genesis publication commit remains retained.
+                            valid_floor = generation == 0
+                        case _:
+                            valid_floor = generation <= floor
                     if not valid_floor:
                         raise CatalogSemanticValidationError(
                             "publication generation nodes differ from the retained "

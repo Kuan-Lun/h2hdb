@@ -84,34 +84,35 @@ def plan_table_nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
 
     def visit(value: object, path: str) -> None:
-        if isinstance(value, dict):
-            if "table_name" in value:
-                result.append(
-                    {
-                        "path": path,
-                        **{
-                            key: value[key]
-                            for key in (
-                                "table_name",
-                                "access_type",
-                                "key",
-                                "rows",
-                                "r_rows",
-                                "r_loops",
-                                "r_filtered",
-                                "r_table_time_ms",
-                                "r_other_time_ms",
-                                "r_engine_stats",
-                            )
-                            if key in value
-                        },
-                    }
-                )
-            for key, child in value.items():
-                visit(child, f"{path}.{key}")
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                visit(child, f"{path}[{index}]")
+        match value:
+            case dict():
+                if "table_name" in value:
+                    result.append(
+                        {
+                            "path": path,
+                            **{
+                                key: value[key]
+                                for key in (
+                                    "table_name",
+                                    "access_type",
+                                    "key",
+                                    "rows",
+                                    "r_rows",
+                                    "r_loops",
+                                    "r_filtered",
+                                    "r_table_time_ms",
+                                    "r_other_time_ms",
+                                    "r_engine_stats",
+                                )
+                                if key in value
+                            },
+                        }
+                    )
+                for key, child in value.items():
+                    visit(child, f"{path}.{key}")
+            case list():
+                for index, child in enumerate(value):
+                    visit(child, f"{path}[{index}]")
 
     visit(plan, "$")
     return result

@@ -146,17 +146,18 @@ def test_manifest_rejects_inconsistent_oracle(
     raw = asdict(_manifest(fixture_module))
     raw = json.loads(json.dumps(raw))
     gallery = raw["galleries"][0]
-    if corruption == "duplicate":
-        raw["galleries"].append(gallery)
-    elif corruption == "marker_digest":
-        gallery["current"]["marker_sha256"] = "0" * 64
-    elif corruption == "page_identity":
-        gallery["current"]["pages"][0]["identity"] = "0" * 64
-        gallery["expected"] = gallery["current"]
-    elif corruption == "page_name":
-        gallery["current"]["pages"][0]["name"] = "../0001.png"
-    else:
-        gallery["expected"] = None
+    match corruption:
+        case "duplicate":
+            raw["galleries"].append(gallery)
+        case "marker_digest":
+            gallery["current"]["marker_sha256"] = "0" * 64
+        case "page_identity":
+            gallery["current"]["pages"][0]["identity"] = "0" * 64
+            gallery["expected"] = gallery["current"]
+        case "page_name":
+            gallery["current"]["pages"][0]["name"] = "../0001.png"
+        case _:
+            gallery["expected"] = None
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError):

@@ -100,35 +100,36 @@ def test_gid_preparation_revalidates_stream_and_qualification_in_each_stage(
 ) -> None:
     with _issue(tmp_path, stage) as case:
         with SQLiteConnector(str(case.path)) as connector, connector.transaction():
-            if fault == "normalized_gid":
-                _change_normalized_gid(connector)
-                message = "normalized GID differs"
-            elif fault == "qualification":
-                connector.execute(
-                    "UPDATE catalog_gallery_observation_validation_policies "
-                    "SET qualification_policy_sha256 = %s",
-                    (b"x" * 32,),
-                )
-                message = "qualification differs"
-            else:
-                root = connector.fetch_one(
-                    "SELECT root.root_page_sha256, page.page_bytes "
-                    "FROM catalog_gallery_observation_tree_roots AS root "
-                    "JOIN catalog_gallery_observation_page_descriptor_components AS descriptor "
-                    "ON descriptor.page_sha256 = root.root_page_sha256 "
-                    "JOIN catalog_gallery_observation_pages AS page "
-                    "ON page.page_sha256 = root.root_page_sha256 "
-                    "WHERE descriptor.component = %s",
-                    (b"METADATA",),
-                )
-                assert len(root) == 2
-                damaged = root[1][:-1] + bytes([root[1][-1] ^ 1])
-                connector.execute(
-                    "UPDATE catalog_gallery_observation_pages SET page_bytes = %s "
-                    "WHERE page_sha256 = %s",
-                    (damaged, root[0]),
-                )
-                message = "metadata page digest differs"
+            match fault:
+                case "normalized_gid":
+                    _change_normalized_gid(connector)
+                    message = "normalized GID differs"
+                case "qualification":
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_validation_policies "
+                        "SET qualification_policy_sha256 = %s",
+                        (b"x" * 32,),
+                    )
+                    message = "qualification differs"
+                case _:
+                    root = connector.fetch_one(
+                        "SELECT root.root_page_sha256, page.page_bytes "
+                        "FROM catalog_gallery_observation_tree_roots AS root "
+                        "JOIN catalog_gallery_observation_page_descriptor_components AS descriptor "
+                        "ON descriptor.page_sha256 = root.root_page_sha256 "
+                        "JOIN catalog_gallery_observation_pages AS page "
+                        "ON page.page_sha256 = root.root_page_sha256 "
+                        "WHERE descriptor.component = %s",
+                        (b"METADATA",),
+                    )
+                    assert len(root) == 2
+                    damaged = root[1][:-1] + bytes([root[1][-1] ^ 1])
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_pages SET page_bytes = %s "
+                        "WHERE page_sha256 = %s",
+                        (damaged, root[0]),
+                    )
+                    message = "metadata page digest differs"
         with pytest.raises(AnalysisCorruptionError, match=message):
             case.facade.prepare_analysis_step(case.analysis, case.issued)
 
@@ -148,36 +149,42 @@ def test_gid_commit_rejects_changed_authority_and_wrong_capability(
         gid = local.preparations[0]
         assert isinstance(gid, AnalysisGidPreparation)
         error: type[AnalysisRepositoryError]
-        if fault == "membership":
-            local.preparations = (replace(gid, observation_id=gid.observation_id + 1),)
-            error, message = AnalysisNotReadyError, "current membership"
-        elif fault == "generation":
-            local.preparations = (
-                replace(
-                    gid,
-                    authority=replace(
-                        gid.authority, generation=gid.authority.generation + 1
-                    ),
-                ),
-            )
-            error, message = AnalysisNotReadyError, "generation is stale"
-        elif fault == "content_capability":
-            with SQLiteConnector(str(case.path)) as connector:
-                full = AnalysisRepository.prepare_gallery(
-                    connector,
-                    backend="sqlite",
-                    authority=gid.authority,
-                    gallery_id=gid.gallery_id,
+        match fault:
+            case "membership":
+                local.preparations = (
+                    replace(gid, observation_id=gid.observation_id + 1),
                 )
-            local.preparations = (full,)
-            error, message = AnalysisNotReadyError, "another stage family"
-        else:
-            with SQLiteConnector(str(case.path)) as connector, connector.transaction():
-                _change_normalized_gid(connector)
-            error, message = (
-                AnalysisCorruptionError,
-                "GID preparation changed metadata group",
-            )
+                error, message = AnalysisNotReadyError, "current membership"
+            case "generation":
+                local.preparations = (
+                    replace(
+                        gid,
+                        authority=replace(
+                            gid.authority, generation=gid.authority.generation + 1
+                        ),
+                    ),
+                )
+                error, message = AnalysisNotReadyError, "generation is stale"
+            case "content_capability":
+                with SQLiteConnector(str(case.path)) as connector:
+                    full = AnalysisRepository.prepare_gallery(
+                        connector,
+                        backend="sqlite",
+                        authority=gid.authority,
+                        gallery_id=gid.gallery_id,
+                    )
+                local.preparations = (full,)
+                error, message = AnalysisNotReadyError, "another stage family"
+            case _:
+                with (
+                    SQLiteConnector(str(case.path)) as connector,
+                    connector.transaction(),
+                ):
+                    _change_normalized_gid(connector)
+                error, message = (
+                    AnalysisCorruptionError,
+                    "GID preparation changed metadata group",
+                )
         with pytest.raises(error, match=message):
             case.facade.commit_analysis_step(case.session, prepared)
 

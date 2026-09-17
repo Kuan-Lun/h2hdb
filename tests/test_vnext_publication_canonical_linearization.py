@@ -218,19 +218,17 @@ def _apply_reference_action(
     page: PreparedCanonicalPage | None,
     operation: str,
 ) -> None:
-    if operation in {
-        "CANONICAL_ALLOCATE",
-        "REDUNDANT_CANONICAL_ALLOCATE",
-    }:
-        state.claims.add(fixture.value_sha256)
-        return
-    if operation == "CANONICAL_PAGE":
-        assert page is not None
-        state.pages[page.page_sha256] = page.page_bytes
-        return
-    if operation == "CANONICAL_SEAL":
-        state.sealed[fixture.value_sha256] = fixture.receipt
-        return
+    match operation:
+        case "CANONICAL_ALLOCATE" | "REDUNDANT_CANONICAL_ALLOCATE":
+            state.claims.add(fixture.value_sha256)
+            return
+        case "CANONICAL_PAGE":
+            assert page is not None
+            state.pages[page.page_sha256] = page.page_bytes
+            return
+        case "CANONICAL_SEAL":
+            state.sealed[fixture.value_sha256] = fixture.receipt
+            return
     raise AssertionError(operation)
 
 
@@ -1050,16 +1048,17 @@ def test_corruption_remains_fail_closed_and_retires_cached_plan(
     fixture = fixtures[0]
     initial = _initial_state(fixtures)
     initial.claims.add(fixture.value_sha256)
-    if corruption == "partial":
-        initial.partial_values.add(fixture.value_sha256)
-    elif corruption == "page":
-        initial.pages[fixture.pages[0].page_sha256] = b"digest collision"
-    else:
-        initial.pages.update(
-            (page.page_sha256, page.page_bytes) for page in fixture.pages
-        )
-        initial.sealed[fixture.value_sha256] = fixture.receipt
-        initial.sealed_payload_overrides[fixture.value_sha256] = b"different bytes"
+    match corruption:
+        case "partial":
+            initial.partial_values.add(fixture.value_sha256)
+        case "page":
+            initial.pages[fixture.pages[0].page_sha256] = b"digest collision"
+        case _:
+            initial.pages.update(
+                (page.page_sha256, page.page_bytes) for page in fixture.pages
+            )
+            initial.sealed[fixture.value_sha256] = fixture.receipt
+            initial.sealed_payload_overrides[fixture.value_sha256] = b"different bytes"
 
     with pytest.raises(RuntimeError) as reference_error:
         _reference_next(fixtures, initial.clone())

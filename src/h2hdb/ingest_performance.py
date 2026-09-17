@@ -82,24 +82,25 @@ class PerformanceStep:
     ) -> None:
         """Only bounded memory updates; never call a logger or clock here."""
         counters = self.counters
-        if category == "sql":
-            counters.sql_calls += 1
-            counters.sql_seconds += elapsed
-            counters.read_rows += rows
-            if self.owner.debug:
-                key = sha256(query.encode()).hexdigest()[:16]
-                if key not in self.queries and len(self.queries) >= _QUERY_LIMIT:
-                    key = "other"
-                statistics = self.queries.get(key)
-                if statistics is None:
-                    statistics = self.queries[key] = SQLQueryStatistics()
-                statistics.record(elapsed, rows)
-        elif category == "connection":
-            counters.connection_calls += 1
-            counters.connection_seconds += elapsed
-        else:
-            counters.transaction_calls += 1
-            counters.transaction_seconds += elapsed
+        match category:
+            case "sql":
+                counters.sql_calls += 1
+                counters.sql_seconds += elapsed
+                counters.read_rows += rows
+                if self.owner.debug:
+                    key = sha256(query.encode()).hexdigest()[:16]
+                    if key not in self.queries and len(self.queries) >= _QUERY_LIMIT:
+                        key = "other"
+                    statistics = self.queries.get(key)
+                    if statistics is None:
+                        statistics = self.queries[key] = SQLQueryStatistics()
+                    statistics.record(elapsed, rows)
+            case "connection":
+                counters.connection_calls += 1
+                counters.connection_seconds += elapsed
+            case _:
+                counters.transaction_calls += 1
+                counters.transaction_seconds += elapsed
 
     def defer(self, records: list[_Diagnostic]) -> None:
         remaining = _NESTED_RECORD_LIMIT - len(self.deferred)

@@ -185,30 +185,32 @@ def _valid_probe_event(value: Any) -> bool:
         and type(value.get("replayed")) is not bool
     ):
         return False
-    if value["event"] == "maintenance_result":
-        generation = value.get("after_ingest_generation")
-        if (
-            value.get("outcome") not in {"DONE", "PROGRESSED", "BLOCKED", "CONTENDED"}
-            or (
-                generation is not None
-                and (type(generation) is not int or generation <= 0)
-            )
-            or type(value.get("started_monotonic_ns")) is not int
-            or not 0 < value["started_monotonic_ns"] <= value["monotonic_ns"]
-        ):
-            return False
-    if value["event"] == "audit_result":
-        elapsed = value.get("elapsed_seconds")
-        if (
-            value.get("mode") not in {"quick", "full"}
-            or not isinstance(value.get("reason"), str)
-            or not value["reason"]
-            or not isinstance(elapsed, int | float)
-            or isinstance(elapsed, bool)
-            or not math.isfinite(elapsed)
-            or elapsed < 0
-        ):
-            return False
+    match value["event"]:
+        case "maintenance_result":
+            generation = value.get("after_ingest_generation")
+            if (
+                value.get("outcome")
+                not in {"DONE", "PROGRESSED", "BLOCKED", "CONTENDED"}
+                or (
+                    generation is not None
+                    and (type(generation) is not int or generation <= 0)
+                )
+                or type(value.get("started_monotonic_ns")) is not int
+                or not 0 < value["started_monotonic_ns"] <= value["monotonic_ns"]
+            ):
+                return False
+        case "audit_result":
+            elapsed = value.get("elapsed_seconds")
+            if (
+                value.get("mode") not in {"quick", "full"}
+                or not isinstance(value.get("reason"), str)
+                or not value["reason"]
+                or not isinstance(elapsed, int | float)
+                or isinstance(elapsed, bool)
+                or not math.isfinite(elapsed)
+                or elapsed < 0
+            ):
+                return False
     return True
 
 

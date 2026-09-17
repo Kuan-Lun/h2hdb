@@ -2281,36 +2281,37 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
         if relation.name == "publication_receipt"
     )
     assert "reserved_revision" not in receipt.attributes
-    if mutation == "missing_seal":
-        invalid_receipt = replace(
-            receipt,
-            foreign_keys=tuple(
-                foreign_key
-                for foreign_key in receipt.foreign_keys
-                if foreign_key.relation != "publication_commit"
-            ),
-        )
-    elif mutation == "candidate_fk":
-        invalid_receipt = replace(
-            receipt,
-            foreign_keys=(
-                *receipt.foreign_keys,
-                checker.ForeignKey(
-                    ("revision",),
-                    "publication_candidate",
-                    ("reserved_revision",),
+    match mutation:
+        case "missing_seal":
+            invalid_receipt = replace(
+                receipt,
+                foreign_keys=tuple(
+                    foreign_key
+                    for foreign_key in receipt.foreign_keys
+                    if foreign_key.relation != "publication_commit"
                 ),
-            ),
-        )
-    else:
-        invalid_receipt = replace(
-            receipt,
-            declared_keys=tuple(
-                key
-                for key in receipt.declared_keys
-                if key != frozenset({"source_revision"})
-            ),
-        )
+            )
+        case "candidate_fk":
+            invalid_receipt = replace(
+                receipt,
+                foreign_keys=(
+                    *receipt.foreign_keys,
+                    checker.ForeignKey(
+                        ("revision",),
+                        "publication_candidate",
+                        ("reserved_revision",),
+                    ),
+                ),
+            )
+        case _:
+            invalid_receipt = replace(
+                receipt,
+                declared_keys=tuple(
+                    key
+                    for key in receipt.declared_keys
+                    if key != frozenset({"source_revision"})
+                ),
+            )
     invalid = replace(
         contract,
         relations=tuple(

@@ -358,60 +358,61 @@ class GeneratedVNextSchemaProvider:
                 )
             return
 
-        if kind == "table":
-            row = connector.fetch_one(
-                """
+        match kind:
+            case "table":
+                row = connector.fetch_one(
+                    """
                 SELECT TABLE_TYPE
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
                 """,
-                (name,),
-            )
-            if row != ("BASE TABLE",):
-                raise SchemaEpochValidationError(
-                    f"MariaDB generated table {name!r} is missing or not a base table"
+                    (name,),
                 )
-        elif kind == "view":
-            row = connector.fetch_one(
-                """
+                if row != ("BASE TABLE",):
+                    raise SchemaEpochValidationError(
+                        f"MariaDB generated table {name!r} is missing or not a base table"
+                    )
+            case "view":
+                row = connector.fetch_one(
+                    """
                 SELECT VIEW_DEFINITION, SECURITY_TYPE, CHECK_OPTION
                 FROM INFORMATION_SCHEMA.VIEWS
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
                 """,
-                (name,),
-            )
-            if (
-                len(row) != 3
-                or not isinstance(row[0], str)
-                or str(row[1]).upper() != "INVOKER"
-                or str(row[2]).upper() != "NONE"
-            ):
-                raise SchemaEpochValidationError(
-                    f"MariaDB generated view {name!r} is missing, not INVOKER, "
-                    "or has a CHECK OPTION"
+                    (name,),
                 )
-            database_row = connector.fetch_one("SELECT DATABASE()")
-            if len(database_row) != 1 or not isinstance(database_row[0], str):
-                raise SchemaEpochValidationError(
-                    "MariaDB current database name is missing or invalid"
+                if (
+                    len(row) != 3
+                    or not isinstance(row[0], str)
+                    or str(row[1]).upper() != "INVOKER"
+                    or str(row[2]).upper() != "NONE"
+                ):
+                    raise SchemaEpochValidationError(
+                        f"MariaDB generated view {name!r} is missing, not INVOKER, "
+                        "or has a CHECK OPTION"
+                    )
+                database_row = connector.fetch_one("SELECT DATABASE()")
+                if len(database_row) != 1 or not isinstance(database_row[0], str):
+                    raise SchemaEpochValidationError(
+                        "MariaDB current database name is missing or invalid"
+                    )
+                expected_body = _mariadb_expected_view_body(expected_sql)
+                actual_tokens = _mariadb_view_body_tokens(
+                    row[0], database_name=database_row[0]
                 )
-            expected_body = _mariadb_expected_view_body(expected_sql)
-            actual_tokens = _mariadb_view_body_tokens(
-                row[0], database_name=database_row[0]
-            )
-            expected_tokens = _mariadb_view_body_tokens(
-                expected_body, database_name=database_row[0]
-            )
-            if actual_tokens != expected_tokens:
-                raise SchemaEpochValidationError(
-                    f"MariaDB generated view {name!r} has the wrong query body"
+                expected_tokens = _mariadb_view_body_tokens(
+                    expected_body, database_name=database_row[0]
                 )
-        else:
-            # MariaDB indexes are deliberately validated as part of their owning
-            # table shape and never appear as top-level epoch catalog objects.
-            raise SchemaEpochValidationError(
-                f"Unsupported MariaDB top-level generated object kind {kind!r}"
-            )
+                if actual_tokens != expected_tokens:
+                    raise SchemaEpochValidationError(
+                        f"MariaDB generated view {name!r} has the wrong query body"
+                    )
+            case _:
+                # MariaDB indexes are deliberately validated as part of their owning
+                # table shape and never appear as top-level epoch catalog objects.
+                raise SchemaEpochValidationError(
+                    f"Unsupported MariaDB top-level generated object kind {kind!r}"
+                )
 
     def _validate_relation_shape(
         self, connector: SQLConnector, relation: Mapping[str, Any]
@@ -782,14 +783,15 @@ def _mariadb_parenthesis_pairs(tokens: Sequence[str]) -> dict[int, int]:
     stack: list[int] = []
     result: dict[int, int] = {}
     for position, token in enumerate(tokens):
-        if token == "(":
-            stack.append(position)
-        elif token == ")":
-            if not stack:
-                raise SchemaEpochValidationError(
-                    "MariaDB view definition has unbalanced parentheses"
-                )
-            result[stack.pop()] = position
+        match token:
+            case "(":
+                stack.append(position)
+            case ")":
+                if not stack:
+                    raise SchemaEpochValidationError(
+                        "MariaDB view definition has unbalanced parentheses"
+                    )
+                result[stack.pop()] = position
     if stack:
         raise SchemaEpochValidationError(
             "MariaDB view definition has unbalanced parentheses"
@@ -870,15 +872,16 @@ def _mariadb_is_complete_join_wrapper(
         elif depth == 0:
             if token == ",":
                 return False
-            if token == "identifier:join":
-                if (
-                    is_left_deep_inner_wrapper
-                    and tokens[position - 1] in non_inner_join_prefixes
-                ):
-                    return False
-                top_level_joins += 1
-            elif token == "identifier:on":
-                top_level_ons += 1
+            match token:
+                case "identifier:join":
+                    if (
+                        is_left_deep_inner_wrapper
+                        and tokens[position - 1] in non_inner_join_prefixes
+                    ):
+                        return False
+                    top_level_joins += 1
+                case "identifier:on":
+                    top_level_ons += 1
 
     if not is_left_deep_inner_wrapper:
         return top_level_joins > 0
@@ -939,18 +942,19 @@ def _mariadb_is_projection_addition_wrapper(
             and value[2].startswith("identifier:")
         )
 
-    if len(expression) == 7:
-        return (
-            is_qualified_column(expression[:3])
-            and expression[3] == "+"
-            and is_qualified_column(expression[4:])
-        )
-    if len(expression) == 5:
-        return (
-            is_qualified_column(expression[:3])
-            and expression[3] == "+"
-            and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", expression[4]) is not None
-        )
+    match len(expression):
+        case 7:
+            return (
+                is_qualified_column(expression[:3])
+                and expression[3] == "+"
+                and is_qualified_column(expression[4:])
+            )
+        case 5:
+            return (
+                is_qualified_column(expression[:3])
+                and expression[3] == "+"
+                and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", expression[4]) is not None
+            )
     return False
 
 
@@ -1597,14 +1601,15 @@ def _balanced_parentheses(value: str) -> bool:
             if character == quote:
                 quote = None
             continue
-        if character in {"'", '"'}:
-            quote = character
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            if depth < 0:
-                return False
+        match character:
+            case "'" | '"':
+                quote = character
+            case "(":
+                depth += 1
+            case ")":
+                depth -= 1
+                if depth < 0:
+                    return False
     return depth == 0 and quote is None
 
 

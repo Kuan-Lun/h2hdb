@@ -318,15 +318,16 @@ def _pre_commit() -> None:
     current = _version_from_spec(":pyproject.toml")
     assert current is not None
     change = _classify_version_change(previous, current)
-    if change == "same":
-        print(
-            "pyproject.toml changed without a project.version increase; release gate skipped."
-        )
-        return
-    if change == "decrease":
-        raise ReleaseGateError(
-            f"project.version decreased from {previous} to {current}"
-        )
+    match change:
+        case "same":
+            print(
+                "pyproject.toml changed without a project.version increase; release gate skipped."
+            )
+            return
+        case "decrease":
+            raise ReleaseGateError(
+                f"project.version decreased from {previous} to {current}"
+            )
 
     _assert_no_unstaged_or_untracked_files()
     print(
@@ -350,12 +351,13 @@ def _pre_push(document: str) -> None:
         previous = _version_from_spec(f"{update.remote_oid}:pyproject.toml")
         assert previous is not None
         change = _classify_version_change(previous, current)
-        if change == "same":
-            continue
-        if change == "decrease":
-            raise ReleaseGateError(
-                f"project.version decreased from {previous} to {current}"
-            )
+        match change:
+            case "same":
+                continue
+            case "decrease":
+                raise ReleaseGateError(
+                    f"project.version decreased from {previous} to {current}"
+                )
         tree = _git("rev-parse", f"{update.local_oid}^{{tree}}")
         if not _has_valid_receipt(tree, current):
             head = _git("rev-parse", "HEAD")
@@ -458,18 +460,19 @@ def main() -> None:
     os.chdir(REPOSITORY_ROOT)
     arguments = _arguments()
     try:
-        if arguments.command == "pre-commit":
-            _pre_commit()
-        elif arguments.command == "pre-push":
-            _pre_push(sys.stdin.read())
-        elif arguments.command == "run":
-            _explicit_run(
-                refresh=bool(arguments.refresh),
-                index=bool(arguments.index),
-                base=str(arguments.base) if arguments.base else None,
-            )
-        else:
-            _receipt_status(str(arguments.revision))
+        match arguments.command:
+            case "pre-commit":
+                _pre_commit()
+            case "pre-push":
+                _pre_push(sys.stdin.read())
+            case "run":
+                _explicit_run(
+                    refresh=bool(arguments.refresh),
+                    index=bool(arguments.index),
+                    base=str(arguments.base) if arguments.base else None,
+                )
+            case _:
+                _receipt_status(str(arguments.revision))
     except (ReleaseGateError, subprocess.CalledProcessError) as error:
         print(f"h2hdb release gate: {error}", file=sys.stderr)
         raise SystemExit(1) from error

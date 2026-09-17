@@ -139,19 +139,20 @@ def test_plan_rejects_mutated_metadata_and_payload(fault: str) -> None:
         (FileDecisionSourceGallery(1, 1, (), ((_key(1), 1), (_key(2), 1))),),
     )
     try:
-        if fault == "count_and_prefix":
-            plan.row_count = 1
-            plan._payload.truncate(
-                88
-            )  # A still-authentic prefix cannot change authority.
-        elif fault == "authority":
-            plan.authority = replace(plan.authority, generation=2)
-        elif fault == "record":
-            plan._payload.seek(0)
-            plan._payload.write(b"x")
-        else:
-            plan._payload.seek(0, 2)
-            plan._payload.write(b"x")
+        match fault:
+            case "count_and_prefix":
+                plan.row_count = 1
+                plan._payload.truncate(
+                    88
+                )  # A still-authentic prefix cannot change authority.
+            case "authority":
+                plan.authority = replace(plan.authority, generation=2)
+            case "record":
+                plan._payload.seek(0)
+                plan._payload.write(b"x")
+            case _:
+                plan._payload.seek(0, 2)
+                plan._payload.write(b"x")
         with pytest.raises(ValueError, match="modified|length changed"):
             plan.source_page(after=None, limit=1)
     finally:
@@ -170,14 +171,15 @@ def test_prepared_page_rejects_forged_expected_values_and_coordinates(
     )
     try:
         page = plan._prepare_page(_issue(authority), ((_key(1), (1, 0, 0)),))
-        if field == "entries":
-            corrupted = replace(page, entries=((_key(1), (2, 0, 0)),))
-        elif field == "batch_key":
-            corrupted = replace(page, batch_key=b"another-batch")
-        elif field == "source_count":
-            corrupted = replace(page, source_count=2)
-        else:
-            corrupted = replace(page, checkpoint_cursor=b"another-cursor")
+        match field:
+            case "entries":
+                corrupted = replace(page, entries=((_key(1), (2, 0, 0)),))
+            case "batch_key":
+                corrupted = replace(page, batch_key=b"another-batch")
+            case "source_count":
+                corrupted = replace(page, source_count=2)
+            case _:
+                corrupted = replace(page, checkpoint_cursor=b"another-cursor")
         with pytest.raises(ValueError, match="changed|modified"):
             corrupted.verify()
     finally:

@@ -190,10 +190,11 @@ def _assignment_name(node: ast.Assign | ast.AnnAssign) -> str | None:
 
 
 def _call_name(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
+    match node.func:
+        case ast.Name():
+            return node.func.id
+        case ast.Attribute():
+            return node.func.attr
     return None
 
 
@@ -376,13 +377,14 @@ def _static_string_with_placeholder(
         return None
     parts: list[str] = []
     for value in node.values:
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            parts.append(value.value)
-        elif isinstance(value, ast.FormattedValue):
-            known = _static_string(value.value, constants)
-            parts.append("catalog_dynamic_target" if known is None else known)
-        else:
-            return None
+        match value:
+            case ast.Constant(value=str() as literal_value):
+                parts.append(literal_value)
+            case ast.FormattedValue():
+                known = _static_string(value.value, constants)
+                parts.append("catalog_dynamic_target" if known is None else known)
+            case _:
+                return None
     return "".join(parts)
 
 
@@ -462,16 +464,19 @@ def mutations_in_python(
             continue
         candidates: set[tuple[int, str]] = set()
         for node in ast.walk(function):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and _RELATION_IDENTIFIER_FULL.fullmatch(node.value)
-            ):
-                candidates.add((getattr(node, "lineno", function.lineno), node.value))
-            elif isinstance(node, ast.Name):
-                value = constants.get(node.id)
-                if value is not None and _RELATION_IDENTIFIER_FULL.fullmatch(value):
-                    candidates.add((getattr(node, "lineno", function.lineno), value))
+            match node:
+                case ast.Constant(value=str() as literal_value) if (
+                    _RELATION_IDENTIFIER_FULL.fullmatch(literal_value)
+                ):
+                    candidates.add(
+                        (getattr(node, "lineno", function.lineno), literal_value)
+                    )
+                case ast.Name():
+                    value = constants.get(node.id)
+                    if value is not None and _RELATION_IDENTIFIER_FULL.fullmatch(value):
+                        candidates.add(
+                            (getattr(node, "lineno", function.lineno), value)
+                        )
         for line, relation in candidates:
             for verb in dynamic_verbs:
                 mutations.add(
@@ -498,20 +503,22 @@ def mutations_in_sql(source_text: str, *, source: str) -> tuple[MutationReferenc
 def _references_for_member(
     source_text: str, *, source: str, suffix: str
 ) -> tuple[RelationReference, ...]:
-    if suffix == ".py":
-        return references_in_python(source_text, source=source)
-    if suffix == ".sql":
-        return references_in_sql(source_text, source=source)
+    match suffix:
+        case ".py":
+            return references_in_python(source_text, source=source)
+        case ".sql":
+            return references_in_sql(source_text, source=source)
     return ()
 
 
 def _mutations_for_member(
     source_text: str, *, source: str, suffix: str
 ) -> tuple[MutationReference, ...]:
-    if suffix == ".py":
-        return mutations_in_python(source_text, source=source)
-    if suffix == ".sql":
-        return mutations_in_sql(source_text, source=source)
+    match suffix:
+        case ".py":
+            return mutations_in_python(source_text, source=source)
+        case ".sql":
+            return mutations_in_sql(source_text, source=source)
     return ()
 
 

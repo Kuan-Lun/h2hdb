@@ -222,14 +222,15 @@ def test_exact_locked_set_rejects_changed_results_before_any_delete(
             if "cleanup_order" not in query:
                 return rows
             assert len(rows) == 3
-            if fault == "missing":
-                return rows[:-1]
-            if fault == "extra":
-                return [*rows, (2, *rows[0][1:])]
-            if fault == "duplicate":
-                return [rows[0], rows[0], rows[2]]
-            if fault == "reordered":
-                return list(reversed(rows))
+            match fault:
+                case "missing":
+                    return rows[:-1]
+                case "extra":
+                    return [*rows, (2, *rows[0][1:])]
+                case "duplicate":
+                    return [rows[0], rows[0], rows[2]]
+                case "reordered":
+                    return list(reversed(rows))
             return [(str(rows[0][0]), *rows[0][1:]), *rows[1:]]
 
         monkeypatch.setattr(connector, "fetch_all", corrupt)

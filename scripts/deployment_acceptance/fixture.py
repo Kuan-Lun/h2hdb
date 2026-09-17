@@ -221,13 +221,14 @@ def page_identity(gid: int, index: int, generation: int) -> str:
 
 
 def image_dimensions(profile: Profile, gid: int, index: int) -> tuple[int, int]:
-    if profile == "small":
-        return 128, 192
-    if profile == "large":
-        return 1024, 1536
-    if profile == "mixed":
-        # An explicitly described mixture, not a claim of a representative corpus.
-        return (1024, 1536) if (gid + index) % 20 == 0 else (128, 192)
+    match profile:
+        case "small":
+            return 128, 192
+        case "large":
+            return 1024, 1536
+        case "mixed":
+            # An explicitly described mixture, not a claim of a representative corpus.
+            return (1024, 1536) if (gid + index) % 20 == 0 else (128, 192)
     raise ValueError(f"Unknown synthetic image profile: {profile}")
 
 
@@ -935,62 +936,63 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("config", "source", "library", "expected-manifest", "output"):
         verifier.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.command == "generate":
-        result = generate(
-            args.root,
-            count=args.count,
-            start_gid=args.start_gid,
-            pages=args.pages,
-            generation=args.generation,
-            profile=args.profile,
-            marker=args.marker,
-            manifest_path=args.manifest,
-        )
-        print(
-            json.dumps(
-                {
-                    "actual_source_galleries": len(result.galleries),
-                    "actual_source_pages": sum(
-                        len(gallery.current.pages) for gallery in result.galleries
-                    ),
-                    "manifest": str(args.manifest or args.root / MANIFEST_NAME),
-                }
+    match args.command:
+        case "generate":
+            result = generate(
+                args.root,
+                count=args.count,
+                start_gid=args.start_gid,
+                pages=args.pages,
+                generation=args.generation,
+                profile=args.profile,
+                marker=args.marker,
+                manifest_path=args.manifest,
             )
-        )
-    elif args.command == "append-collection":
-        result = append_collection(
-            args.root,
-            count=args.count,
-            start_gid=args.start_gid,
-            pages=args.pages,
-            profile=args.profile,
-            collection=args.collection,
-        )
-        print(json.dumps({"actual_source_galleries": len(result.galleries)}))
-    elif args.command == "change":
-        change(
-            args.root,
-            gid=args.gid,
-            generation=args.generation,
-            marker=args.marker,
-            pages=args.pages,
-            manifest_path=args.manifest,
-        )
-    else:
-        report = verify(
-            config=args.config,
-            source=args.source,
-            library=args.library,
-            expected_manifest=args.expected_manifest,
-            output=args.output,
-            render_config=args.render_config,
-        )
-        print(
-            json.dumps(
-                {key: value for key, value in report.items() if key != "artifacts"},
-                sort_keys=True,
+            print(
+                json.dumps(
+                    {
+                        "actual_source_galleries": len(result.galleries),
+                        "actual_source_pages": sum(
+                            len(gallery.current.pages) for gallery in result.galleries
+                        ),
+                        "manifest": str(args.manifest or args.root / MANIFEST_NAME),
+                    }
+                )
             )
-        )
+        case "append-collection":
+            result = append_collection(
+                args.root,
+                count=args.count,
+                start_gid=args.start_gid,
+                pages=args.pages,
+                profile=args.profile,
+                collection=args.collection,
+            )
+            print(json.dumps({"actual_source_galleries": len(result.galleries)}))
+        case "change":
+            change(
+                args.root,
+                gid=args.gid,
+                generation=args.generation,
+                marker=args.marker,
+                pages=args.pages,
+                manifest_path=args.manifest,
+            )
+        case _:
+            report = verify(
+                config=args.config,
+                source=args.source,
+                library=args.library,
+                expected_manifest=args.expected_manifest,
+                output=args.output,
+                render_config=args.render_config,
+            )
+            print(
+                json.dumps(
+                    {key: value for key, value in report.items() if key != "artifacts"},
+                    sort_keys=True,
+                )
+            )
     return 0
 
 

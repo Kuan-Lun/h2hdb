@@ -914,10 +914,11 @@ def test_readable_scratch_retains_output_growth_bounds(operation: str) -> None:
     scratch = _BoundedArtifactStream(delegate, 4)
     assert scratch.read() == b"four"
     with pytest.raises(ArtifactRenderNotReadyError, match="core resource bound"):
-        if operation == "write":
-            scratch.write(b"x")
-        elif operation == "seek":
-            scratch.seek(5)
-        else:
-            scratch.truncate(5)
+        match operation:
+            case "write":
+                scratch.write(b"x")
+            case "seek":
+                scratch.seek(5)
+            case _:
+                scratch.truncate(5)
     assert delegate.getvalue() == b"four"
