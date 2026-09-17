@@ -132,12 +132,13 @@ def _semantic(value: object) -> object:
     """Keep every semantic field, excluding only identified opaque locators."""
 
     omitted: set[str] = set()
-    if isinstance(value, CatalogArtifact):
-        omitted = {"artifact_id"}
-    elif isinstance(value, StorageObjectDescriptor):
-        omitted = {"key"}
-    elif isinstance(value, (CatalogPublication, CatalogPublicationPresentation)):
-        omitted = {"publication_id"}
+    match value:
+        case CatalogArtifact():
+            omitted = {"artifact_id"}
+        case StorageObjectDescriptor():
+            omitted = {"key"}
+        case CatalogPublication() | CatalogPublicationPresentation():
+            omitted = {"publication_id"}
     if is_dataclass(value) and not isinstance(value, type):
         return {
             item.name: _semantic(getattr(value, item.name))

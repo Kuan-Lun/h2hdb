@@ -116,10 +116,11 @@ def operational_preparation_cleanup_eligible(facts: PreparationCleanupFacts) -> 
 
     if not facts.exclusive_gate_held:
         return False
-    if facts.state == "ABANDONED":
-        return not facts.activation_present
-    if facts.state == "COMPLETE":
-        return facts.activation_present
+    match facts.state:
+        case "ABANDONED":
+            return not facts.activation_present
+        case "COMPLETE":
+            return facts.activation_present
     return False
 
 
@@ -322,16 +323,17 @@ def cleanup_replay_state(
 ) -> str:
     checkpoint_exists = checkpoint_cleanup_id is not None
     matching_checkpoint = checkpoint_cleanup_id == job_cleanup_id
-    if job_state == "OPEN":
-        if completion_cycle_generation is not None or (
-            checkpoint_exists and not matching_checkpoint
-        ):
-            raise ValueError("cleanup replay state is corrupt or stale")
-        return "RESUME" if checkpoint_exists else "START"
-    if job_state == "COMPLETE":
-        if checkpoint_exists or completion_cycle_generation != job_cycle_generation:
-            raise ValueError("cleanup replay state is corrupt or incomplete")
-        return "COMPLETE"
+    match job_state:
+        case "OPEN":
+            if completion_cycle_generation is not None or (
+                checkpoint_exists and not matching_checkpoint
+            ):
+                raise ValueError("cleanup replay state is corrupt or stale")
+            return "RESUME" if checkpoint_exists else "START"
+        case "COMPLETE":
+            if checkpoint_exists or completion_cycle_generation != job_cycle_generation:
+                raise ValueError("cleanup replay state is corrupt or incomplete")
+            return "COMPLETE"
     raise ValueError("cleanup job state is not replayable")
 
 
@@ -374,33 +376,40 @@ def encode_cleanup_target_key(
     tag = hashlib.sha256(
         b"h2hdb-cleanup-target-v1\0" + target_kind.encode("ascii")
     ).digest()[:16]
-    if codec == "target_kind_tag16_uuid16_v1":
-        if len(values) != 1 or not isinstance(values[0], bytes) or len(values[0]) != 16:
-            raise ValueError("UUID cleanup codec requires one exact 16-byte identity")
-        return tag + values[0]
-    if codec == "target_kind_tag16_u64be_u64be_v1":
-        if len(values) != 2:
-            raise ValueError("observation cleanup codec requires two uint64 values")
-        first, second = values
-        if (
-            not isinstance(first, int)
-            or isinstance(first, bool)
-            or not 0 <= first < 2**64
-            or not isinstance(second, int)
-            or isinstance(second, bool)
-            or not 0 <= second < 2**64
-        ):
-            raise ValueError("observation cleanup codec requires two uint64 values")
-        return tag + first.to_bytes(8, "big") + second.to_bytes(8, "big")
-    if codec == "target_kind_tag16_u64be_zero8_v1":
-        if (
-            len(values) != 1
-            or not isinstance(values[0], int)
-            or isinstance(values[0], bool)
-            or not 0 <= values[0] <= 255
-        ):
-            raise ValueError("sweep cleanup codec requires one shard in 0..255")
-        return tag + values[0].to_bytes(8, "big") + bytes(8)
+    match codec:
+        case "target_kind_tag16_uuid16_v1":
+            if (
+                len(values) != 1
+                or not isinstance(values[0], bytes)
+                or len(values[0]) != 16
+            ):
+                raise ValueError(
+                    "UUID cleanup codec requires one exact 16-byte identity"
+                )
+            return tag + values[0]
+        case "target_kind_tag16_u64be_u64be_v1":
+            if len(values) != 2:
+                raise ValueError("observation cleanup codec requires two uint64 values")
+            first, second = values
+            if (
+                not isinstance(first, int)
+                or isinstance(first, bool)
+                or not 0 <= first < 2**64
+                or not isinstance(second, int)
+                or isinstance(second, bool)
+                or not 0 <= second < 2**64
+            ):
+                raise ValueError("observation cleanup codec requires two uint64 values")
+            return tag + first.to_bytes(8, "big") + second.to_bytes(8, "big")
+        case "target_kind_tag16_u64be_zero8_v1":
+            if (
+                len(values) != 1
+                or not isinstance(values[0], int)
+                or isinstance(values[0], bool)
+                or not 0 <= values[0] <= 255
+            ):
+                raise ValueError("sweep cleanup codec requires one shard in 0..255")
+            return tag + values[0].to_bytes(8, "big") + bytes(8)
     raise ValueError("unregistered cleanup key codec")
 
 
@@ -2437,127 +2446,130 @@ def check_cleanup_reachability_v1(
             child_relations.update(relations)
         if root not in child_relations or root not in tuple(phases[-1]["relations"]):
             raise ValueError(f"cleanup target {kind} root is not in its terminal phase")
-        if kind in {"ARTIFACT_BLOB", "STORAGE_OBJECT_KEY", "CANONICAL_VALUE"}:
-            raw_owned = target.get("owned_prunable_intermediates")
-            if not isinstance(raw_owned, list) or not all(
-                isinstance(value, str) and value for value in raw_owned
-            ):
-                raise ValueError(
-                    f"cleanup target {kind}.owned_prunable_intermediates must be a string array"
+        match kind:
+            case "ARTIFACT_BLOB" | "STORAGE_OBJECT_KEY" | "CANONICAL_VALUE":
+                raw_owned = target.get("owned_prunable_intermediates")
+                if not isinstance(raw_owned, list) or not all(
+                    isinstance(value, str) and value for value in raw_owned
+                ):
+                    raise ValueError(
+                        f"cleanup target {kind}.owned_prunable_intermediates must be a string array"
+                    )
+                owned = set(raw_owned)
+                if owned != child_relations - {root}:
+                    raise ValueError(
+                        f"cleanup target {kind} prunable intermediary coverage drifts"
+                    )
+                expected_via: list[dict[str, object]] = []
+                if target.get("required_via_paths") != expected_via:
+                    raise ValueError(f"cleanup target {kind} verified via paths drift")
+            case "GALLERY_OBSERVATION":
+                if target.get("conditional_blockers") != [
+                    {
+                        "relation": "gallery_observation_staging",
+                        "claim_relation": "gallery_observation_staging_claim",
+                        "state_attribute": "state",
+                        "ingest_generation_attribute": "ingest_generation",
+                        "claim_generation_attribute": "claim_generation",
+                        "owner_relation": "ingest_generation_owner",
+                        "rule": "under row locks and exact header plus claim recheck, cleanup rejects OPEN whose outer owner row has an unexpired lease_expires_at and every SEALED or RETIRING_SEALED allocation linked by source_build_gallery; ABANDONED is eligible only after its claim generation is stale, while REUSED or RETIRING_REUSED becomes eligible only after the durable build link names a different sealed observation; every bounded batch rechecks the same header state, ingest generation, and claim generation",
+                    }
+                ]:
+                    raise ValueError("gallery staging cleanup liveness blocker drifts")
+            case "SOURCE_BUILD":
+                retention_roots = _required_texts(
+                    target,
+                    "retention_roots",
+                    "cleanup target SOURCE_BUILD",
                 )
-            owned = set(raw_owned)
-            if owned != child_relations - {root}:
-                raise ValueError(
-                    f"cleanup target {kind} prunable intermediary coverage drifts"
+                if not any(
+                    "at-most-one ABANDONED analysis retirement family" in root
+                    and "schema-unreachable sibling analysis" in root
+                    for root in retention_roots
+                ):
+                    raise ValueError("source-build successor-fence retention drifts")
+            case "ANALYSIS_RUN":
+                retention_roots = _required_texts(
+                    target,
+                    "retention_roots",
+                    "cleanup target ANALYSIS_RUN",
                 )
-            expected_via: list[dict[str, object]] = []
-            if target.get("required_via_paths") != expected_via:
-                raise ValueError(f"cleanup target {kind} verified via paths drift")
-        if kind == "GALLERY_OBSERVATION":
-            if target.get("conditional_blockers") != [
-                {
-                    "relation": "gallery_observation_staging",
-                    "claim_relation": "gallery_observation_staging_claim",
-                    "state_attribute": "state",
-                    "ingest_generation_attribute": "ingest_generation",
-                    "claim_generation_attribute": "claim_generation",
-                    "owner_relation": "ingest_generation_owner",
-                    "rule": "under row locks and exact header plus claim recheck, cleanup rejects OPEN whose outer owner row has an unexpired lease_expires_at and every SEALED or RETIRING_SEALED allocation linked by source_build_gallery; ABANDONED is eligible only after its claim generation is stale, while REUSED or RETIRING_REUSED becomes eligible only after the durable build link names a different sealed observation; every bounded batch rechecks the same header state, ingest generation, and claim generation",
-                }
-            ]:
-                raise ValueError("gallery staging cleanup liveness blocker drifts")
-        if kind == "SOURCE_BUILD":
-            retention_roots = _required_texts(
-                target,
-                "retention_roots",
-                "cleanup target SOURCE_BUILD",
-            )
-            if not any(
-                "at-most-one ABANDONED analysis retirement family" in root
-                and "schema-unreachable sibling analysis" in root
-                for root in retention_roots
-            ):
-                raise ValueError("source-build successor-fence retention drifts")
-        if kind == "ANALYSIS_RUN":
-            retention_roots = _required_texts(
-                target,
-                "retention_roots",
-                "cleanup target ANALYSIS_RUN",
-            )
-            if not any(
-                "source_build_base_publication_commit.base_receipt_id" in root
-                and "source_revision_provenance.analysis_id" in root
-                for root in retention_roots
-            ):
-                raise ValueError("source-build base provenance retention drifts")
-            if not any(
-                "at-most-one ABANDONED analysis" in root
-                and "globally latest source_build_generation" in root
-                for root in retention_roots
-            ):
-                raise ValueError("latest analysis retirement retention drifts")
-            if not any(
-                "schema-unreachable sibling family" in root
-                and "audit-bypassing damaged database" in root
-                for root in retention_roots
-            ):
-                raise ValueError("multi-analysis retirement retention drifts")
-            if target.get("conditional_blockers") != [
-                "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head",
-                "a source-build base receipt retains its exact provenance analysis even after that receipt ceases to be the active head",
-                "a latest-mapped ABANDONED run is released only by a strictly newer source-build mapping; any schema-unreachable sibling family remains fail-closed and is never automatically released",
-            ]:
-                raise ValueError("active source-head provenance blocker drifts")
-            if target.get("state_rule") != (
-                "OPEN is never cleanup-eligible; only COMPLETE or ABANDONED may be "
-                "selected. The schema enforces at most one analysis run per build. A "
-                "valid OPEN-to-ABANDONED CAS requires that run, the exact source working "
-                "assignment to equal the build's database-owned created_at, and no "
-                "catalog working candidate, snapshot binding, publication candidate, "
-                "source-revision provenance, or operational preparation; it atomically "
-                "removes that exact working root. Cleanup retains the globally latest "
-                "ABANDONED proof until a successor mapping and fails closed if an "
-                "audit-bypassing damaged database exposes an impossible sibling family"
-            ):
-                raise ValueError("analysis cleanup state rule drifts")
-        if kind == "PUBLICATION_CANDIDATE":
-            retention_roots = _required_texts(
-                target,
-                "retention_roots",
-                "cleanup target PUBLICATION_CANDIDATE",
-            )
-            if not any(
-                "publication_commit.candidate_id" in root
-                and "source_build_base_publication_commit.base_receipt_id" in root
-                for root in retention_roots
-            ):
-                raise ValueError("source-build base candidate retention drifts")
-            if target.get("semantic_blockers") != [
-                {
-                    "relation": "prepared_artifact",
-                    "attributes": ["candidate_id"],
-                    "root_attributes": ["candidate_id"],
-                    "blocking_predicate": "state IN ('PENDING','PREPARED')",
-                    "nonblocking_state": "COMMITTED",
-                    "semantic_obligation_id": "catalog.retention.v2",
-                    "release_obligation_id": "catalog.artifact-semantics.v1",
-                }
-            ]:
-                raise ValueError(
-                    "candidate cleanup prepared-artifact semantic blocker drifts"
+                if not any(
+                    "source_build_base_publication_commit.base_receipt_id" in root
+                    and "source_revision_provenance.analysis_id" in root
+                    for root in retention_roots
+                ):
+                    raise ValueError("source-build base provenance retention drifts")
+                if not any(
+                    "at-most-one ABANDONED analysis" in root
+                    and "globally latest source_build_generation" in root
+                    for root in retention_roots
+                ):
+                    raise ValueError("latest analysis retirement retention drifts")
+                if not any(
+                    "schema-unreachable sibling family" in root
+                    and "audit-bypassing damaged database" in root
+                    for root in retention_roots
+                ):
+                    raise ValueError("multi-analysis retirement retention drifts")
+                if target.get("conditional_blockers") != [
+                    "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head",
+                    "a source-build base receipt retains its exact provenance analysis even after that receipt ceases to be the active head",
+                    "a latest-mapped ABANDONED run is released only by a strictly newer source-build mapping; any schema-unreachable sibling family remains fail-closed and is never automatically released",
+                ]:
+                    raise ValueError("active source-head provenance blocker drifts")
+                if target.get("state_rule") != (
+                    "OPEN is never cleanup-eligible; only COMPLETE or ABANDONED may be "
+                    "selected. The schema enforces at most one analysis run per build. A "
+                    "valid OPEN-to-ABANDONED CAS requires that run, the exact source working "
+                    "assignment to equal the build's database-owned created_at, and no "
+                    "catalog working candidate, snapshot binding, publication candidate, "
+                    "source-revision provenance, or operational preparation; it atomically "
+                    "removes that exact working root. Cleanup retains the globally latest "
+                    "ABANDONED proof until a successor mapping and fails closed if an "
+                    "audit-bypassing damaged database exposes an impossible sibling family"
+                ):
+                    raise ValueError("analysis cleanup state rule drifts")
+            case "PUBLICATION_CANDIDATE":
+                retention_roots = _required_texts(
+                    target,
+                    "retention_roots",
+                    "cleanup target PUBLICATION_CANDIDATE",
                 )
-            if target.get("conditional_blockers") != [
-                {
-                    "relation": "prepared_artifact",
-                    "candidate_attribute": "candidate_id",
-                    "state_attribute": "state",
-                    "blocking_states": ["PENDING", "PREPARED"],
-                    "release_acknowledged_state": "COMMITTED",
-                    "release_token_relation": "prepared_artifact",
-                    "rule": "under the locked candidate, initial eligibility, every phase batch, and final completion recheck reject every PENDING or PREPARED row; bounded orphan reconciliation must issue an immutable keyset page from current complete prepared rows under the exact live EXCLUSIVE gate, commit exact candidate and row revalidation before invoking the registered adapter's terminal release outside every database transaction, then revalidate under that gate and compare-and-swap either PENDING or PREPARED to COMMITTED from only the repository-issued opaque acknowledgement; response-loss retries reuse the same tokens, late protect cannot defeat the terminal tombstone, all-COMMITTED replay performs zero DML, and only COMMITTED permits child-first deletion",
-                }
-            ]:
-                raise ValueError("candidate cleanup external-protection blocker drifts")
+                if not any(
+                    "publication_commit.candidate_id" in root
+                    and "source_build_base_publication_commit.base_receipt_id" in root
+                    for root in retention_roots
+                ):
+                    raise ValueError("source-build base candidate retention drifts")
+                if target.get("semantic_blockers") != [
+                    {
+                        "relation": "prepared_artifact",
+                        "attributes": ["candidate_id"],
+                        "root_attributes": ["candidate_id"],
+                        "blocking_predicate": "state IN ('PENDING','PREPARED')",
+                        "nonblocking_state": "COMMITTED",
+                        "semantic_obligation_id": "catalog.retention.v2",
+                        "release_obligation_id": "catalog.artifact-semantics.v1",
+                    }
+                ]:
+                    raise ValueError(
+                        "candidate cleanup prepared-artifact semantic blocker drifts"
+                    )
+                if target.get("conditional_blockers") != [
+                    {
+                        "relation": "prepared_artifact",
+                        "candidate_attribute": "candidate_id",
+                        "state_attribute": "state",
+                        "blocking_states": ["PENDING", "PREPARED"],
+                        "release_acknowledged_state": "COMMITTED",
+                        "release_token_relation": "prepared_artifact",
+                        "rule": "under the locked candidate, initial eligibility, every phase batch, and final completion recheck reject every PENDING or PREPARED row; bounded orphan reconciliation must issue an immutable keyset page from current complete prepared rows under the exact live EXCLUSIVE gate, commit exact candidate and row revalidation before invoking the registered adapter's terminal release outside every database transaction, then revalidate under that gate and compare-and-swap either PENDING or PREPARED to COMMITTED from only the repository-issued opaque acknowledgement; response-loss retries reuse the same tokens, late protect cannot defeat the terminal tombstone, all-COMMITTED replay performs zero DML, and only COMMITTED permits child-first deletion",
+                    }
+                ]:
+                    raise ValueError(
+                        "candidate cleanup external-protection blocker drifts"
+                    )
     prep = by_kind["OPERATIONAL_PREPARATION"]
     if prep.get("operational_blockers") != [
         {
@@ -3001,28 +3013,29 @@ def _validate_catalog_cleanup_fk_coverage(
             for edge in operational_children.get(parent, set())
             if edge[0] not in deleted
         }
-        if kind == "CANONICAL_VALUE":
-            expected_blockers |= {
-                ("hash_cache_observation", ("source_identity_sha256",)),
-                ("hash_cache_observation", ("fingerprint_sha256",)),
-            }
-        if kind == "OPERATIONAL_PREPARATION":
-            # The permanent wide catalog commit points at the effect seal,
-            # which is an owned child of this cleanup root.  Keep that
-            # cross-manifest boundary explicit even though it is represented
-            # as an external logical relation in the operational manifest.
-            expected_blockers.add(("publication_commit", ("preparation_id",)))
-        if kind == "PUBLICATION_COMMIT":
-            # The commit row itself is catalog-owned external authority that is
-            # deleted by this mixed catalog/operational lifecycle.  Its direct
-            # source and preparation boundaries replace the former SQL-view
-            # projection edges and therefore remain explicit here.
-            expected_blockers.update(
-                {
-                    ("publication_commit", ("source_revision",)),
-                    ("publication_commit", ("preparation_id",)),
+        match kind:
+            case "CANONICAL_VALUE":
+                expected_blockers |= {
+                    ("hash_cache_observation", ("source_identity_sha256",)),
+                    ("hash_cache_observation", ("fingerprint_sha256",)),
                 }
-            )
+            case "OPERATIONAL_PREPARATION":
+                # The permanent wide catalog commit points at the effect seal,
+                # which is an owned child of this cleanup root.  Keep that
+                # cross-manifest boundary explicit even though it is represented
+                # as an external logical relation in the operational manifest.
+                expected_blockers.add(("publication_commit", ("preparation_id",)))
+            case "PUBLICATION_COMMIT":
+                # The commit row itself is catalog-owned external authority that is
+                # deleted by this mixed catalog/operational lifecycle.  Its direct
+                # source and preparation boundaries replace the former SQL-view
+                # projection edges and therefore remain explicit here.
+                expected_blockers.update(
+                    {
+                        ("publication_commit", ("source_revision",)),
+                        ("publication_commit", ("preparation_id",)),
+                    }
+                )
         if actual_blockers != expected_blockers:
             raise ValueError(
                 f"cleanup target {kind} operational FK boundary is incomplete: "
@@ -4353,32 +4366,33 @@ def _validate_gallery_metadata_parser_state(state: GalleryMetadataParserState) -
     elif state.fixed_carry:
         raise ValueError("metadata non-fixed phase has fixed carry")
     names = tuple(name for name, _value in state.scalars)
-    if state.phase == "PAGE_COUNT":
-        expected_names = _GALLERY_METADATA_SCALAR_PREFIX["PAGE_COUNT_PRESENCE"] + (
-            "page_count_presence",
-        )
-        if not state.scalars or state.scalars[-1] != ("page_count_presence", 1):
-            raise ValueError("metadata page-count phase lacks exact presence authority")
-    elif state.phase in {
-        "QUAL_POLICY",
-        "QUAL_ACCEPTED",
-        "QUAL_REASON",
-        "QUAL_SOURCE",
-        "DONE",
-    }:
-        base = _GALLERY_METADATA_SCALAR_PREFIX["PAGE_COUNT_PRESENCE"]
-        if len(state.scalars) == len(base) + 1:
-            expected_names = base + ("page_count_presence",)
-            if state.scalars[-1] != ("page_count_presence", 0):
-                raise ValueError("metadata DONE state has invalid absent page count")
-        elif len(state.scalars) == len(base) + 2:
-            expected_names = base + ("page_count_presence", "page_count")
-            if state.scalars[-2][1] != 1:
-                raise ValueError("metadata DONE state has invalid present page count")
-        else:
-            raise ValueError("metadata DONE state lacks its complete scalar prefix")
-    else:
-        expected_names = _GALLERY_METADATA_SCALAR_PREFIX[state.phase]
+    match state.phase:
+        case "PAGE_COUNT":
+            expected_names = _GALLERY_METADATA_SCALAR_PREFIX["PAGE_COUNT_PRESENCE"] + (
+                "page_count_presence",
+            )
+            if not state.scalars or state.scalars[-1] != ("page_count_presence", 1):
+                raise ValueError(
+                    "metadata page-count phase lacks exact presence authority"
+                )
+        case "QUAL_POLICY" | "QUAL_ACCEPTED" | "QUAL_REASON" | "QUAL_SOURCE" | "DONE":
+            base = _GALLERY_METADATA_SCALAR_PREFIX["PAGE_COUNT_PRESENCE"]
+            if len(state.scalars) == len(base) + 1:
+                expected_names = base + ("page_count_presence",)
+                if state.scalars[-1] != ("page_count_presence", 0):
+                    raise ValueError(
+                        "metadata DONE state has invalid absent page count"
+                    )
+            elif len(state.scalars) == len(base) + 2:
+                expected_names = base + ("page_count_presence", "page_count")
+                if state.scalars[-2][1] != 1:
+                    raise ValueError(
+                        "metadata DONE state has invalid present page count"
+                    )
+            else:
+                raise ValueError("metadata DONE state lacks its complete scalar prefix")
+        case _:
+            expected_names = _GALLERY_METADATA_SCALAR_PREFIX[state.phase]
     if names != expected_names:
         raise ValueError("metadata durable scalars are not the exact phase prefix")
     qualification_phases = (
@@ -4532,22 +4546,17 @@ def gallery_metadata_parser_state_from_row(
             "scan_version" if column == "scan_observation_version" else column
         )
         scalars.append((internal_name, value))
-    if phase == "PAGE_COUNT":
-        if row["page_count"] is not None:
-            raise ValueError("metadata page-count value appears before decoding")
-        scalars.append(("page_count_presence", 1))
-    elif phase in {
-        "QUAL_POLICY",
-        "QUAL_ACCEPTED",
-        "QUAL_REASON",
-        "QUAL_SOURCE",
-        "DONE",
-    }:
-        page_count = row["page_count"]
-        if page_count is None:
-            scalars.append(("page_count_presence", 0))
-        else:
-            scalars.insert(-1, ("page_count_presence", 1))
+    match phase:
+        case "PAGE_COUNT":
+            if row["page_count"] is not None:
+                raise ValueError("metadata page-count value appears before decoding")
+            scalars.append(("page_count_presence", 1))
+        case "QUAL_POLICY" | "QUAL_ACCEPTED" | "QUAL_REASON" | "QUAL_SOURCE" | "DONE":
+            page_count = row["page_count"]
+            if page_count is None:
+                scalars.append(("page_count_presence", 0))
+            else:
+                scalars.insert(-1, ("page_count_presence", 1))
     state = GalleryMetadataParserState(
         phase=phase,
         field_remaining=remaining,
@@ -4625,58 +4634,66 @@ def advance_gallery_metadata_parser(
             break
         token = fixed_carry
         fixed_carry = b""
-        if phase == "PREFIX":
-            if token != _GALLERY_METADATA_PREFIX:
-                raise ValueError("metadata stream prefix mismatch")
-        elif phase in {"QUAL_POLICY", "QUAL_ACCEPTED", "QUAL_REASON", "QUAL_SOURCE"}:
-            if phase == "QUAL_POLICY":
-                qualification["qualification_policy_sha256"] = token
-            elif phase == "QUAL_ACCEPTED":
-                qualification["accepted"] = token[0]
-            elif phase == "QUAL_REASON":
-                qualification["qualification_reason"] = token.rstrip(b"\x00")
-            else:
-                length = token[0]
-                if any(token[1 + length :]):
-                    raise ValueError("qualification source padding is not canonical")
-                qualification["qualification_source_name"] = token[1 : 1 + length]
-        else:
-            if field is None:
-                raise ValueError("metadata fixed phase lacks its scalar field")
-            value = int.from_bytes(token, "big")
-            if field == "version" and value != 2:
-                raise ValueError("metadata stream version mismatch")
-            if field == "title_tag" and value != 1:
-                raise ValueError("metadata title tag mismatch")
-            if field == "comment_tag" and value != 2:
-                raise ValueError("metadata comment tag mismatch")
-            if field == "upload_account_tag" and value != 3:
-                raise ValueError("metadata upload-account tag mismatch")
-            if field in {"title_length", "comment_length", "upload_account_length"}:
-                if value > 9223372036854775807:
-                    raise ValueError("metadata text length is outside portable int63")
-                remaining = value
-                scalars = _append_metadata_scalar(
-                    scalars,
-                    field.replace("_length", "_byte_count"),
-                    value,
-                )
-            elif field == "page_count_presence":
-                if value not in {0, 1}:
-                    raise ValueError("metadata page-count presence is invalid")
-                scalars = _append_metadata_scalar(scalars, field, value)
-                next_phase = "PAGE_COUNT" if value == 1 else "QUAL_POLICY"
-            elif field not in {
-                "version",
-                "title_tag",
-                "comment_tag",
-                "upload_account_tag",
-            }:
-                if value > 9223372036854775807:
-                    raise ValueError("metadata scalar is outside portable int63")
-                if field in {"gid", "scan_version"} and value == 0:
-                    raise ValueError(f"metadata {field} must be positive")
-                scalars = _append_metadata_scalar(scalars, field, value)
+        match phase:
+            case "PREFIX":
+                if token != _GALLERY_METADATA_PREFIX:
+                    raise ValueError("metadata stream prefix mismatch")
+            case "QUAL_POLICY" | "QUAL_ACCEPTED" | "QUAL_REASON" | "QUAL_SOURCE":
+                match phase:
+                    case "QUAL_POLICY":
+                        qualification["qualification_policy_sha256"] = token
+                    case "QUAL_ACCEPTED":
+                        qualification["accepted"] = token[0]
+                    case "QUAL_REASON":
+                        qualification["qualification_reason"] = token.rstrip(b"\x00")
+                    case _:
+                        length = token[0]
+                        if any(token[1 + length :]):
+                            raise ValueError(
+                                "qualification source padding is not canonical"
+                            )
+                        qualification["qualification_source_name"] = token[
+                            1 : 1 + length
+                        ]
+            case _:
+                if field is None:
+                    raise ValueError("metadata fixed phase lacks its scalar field")
+                value = int.from_bytes(token, "big")
+                if field == "version" and value != 2:
+                    raise ValueError("metadata stream version mismatch")
+                if field == "title_tag" and value != 1:
+                    raise ValueError("metadata title tag mismatch")
+                if field == "comment_tag" and value != 2:
+                    raise ValueError("metadata comment tag mismatch")
+                if field == "upload_account_tag" and value != 3:
+                    raise ValueError("metadata upload-account tag mismatch")
+                if field in {"title_length", "comment_length", "upload_account_length"}:
+                    if value > 9223372036854775807:
+                        raise ValueError(
+                            "metadata text length is outside portable int63"
+                        )
+                    remaining = value
+                    scalars = _append_metadata_scalar(
+                        scalars,
+                        field.replace("_length", "_byte_count"),
+                        value,
+                    )
+                elif field == "page_count_presence":
+                    if value not in {0, 1}:
+                        raise ValueError("metadata page-count presence is invalid")
+                    scalars = _append_metadata_scalar(scalars, field, value)
+                    next_phase = "PAGE_COUNT" if value == 1 else "QUAL_POLICY"
+                elif field not in {
+                    "version",
+                    "title_tag",
+                    "comment_tag",
+                    "upload_account_tag",
+                }:
+                    if value > 9223372036854775807:
+                        raise ValueError("metadata scalar is outside portable int63")
+                    if field in {"gid", "scan_version"} and value == 0:
+                        raise ValueError(f"metadata {field} must be positive")
+                    scalars = _append_metadata_scalar(scalars, field, value)
         phase = next_phase
     result = GalleryMetadataParserState(
         phase=phase,
@@ -5208,36 +5225,37 @@ def _validate_bootstrap(
         exact_types = tuple(value.value_type for value in cells)
         expected_values: tuple[object, ...] | None
         expected_types: tuple[str, ...]
-        if relation == "revision_allocator":
-            expected_values = (allocator_rows.get(seed_id), 1, 0)
-            expected_types = ("ascii_enum", "uint64", "unix_microseconds")
-        elif relation == "identity_allocator":
-            expected_values = (identity_allocator_rows.get(seed_id), 1, 0)
-            expected_types = (
-                "ascii_enum",
-                "uint64",
-                "unix_microseconds",
-            )
-        elif relation in {
-            "deletion_request_generation",
-            "deletion_request_generation_head",
-            "gallery_observation_staging_request_budget",
-        }:
-            singleton_row = (deletion_generation_rows | request_budget_rows).get(
-                seed_id
-            )
-            if singleton_row is None or singleton_row[0] != relation:
-                expected_values = None
-                expected_types = ()
-            else:
-                expected_values = singleton_row[1]
-                expected_types = singleton_row[2]
-        elif relation == "cleanup_target_kind":
-            expected_values = target_rows.get(seed_id)
-            expected_types = ("ascii_enum",)
-        else:
-            expected_values = phase_rows.get(seed_id)
-            expected_types = ("ascii_enum", "ascii_enum", "uint64")
+        match relation:
+            case "revision_allocator":
+                expected_values = (allocator_rows.get(seed_id), 1, 0)
+                expected_types = ("ascii_enum", "uint64", "unix_microseconds")
+            case "identity_allocator":
+                expected_values = (identity_allocator_rows.get(seed_id), 1, 0)
+                expected_types = (
+                    "ascii_enum",
+                    "uint64",
+                    "unix_microseconds",
+                )
+            case (
+                "deletion_request_generation"
+                | "deletion_request_generation_head"
+                | "gallery_observation_staging_request_budget"
+            ):
+                singleton_row = (deletion_generation_rows | request_budget_rows).get(
+                    seed_id
+                )
+                if singleton_row is None or singleton_row[0] != relation:
+                    expected_values = None
+                    expected_types = ()
+                else:
+                    expected_values = singleton_row[1]
+                    expected_types = singleton_row[2]
+            case "cleanup_target_kind":
+                expected_values = target_rows.get(seed_id)
+                expected_types = ("ascii_enum",)
+            case _:
+                expected_values = phase_rows.get(seed_id)
+                expected_types = ("ascii_enum", "ascii_enum", "uint64")
         if (
             expected_values is None
             or exact_values != expected_values
@@ -5986,97 +6004,95 @@ def _external_runtime_only_key(stub: ExternalStub, key: tuple[str, ...]) -> bool
 
 def _sqlite_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
-    if stub.relation in {
-        "gallery_identity",
-    }:
-        return (f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',)
-    if stub.relation == "gallery_observation_allocation":
-        return (
-            f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',
-            f'CHECK ("observation_id" >= 1 AND "observation_id" <= {portable_max})',
-            f'CHECK ("allocated_at" >= 0 AND "allocated_at" <= {portable_max})',
-        )
-    if stub.relation == "gallery_observation_page":
-        return ('CHECK (length("page_bytes") BETWEEN 1 AND 65536)',)
-    if stub.relation == "gallery_observation_page_descriptor":
-        return (
-            "CHECK (\"component\" IN (X'46494C45', X'544147', "
-            "X'4449524543544F5259', X'4D45544144415441'))",
-            'CHECK ("level" >= 0 AND "level" <= 8)',
-            f'CHECK ("subtree_item_count" >= 0 AND '
-            f'"subtree_item_count" <= {portable_max})',
-        )
-    if stub.relation == "gallery_observation_page_key_bounds":
-        return (
-            'CHECK (length("first_key") BETWEEN 1 AND 255)',
-            'CHECK (length("last_key") BETWEEN 1 AND 255)',
-            'CHECK ("first_key" <= "last_key")',
-        )
-    if stub.relation == "gallery_observation_page_child":
-        return ('CHECK ("position" >= 0 AND "position" <= 255)',)
-    if stub.relation == "gallery_observation_tree_root":
-        return (
-            f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',
-            f'CHECK ("observation_id" >= 1 AND "observation_id" <= {portable_max})',
-        )
-    if stub.relation == "canonical_value_page":
-        return ('CHECK (length("page_bytes") BETWEEN 1 AND 65536)',)
-    if stub.relation == "canonical_value_page_descriptor":
-        return (
-            'CHECK ("level" BETWEEN 0 AND 8)',
-            f'CHECK ("page_position" >= 0 AND "page_position" <= {portable_max})',
-            f'CHECK ("subtree_item_count" >= 0 AND "subtree_item_count" <= {portable_max})',
-        )
-    if stub.relation == "canonical_value_page_parent":
-        return ('CHECK ("position" BETWEEN 0 AND 255)',)
+    match stub.relation:
+        case "gallery_identity":
+            return (f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',)
+        case "gallery_observation_allocation":
+            return (
+                f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',
+                f'CHECK ("observation_id" >= 1 AND "observation_id" <= {portable_max})',
+                f'CHECK ("allocated_at" >= 0 AND "allocated_at" <= {portable_max})',
+            )
+        case "gallery_observation_page":
+            return ('CHECK (length("page_bytes") BETWEEN 1 AND 65536)',)
+        case "gallery_observation_page_descriptor":
+            return (
+                "CHECK (\"component\" IN (X'46494C45', X'544147', "
+                "X'4449524543544F5259', X'4D45544144415441'))",
+                'CHECK ("level" >= 0 AND "level" <= 8)',
+                f'CHECK ("subtree_item_count" >= 0 AND '
+                f'"subtree_item_count" <= {portable_max})',
+            )
+        case "gallery_observation_page_key_bounds":
+            return (
+                'CHECK (length("first_key") BETWEEN 1 AND 255)',
+                'CHECK (length("last_key") BETWEEN 1 AND 255)',
+                'CHECK ("first_key" <= "last_key")',
+            )
+        case "gallery_observation_page_child":
+            return ('CHECK ("position" >= 0 AND "position" <= 255)',)
+        case "gallery_observation_tree_root":
+            return (
+                f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',
+                f'CHECK ("observation_id" >= 1 AND "observation_id" <= {portable_max})',
+            )
+        case "canonical_value_page":
+            return ('CHECK (length("page_bytes") BETWEEN 1 AND 65536)',)
+        case "canonical_value_page_descriptor":
+            return (
+                'CHECK ("level" BETWEEN 0 AND 8)',
+                f'CHECK ("page_position" >= 0 AND "page_position" <= {portable_max})',
+                f'CHECK ("subtree_item_count" >= 0 AND "subtree_item_count" <= {portable_max})',
+            )
+        case "canonical_value_page_parent":
+            return ('CHECK ("position" BETWEEN 0 AND 255)',)
     return ()
 
 
 def _mariadb_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
-    if stub.relation in {
-        "gallery_identity",
-    }:
-        return (f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",)
-    if stub.relation == "gallery_observation_allocation":
-        return (
-            f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",
-            f"CHECK (`observation_id` >= 1 AND `observation_id` <= {portable_max})",
-            f"CHECK (`allocated_at` >= 0 AND `allocated_at` <= {portable_max})",
-        )
-    if stub.relation == "gallery_observation_page":
-        return ("CHECK (octet_length(`page_bytes`) BETWEEN 1 AND 65536)",)
-    if stub.relation == "gallery_observation_page_descriptor":
-        return (
-            "CHECK (`component` IN (X'46494C45', X'544147', "
-            "X'4449524543544F5259', X'4D45544144415441'))",
-            "CHECK (`level` >= 0 AND `level` <= 8)",
-            f"CHECK (`subtree_item_count` >= 0 AND "
-            f"`subtree_item_count` <= {portable_max})",
-        )
-    if stub.relation == "gallery_observation_page_key_bounds":
-        return (
-            "CHECK (octet_length(`first_key`) BETWEEN 1 AND 255)",
-            "CHECK (octet_length(`last_key`) BETWEEN 1 AND 255)",
-            "CHECK (`first_key` <= `last_key`)",
-        )
-    if stub.relation == "gallery_observation_page_child":
-        return ("CHECK (`position` >= 0 AND `position` <= 255)",)
-    if stub.relation == "gallery_observation_tree_root":
-        return (
-            f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",
-            f"CHECK (`observation_id` >= 1 AND `observation_id` <= {portable_max})",
-        )
-    if stub.relation == "canonical_value_page":
-        return ("CHECK (octet_length(`page_bytes`) BETWEEN 1 AND 65536)",)
-    if stub.relation == "canonical_value_page_descriptor":
-        return (
-            "CHECK (`level` BETWEEN 0 AND 8)",
-            f"CHECK (`page_position` >= 0 AND `page_position` <= {portable_max})",
-            f"CHECK (`subtree_item_count` >= 0 AND `subtree_item_count` <= {portable_max})",
-        )
-    if stub.relation == "canonical_value_page_parent":
-        return ("CHECK (`position` BETWEEN 0 AND 255)",)
+    match stub.relation:
+        case "gallery_identity":
+            return (f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",)
+        case "gallery_observation_allocation":
+            return (
+                f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",
+                f"CHECK (`observation_id` >= 1 AND `observation_id` <= {portable_max})",
+                f"CHECK (`allocated_at` >= 0 AND `allocated_at` <= {portable_max})",
+            )
+        case "gallery_observation_page":
+            return ("CHECK (octet_length(`page_bytes`) BETWEEN 1 AND 65536)",)
+        case "gallery_observation_page_descriptor":
+            return (
+                "CHECK (`component` IN (X'46494C45', X'544147', "
+                "X'4449524543544F5259', X'4D45544144415441'))",
+                "CHECK (`level` >= 0 AND `level` <= 8)",
+                f"CHECK (`subtree_item_count` >= 0 AND "
+                f"`subtree_item_count` <= {portable_max})",
+            )
+        case "gallery_observation_page_key_bounds":
+            return (
+                "CHECK (octet_length(`first_key`) BETWEEN 1 AND 255)",
+                "CHECK (octet_length(`last_key`) BETWEEN 1 AND 255)",
+                "CHECK (`first_key` <= `last_key`)",
+            )
+        case "gallery_observation_page_child":
+            return ("CHECK (`position` >= 0 AND `position` <= 255)",)
+        case "gallery_observation_tree_root":
+            return (
+                f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",
+                f"CHECK (`observation_id` >= 1 AND `observation_id` <= {portable_max})",
+            )
+        case "canonical_value_page":
+            return ("CHECK (octet_length(`page_bytes`) BETWEEN 1 AND 65536)",)
+        case "canonical_value_page_descriptor":
+            return (
+                "CHECK (`level` BETWEEN 0 AND 8)",
+                f"CHECK (`page_position` >= 0 AND `page_position` <= {portable_max})",
+                f"CHECK (`subtree_item_count` >= 0 AND `subtree_item_count` <= {portable_max})",
+            )
+        case "canonical_value_page_parent":
+            return ("CHECK (`position` BETWEEN 0 AND 255)",)
     return ()
 
 

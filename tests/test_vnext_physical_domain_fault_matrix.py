@@ -214,25 +214,26 @@ def candidates(column: Column) -> Iterator[Candidate]:
             )
     if enums:
         sample = enums[0]
-        if isinstance(sample, bytes):
-            yield Candidate(column, "enum-unregistered", b"bogus", _BOTH)
-            if sample.upper() != sample:
-                yield Candidate(column, "enum-collation", sample.upper(), _BOTH)
-            elif sample.lower() != sample:
-                yield Candidate(column, "enum-collation", sample.lower(), _BOTH)
-        elif isinstance(sample, str):
-            yield Candidate(column, "enum-unregistered", "BOGUS", _BOTH)
-            if sample.lower() != sample:
-                yield Candidate(column, "enum-collation", sample.lower(), _BOTH)
-            elif sample.upper() != sample:
-                yield Candidate(column, "enum-collation", sample.upper(), _BOTH)
-        else:
-            yield Candidate(
-                column,
-                "enum-unregistered",
-                max(int(v) for v in enums if isinstance(v, int)) + 1,
-                _BOTH,
-            )
+        match sample:
+            case bytes():
+                yield Candidate(column, "enum-unregistered", b"bogus", _BOTH)
+                if sample.upper() != sample:
+                    yield Candidate(column, "enum-collation", sample.upper(), _BOTH)
+                elif sample.lower() != sample:
+                    yield Candidate(column, "enum-collation", sample.lower(), _BOTH)
+            case str():
+                yield Candidate(column, "enum-unregistered", "BOGUS", _BOTH)
+                if sample.lower() != sample:
+                    yield Candidate(column, "enum-collation", sample.lower(), _BOTH)
+                elif sample.upper() != sample:
+                    yield Candidate(column, "enum-collation", sample.upper(), _BOTH)
+            case _:
+                yield Candidate(
+                    column,
+                    "enum-unregistered",
+                    max(int(v) for v in enums if isinstance(v, int)) + 1,
+                    _BOTH,
+                )
 
 
 def _sqlite_config(path: Path) -> CoreConfig:

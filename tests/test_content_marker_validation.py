@@ -123,10 +123,11 @@ def _has_marker(connector: SQLiteConnector, values: Sequence[bytes]) -> bool:
 
 
 def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> bytes:
-    if fault == "domain":
-        return _store_value(connector, b"bad-domain", domain="source_title_utf8_v1")
-    if fault == "digest":
-        return b"invalid digest"
+    match fault:
+        case "domain":
+            return _store_value(connector, b"bad-domain", domain="source_title_utf8_v1")
+        case "digest":
+            return b"invalid digest"
     (root,) = connector.fetch_one(
         "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
@@ -137,43 +138,44 @@ def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> b
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
         with connector.transaction():
-            if fault == "identity":
-                connector.execute(
-                    "DELETE FROM catalog_canonical_value_identities "
-                    "WHERE value_sha256 = %s",
-                    (value,),
-                )
-            elif fault == "allocation":
-                connector.execute(
-                    "DELETE FROM catalog_canonical_value_allocation_seals "
-                    "WHERE value_sha256 = %s",
-                    (value,),
-                )
-            elif fault == "payload":
-                (payload,) = connector.fetch_one(
-                    "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
-                    "WHERE page_sha256 = %s",
-                    (root,),
-                )
-                connector.execute(
-                    "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s "
-                    "WHERE page_sha256 = %s",
-                    (payload[:-1] + bytes([payload[-1] ^ 1]), root),
-                )
-            elif fault == "count":
-                connector.execute(
-                    "UPDATE catalog_canonical_value_page_subtree_item_counts "
-                    "SET subtree_item_count = subtree_item_count + 1 "
-                    "WHERE page_sha256 = %s",
-                    (root,),
-                )
-            else:
-                assert fault == "parent"
-                connector.execute(
-                    "INSERT INTO catalog_canonical_value_page_parents "
-                    "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
-                    (root, root),
-                )
+            match fault:
+                case "identity":
+                    connector.execute(
+                        "DELETE FROM catalog_canonical_value_identities "
+                        "WHERE value_sha256 = %s",
+                        (value,),
+                    )
+                case "allocation":
+                    connector.execute(
+                        "DELETE FROM catalog_canonical_value_allocation_seals "
+                        "WHERE value_sha256 = %s",
+                        (value,),
+                    )
+                case "payload":
+                    (payload,) = connector.fetch_one(
+                        "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
+                        "WHERE page_sha256 = %s",
+                        (root,),
+                    )
+                    connector.execute(
+                        "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s "
+                        "WHERE page_sha256 = %s",
+                        (payload[:-1] + bytes([payload[-1] ^ 1]), root),
+                    )
+                case "count":
+                    connector.execute(
+                        "UPDATE catalog_canonical_value_page_subtree_item_counts "
+                        "SET subtree_item_count = subtree_item_count + 1 "
+                        "WHERE page_sha256 = %s",
+                        (root,),
+                    )
+                case _:
+                    assert fault == "parent"
+                    connector.execute(
+                        "INSERT INTO catalog_canonical_value_page_parents "
+                        "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
+                        (root, root),
+                    )
     finally:
         connector.execute("PRAGMA foreign_keys = ON")
     return value

@@ -218,22 +218,23 @@ def test_next_transaction_revalidates_loaded_cleanup_authority(
                 now=3,
             )
         with connector.transaction():
-            if corruption == "seal":
-                connector.execute(
-                    "UPDATE operational_cleanup_jobs SET frozen_root_set_sha256 = %s "
-                    "WHERE cleanup_id = %s",
-                    (b"z" * 32, cycle.cleanup_id),
-                )
-            elif corruption == "roots":
-                connector.execute(
-                    "DELETE FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
-                    (cycle.cleanup_id,),
-                )
-            else:
-                connector.execute(
-                    "DELETE FROM operational_cleanup_phases WHERE phase = %s",
-                    ("AR_ROOT",),
-                )
+            match corruption:
+                case "seal":
+                    connector.execute(
+                        "UPDATE operational_cleanup_jobs SET frozen_root_set_sha256 = %s "
+                        "WHERE cleanup_id = %s",
+                        (b"z" * 32, cycle.cleanup_id),
+                    )
+                case "roots":
+                    connector.execute(
+                        "DELETE FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
+                        (cycle.cleanup_id,),
+                    )
+                case _:
+                    connector.execute(
+                        "DELETE FROM operational_cleanup_phases WHERE phase = %s",
+                        ("AR_ROOT",),
+                    )
         before = _snapshot(connector)
         with pytest.raises(CleanupCorruptionError), connector.transaction():
             _advance(db_config, connector, gate, cycle, now=4)

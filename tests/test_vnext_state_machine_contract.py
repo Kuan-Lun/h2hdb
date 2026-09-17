@@ -110,12 +110,13 @@ def _module_constants(tree: ast.Module) -> dict[str, str]:
     for statement in tree.body:
         target: ast.expr | None = None
         value: ast.expr | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            target = statement.target
-            value = statement.value
+        match statement:
+            case ast.Assign() if len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = statement.value
+            case ast.AnnAssign():
+                target = statement.target
+                value = statement.value
         if isinstance(target, ast.Name) and value is not None:
             resolved = _literal(value, result)
             if resolved is not None:
@@ -124,10 +125,11 @@ def _module_constants(tree: ast.Module) -> dict[str, str]:
 
 
 def _call_name(function: ast.expr) -> str | None:
-    if isinstance(function, ast.Name):
-        return function.id
-    if isinstance(function, ast.Attribute):
-        return function.attr
+    match function:
+        case ast.Name():
+            return function.id
+        case ast.Attribute():
+            return function.attr
     return None
 
 

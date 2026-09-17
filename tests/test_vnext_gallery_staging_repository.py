@@ -700,47 +700,48 @@ def _persist_vertical_family(
     handle: GalleryStagingHandle,
     family: str,
 ) -> None:
-    if family == "directory":
-        staging_module._persist_directory_fact(
-            connector,
-            gallery_id=handle.gallery_id,
-            observation_id=handle.observation_id,
-            directory_entry_count=3,
-            directory_observation_sha256=b"d" * 32,
-        )
-    elif family == "stat":
-        staging_module._persist_stat_fact(
-            connector,
-            gallery_id=handle.gallery_id,
-            observation_id=handle.observation_id,
-            file_count=3,
-            byte_count=9,
-        )
-    elif family == "scan":
-        roots = {
-            component: (bytes((int(component) + 1,)) * 32, int(component) + 3)
-            for component in GalleryObservationComponent
-        }
-        staging_module._persist_scan_fact(
-            connector,
-            handle,
-            roots,
-            scan_observation_version=2,
-            source_file_count=3,
-        )
-    elif family == "filesystem":
-        staging_module._persist_file_filesystem_fact(
-            connector,
-            gallery_id=handle.gallery_id,
-            observation_id=handle.observation_id,
-            file_key=b"k" * 32,
-            device=b"\x01" * 8,
-            inode=b"\x02" * 8,
-            modified_ns=b"\x03" * 8,
-            changed_ns=b"\x04" * 8,
-        )
-    else:  # pragma: no cover - the test matrix is closed above.
-        raise AssertionError(family)
+    match family:
+        case "directory":
+            staging_module._persist_directory_fact(
+                connector,
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                directory_entry_count=3,
+                directory_observation_sha256=b"d" * 32,
+            )
+        case "stat":
+            staging_module._persist_stat_fact(
+                connector,
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                file_count=3,
+                byte_count=9,
+            )
+        case "scan":
+            roots = {
+                component: (bytes((int(component) + 1,)) * 32, int(component) + 3)
+                for component in GalleryObservationComponent
+            }
+            staging_module._persist_scan_fact(
+                connector,
+                handle,
+                roots,
+                scan_observation_version=2,
+                source_file_count=3,
+            )
+        case "filesystem":
+            staging_module._persist_file_filesystem_fact(
+                connector,
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                file_key=b"k" * 32,
+                device=b"\x01" * 8,
+                inode=b"\x02" * 8,
+                modified_ns=b"\x03" * 8,
+                changed_ns=b"\x04" * 8,
+            )
+        case _:  # pragma: no cover - the test matrix is closed above.
+            raise AssertionError(family)
 
 
 def _vertical_family_snapshot(
@@ -748,23 +749,24 @@ def _vertical_family_snapshot(
     family: str,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     queries: tuple[str, ...]
-    if family == "directory":
-        queries = ("SELECT * FROM catalog_gallery_observation_directories",)
-    elif family == "stat":
-        queries = ("SELECT * FROM catalog_gallery_observation_stat",)
-    elif family == "scan":
-        queries = ("SELECT * FROM catalog_gallery_observation_scans",)
-    elif family == "filesystem":
-        queries = (
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_anchors",
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_devices",
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_inodes",
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_modified_nses",
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_changed_nses",
-            "SELECT * FROM catalog_gallery_observation_file_filesystem_seals",
-        )
-    else:  # pragma: no cover - the test matrix is closed above.
-        raise AssertionError(family)
+    match family:
+        case "directory":
+            queries = ("SELECT * FROM catalog_gallery_observation_directories",)
+        case "stat":
+            queries = ("SELECT * FROM catalog_gallery_observation_stat",)
+        case "scan":
+            queries = ("SELECT * FROM catalog_gallery_observation_scans",)
+        case "filesystem":
+            queries = (
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_anchors",
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_devices",
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_inodes",
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_modified_nses",
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_changed_nses",
+                "SELECT * FROM catalog_gallery_observation_file_filesystem_seals",
+            )
+        case _:  # pragma: no cover - the test matrix is closed above.
+            raise AssertionError(family)
     return tuple(connector.fetch_all(query) for query in queries)
 
 
@@ -772,18 +774,21 @@ def _vertical_family_view(
     connector: SQLiteConnector,
     family: str,
 ) -> list[tuple[Any, ...]]:
-    if family == "directory":
-        return connector.fetch_all(
-            "SELECT * FROM catalog_gallery_observation_directories"
-        )
-    if family == "stat":
-        return connector.fetch_all("SELECT * FROM catalog_gallery_observation_stat")
-    if family == "scan":
-        return connector.fetch_all("SELECT * FROM catalog_gallery_observation_scans")
-    if family == "filesystem":
-        return connector.fetch_all(
-            "SELECT * FROM catalog_gallery_observation_file_filesystem"
-        )
+    match family:
+        case "directory":
+            return connector.fetch_all(
+                "SELECT * FROM catalog_gallery_observation_directories"
+            )
+        case "stat":
+            return connector.fetch_all("SELECT * FROM catalog_gallery_observation_stat")
+        case "scan":
+            return connector.fetch_all(
+                "SELECT * FROM catalog_gallery_observation_scans"
+            )
+        case "filesystem":
+            return connector.fetch_all(
+                "SELECT * FROM catalog_gallery_observation_file_filesystem"
+            )
     raise AssertionError(family)  # pragma: no cover - closed test matrix.
 
 
@@ -2411,30 +2416,31 @@ def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
             )
 
             key = (handle.gallery_id, handle.observation_id)
-            if family == "directory":
-                connector.execute(
-                    "DELETE FROM catalog_gallery_observation_directories "
-                    "WHERE gallery_id = %s AND observation_id = %s",
-                    key,
-                )
-            elif family == "stat":
-                connector.execute(
-                    "DELETE FROM catalog_gallery_observation_stat "
-                    "WHERE gallery_id = %s AND observation_id = %s",
-                    key,
-                )
-            elif family == "scan":
-                connector.execute(
-                    "DELETE FROM catalog_gallery_observation_scans "
-                    "WHERE gallery_id = %s AND observation_id = %s",
-                    key,
-                )
-            else:
-                connector.execute(
-                    "DELETE FROM catalog_gallery_observation_file_filesystem_seals "
-                    "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
-                    (*key, b"k" * 32),
-                )
+            match family:
+                case "directory":
+                    connector.execute(
+                        "DELETE FROM catalog_gallery_observation_directories "
+                        "WHERE gallery_id = %s AND observation_id = %s",
+                        key,
+                    )
+                case "stat":
+                    connector.execute(
+                        "DELETE FROM catalog_gallery_observation_stat "
+                        "WHERE gallery_id = %s AND observation_id = %s",
+                        key,
+                    )
+                case "scan":
+                    connector.execute(
+                        "DELETE FROM catalog_gallery_observation_scans "
+                        "WHERE gallery_id = %s AND observation_id = %s",
+                        key,
+                    )
+                case _:
+                    connector.execute(
+                        "DELETE FROM catalog_gallery_observation_file_filesystem_seals "
+                        "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+                        (*key, b"k" * 32),
+                    )
             assert _vertical_family_view(connector, family) == []
         finally:
             connector.close()
@@ -2449,40 +2455,41 @@ def test_four_vertical_family_corruption_is_zero_partial(
     try:
         handle = _seed_vertical_family_parents(connector)
         key = (handle.gallery_id, handle.observation_id)
-        if family == "directory":
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_directories "
-                "(gallery_id, observation_id, directory_entry_count, "
-                "directory_observation_sha256) VALUES (%s, %s, %s, %s)",
-                (*key, 999, b"x" * 32),
-            )
-        elif family == "stat":
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_stat "
-                "(gallery_id, observation_id, file_count, byte_count) "
-                "VALUES (%s, %s, %s, %s)",
-                (*key, 999, 999),
-            )
-        elif family == "scan":
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_scans "
-                "(gallery_id, observation_id, scan_observation_sha256, "
-                "scan_observation_version, source_file_count) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (*key, b"x" * 32, 999, 999),
-            )
-        else:
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
-                "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
-                (*key, b"k" * 32),
-            )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
-                "(gallery_id, observation_id, file_key, changed_ns) "
-                "VALUES (%s, %s, %s, %s)",
-                (*key, b"k" * 32, b"x" * 8),
-            )
+        match family:
+            case "directory":
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_directories "
+                    "(gallery_id, observation_id, directory_entry_count, "
+                    "directory_observation_sha256) VALUES (%s, %s, %s, %s)",
+                    (*key, 999, b"x" * 32),
+                )
+            case "stat":
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_stat "
+                    "(gallery_id, observation_id, file_count, byte_count) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (*key, 999, 999),
+                )
+            case "scan":
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_scans "
+                    "(gallery_id, observation_id, scan_observation_sha256, "
+                    "scan_observation_version, source_file_count) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (*key, b"x" * 32, 999, 999),
+                )
+            case _:
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
+                    "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
+                    (*key, b"k" * 32),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
+                    "(gallery_id, observation_id, file_key, changed_ns) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (*key, b"k" * 32, b"x" * 8),
+                )
         before = _vertical_family_snapshot(connector, family)
 
         with pytest.raises(GalleryStagingConflictError, match="differs"):
@@ -3308,76 +3315,79 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                             handle=handle,
                             now=retirement_now,
                         )
-                if retirement.phase == "CHECKPOINT":
-                    retained_before_corruption = _request_snapshot(connector)
-                    terminal_byte_count = connector.fetch_one(
-                        "SELECT terminal_byte_count FROM "
-                        "operational_gallery_observation_stagings "
-                        "WHERE staging_id = %s",
-                        (handle.staging_id,),
-                    )[0]
-                    assert isinstance(terminal_byte_count, int)
-                    connector.execute(
-                        "UPDATE catalog_gallery_observation_stat "
-                        "SET byte_count = %s WHERE gallery_id = %s "
-                        "AND observation_id = %s",
-                        (
-                            terminal_byte_count + 1,
-                            gallery_id,
-                            seal.observation_id,
-                        ),
-                    )
-                    with (
-                        connector.transaction(),
-                        pytest.raises(
-                            GalleryStagingConflictError,
-                            match="byte authority",
-                        ),
-                    ):
-                        GalleryObservationStagingRepository.retire_sealed(
-                            VNextUnitOfWork(connector, backend="sqlite"),
-                            gate_lease=gate,
-                            ingest_turn=turn,
-                            seal=seal,
-                            now=retirement_now,
+                match retirement.phase:
+                    case "CHECKPOINT":
+                        retained_before_corruption = _request_snapshot(connector)
+                        terminal_byte_count = connector.fetch_one(
+                            "SELECT terminal_byte_count FROM "
+                            "operational_gallery_observation_stagings "
+                            "WHERE staging_id = %s",
+                            (handle.staging_id,),
+                        )[0]
+                        assert isinstance(terminal_byte_count, int)
+                        connector.execute(
+                            "UPDATE catalog_gallery_observation_stat "
+                            "SET byte_count = %s WHERE gallery_id = %s "
+                            "AND observation_id = %s",
+                            (
+                                terminal_byte_count + 1,
+                                gallery_id,
+                                seal.observation_id,
+                            ),
                         )
-                    assert _request_snapshot(connector) == retained_before_corruption
-                    assert connector.fetch_one(
-                        "SELECT 1 FROM "
-                        "operational_gallery_observation_staging_claims "
-                        "WHERE staging_id = %s",
-                        (handle.staging_id,),
-                    ) == (1,)
-                    connector.execute(
-                        "UPDATE catalog_gallery_observation_stat "
-                        "SET byte_count = %s WHERE gallery_id = %s "
-                        "AND observation_id = %s",
-                        (terminal_byte_count, gallery_id, seal.observation_id),
-                    )
-                if retirement.phase == "CLAIM":
-                    old_turn = turn
-                    with connector.transaction():
-                        turn = IngestFenceRepository.claim(
-                            VNextUnitOfWork(connector, backend="sqlite"),
-                            owner_token=b"n" * 16,
-                            now=100_012,
-                            lease_duration=100_000,
-                        )
-                    connector.execute(
-                        "INSERT INTO operational_source_build_generations "
-                        "(build_id, generation) VALUES (%s, %s)",
-                        (build_id, turn.generation),
-                    )
-                    with pytest.raises(IngestFenceUnavailableError, match="stale"):
-                        with connector.transaction():
+                        with (
+                            connector.transaction(),
+                            pytest.raises(
+                                GalleryStagingConflictError,
+                                match="byte authority",
+                            ),
+                        ):
                             GalleryObservationStagingRepository.retire_sealed(
                                 VNextUnitOfWork(connector, backend="sqlite"),
                                 gate_lease=gate,
-                                ingest_turn=old_turn,
+                                ingest_turn=turn,
                                 seal=seal,
-                                now=100_013,
+                                now=retirement_now,
                             )
-                    retirement_now = 100_014
+                        assert (
+                            _request_snapshot(connector) == retained_before_corruption
+                        )
+                        assert connector.fetch_one(
+                            "SELECT 1 FROM "
+                            "operational_gallery_observation_staging_claims "
+                            "WHERE staging_id = %s",
+                            (handle.staging_id,),
+                        ) == (1,)
+                        connector.execute(
+                            "UPDATE catalog_gallery_observation_stat "
+                            "SET byte_count = %s WHERE gallery_id = %s "
+                            "AND observation_id = %s",
+                            (terminal_byte_count, gallery_id, seal.observation_id),
+                        )
+                    case "CLAIM":
+                        old_turn = turn
+                        with connector.transaction():
+                            turn = IngestFenceRepository.claim(
+                                VNextUnitOfWork(connector, backend="sqlite"),
+                                owner_token=b"n" * 16,
+                                now=100_012,
+                                lease_duration=100_000,
+                            )
+                        connector.execute(
+                            "INSERT INTO operational_source_build_generations "
+                            "(build_id, generation) VALUES (%s, %s)",
+                            (build_id, turn.generation),
+                        )
+                        with pytest.raises(IngestFenceUnavailableError, match="stale"):
+                            with connector.transaction():
+                                GalleryObservationStagingRepository.retire_sealed(
+                                    VNextUnitOfWork(connector, backend="sqlite"),
+                                    gate_lease=gate,
+                                    ingest_turn=old_turn,
+                                    seal=seal,
+                                    now=100_013,
+                                )
+                        retirement_now = 100_014
             else:
                 break
 

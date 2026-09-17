@@ -271,37 +271,38 @@ def test_analysis_metadata_rejects_qualification_not_bound_to_canonical_bytes(
             _seed_preparation_facts(
                 connector, gallery_id=1, observation_id=1, file_sha256=digest
             )
-            if corruption == "missing":
-                connector.execute(
-                    "DELETE FROM catalog_gallery_observation_validation_dispositions "
-                    "WHERE gallery_id = 1 AND observation_id = 1"
-                )
-            elif corruption == "policy":
-                connector.execute(
-                    "UPDATE catalog_gallery_observation_validation_policies "
-                    "SET qualification_policy_sha256 = %s "
-                    "WHERE gallery_id = 1 AND observation_id = 1",
-                    (b"x" * 32,),
-                )
-            elif corruption == "disposition":
-                connector.execute(
-                    "UPDATE catalog_gallery_observation_validation_dispositions "
-                    "SET accepted = 0 WHERE gallery_id = 1 AND observation_id = 1"
-                )
-            elif corruption == "unexpected_reason":
-                connector.execute(
-                    "INSERT INTO catalog_gallery_observation_validation_reasons "
-                    "(gallery_id, observation_id, qualification_reason) "
-                    "VALUES (1, 1, %s)",
-                    (b"image_decode_failed",),
-                )
-            else:
-                connector.execute(
-                    "INSERT INTO catalog_gallery_observation_validation_sources "
-                    "(gallery_id, observation_id, qualification_source_name) "
-                    "VALUES (1, 1, %s)",
-                    (b"content-1.jpg",),
-                )
+            match corruption:
+                case "missing":
+                    connector.execute(
+                        "DELETE FROM catalog_gallery_observation_validation_dispositions "
+                        "WHERE gallery_id = 1 AND observation_id = 1"
+                    )
+                case "policy":
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_validation_policies "
+                        "SET qualification_policy_sha256 = %s "
+                        "WHERE gallery_id = 1 AND observation_id = 1",
+                        (b"x" * 32,),
+                    )
+                case "disposition":
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_validation_dispositions "
+                        "SET accepted = 0 WHERE gallery_id = 1 AND observation_id = 1"
+                    )
+                case "unexpected_reason":
+                    connector.execute(
+                        "INSERT INTO catalog_gallery_observation_validation_reasons "
+                        "(gallery_id, observation_id, qualification_reason) "
+                        "VALUES (1, 1, %s)",
+                        (b"image_decode_failed",),
+                    )
+                case _:
+                    connector.execute(
+                        "INSERT INTO catalog_gallery_observation_validation_sources "
+                        "(gallery_id, observation_id, qualification_source_name) "
+                        "VALUES (1, 1, %s)",
+                        (b"content-1.jpg",),
+                    )
         with pytest.raises(analysis.AnalysisCorruptionError, match="qualification"):
             analysis._metadata_comparator_facts(
                 VNextUnitOfWork(connector, backend="sqlite"), 1, 1

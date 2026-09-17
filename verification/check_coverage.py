@@ -158,13 +158,14 @@ def _location_exists(path: Path, symbol: str) -> bool:
     if path.suffix == ".py":
         return symbol.rsplit(".", 1)[-1] in _python_symbols(path)
     text = path.read_text(encoding="utf-8")
-    if path.suffix == ".lean":
-        return (
-            re.search(rf"(?m)^\s*(?:theorem|def)\s+{re.escape(symbol)}\b", text)
-            is not None
-        )
-    if path.suffix == ".tla":
-        return re.search(rf"(?m)^\s*{re.escape(symbol)}\s*==", text) is not None
+    match path.suffix:
+        case ".lean":
+            return (
+                re.search(rf"(?m)^\s*(?:theorem|def)\s+{re.escape(symbol)}\b", text)
+                is not None
+            )
+        case ".tla":
+            return re.search(rf"(?m)^\s*{re.escape(symbol)}\s*==", text) is not None
     return symbol in text
 
 

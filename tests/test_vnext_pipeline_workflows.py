@@ -2091,94 +2091,95 @@ def test_receipt_scoped_recovery_replays_external_and_database_response_loss(
     session = claim_session(facade)
     adapters = {pipeline.library.adapter_id: pipeline.library}
     try:
-        if lost_response == "activation-page":
-            issued = facade.try_issue_publication_recovery_step(session)
-            assert issued is not None and issued.operation == "LIBRARY_ACTIVATION"
-            prepared = facade.prepare_publication_step(
-                issued,
-                artifact_adapters=adapters,
-                finalization_adapters=adapters,
-                library_activation=pipeline.library,
-            )
-            with prepared:
-                facade.commit_publication_step(session, prepared)
+        match lost_response:
+            case "activation-page":
+                issued = facade.try_issue_publication_recovery_step(session)
+                assert issued is not None and issued.operation == "LIBRARY_ACTIVATION"
+                prepared = facade.prepare_publication_step(
+                    issued,
+                    artifact_adapters=adapters,
+                    finalization_adapters=adapters,
+                    library_activation=pipeline.library,
+                )
+                with prepared:
+                    facade.commit_publication_step(session, prepared)
 
-            issued = facade.try_issue_publication_recovery_step(session)
-            assert issued is not None and issued.operation == "LIBRARY_ACTIVATION"
-            prepared = facade.prepare_publication_step(
-                issued,
-                artifact_adapters=adapters,
-                finalization_adapters=adapters,
-                library_activation=pipeline.library,
-            )
-            assert pipeline.library.activation_calls[-1] == "activate_page"
-            prepared.close()
-        elif lost_response == "finalization-prepare":
-            for _ in range(32):
                 issued = facade.try_issue_publication_recovery_step(session)
-                assert issued is not None
+                assert issued is not None and issued.operation == "LIBRARY_ACTIVATION"
                 prepared = facade.prepare_publication_step(
                     issued,
                     artifact_adapters=adapters,
                     finalization_adapters=adapters,
                     library_activation=pipeline.library,
                 )
-                if issued.operation == "FINALIZE":
-                    prepared.close()
-                    break
-                with prepared:
-                    facade.commit_publication_step(session, prepared)
-            else:  # pragma: no cover - bounded protocol regression guard
-                raise AssertionError("recovery did not reach finalization")
-        elif lost_response == "finalization-commit":
-            for _ in range(32):
-                issued = facade.try_issue_publication_recovery_step(session)
-                assert issued is not None
-                prepared = facade.prepare_publication_step(
-                    issued,
-                    artifact_adapters=adapters,
-                    finalization_adapters=adapters,
-                    library_activation=pipeline.library,
-                )
-                with prepared:
-                    facade.commit_publication_step(session, prepared)
-                if issued.operation == "FINALIZE":
-                    try:
-                        assert pipeline.view()["revision"] == 1
-                    except CatalogRevisionNotFoundError:
-                        continue
-                    break
-            else:  # pragma: no cover - bounded protocol regression guard
-                raise AssertionError("recovery did not reach finalization")
-        else:
-            for _ in range(32):
-                issued = facade.try_issue_publication_recovery_step(session)
-                assert issued is not None
-                if issued.operation == "RECOVERY_COMPLETE":
-                    break
-                prepared = facade.prepare_publication_step(
-                    issued,
-                    artifact_adapters=adapters,
-                    finalization_adapters=adapters,
-                    library_activation=pipeline.library,
-                )
-                with prepared:
-                    facade.commit_publication_step(session, prepared)
-            else:  # pragma: no cover - bounded protocol regression guard
-                raise AssertionError("recovery did not reach completion")
-
-            prepared = facade.prepare_publication_step(
-                issued,
-                artifact_adapters=adapters,
-                finalization_adapters=adapters,
-                library_activation=pipeline.library,
-            )
-            assert pipeline.library.activations[1].status.name == "COMPLETE"
-            if lost_response == "completion-prepare":
+                assert pipeline.library.activation_calls[-1] == "activate_page"
                 prepared.close()
-            else:
-                with prepared:
-                    facade.commit_publication_step(session, prepared)
+            case "finalization-prepare":
+                for _ in range(32):
+                    issued = facade.try_issue_publication_recovery_step(session)
+                    assert issued is not None
+                    prepared = facade.prepare_publication_step(
+                        issued,
+                        artifact_adapters=adapters,
+                        finalization_adapters=adapters,
+                        library_activation=pipeline.library,
+                    )
+                    if issued.operation == "FINALIZE":
+                        prepared.close()
+                        break
+                    with prepared:
+                        facade.commit_publication_step(session, prepared)
+                else:  # pragma: no cover - bounded protocol regression guard
+                    raise AssertionError("recovery did not reach finalization")
+            case "finalization-commit":
+                for _ in range(32):
+                    issued = facade.try_issue_publication_recovery_step(session)
+                    assert issued is not None
+                    prepared = facade.prepare_publication_step(
+                        issued,
+                        artifact_adapters=adapters,
+                        finalization_adapters=adapters,
+                        library_activation=pipeline.library,
+                    )
+                    with prepared:
+                        facade.commit_publication_step(session, prepared)
+                    if issued.operation == "FINALIZE":
+                        try:
+                            assert pipeline.view()["revision"] == 1
+                        except CatalogRevisionNotFoundError:
+                            continue
+                        break
+                else:  # pragma: no cover - bounded protocol regression guard
+                    raise AssertionError("recovery did not reach finalization")
+            case _:
+                for _ in range(32):
+                    issued = facade.try_issue_publication_recovery_step(session)
+                    assert issued is not None
+                    if issued.operation == "RECOVERY_COMPLETE":
+                        break
+                    prepared = facade.prepare_publication_step(
+                        issued,
+                        artifact_adapters=adapters,
+                        finalization_adapters=adapters,
+                        library_activation=pipeline.library,
+                    )
+                    with prepared:
+                        facade.commit_publication_step(session, prepared)
+                else:  # pragma: no cover - bounded protocol regression guard
+                    raise AssertionError("recovery did not reach completion")
+
+                prepared = facade.prepare_publication_step(
+                    issued,
+                    artifact_adapters=adapters,
+                    finalization_adapters=adapters,
+                    library_activation=pipeline.library,
+                )
+                assert pipeline.library.activations[1].status.name == "COMPLETE"
+                if lost_response == "completion-prepare":
+                    prepared.close()
+                else:
+                    with prepared:
+                        facade.commit_publication_step(session, prepared)
     finally:
         facade.close()
 
@@ -2784,20 +2785,21 @@ def test_non_analysis_policy_change_after_crash_converges_in_one_turn(
     _abandon_turn_before(pipeline, label)
     previous = _policy_facts(pipeline.config)
     base = ingest_policy()
-    if component == "artifact":
-        fingerprint = sha256(b"memory-library-policy-v2").digest()
-        pipeline.library.policy_fingerprint_sha256 = fingerprint
-        changed = replace(
-            base,
-            artifact=replace(
-                base.artifact,
-                policy_fingerprint_sha256=fingerprint,
-            ),
-        )
-    elif component == "artifacts-required":
-        changed = replace(base, artifacts_required=False)
-    else:
-        changed = replace(base, operational_max_batch_rows=64)
+    match component:
+        case "artifact":
+            fingerprint = sha256(b"memory-library-policy-v2").digest()
+            pipeline.library.policy_fingerprint_sha256 = fingerprint
+            changed = replace(
+                base,
+                artifact=replace(
+                    base.artifact,
+                    policy_fingerprint_sha256=fingerprint,
+                ),
+            )
+        case "artifacts-required":
+            changed = replace(base, artifacts_required=False)
+        case _:
+            changed = replace(base, operational_max_batch_rows=64)
 
     receipts, _ = pipeline.turn(clock=takeover_clock(), policy=changed, drain=False)
     head = _policy_facts(pipeline.config)["head"]

@@ -1153,14 +1153,15 @@ def relation_checks(
     if "ancestor_depth" in attributes:
         sqlite.append("ancestor_depth <= 16")
         maria.append("ancestor_depth <= 16")
-    if name == "analysis_state_anchor":
-        expression = "(overlay_depth = 0 AND anchor_analysis_id = analysis_id OR overlay_depth BETWEEN 1 AND 16 AND anchor_analysis_id <> analysis_id)"
-        sqlite.append(expression)
-        maria.append(expression)
-    if name == "analysis_state_ancestry":
-        expression = "(ancestor_depth = 0 AND ancestor_analysis_id = analysis_id OR ancestor_depth BETWEEN 1 AND 16 AND ancestor_analysis_id <> analysis_id)"
-        sqlite.append(expression)
-        maria.append(expression)
+    match name:
+        case "analysis_state_anchor":
+            expression = "(overlay_depth = 0 AND anchor_analysis_id = analysis_id OR overlay_depth BETWEEN 1 AND 16 AND anchor_analysis_id <> analysis_id)"
+            sqlite.append(expression)
+            maria.append(expression)
+        case "analysis_state_ancestry":
+            expression = "(ancestor_depth = 0 AND ancestor_analysis_id = analysis_id OR ancestor_depth BETWEEN 1 AND 16 AND ancestor_analysis_id <> analysis_id)"
+            sqlite.append(expression)
+            maria.append(expression)
     if name.startswith("analysis_state_component_") and "state_component" in attributes:
         state_components = (
             "file_hash_decision",
@@ -1190,34 +1191,37 @@ def relation_checks(
         resource_kinds = "(X'6163717569736974696F6E', X'7468756D626E61696C')"
         sqlite.append(f"resource_kind IN {resource_kinds}")
         maria.append(f"resource_kind IN {resource_kinds}")
-    if name == "source_build_state":
-        sqlite.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
-        maria.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
-    elif name == "analysis_run_state":
-        sqlite.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
-        maria.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
-    if name in {"analysis_checkpoint", "publication_checkpoint"}:
-        sqlite.append("state IN ('OPEN', 'COMPLETE')")
-        maria.append("state IN ('OPEN', 'COMPLETE')")
-    elif name == "prepared_artifact":
-        sqlite.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
-        maria.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
-        sqlite.append(
-            "typeof(protection_token) = 'blob' AND length(protection_token) = 32"
-        )
-        maria.append("octet_length(protection_token) = 32")
-    elif name == "publication_receipt":
-        sqlite.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
-        maria.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
-        final_rule = "(state = 'DB_COMMITTED' AND finalized_at IS NULL OR state = 'PUBLISHED' AND finalized_at IS NOT NULL)"
-        sqlite.append(final_rule)
-        maria.append(final_rule)
-    if name == "artifact_operation":
-        sqlite.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
-        maria.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
-    if name == "catalog_revision_descriptor":
-        sqlite.append("(artifact_count = 0 OR artifact_count = publication_count)")
-        maria.append("(artifact_count = 0 OR artifact_count = publication_count)")
+    match name:
+        case "source_build_state":
+            sqlite.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
+            maria.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
+        case "analysis_run_state":
+            sqlite.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
+            maria.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
+    match name:
+        case "analysis_checkpoint" | "publication_checkpoint":
+            sqlite.append("state IN ('OPEN', 'COMPLETE')")
+            maria.append("state IN ('OPEN', 'COMPLETE')")
+        case "prepared_artifact":
+            sqlite.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
+            maria.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
+            sqlite.append(
+                "typeof(protection_token) = 'blob' AND length(protection_token) = 32"
+            )
+            maria.append("octet_length(protection_token) = 32")
+        case "publication_receipt":
+            sqlite.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
+            maria.append("state IN ('DB_COMMITTED', 'PUBLISHED')")
+            final_rule = "(state = 'DB_COMMITTED' AND finalized_at IS NULL OR state = 'PUBLISHED' AND finalized_at IS NOT NULL)"
+            sqlite.append(final_rule)
+            maria.append(final_rule)
+    match name:
+        case "artifact_operation":
+            sqlite.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
+            maria.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
+        case "catalog_revision_descriptor":
+            sqlite.append("(artifact_count = 0 OR artifact_count = publication_count)")
+            maria.append("(artifact_count = 0 OR artifact_count = publication_count)")
     if "next_state" in attributes:
         sqlite.append("next_state IN ('OPEN', 'COMPLETE')")
         maria.append("next_state IN ('OPEN', 'COMPLETE')")
@@ -1243,12 +1247,13 @@ def relation_checks(
     if "level" in attributes:
         sqlite.append("level BETWEEN 0 AND 8")
         maria.append("level BETWEEN 0 AND 8")
-    if name == "canonical_value_page_coordinate":
-        sqlite.append("page_position >= 0")
-        maria.append("page_position >= 0")
-    if name in {"canonical_value_page_parent", "gallery_observation_page_child"}:
-        sqlite.append("position BETWEEN 0 AND 255")
-        maria.append("position BETWEEN 0 AND 255")
+    match name:
+        case "canonical_value_page_coordinate":
+            sqlite.append("page_position >= 0")
+            maria.append("page_position >= 0")
+        case "canonical_value_page_parent" | "gallery_observation_page_child":
+            sqlite.append("position BETWEEN 0 AND 255")
+            maria.append("position BETWEEN 0 AND 255")
     if "page_bytes" in attributes:
         sqlite.append(
             "typeof(page_bytes) = 'blob' AND length(page_bytes) BETWEEN 1 AND 65536"
@@ -1621,179 +1626,186 @@ def emit_relation(relation: dict[str, Any]) -> str:
         lines.append('kind = "view"')
         view = relation["view"]
         assert isinstance(view, dict)
-        if view["pattern"] == "nearest_ancestor_overlay":
-            lines.append(
-                "view = { pattern = "
-                + q(str(view["pattern"]))
-                + ", ancestry_relation = "
-                + q(str(view["ancestry_relation"]))
-                + ", shadow_relation = "
-                + q(str(view["shadow_relation"]))
-                + ", tombstone_relation = "
-                + q(str(view["tombstone_relation"]))
-                + " }"
-            )
-        elif view["pattern"] == "sealed_vertical_family":
-            members = view["members"]
-            assert isinstance(members, list)
-            rendered_members = ", ".join(
-                "{ relation = "
-                + q(str(member["relation"]))
-                + ", key_attributes = "
-                + inline_strings(member["key_attributes"])
-                + ", value_attribute = "
-                + q(str(member["value_attribute"]))
-                + ", projection_attribute = "
-                + q(str(member.get("projection_attribute", member["value_attribute"])))
-                + ", join = { source_relation = "
-                + q(str(member["join"]["source_relation"]))
-                + ", source_attributes = "
-                + inline_strings(member["join"]["source_attributes"])
-                + ", member_attributes = "
-                + inline_strings(member["join"]["member_attributes"])
-                + " }, project = "
-                + str(bool(member["project"])).lower()
-                + ", required = "
-                + str(bool(member.get("required", True))).lower()
-                + " }"
-                for member in members
-            )
-            lines.append(
-                "view = { pattern = "
-                + q(str(view["pattern"]))
-                + ", family = "
-                + q(str(view["family"]))
-                + ", anchor_relation = "
-                + q(str(view["anchor_relation"]))
-                + ", seal_relation = "
-                + q(str(view["seal_relation"]))
-                + ", key_attributes = "
-                + inline_strings(view["key_attributes"])
-                + (
-                    ", projection_attributes = "
-                    + inline_strings(view["projection_attributes"])
-                    if "projection_attributes" in view
-                    else ""
-                )
-                + ", members = ["
-                + rendered_members
-                + "]"
-                + (
-                    ", optional_presence = { member_relation = "
-                    + q(str(view["optional_presence"]["member_relation"]))
-                    + ", discriminator_relation = "
-                    + q(str(view["optional_presence"]["discriminator_relation"]))
-                    + ", discriminator_attribute = "
-                    + q(str(view["optional_presence"]["discriminator_attribute"]))
-                    + ", present_value = "
-                    + q(str(view["optional_presence"]["present_value"]))
-                    + ", absent_values = "
-                    + inline_strings(view["optional_presence"]["absent_values"])
+        match view["pattern"]:
+            case "nearest_ancestor_overlay":
+                lines.append(
+                    "view = { pattern = "
+                    + q(str(view["pattern"]))
+                    + ", ancestry_relation = "
+                    + q(str(view["ancestry_relation"]))
+                    + ", shadow_relation = "
+                    + q(str(view["shadow_relation"]))
+                    + ", tombstone_relation = "
+                    + q(str(view["tombstone_relation"]))
                     + " }"
-                    if "optional_presence" in view
-                    else ""
                 )
-                + " }"
-            )
-        elif view["pattern"] == "revision_generation_baseline":
-            lines.append(
-                "view = { pattern = "
-                + q(str(view["pattern"]))
-                + ", base_relation = "
-                + q(str(view["base_relation"]))
-                + ", mapping_relation = "
-                + q(str(view["mapping_relation"]))
-                + ", owner_attribute = "
-                + q(str(view["owner_attribute"]))
-                + ", revision_attribute = "
-                + q(str(view["revision_attribute"]))
-                + ", mapping_revision_attribute = "
-                + q(str(view["mapping_revision_attribute"]))
-                + ", generation_attribute = "
-                + q(str(view["generation_attribute"]))
-                + ", mapping_generation_attribute = "
-                + q(str(view["mapping_generation_attribute"]))
-                + " }"
-            )
-        elif view["pattern"] == "revision_generation_head":
-            lines.append(
-                "view = { pattern = "
-                + q(str(view["pattern"]))
-                + ", revision_relation = "
-                + q(str(view["revision_relation"]))
-                + ", time_relation = "
-                + q(str(view["time_relation"]))
-                + ", mapping_relation = "
-                + q(str(view["mapping_relation"]))
-                + ", channel_attribute = "
-                + q(str(view["channel_attribute"]))
-                + ", revision_attribute = "
-                + q(str(view["revision_attribute"]))
-                + ", generation_attribute = "
-                + q(str(view["generation_attribute"]))
-                + ", time_attribute = "
-                + q(str(view["time_attribute"]))
-                + " }"
-            )
-        elif view["pattern"] in {
-            "analysis_ancestry_endpoint",
-            "analysis_gid_winner_keyset",
-            "artifact_delta_old",
-            "artifact_delta_new",
-            "build_manifest_projection",
-            "analysis_impacted_gid_projection",
-            "analysis_impacted_gid_provenance_projection",
-            "catalog_publication_occurrence_identity",
-            "catalog_publication_projection",
-            "catalog_publication_title_projection",
-            "gallery_observation_metadata_projection",
-            "publication_selection_occurrence_identity",
-            "publication_selection_projection",
-            "publication_candidate_projection",
-            "batch_receipt_derived",
-            "publication_commit_baseline",
-            "publication_commit_published_descriptor",
-            "publication_commit_generation",
-            "publication_commit_head",
-            "publication_commit_head_projection",
-            "publication_receipt",
-            "lifecycle_projection",
-        }:
-            extra_fields = []
-            for field in (
-                "projection",
-                "owner_attribute",
-                "stage_attribute",
-                "batch_key_attribute",
-                "start_generation_attribute",
-                "start_cursor_attribute",
-                "start_processed_count_attribute",
-                "page_limit_attribute",
-                "next_cursor_attribute",
-                "next_processed_count_attribute",
-                "next_state_attribute",
-                "row_count_attribute",
-                "terminal_attribute",
-                "committed_generation_attribute",
-                "committed_at_attribute",
-                "stored_relation",
-                "checkpoint_relation",
+            case "sealed_vertical_family":
+                members = view["members"]
+                assert isinstance(members, list)
+                rendered_members = ", ".join(
+                    "{ relation = "
+                    + q(str(member["relation"]))
+                    + ", key_attributes = "
+                    + inline_strings(member["key_attributes"])
+                    + ", value_attribute = "
+                    + q(str(member["value_attribute"]))
+                    + ", projection_attribute = "
+                    + q(
+                        str(
+                            member.get(
+                                "projection_attribute", member["value_attribute"]
+                            )
+                        )
+                    )
+                    + ", join = { source_relation = "
+                    + q(str(member["join"]["source_relation"]))
+                    + ", source_attributes = "
+                    + inline_strings(member["join"]["source_attributes"])
+                    + ", member_attributes = "
+                    + inline_strings(member["join"]["member_attributes"])
+                    + " }, project = "
+                    + str(bool(member["project"])).lower()
+                    + ", required = "
+                    + str(bool(member.get("required", True))).lower()
+                    + " }"
+                    for member in members
+                )
+                lines.append(
+                    "view = { pattern = "
+                    + q(str(view["pattern"]))
+                    + ", family = "
+                    + q(str(view["family"]))
+                    + ", anchor_relation = "
+                    + q(str(view["anchor_relation"]))
+                    + ", seal_relation = "
+                    + q(str(view["seal_relation"]))
+                    + ", key_attributes = "
+                    + inline_strings(view["key_attributes"])
+                    + (
+                        ", projection_attributes = "
+                        + inline_strings(view["projection_attributes"])
+                        if "projection_attributes" in view
+                        else ""
+                    )
+                    + ", members = ["
+                    + rendered_members
+                    + "]"
+                    + (
+                        ", optional_presence = { member_relation = "
+                        + q(str(view["optional_presence"]["member_relation"]))
+                        + ", discriminator_relation = "
+                        + q(str(view["optional_presence"]["discriminator_relation"]))
+                        + ", discriminator_attribute = "
+                        + q(str(view["optional_presence"]["discriminator_attribute"]))
+                        + ", present_value = "
+                        + q(str(view["optional_presence"]["present_value"]))
+                        + ", absent_values = "
+                        + inline_strings(view["optional_presence"]["absent_values"])
+                        + " }"
+                        if "optional_presence" in view
+                        else ""
+                    )
+                    + " }"
+                )
+            case "revision_generation_baseline":
+                lines.append(
+                    "view = { pattern = "
+                    + q(str(view["pattern"]))
+                    + ", base_relation = "
+                    + q(str(view["base_relation"]))
+                    + ", mapping_relation = "
+                    + q(str(view["mapping_relation"]))
+                    + ", owner_attribute = "
+                    + q(str(view["owner_attribute"]))
+                    + ", revision_attribute = "
+                    + q(str(view["revision_attribute"]))
+                    + ", mapping_revision_attribute = "
+                    + q(str(view["mapping_revision_attribute"]))
+                    + ", generation_attribute = "
+                    + q(str(view["generation_attribute"]))
+                    + ", mapping_generation_attribute = "
+                    + q(str(view["mapping_generation_attribute"]))
+                    + " }"
+                )
+            case "revision_generation_head":
+                lines.append(
+                    "view = { pattern = "
+                    + q(str(view["pattern"]))
+                    + ", revision_relation = "
+                    + q(str(view["revision_relation"]))
+                    + ", time_relation = "
+                    + q(str(view["time_relation"]))
+                    + ", mapping_relation = "
+                    + q(str(view["mapping_relation"]))
+                    + ", channel_attribute = "
+                    + q(str(view["channel_attribute"]))
+                    + ", revision_attribute = "
+                    + q(str(view["revision_attribute"]))
+                    + ", generation_attribute = "
+                    + q(str(view["generation_attribute"]))
+                    + ", time_attribute = "
+                    + q(str(view["time_attribute"]))
+                    + " }"
+                )
+            case (
+                "analysis_ancestry_endpoint"
+                | "analysis_gid_winner_keyset"
+                | "artifact_delta_old"
+                | "artifact_delta_new"
+                | "build_manifest_projection"
+                | "analysis_impacted_gid_projection"
+                | "analysis_impacted_gid_provenance_projection"
+                | "catalog_publication_occurrence_identity"
+                | "catalog_publication_projection"
+                | "catalog_publication_title_projection"
+                | "gallery_observation_metadata_projection"
+                | "publication_selection_occurrence_identity"
+                | "publication_selection_projection"
+                | "publication_candidate_projection"
+                | "batch_receipt_derived"
+                | "publication_commit_baseline"
+                | "publication_commit_published_descriptor"
+                | "publication_commit_generation"
+                | "publication_commit_head"
+                | "publication_commit_head_projection"
+                | "publication_receipt"
+                | "lifecycle_projection"
             ):
-                if field in view:
-                    extra_fields.append(", " + field + " = " + q(str(view[field])))
-            lines.append(
-                "view = { pattern = "
-                + q(str(view["pattern"]))
-                + ", source_relations = "
-                + inline_strings(view["source_relations"])
-                + ""
-                + "".join(extra_fields)
-                + " }"
-            )
-        else:
-            raise RuntimeError(
-                f"Unsupported generated view pattern {view['pattern']!r}"
-            )
+                extra_fields = []
+                for field in (
+                    "projection",
+                    "owner_attribute",
+                    "stage_attribute",
+                    "batch_key_attribute",
+                    "start_generation_attribute",
+                    "start_cursor_attribute",
+                    "start_processed_count_attribute",
+                    "page_limit_attribute",
+                    "next_cursor_attribute",
+                    "next_processed_count_attribute",
+                    "next_state_attribute",
+                    "row_count_attribute",
+                    "terminal_attribute",
+                    "committed_generation_attribute",
+                    "committed_at_attribute",
+                    "stored_relation",
+                    "checkpoint_relation",
+                ):
+                    if field in view:
+                        extra_fields.append(", " + field + " = " + q(str(view[field])))
+                lines.append(
+                    "view = { pattern = "
+                    + q(str(view["pattern"]))
+                    + ", source_relations = "
+                    + inline_strings(view["source_relations"])
+                    + ""
+                    + "".join(extra_fields)
+                    + " }"
+                )
+            case _:
+                raise RuntimeError(
+                    f"Unsupported generated view pattern {view['pattern']!r}"
+                )
     lines.append(f"primary_key = {inline_strings(relation['primary_key'])}")
     unique_keys = relation["unique_keys"]
     assert isinstance(unique_keys, list)
@@ -1851,22 +1863,23 @@ def emit_relation(relation: dict[str, Any]) -> str:
             continue
         lines.append(f"{heading} = [")
         for value in values:
-            if field == "foreign_key":
-                rendered = (
-                    f"name = {q(value['name'])}, attributes = {inline_strings(value['attributes'])}, "
-                    f"referenced_relation = {q(value['referenced_relation'])}, "
-                    f"referenced_attributes = {inline_strings(value['referenced_attributes'])}"
-                )
-            elif field == "required_index":
-                rendered = (
-                    f"name = {q(value['name'])}, attributes = {inline_strings(value['attributes'])}, "
-                    f"unique = {str(value['unique']).lower()}"
-                )
-            else:
-                rendered = (
-                    f"name = {q(value['name'])}, sqlite_expression = {q(value['sqlite_expression'])}, "
-                    f"mariadb_expression = {q(value['mariadb_expression'])}"
-                )
+            match field:
+                case "foreign_key":
+                    rendered = (
+                        f"name = {q(value['name'])}, attributes = {inline_strings(value['attributes'])}, "
+                        f"referenced_relation = {q(value['referenced_relation'])}, "
+                        f"referenced_attributes = {inline_strings(value['referenced_attributes'])}"
+                    )
+                case "required_index":
+                    rendered = (
+                        f"name = {q(value['name'])}, attributes = {inline_strings(value['attributes'])}, "
+                        f"unique = {str(value['unique']).lower()}"
+                    )
+                case _:
+                    rendered = (
+                        f"name = {q(value['name'])}, sqlite_expression = {q(value['sqlite_expression'])}, "
+                        f"mariadb_expression = {q(value['mariadb_expression'])}"
+                    )
             lines.append("  { " + rendered + " },")
         lines.append("]")
     return "\n".join(lines)
@@ -1894,61 +1907,62 @@ def topological_order(
         view = relation.get("view")
         if isinstance(view, dict):
             pattern = str(view["pattern"])
-            if pattern == "nearest_ancestor_overlay":
-                view_dependencies = tuple(
-                    str(view[field])
-                    for field in (
-                        "ancestry_relation",
-                        "shadow_relation",
-                        "tombstone_relation",
+            match pattern:
+                case "nearest_ancestor_overlay":
+                    view_dependencies = tuple(
+                        str(view[field])
+                        for field in (
+                            "ancestry_relation",
+                            "shadow_relation",
+                            "tombstone_relation",
+                        )
                     )
-                )
-            elif pattern == "sealed_vertical_family":
-                view_dependencies = (
-                    str(view["anchor_relation"]),
-                    str(view["seal_relation"]),
-                    *(str(member["relation"]) for member in view["members"]),
-                )
-            elif pattern == "revision_generation_baseline":
-                view_dependencies = (
-                    str(view["base_relation"]),
-                    str(view["mapping_relation"]),
-                )
-            elif pattern == "revision_generation_head":
-                view_dependencies = (
-                    str(view["revision_relation"]),
-                    str(view["time_relation"]),
-                    str(view["mapping_relation"]),
-                )
-            elif pattern in {
-                "analysis_ancestry_endpoint",
-                "analysis_gid_winner_keyset",
-                "artifact_delta_old",
-                "artifact_delta_new",
-                "build_manifest_projection",
-                "analysis_impacted_gid_projection",
-                "analysis_impacted_gid_provenance_projection",
-                "catalog_publication_occurrence_identity",
-                "catalog_publication_projection",
-                "catalog_publication_title_projection",
-                "gallery_observation_metadata_projection",
-                "publication_selection_occurrence_identity",
-                "publication_selection_projection",
-                "publication_candidate_projection",
-                "batch_receipt_derived",
-                "publication_commit_baseline",
-                "publication_commit_published_descriptor",
-                "publication_commit_generation",
-                "publication_commit_head",
-                "publication_commit_head_projection",
-                "publication_receipt",
-                "lifecycle_projection",
-            }:
-                view_dependencies = tuple(
-                    str(value) for value in view["source_relations"]
-                )
-            else:
-                raise RuntimeError(f"Unsupported view pattern {pattern!r}")
+                case "sealed_vertical_family":
+                    view_dependencies = (
+                        str(view["anchor_relation"]),
+                        str(view["seal_relation"]),
+                        *(str(member["relation"]) for member in view["members"]),
+                    )
+                case "revision_generation_baseline":
+                    view_dependencies = (
+                        str(view["base_relation"]),
+                        str(view["mapping_relation"]),
+                    )
+                case "revision_generation_head":
+                    view_dependencies = (
+                        str(view["revision_relation"]),
+                        str(view["time_relation"]),
+                        str(view["mapping_relation"]),
+                    )
+                case (
+                    "analysis_ancestry_endpoint"
+                    | "analysis_gid_winner_keyset"
+                    | "artifact_delta_old"
+                    | "artifact_delta_new"
+                    | "build_manifest_projection"
+                    | "analysis_impacted_gid_projection"
+                    | "analysis_impacted_gid_provenance_projection"
+                    | "catalog_publication_occurrence_identity"
+                    | "catalog_publication_projection"
+                    | "catalog_publication_title_projection"
+                    | "gallery_observation_metadata_projection"
+                    | "publication_selection_occurrence_identity"
+                    | "publication_selection_projection"
+                    | "publication_candidate_projection"
+                    | "batch_receipt_derived"
+                    | "publication_commit_baseline"
+                    | "publication_commit_published_descriptor"
+                    | "publication_commit_generation"
+                    | "publication_commit_head"
+                    | "publication_commit_head_projection"
+                    | "publication_receipt"
+                    | "lifecycle_projection"
+                ):
+                    view_dependencies = tuple(
+                        str(value) for value in view["source_relations"]
+                    )
+                case _:
+                    raise RuntimeError(f"Unsupported view pattern {pattern!r}")
             for target in view_dependencies:
                 dependencies[name].add(target)
                 reverse[target].add(name)

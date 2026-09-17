@@ -163,15 +163,16 @@ def _event(
             }
         },
     }
-    if event == "installed":
-        value["capabilities"] = {"fault_injection": False, "core": True}
-        value["versions"] = {"h2hdb": "0.37.3"}
-    elif event == "process_exit":
-        value.update(
-            measurement_valid=True,
-            counters_complete=True,
-            counter_tail_status="complete",
-        )
+    match event:
+        case "installed":
+            value["capabilities"] = {"fault_injection": False, "core": True}
+            value["versions"] = {"h2hdb": "0.37.3"}
+        case "process_exit":
+            value.update(
+                measurement_valid=True,
+                counters_complete=True,
+                counter_tail_status="complete",
+            )
     return value
 
 
@@ -506,12 +507,13 @@ def test_instrumented_acceptance_rejects_unusable_measurement_evidence(
     installed = _event(1, "installed", 0)
     installed["capabilities"]["ingest"] = failure != "no_ingest"
     events = [installed, _event(2, "process_exit", 3)]
-    if failure == "observer_failed":
-        events[-1]["measurement_valid"] = False
-    elif failure == "no_install":
-        events[0]["event"] = "snapshot"
-    elif failure == "missing":
-        events = []
+    match failure:
+        case "observer_failed":
+            events[-1]["measurement_valid"] = False
+        case "no_install":
+            events[0]["event"] = "snapshot"
+        case "missing":
+            events = []
     summary = report.summarize_probe(events)
     result = report.assess_probe_measurement(
         summary,

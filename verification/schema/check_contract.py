@@ -2538,21 +2538,24 @@ def validate_contract(contract: Contract) -> ValidationReport:
                 relation_by_name,
             )
         )
-    if contract.scope == "catalog_data_plane":
-        errors.extend(
-            _validate_data_plane_integrity_contracts(contract, relation_by_name)
-        )
-        errors.extend(_validate_recomposed_projection_contracts(relation_by_name))
-        errors.extend(_validate_retention_contract(contract, relation_by_name))
-        errors.extend(_validate_data_semantic_obligations(contract, relation_by_name))
-    if contract.scope == "operational_control_plane":
-        errors.extend(
-            _validate_operational_integrity_contracts(
-                contract,
-                relation_by_name,
-                external_by_name,
+    match contract.scope:
+        case "catalog_data_plane":
+            errors.extend(
+                _validate_data_plane_integrity_contracts(contract, relation_by_name)
             )
-        )
+            errors.extend(_validate_recomposed_projection_contracts(relation_by_name))
+            errors.extend(_validate_retention_contract(contract, relation_by_name))
+            errors.extend(
+                _validate_data_semantic_obligations(contract, relation_by_name)
+            )
+        case "operational_control_plane":
+            errors.extend(
+                _validate_operational_integrity_contracts(
+                    contract,
+                    relation_by_name,
+                    external_by_name,
+                )
+            )
 
     decomposition_names: set[str] = set()
     decomposition_signatures: dict[
@@ -3972,23 +3975,24 @@ def _validate_retention_target(
     pending = [target.root_relation]
     if target.root_relation in phases:
         visited_phases.add(target.root_relation)
-    if target.target == "PUBLICATION_CANDIDATE":
-        # A unique reserved revision is a semantic, deliberately non-FK owner:
-        # committed publication payload must outlive its transient candidate.
-        # The exact machine gate above restricts this second traversal root to
-        # an uncommitted candidate and rechecks that predicate for every batch.
-        pending.append("catalog_publication_occurrence_identity")
-        visited_phases.add("catalog_publication_occurrence_identity")
-        # Namespace directory rows share that same reserved-revision owner
-        # without depending on a single publication occurrence.
-        pending.append("tag_directory_order")
-        visited_phases.add("tag_directory_order")
-    if target.target == "CATALOG_PUBLICATION":
-        # The directory's semantic owner is its tag's position-zero ordered
-        # publication. Retire it before that rank row, even when the revision
-        # descriptor remains as compact audit authority.
-        pending.append("tag_directory_order")
-        visited_phases.add("tag_directory_order")
+    match target.target:
+        case "PUBLICATION_CANDIDATE":
+            # A unique reserved revision is a semantic, deliberately non-FK owner:
+            # committed publication payload must outlive its transient candidate.
+            # The exact machine gate above restricts this second traversal root to
+            # an uncommitted candidate and rechecks that predicate for every batch.
+            pending.append("catalog_publication_occurrence_identity")
+            visited_phases.add("catalog_publication_occurrence_identity")
+            # Namespace directory rows share that same reserved-revision owner
+            # without depending on a single publication occurrence.
+            pending.append("tag_directory_order")
+            visited_phases.add("tag_directory_order")
+        case "CATALOG_PUBLICATION":
+            # The directory's semantic owner is its tag's position-zero ordered
+            # publication. Retire it before that rank row, even when the revision
+            # descriptor remains as compact audit authority.
+            pending.append("tag_directory_order")
+            visited_phases.add("tag_directory_order")
     expanded: set[str] = set()
     while pending:
         parent = pending.pop()

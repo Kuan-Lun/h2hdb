@@ -226,23 +226,24 @@ def test_lifetime_receipt_rejects_incomplete_or_mismatched_evidence(
     stream_probe: ModuleType, change: str
 ) -> None:
     events = lifetime_events()
-    if change == "missing":
-        events.pop()
-    elif change == "duplicate":
-        events.append(events[0])
-    elif change == "timeout":
-        events.append({"token": "case", "event": "stream_gate_timeout"})
-    elif change == "no_identity":
-        del events[0]["descriptor_inode"]
-    else:
-        key, value = {
-            "thread": ("thread_id", 98),
-            "process": ("process_instance", "opds-other"),
-            "inode": ("descriptor_inode", 7),
-            "size": ("byte_length", 101),
-            "ordering": ("sequence", 12),
-            "clock": ("monotonic_ns", 1_000_000_000),
-        }[change]
-        events[1][key] = value
+    match change:
+        case "missing":
+            events.pop()
+        case "duplicate":
+            events.append(events[0])
+        case "timeout":
+            events.append({"token": "case", "event": "stream_gate_timeout"})
+        case "no_identity":
+            del events[0]["descriptor_inode"]
+        case _:
+            key, value = {
+                "thread": ("thread_id", 98),
+                "process": ("process_instance", "opds-other"),
+                "inode": ("descriptor_inode", 7),
+                "size": ("byte_length", 101),
+                "ordering": ("sequence", 12),
+                "clock": ("monotonic_ns", 1_000_000_000),
+            }[change]
+            events[1][key] = value
     with pytest.raises(AssertionError, match="Stream lifetime"):
         stream_probe.stream_lifetime_evidence(events, "case")

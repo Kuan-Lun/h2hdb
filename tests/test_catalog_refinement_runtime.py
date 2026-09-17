@@ -1387,33 +1387,34 @@ def test_active_analysis_rejects_corruption_anywhere_in_the_bounded_parent_chain
         )
         catalog_refinement.check_source_baseline_channel_v1(connector)
 
-        if corruption == "missing_parent_suffix":
-            connector.execute(
-                "DELETE FROM catalog_analysis_state_ancestry "
-                "WHERE analysis_id = %s AND ancestor_depth = 1",
-                (ancestors[1],),
-            )
-        elif corruption == "wrong_parent_baseline":
-            connector.execute(
-                "UPDATE catalog_analysis_baselines SET base_analysis_id = %s "
-                "WHERE analysis_id = %s",
-                (ancestors[0], ancestors[1]),
-            )
-        elif corruption == "deep_policy_drift":
-            _insert_analysis_policy(connector, 2, algorithm_version=2)
-            connector.execute("PRAGMA foreign_keys = OFF")
-            connector.execute(
-                "UPDATE catalog_analysis_run_descriptor "
-                "SET policy_id = 2 WHERE analysis_id = %s",
-                (ancestors[2],),
-            )
-            connector.execute("PRAGMA foreign_keys = ON")
-        else:
-            connector.execute(
-                "DELETE FROM catalog_analysis_state_component_seals "
-                "WHERE analysis_id = %s AND state_component = %s",
-                (ancestors[2], b"gid_winner"),
-            )
+        match corruption:
+            case "missing_parent_suffix":
+                connector.execute(
+                    "DELETE FROM catalog_analysis_state_ancestry "
+                    "WHERE analysis_id = %s AND ancestor_depth = 1",
+                    (ancestors[1],),
+                )
+            case "wrong_parent_baseline":
+                connector.execute(
+                    "UPDATE catalog_analysis_baselines SET base_analysis_id = %s "
+                    "WHERE analysis_id = %s",
+                    (ancestors[0], ancestors[1]),
+                )
+            case "deep_policy_drift":
+                _insert_analysis_policy(connector, 2, algorithm_version=2)
+                connector.execute("PRAGMA foreign_keys = OFF")
+                connector.execute(
+                    "UPDATE catalog_analysis_run_descriptor "
+                    "SET policy_id = 2 WHERE analysis_id = %s",
+                    (ancestors[2],),
+                )
+                connector.execute("PRAGMA foreign_keys = ON")
+            case _:
+                connector.execute(
+                    "DELETE FROM catalog_analysis_state_component_seals "
+                    "WHERE analysis_id = %s AND state_component = %s",
+                    (ancestors[2], b"gid_winner"),
+                )
 
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
@@ -1961,46 +1962,47 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
             revision=1,
         )
 
-        if fault == "missing_payload":
-            connector.execute(
-                "DELETE FROM catalog_publication_storage "
-                "WHERE catalog_occurrence_sha256 = %s",
-                (occurrence,),
-            )
-        elif fault == "missing_download_time":
-            connector.execute(
-                "DELETE FROM catalog_publication_download_times "
-                "WHERE catalog_occurrence_sha256 = %s",
-                (occurrence,),
-            )
-        elif fault == "missing_gallery_chain":
-            connector.execute(
-                "DELETE FROM catalog_gallery_source_name_accesses "
-                "WHERE gallery_id = %s",
-                (1,),
-            )
-        else:
-            other_publication_key = vnext_identity.publication_key(18)
-            connector.execute(
-                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                "VALUES (%s, %s)",
-                (18, 1),
-            )
-            connector.execute(
-                "INSERT INTO catalog_source_gallery_name_gids "
-                "(source_gallery_name, gid) VALUES (%s, %s)",
-                (b"gallery-other", 18),
-            )
-            connector.execute(
-                "INSERT INTO catalog_publication_identities (publication_key, gid) "
-                "VALUES (%s, %s)",
-                (other_publication_key, 18),
-            )
-            connector.execute(
-                "UPDATE catalog_gallery_source_name_accesses "
-                "SET source_gallery_name = %s WHERE gallery_id = %s",
-                (b"gallery-other", 1),
-            )
+        match fault:
+            case "missing_payload":
+                connector.execute(
+                    "DELETE FROM catalog_publication_storage "
+                    "WHERE catalog_occurrence_sha256 = %s",
+                    (occurrence,),
+                )
+            case "missing_download_time":
+                connector.execute(
+                    "DELETE FROM catalog_publication_download_times "
+                    "WHERE catalog_occurrence_sha256 = %s",
+                    (occurrence,),
+                )
+            case "missing_gallery_chain":
+                connector.execute(
+                    "DELETE FROM catalog_gallery_source_name_accesses "
+                    "WHERE gallery_id = %s",
+                    (1,),
+                )
+            case _:
+                other_publication_key = vnext_identity.publication_key(18)
+                connector.execute(
+                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+                    "VALUES (%s, %s)",
+                    (18, 1),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_source_gallery_name_gids "
+                    "(source_gallery_name, gid) VALUES (%s, %s)",
+                    (b"gallery-other", 18),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_publication_identities (publication_key, gid) "
+                    "VALUES (%s, %s)",
+                    (other_publication_key, 18),
+                )
+                connector.execute(
+                    "UPDATE catalog_gallery_source_name_accesses "
+                    "SET source_gallery_name = %s WHERE gallery_id = %s",
+                    (b"gallery-other", 1),
+                )
 
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,

@@ -228,35 +228,36 @@ def test_catalog_validation_rejects_corruption_after_a_prior_cached_build(
             "SELECT root_page_sha256 FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
             (digest,),
         )
-        if corruption == "payload":
-            (payload,) = connector.fetch_one(
-                "SELECT page_bytes FROM catalog_canonical_value_page_payloads WHERE page_sha256 = %s",
-                (root,),
-            )
-            connector.execute(
-                "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s WHERE page_sha256 = %s",
-                (payload[:-1] + bytes([payload[-1] ^ 1]), root),
-            )
-        elif corruption == "domain":
-            connector.execute(
-                "UPDATE catalog_canonical_value_allocation_digest_domains SET digest_domain = %s WHERE value_sha256 = %s",
-                (b"catalog_language_utf8_v1", digest),
-            )
-        elif corruption == "unsealed":
-            # Fault injection bypasses the FK that normally protects this seal.
-            connector.execute("PRAGMA foreign_keys = OFF")
-            try:
-                connector.execute(
-                    "DELETE FROM catalog_canonical_value_allocation_seals WHERE value_sha256 = %s",
-                    (digest,),
+        match corruption:
+            case "payload":
+                (payload,) = connector.fetch_one(
+                    "SELECT page_bytes FROM catalog_canonical_value_page_payloads WHERE page_sha256 = %s",
+                    (root,),
                 )
-            finally:
-                connector.execute("PRAGMA foreign_keys = ON")
-        else:
-            connector.execute(
-                "INSERT INTO catalog_canonical_value_page_parents (parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
-                (root, root),
-            )
+                connector.execute(
+                    "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s WHERE page_sha256 = %s",
+                    (payload[:-1] + bytes([payload[-1] ^ 1]), root),
+                )
+            case "domain":
+                connector.execute(
+                    "UPDATE catalog_canonical_value_allocation_digest_domains SET digest_domain = %s WHERE value_sha256 = %s",
+                    (b"catalog_language_utf8_v1", digest),
+                )
+            case "unsealed":
+                # Fault injection bypasses the FK that normally protects this seal.
+                connector.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    connector.execute(
+                        "DELETE FROM catalog_canonical_value_allocation_seals WHERE value_sha256 = %s",
+                        (digest,),
+                    )
+                finally:
+                    connector.execute("PRAGMA foreign_keys = ON")
+            case _:
+                connector.execute(
+                    "INSERT INTO catalog_canonical_value_page_parents (parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
+                    (root, root),
+                )
         with pytest.raises(
             projection.PublicationCandidateConflictError, match="corrupt"
         ):

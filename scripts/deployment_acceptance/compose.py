@@ -526,26 +526,27 @@ def validate_isolation(
             if target in seen:
                 raise ValueError("Duplicated isolated mount")
             seen.add(target)
-            if volume.get("type") == "volume":
-                if name != "database" or volume != {
-                    "type": "volume",
-                    "source": "database-data",
-                    "target": "/var/lib/mysql",
-                }:
-                    raise ValueError("Unknown acceptance volume")
-            elif volume.get("type") == "bind":
-                source = _inside(root, Path(volume["source"]))
-                expected = expected_binds.get(target)
-                if (
-                    expected is None
-                    or volume != _bind(source, target, expected[1])
-                    or source != expected[0]
-                ):
-                    raise ValueError(
-                        "Acceptance bind target/source/access contract changed"
-                    )
-            else:
-                raise ValueError("Unknown acceptance mount type")
+            match volume.get("type"):
+                case "volume":
+                    if name != "database" or volume != {
+                        "type": "volume",
+                        "source": "database-data",
+                        "target": "/var/lib/mysql",
+                    }:
+                        raise ValueError("Unknown acceptance volume")
+                case "bind":
+                    source = _inside(root, Path(volume["source"]))
+                    expected = expected_binds.get(target)
+                    if (
+                        expected is None
+                        or volume != _bind(source, target, expected[1])
+                        or source != expected[0]
+                    ):
+                        raise ValueError(
+                            "Acceptance bind target/source/access contract changed"
+                        )
+                case _:
+                    raise ValueError("Unknown acceptance mount type")
         expected_targets = set(expected_binds) | (
             {"/var/lib/mysql"} if name == "database" else set()
         )

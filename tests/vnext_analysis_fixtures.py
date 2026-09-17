@@ -99,19 +99,20 @@ def seed_analysis_run(
         if completed_at is not None:
             raise ValueError("OPEN fixture cannot have completed_at")
         return
-    if state == "COMPLETE":
-        if completed_at is None:
-            raise ValueError("COMPLETE fixture requires completed_at")
-        insert_analysis_run_completed_at(
-            connector,
-            analysis_id=analysis_id,
-            completed_at=completed_at,
-        )
-    elif state == "ABANDONED":
-        if completed_at is not None:
-            raise ValueError("ABANDONED fixture cannot have completed_at")
-    else:
-        raise ValueError("analysis fixture state is not registered")
+    match state:
+        case "COMPLETE":
+            if completed_at is None:
+                raise ValueError("COMPLETE fixture requires completed_at")
+            insert_analysis_run_completed_at(
+                connector,
+                analysis_id=analysis_id,
+                completed_at=completed_at,
+            )
+        case "ABANDONED":
+            if completed_at is not None:
+                raise ValueError("ABANDONED fixture cannot have completed_at")
+        case _:
+            raise ValueError("analysis fixture state is not registered")
     connector.execute(
         "UPDATE catalog_analysis_run_states SET state = %s "
         "WHERE analysis_id = %s AND state = %s",

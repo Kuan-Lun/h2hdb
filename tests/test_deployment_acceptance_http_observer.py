@@ -282,12 +282,13 @@ def test_archive_mismatch_never_becomes_success(
     change: str,
 ) -> None:
     response = archive(OLD)
-    if change == "bytes":
-        response.body = io.BytesIO(b"x" * len(OLD))
-    elif change == "etag":
-        response.headers["ETag"] = '"invalid"'
-    else:
-        response.headers["Content-Length"] = "100"
+    match change:
+        case "bytes":
+            response.body = io.BytesIO(b"x" * len(OLD))
+        case "etag":
+            response.headers["ETag"] = '"invalid"'
+        case _:
+            response.headers["Content-Length"] = "100"
     install(monkeypatch, observer, [search(7, OLD), response])
     instance = observer.Observer(
         BASE,
@@ -364,14 +365,17 @@ def test_history_binds_each_endpoint_revision_to_its_own_archive(
             "byte_length": final.byte_length,
         },
     ]
-    if change == "new-under-old":
-        samples[0].update(sha256=final.sha256, byte_length=final.byte_length)
-    elif change == "old-under-new":
-        samples[1].update(sha256=old.sha256, byte_length=old.byte_length)
-    elif change == "backward":
-        samples.reverse()
-    else:
-        samples.insert(0, {"status": "revision_changed_before_download", "revision": 6})
+    match change:
+        case "new-under-old":
+            samples[0].update(sha256=final.sha256, byte_length=final.byte_length)
+        case "old-under-new":
+            samples[1].update(sha256=old.sha256, byte_length=old.byte_length)
+        case "backward":
+            samples.reverse()
+        case _:
+            samples.insert(
+                0, {"status": "revision_changed_before_download", "revision": 6}
+            )
     with pytest.raises(observer.http.ProbeError):
         observer._require_sample_history(samples, old, final)
 

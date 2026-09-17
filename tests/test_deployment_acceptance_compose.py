@@ -184,16 +184,19 @@ def test_unknown_service_capabilities_fail_closed(tmp_path: Path, field: str) ->
 def test_mount_contract_drift_is_rejected(tmp_path: Path, change: str) -> None:
     original = model()
     mounts = original["services"]["h2hdb-ingest"]["volumes"]
-    if change == "unknown":
-        mounts.append({**mounts[0], "target": "/var/run/docker.sock"})
-    elif change == "duplicate":
-        mounts.append(mounts[0])
-    elif change == "writable-source":
-        mounts[1]["read_only"] = False
-    elif change == "create-host":
-        mounts[0]["bind"]["create_host_path"] = True
-    else:
-        original["services"]["h2hdb-opds"]["volumes"][1]["source"] = "/other/current"
+    match change:
+        case "unknown":
+            mounts.append({**mounts[0], "target": "/var/run/docker.sock"})
+        case "duplicate":
+            mounts.append(mounts[0])
+        case "writable-source":
+            mounts[1]["read_only"] = False
+        case "create-host":
+            mounts[0]["bind"]["create_host_path"] = True
+        case _:
+            original["services"]["h2hdb-opds"]["volumes"][1]["source"] = (
+                "/other/current"
+            )
     with pytest.raises(ValueError):
         derive(tmp_path, original)
 
@@ -333,15 +336,16 @@ def test_executor_rejects_role_command_or_observer_scope_drift(
 ) -> None:
     isolated = derive(tmp_path, instrumented=True)
     command = isolated["services"][compose.SERVICES[role]]["command"]
-    if change == "credential":
-        command.insert(
-            1, f"H2HDB_DATABASE_WRITER_PASSWORD={CREDENTIALS.writer_password}"
-        )
-    elif change == "control":
-        assignment = "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
-        command.remove(assignment)
-    else:
-        command[-1] = "bootstrap"
+    match change:
+        case "credential":
+            command.insert(
+                1, f"H2HDB_DATABASE_WRITER_PASSWORD={CREDENTIALS.writer_password}"
+            )
+        case "control":
+            assignment = "H2HDB_ACCEPTANCE_CONTROL_DIR=/acceptance-control"
+            command.remove(assignment)
+        case _:
+            command[-1] = "bootstrap"
     with pytest.raises(ValueError, match="role command or observer scope changed"):
         compose.validate_isolation(isolated, tmp_path / "fixture", project=PROJECT)
 
@@ -490,18 +494,19 @@ def test_executor_revalidation_rejects_later_safety_drift(
 ) -> None:
     isolated = derive(tmp_path)
     reader = isolated["services"]["h2hdb-opds"]
-    if change == "unknown-target":
-        reader["volumes"][0]["target"] = "/other"
-    elif change == "writable-reader":
-        reader["volumes"][1]["read_only"] = False
-    elif change == "reader-secret":
-        reader["environment"]["H2HDB_DATABASE_WRITER_PASSWORD"] = (
-            CREDENTIALS.writer_password
-        )
-    elif change == "mutable-image":
-        reader["image"] = "image:latest"
-    else:
-        reader["volumes"].pop()
+    match change:
+        case "unknown-target":
+            reader["volumes"][0]["target"] = "/other"
+        case "writable-reader":
+            reader["volumes"][1]["read_only"] = False
+        case "reader-secret":
+            reader["environment"]["H2HDB_DATABASE_WRITER_PASSWORD"] = (
+                CREDENTIALS.writer_password
+            )
+        case "mutable-image":
+            reader["image"] = "image:latest"
+        case _:
+            reader["volumes"].pop()
     with pytest.raises(ValueError):
         compose.validate_isolation(isolated, tmp_path / "fixture", project=PROJECT)
 

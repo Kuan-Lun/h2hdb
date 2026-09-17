@@ -253,14 +253,15 @@ def _where(
 
 
 def _corrupted(value: Any) -> Any:
-    if isinstance(value, bool):
-        return int(not value)
-    if isinstance(value, int):
-        return value + 1
-    if isinstance(value, bytes):
-        return bytes([value[0] ^ 0xFF]) + value[1:] if value else b"\x01"
-    if isinstance(value, str):
-        return value + "x"
+    match value:
+        case bool():
+            return int(not value)
+        case int():
+            return value + 1
+        case bytes():
+            return bytes([value[0] ^ 0xFF]) + value[1:] if value else b"\x01"
+        case str():
+            return value + "x"
     raise TypeError(type(value))
 
 

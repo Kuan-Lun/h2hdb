@@ -229,53 +229,54 @@ def test_batch_rejects_stale_or_mixed_fences_before_any_write(
     ):
         items = list(batch.items)
         fence = cast(publication._CanonicalStageFence, items[0].stage_fence)
-        if stale == "consumer":
-            with connector.transaction():
-                connector.execute(
-                    "UPDATE catalog_publication_checkpoints SET `cursor` = %s "
-                    "WHERE candidate_id = %s AND stage = %s",
-                    (
-                        min(
-                            cast(
-                                publication._CanonicalStageFence, item.stage_fence
-                            ).first_consumer_cursor
-                            for item in items
+        match stale:
+            case "consumer":
+                with connector.transaction():
+                    connector.execute(
+                        "UPDATE catalog_publication_checkpoints SET `cursor` = %s "
+                        "WHERE candidate_id = %s AND stage = %s",
+                        (
+                            min(
+                                cast(
+                                    publication._CanonicalStageFence, item.stage_fence
+                                ).first_consumer_cursor
+                                for item in items
+                            ),
+                            fixtures._CANDIDATE,
+                            b"BUILD_CATALOG_PROJECTION",
                         ),
-                        fixtures._CANDIDATE,
-                        b"BUILD_CATALOG_PROJECTION",
-                    ),
-                )
-        elif stale == "candidate":
-            items = [
-                replace(
-                    item,
+                    )
+            case "candidate":
+                items = [
+                    replace(
+                        item,
+                        stage_fence=replace(
+                            cast(publication._CanonicalStageFence, item.stage_fence),
+                            candidate_id=b"x" * 16,
+                        ),
+                    )
+                    for item in items
+                ]
+            case "generation":
+                items = [
+                    replace(
+                        item,
+                        stage_fence=replace(
+                            cast(publication._CanonicalStageFence, item.stage_fence),
+                            ingest_generation=turn.generation + 1,
+                        ),
+                    )
+                    for item in items
+                ]
+            case "mixed_stage":
+                items[0] = replace(
+                    items[0],
                     stage_fence=replace(
-                        cast(publication._CanonicalStageFence, item.stage_fence),
-                        candidate_id=b"x" * 16,
+                        fence, stage_action=publication._Action.BUILD_ARTIFACT_INPUT
                     ),
                 )
-                for item in items
-            ]
-        elif stale == "generation":
-            items = [
-                replace(
-                    item,
-                    stage_fence=replace(
-                        cast(publication._CanonicalStageFence, item.stage_fence),
-                        ingest_generation=turn.generation + 1,
-                    ),
-                )
-                for item in items
-            ]
-        elif stale == "mixed_stage":
-            items[0] = replace(
-                items[0],
-                stage_fence=replace(
-                    fence, stage_action=publication._Action.BUILD_ARTIFACT_INPUT
-                ),
-            )
-        else:
-            items[0] = replace(items[0], owner=object())
+            case _:
+                items[0] = replace(items[0], owner=object())
         proposed = replace(batch, items=tuple(items))
         before = _snapshot(connector, batch)
         with pytest.raises((RuntimeError, PublicationCandidateNotReadyError)):

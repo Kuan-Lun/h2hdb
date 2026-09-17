@@ -79,22 +79,23 @@ def test_incomplete_evidence_is_not_a_zero_cost_claim(
     collector: ModuleType, condition: str
 ) -> None:
     before, after = sample(collector, 2), sample(collector, 5)
-    if condition == "reset":
-        after["digests"]["abc"]["COUNT_STAR"] = 1
-    elif condition == "missing":
-        after["digests"] = {}
-    elif condition in {"truncated", "disabled"}:
-        after["digest_status"] = condition
-    elif condition == "overflow":
-        after["global_digest_overflow_events"] = 100
-    elif condition == "untimed":
-        after["statement_instruments"][0]["timed"] = "NO"
-    elif condition == "consumer":
-        after["consumers"]["statements_digest"] = "NO"
-    elif condition == "restart":
-        after["global_status"]["Uptime"] = 1
-    else:
-        del after["global_status"]["Uptime"]
+    match condition:
+        case "reset":
+            after["digests"]["abc"]["COUNT_STAR"] = 1
+        case "missing":
+            after["digests"] = {}
+        case "truncated" | "disabled":
+            after["digest_status"] = condition
+        case "overflow":
+            after["global_digest_overflow_events"] = 100
+        case "untimed":
+            after["statement_instruments"][0]["timed"] = "NO"
+        case "consumer":
+            after["consumers"]["statements_digest"] = "NO"
+        case "restart":
+            after["global_status"]["Uptime"] = 1
+        case _:
+            del after["global_status"]["Uptime"]
     result = collector.differences(before, after)
     assert result["complete_counter_comparison"] is False
     assert result["limitations_detected"]

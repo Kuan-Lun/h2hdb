@@ -401,12 +401,13 @@ def _positive_seconds(value: str) -> float:
 
 
 def _phases(profile: ProfileName) -> tuple[PytestPhase, ...]:
-    if profile == "merge":
-        return MERGE_PHASES
-    if profile == "mariadb-server-crash":
-        return (MARIADB_SERVER_CRASH_PHASE,)
-    if profile == "cleanup-acceptance":
-        return CLEANUP_ACCEPTANCE_PHASES
+    match profile:
+        case "merge":
+            return MERGE_PHASES
+        case "mariadb-server-crash":
+            return (MARIADB_SERVER_CRASH_PHASE,)
+        case "cleanup-acceptance":
+            return CLEANUP_ACCEPTANCE_PHASES
     return DEEP_PHASES
 
 

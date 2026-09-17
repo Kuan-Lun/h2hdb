@@ -221,18 +221,19 @@ def test_search_requires_exact_identity_one_acquisition_and_advertised_size(
 ) -> None:
     document = _document()
     publication = document["publications"][0]
-    if change == "empty":
-        document["publications"] = []
-    elif change == "multiple":
-        document["publications"].append(publication)
-    elif change == "gid":
-        publication["metadata"]["identifier"] = "urn:h2h:gallery:7"
-    elif change == "no-acquisition":
-        publication["links"].pop()
-    elif change == "duplicate":
-        publication["links"].append(publication["links"][-1])
-    else:
-        publication["links"][-1]["size"] += 1
+    match change:
+        case "empty":
+            document["publications"] = []
+        case "multiple":
+            document["publications"].append(publication)
+        case "gid":
+            publication["metadata"]["identifier"] = "urn:h2h:gallery:7"
+        case "no-acquisition":
+            publication["links"].pop()
+        case "duplicate":
+            publication["links"].append(publication["links"][-1])
+        case _:
+            publication["links"][-1]["size"] += 1
     opener = _install(monkeypatch, _responses(document))
     with pytest.raises(probe.ProbeError):
         probe.probe(BASE, GID, DIGEST, len(CONTENT))
@@ -262,14 +263,17 @@ def test_range_checks_status_headers_and_exact_prefix(
 ) -> None:
     responses = _responses()
     response = responses[-1]
-    if change == "status":
-        response.status = 200
-    elif change == "extent":
-        response.headers["Content-Range"] = f"bytes 1-32/{len(CONTENT)}"
-    elif change == "length":
-        response.headers["Content-Length"] = "31"
-    else:
-        response.body = io.BytesIO(b"x" * 32 if change == "content" else CONTENT[:33])
+    match change:
+        case "status":
+            response.status = 200
+        case "extent":
+            response.headers["Content-Range"] = f"bytes 1-32/{len(CONTENT)}"
+        case "length":
+            response.headers["Content-Length"] = "31"
+        case _:
+            response.body = io.BytesIO(
+                b"x" * 32 if change == "content" else CONTENT[:33]
+            )
     _install(monkeypatch, responses)
     with pytest.raises(probe.ProbeError):
         probe.probe(BASE, GID, DIGEST, len(CONTENT))

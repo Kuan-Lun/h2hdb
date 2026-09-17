@@ -134,10 +134,11 @@ class PhysicalColumnSpec:
     mariadb: BackendColumnSpec
 
     def for_backend(self, backend: str) -> BackendColumnSpec:
-        if backend == "sqlite":
-            return self.sqlite
-        if backend == "mariadb":
-            return self.mariadb
+        match backend:
+            case "sqlite":
+                return self.sqlite
+            case "mariadb":
+                return self.mariadb
         raise ValueError(f"Unsupported physical-schema backend: {backend!r}")
 
 
@@ -163,10 +164,11 @@ class PhysicalCheckSpec:
     mariadb_expression: str
 
     def expression_for(self, backend: str) -> str:
-        if backend == "sqlite":
-            return self.sqlite_expression
-        if backend == "mariadb":
-            return self.mariadb_expression
+        match backend:
+            case "sqlite":
+                return self.sqlite_expression
+            case "mariadb":
+                return self.mariadb_expression
         raise ValueError(f"Unsupported physical-schema backend: {backend!r}")
 
 
@@ -873,145 +875,156 @@ def load_physical_schema(
                     f"view relation {relation_name!r}.view must be a table"
                 )
             pattern = _required_string(raw_view, "pattern")
-            if pattern == "nearest_ancestor_overlay":
-                unexpected_view = set(raw_view) - {
-                    "pattern",
-                    "ancestry_relation",
-                    "shadow_relation",
-                    "tombstone_relation",
-                }
-                if unexpected_view:
-                    raise ValueError(
-                        f"view relation {relation_name!r}.view has unknown fields "
-                        f"{_format_names(unexpected_view)}"
-                    )
-                overlay_view = OverlayViewSpec(
-                    _required_string(raw_view, "ancestry_relation"),
-                    _required_string(raw_view, "shadow_relation"),
-                    _required_string(raw_view, "tombstone_relation"),
-                )
-            elif pattern == "sealed_vertical_family":
-                unexpected_view = set(raw_view) - {
-                    "pattern",
-                    "family",
-                    "anchor_relation",
-                    "seal_relation",
-                    "key_attributes",
-                    "members",
-                    "projection_attributes",
-                    "optional_presence",
-                }
-                if unexpected_view:
-                    raise ValueError(
-                        f"view relation {relation_name!r}.view has unknown fields "
-                        f"{_format_names(unexpected_view)}"
-                    )
-                vertical_view = SealedVerticalViewSpec(
-                    family=_required_string(raw_view, "family"),
-                    anchor_relation=_required_string(raw_view, "anchor_relation"),
-                    seal_relation=_required_string(raw_view, "seal_relation"),
-                    key_attributes=_required_string_tuple(raw_view, "key_attributes"),
-                    members=tuple(
-                        _parse_vertical_view_member(member)
-                        for member in _table_array(
-                            raw_view.get("members"),
-                            f"view relation {relation_name!r}.view.members",
+            match pattern:
+                case "nearest_ancestor_overlay":
+                    unexpected_view = set(raw_view) - {
+                        "pattern",
+                        "ancestry_relation",
+                        "shadow_relation",
+                        "tombstone_relation",
+                    }
+                    if unexpected_view:
+                        raise ValueError(
+                            f"view relation {relation_name!r}.view has unknown fields "
+                            f"{_format_names(unexpected_view)}"
                         )
-                    ),
-                    projection_attributes=(
-                        _required_string_tuple(raw_view, "projection_attributes")
-                        if "projection_attributes" in raw_view
-                        else ()
-                    ),
-                    optional_presence=(
-                        VerticalOptionalPresenceSpec(
-                            member_relation=_required_string(
-                                _required_table(raw_view, "optional_presence"),
-                                "member_relation",
-                            ),
-                            discriminator_relation=_required_string(
-                                _required_table(raw_view, "optional_presence"),
-                                "discriminator_relation",
-                            ),
-                            discriminator_attribute=_required_string(
-                                _required_table(raw_view, "optional_presence"),
-                                "discriminator_attribute",
-                            ),
-                            present_value=_required_string(
-                                _required_table(raw_view, "optional_presence"),
-                                "present_value",
-                            ),
-                            absent_values=_required_string_tuple(
-                                _required_table(raw_view, "optional_presence"),
-                                "absent_values",
-                            ),
+                    overlay_view = OverlayViewSpec(
+                        _required_string(raw_view, "ancestry_relation"),
+                        _required_string(raw_view, "shadow_relation"),
+                        _required_string(raw_view, "tombstone_relation"),
+                    )
+                case "sealed_vertical_family":
+                    unexpected_view = set(raw_view) - {
+                        "pattern",
+                        "family",
+                        "anchor_relation",
+                        "seal_relation",
+                        "key_attributes",
+                        "members",
+                        "projection_attributes",
+                        "optional_presence",
+                    }
+                    if unexpected_view:
+                        raise ValueError(
+                            f"view relation {relation_name!r}.view has unknown fields "
+                            f"{_format_names(unexpected_view)}"
                         )
-                        if "optional_presence" in raw_view
-                        else None
-                    ),
-                )
-            elif pattern == "revision_generation_baseline":
-                expected_fields = {
-                    "pattern",
-                    "base_relation",
-                    "mapping_relation",
-                    "owner_attribute",
-                    "revision_attribute",
-                    "mapping_revision_attribute",
-                    "generation_attribute",
-                    "mapping_generation_attribute",
-                }
-                unexpected_view = set(raw_view) - expected_fields
-                if unexpected_view:
-                    raise ValueError(
-                        f"view relation {relation_name!r}.view has unknown fields "
-                        f"{_format_names(unexpected_view)}"
+                    vertical_view = SealedVerticalViewSpec(
+                        family=_required_string(raw_view, "family"),
+                        anchor_relation=_required_string(raw_view, "anchor_relation"),
+                        seal_relation=_required_string(raw_view, "seal_relation"),
+                        key_attributes=_required_string_tuple(
+                            raw_view, "key_attributes"
+                        ),
+                        members=tuple(
+                            _parse_vertical_view_member(member)
+                            for member in _table_array(
+                                raw_view.get("members"),
+                                f"view relation {relation_name!r}.view.members",
+                            )
+                        ),
+                        projection_attributes=(
+                            _required_string_tuple(raw_view, "projection_attributes")
+                            if "projection_attributes" in raw_view
+                            else ()
+                        ),
+                        optional_presence=(
+                            VerticalOptionalPresenceSpec(
+                                member_relation=_required_string(
+                                    _required_table(raw_view, "optional_presence"),
+                                    "member_relation",
+                                ),
+                                discriminator_relation=_required_string(
+                                    _required_table(raw_view, "optional_presence"),
+                                    "discriminator_relation",
+                                ),
+                                discriminator_attribute=_required_string(
+                                    _required_table(raw_view, "optional_presence"),
+                                    "discriminator_attribute",
+                                ),
+                                present_value=_required_string(
+                                    _required_table(raw_view, "optional_presence"),
+                                    "present_value",
+                                ),
+                                absent_values=_required_string_tuple(
+                                    _required_table(raw_view, "optional_presence"),
+                                    "absent_values",
+                                ),
+                            )
+                            if "optional_presence" in raw_view
+                            else None
+                        ),
                     )
-                generation_baseline_view = RevisionGenerationBaselineViewSpec(
-                    base_relation=_required_string(raw_view, "base_relation"),
-                    mapping_relation=_required_string(raw_view, "mapping_relation"),
-                    owner_attribute=_required_string(raw_view, "owner_attribute"),
-                    revision_attribute=_required_string(raw_view, "revision_attribute"),
-                    mapping_revision_attribute=_required_string(
-                        raw_view, "mapping_revision_attribute"
-                    ),
-                    generation_attribute=_required_string(
-                        raw_view, "generation_attribute"
-                    ),
-                    mapping_generation_attribute=_required_string(
-                        raw_view, "mapping_generation_attribute"
-                    ),
-                )
-            elif pattern == "revision_generation_head":
-                expected_fields = {
-                    "pattern",
-                    "revision_relation",
-                    "time_relation",
-                    "mapping_relation",
-                    "channel_attribute",
-                    "revision_attribute",
-                    "generation_attribute",
-                    "time_attribute",
-                }
-                unexpected_view = set(raw_view) - expected_fields
-                if unexpected_view:
-                    raise ValueError(
-                        f"view relation {relation_name!r}.view has unknown fields "
-                        f"{_format_names(unexpected_view)}"
+                case "revision_generation_baseline":
+                    expected_fields = {
+                        "pattern",
+                        "base_relation",
+                        "mapping_relation",
+                        "owner_attribute",
+                        "revision_attribute",
+                        "mapping_revision_attribute",
+                        "generation_attribute",
+                        "mapping_generation_attribute",
+                    }
+                    unexpected_view = set(raw_view) - expected_fields
+                    if unexpected_view:
+                        raise ValueError(
+                            f"view relation {relation_name!r}.view has unknown fields "
+                            f"{_format_names(unexpected_view)}"
+                        )
+                    generation_baseline_view = RevisionGenerationBaselineViewSpec(
+                        base_relation=_required_string(raw_view, "base_relation"),
+                        mapping_relation=_required_string(raw_view, "mapping_relation"),
+                        owner_attribute=_required_string(raw_view, "owner_attribute"),
+                        revision_attribute=_required_string(
+                            raw_view, "revision_attribute"
+                        ),
+                        mapping_revision_attribute=_required_string(
+                            raw_view, "mapping_revision_attribute"
+                        ),
+                        generation_attribute=_required_string(
+                            raw_view, "generation_attribute"
+                        ),
+                        mapping_generation_attribute=_required_string(
+                            raw_view, "mapping_generation_attribute"
+                        ),
                     )
-                generation_head_view = RevisionGenerationHeadViewSpec(
-                    revision_relation=_required_string(raw_view, "revision_relation"),
-                    time_relation=_required_string(raw_view, "time_relation"),
-                    mapping_relation=_required_string(raw_view, "mapping_relation"),
-                    channel_attribute=_required_string(raw_view, "channel_attribute"),
-                    revision_attribute=_required_string(raw_view, "revision_attribute"),
-                    generation_attribute=_required_string(
-                        raw_view, "generation_attribute"
-                    ),
-                    time_attribute=_required_string(raw_view, "time_attribute"),
-                )
-            else:
-                derived_view = parse_derived_view_spec(raw_view, relation_name)
+                case "revision_generation_head":
+                    expected_fields = {
+                        "pattern",
+                        "revision_relation",
+                        "time_relation",
+                        "mapping_relation",
+                        "channel_attribute",
+                        "revision_attribute",
+                        "generation_attribute",
+                        "time_attribute",
+                    }
+                    unexpected_view = set(raw_view) - expected_fields
+                    if unexpected_view:
+                        raise ValueError(
+                            f"view relation {relation_name!r}.view has unknown fields "
+                            f"{_format_names(unexpected_view)}"
+                        )
+                    generation_head_view = RevisionGenerationHeadViewSpec(
+                        revision_relation=_required_string(
+                            raw_view, "revision_relation"
+                        ),
+                        time_relation=_required_string(raw_view, "time_relation"),
+                        mapping_relation=_required_string(raw_view, "mapping_relation"),
+                        channel_attribute=_required_string(
+                            raw_view, "channel_attribute"
+                        ),
+                        revision_attribute=_required_string(
+                            raw_view, "revision_attribute"
+                        ),
+                        generation_attribute=_required_string(
+                            raw_view, "generation_attribute"
+                        ),
+                        time_attribute=_required_string(raw_view, "time_attribute"),
+                    )
+                case _:
+                    derived_view = parse_derived_view_spec(raw_view, relation_name)
         elif raw_view is not None:
             raise ValueError(f"table relation {relation_name!r} cannot declare view")
         raw_columns = raw_relation.get("column")
@@ -2195,732 +2208,741 @@ def _render_derived_view(
     pattern = spec.pattern
     expressions: dict[str, str]
     from_sql: str
-    if pattern == "lifecycle_projection":
-        if len(sources) != 3:
-            raise ValueError(
-                "lifecycle_projection requires descriptor, state, terminal"
-            )
-        descriptor, state, terminal = sources
-        present_state = {
-            "analysis_run": "COMPLETE",
-            "source_build": "SEALED",
-        }.get(relation.relation)
-        if present_state is None:
-            raise ValueError(f"unsupported lifecycle projection {relation.relation!r}")
-        descriptor_attributes = {item.attribute for item in descriptor.columns}
-        state_attributes = {item.attribute for item in state.columns}
-        terminal_attributes = {item.attribute for item in terminal.columns}
-        expressions = {}
-        for item in relation.columns:
-            if item.attribute in descriptor_attributes:
-                source, alias = descriptor, "descriptor"
-            elif item.attribute in state_attributes:
-                source, alias = state, "mutable_state"
-            elif item.attribute in terminal_attributes:
-                source, alias = terminal, "terminal"
-            else:
+    match pattern:
+        case "lifecycle_projection":
+            if len(sources) != 3:
                 raise ValueError(
-                    f"lifecycle projection cannot source {item.attribute!r}"
+                    "lifecycle_projection requires descriptor, state, terminal"
                 )
-            expressions[item.attribute] = f"{alias}.{column(source, item.attribute)}"
-        key_attributes = tuple(relation.primary_key)
-        state_join = "\n AND ".join(
-            f"mutable_state.{column(state, attribute)} "
-            f"= descriptor.{column(descriptor, attribute)}"
-            for attribute in key_attributes
-        )
-        terminal_join = "\n AND ".join(
-            f"terminal.{column(terminal, attribute)} "
-            f"= descriptor.{column(descriptor, attribute)}"
-            for attribute in key_attributes
-        )
-
-        def literal(value: str) -> str:
-            return "'" + value.replace("'", "''") + "'"
-
-        state_column = f"mutable_state.{column(state, 'state')}"
-        terminal_key = f"terminal.{column(terminal, key_attributes[0])}"
-        from_sql = (
-            f"FROM {table(descriptor)} AS descriptor\n"
-            f"JOIN {table(state)} AS mutable_state\n"
-            f"  ON {state_join}\n"
-            f"LEFT JOIN {table(terminal)} AS terminal\n"
-            f"  ON {terminal_join}\n"
-            f"WHERE {state_column} = {literal(present_state)} "
-            f"AND {terminal_key} IS NOT NULL\n"
-            f"   OR {state_column} IN ({literal('OPEN')}, "
-            f"{literal('ABANDONED')}) AND {terminal_key} IS NULL"
-        )
-    elif pattern == "build_manifest_projection":
-        source_by_name = {source.relation: source for source in sources}
-        if set(source_by_name) != {
-            "build_manifest_core",
-            "source_build_discovery",
-            "source_build_sealed_at",
-        }:
-            raise ValueError("build_manifest_projection source set drift")
-        core = source_by_name["build_manifest_core"]
-        discovery = source_by_name["source_build_discovery"]
-        terminal = source_by_name["source_build_sealed_at"]
-        core_attributes = {item.attribute for item in core.columns}
-        expressions = {}
-        for item in relation.columns:
-            if item.attribute in core_attributes:
-                expressions[item.attribute] = f"core.{column(core, item.attribute)}"
-            elif item.attribute == "gallery_count":
-                expressions[item.attribute] = (
-                    f"discovery.{column(discovery, 'gallery_count')}"
-                )
-            elif item.attribute == "computed_at":
-                expressions[item.attribute] = (
-                    f"terminal.{column(terminal, 'sealed_at')}"
-                )
-            else:
+            descriptor, state, terminal = sources
+            present_state = {
+                "analysis_run": "COMPLETE",
+                "source_build": "SEALED",
+            }.get(relation.relation)
+            if present_state is None:
                 raise ValueError(
-                    f"build_manifest_projection cannot source {item.attribute!r}"
+                    f"unsupported lifecycle projection {relation.relation!r}"
                 )
-        from_sql = (
-            f"FROM {table(core)} AS core\n"
-            f"JOIN {table(discovery)} AS discovery\n"
-            f"  ON discovery.{column(discovery, 'build_id')}\n"
-            f"   = core.{column(core, 'build_id')}\n"
-            f"JOIN {table(terminal)} AS terminal\n"
-            f"  ON terminal.{column(terminal, 'build_id')}\n"
-            f"   = core.{column(core, 'build_id')}"
-        )
-    elif pattern in {
-        "publication_selection_occurrence_identity",
-        "catalog_publication_occurrence_identity",
-    }:
-        source_by_name = {source.relation: source for source in sources}
-        storage_name = (
-            "publication_selection_storage"
-            if pattern == "publication_selection_occurrence_identity"
-            else "catalog_publication_storage"
-        )
-        storage = source_by_name[storage_name]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        publication = source_by_name["publication_identity"]
-        occurrence_attribute = (
-            "selection_occurrence_sha256"
-            if pattern == "publication_selection_occurrence_identity"
-            else "catalog_occurrence_sha256"
-        )
-        expressions = {
-            occurrence_attribute: f"stored.{column(storage, occurrence_attribute)}",
-            "publication_key": f"publication.{column(publication, 'publication_key')}",
-        }
-        scope_attribute = (
-            "candidate_id"
-            if pattern == "publication_selection_occurrence_identity"
-            else "revision"
-        )
-        expressions[scope_attribute] = f"stored.{column(storage, scope_attribute)}"
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = stored.{column(storage, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}\n"
-            f"JOIN {table(publication)} AS publication\n"
-            f"  ON publication.{column(publication, 'gid')}\n"
-            f"   = name_gid.{column(name_gid, 'gid')}"
-        )
-    elif pattern == "publication_selection_projection":
-        source_by_name = {source.relation: source for source in sources}
-        storage = source_by_name["publication_selection_storage"]
-        occurrence = source_by_name["publication_selection_occurrence_identity"]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        publication = source_by_name["publication_identity"]
-        expressions = {
-            "candidate_id": f"occurrence.{column(occurrence, 'candidate_id')}",
-            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
-            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
-        }
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(occurrence)} AS occurrence\n"
-            f"  ON occurrence.{column(occurrence, 'selection_occurrence_sha256')}\n"
-            f"   = stored.{column(storage, 'selection_occurrence_sha256')}\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = stored.{column(storage, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}\n"
-            f"JOIN {table(publication)} AS derived\n"
-            f"  ON derived.{column(publication, 'gid')}\n"
-            f"   = name_gid.{column(name_gid, 'gid')}\n"
-            f" AND derived.{column(publication, 'publication_key')}\n"
-            f"   = occurrence.{column(occurrence, 'publication_key')}"
-        )
-    elif pattern == "catalog_publication_projection":
-        source_by_name = {source.relation: source for source in sources}
-        storage = source_by_name["catalog_publication_storage"]
-        occurrence = source_by_name["catalog_publication_occurrence_identity"]
-        download = source_by_name["catalog_publication_download_time"]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        publication = source_by_name["publication_identity"]
-        expressions = {
-            "revision": f"occurrence.{column(occurrence, 'revision')}",
-            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
-            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
-            "summary_sha256": f"stored.{column(storage, 'summary_sha256')}",
-            "language_sha256": f"stored.{column(storage, 'language_sha256')}",
-            "modified_at": f"stored.{column(storage, 'modified_at')}",
-            "download_time": f"download.{column(download, 'download_time')}",
-        }
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(occurrence)} AS occurrence\n"
-            f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
-            f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
-            f"JOIN {table(download)} AS download\n"
-            f"  ON download.{column(download, 'catalog_occurrence_sha256')}\n"
-            f"   = occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = stored.{column(storage, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}\n"
-            f"JOIN {table(publication)} AS derived\n"
-            f"  ON derived.{column(publication, 'gid')}\n"
-            f"   = name_gid.{column(name_gid, 'gid')}\n"
-            f" AND derived.{column(publication, 'publication_key')}\n"
-            f"   = occurrence.{column(occurrence, 'publication_key')}"
-        )
-    elif pattern == "catalog_publication_title_projection":
-        source_by_name = {source.relation: source for source in sources}
-        storage = source_by_name["catalog_publication_storage"]
-        occurrence = source_by_name["catalog_publication_occurrence_identity"]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        publication = source_by_name["publication_identity"]
-        expressions = {
-            "revision": f"occurrence.{column(occurrence, 'revision')}",
-            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
-            "source_title_sha256": f"stored.{column(storage, 'source_title_sha256')}",
-            "source_gallery_name": f"access.{column(access, 'source_gallery_name')}",
-        }
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(occurrence)} AS occurrence\n"
-            f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
-            f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
-            "\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = stored.{column(storage, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}\n"
-            f"JOIN {table(publication)} AS derived\n"
-            f"  ON derived.{column(publication, 'gid')}\n"
-            f"   = name_gid.{column(name_gid, 'gid')}\n"
-            f" AND derived.{column(publication, 'publication_key')}\n"
-            f"   = occurrence.{column(occurrence, 'publication_key')}"
-        )
-    elif pattern == "analysis_impacted_gid_provenance_projection":
-        source_by_name = {source.relation: source for source in sources}
-        storage = source_by_name["analysis_impacted_gid_provenance_storage"]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        expressions = {
-            "analysis_id": f"stored.{column(storage, 'analysis_id')}",
-            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
-            "gid": f"name_gid.{column(name_gid, 'gid')}",
-        }
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = stored.{column(storage, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}"
-        )
-    elif pattern == "analysis_impacted_gid_projection":
-        source_by_name = {source.relation: source for source in sources}
-        storage = source_by_name["analysis_impacted_gid_storage"]
-        provenance = source_by_name["analysis_impacted_gid_provenance"]
-        expressions = {
-            "analysis_id": f"stored.{column(storage, 'analysis_id')}",
-            "gid": f"stored.{column(storage, 'gid')}",
-            "witness_gallery_id": (
-                f"MIN(provenance.{column(provenance, 'gallery_id')})"
-            ),
-        }
-        from_sql = (
-            f"FROM {table(storage)} AS stored\n"
-            f"JOIN {table(provenance)} AS provenance\n"
-            f"  ON provenance.{column(provenance, 'analysis_id')}\n"
-            f"   = stored.{column(storage, 'analysis_id')}\n"
-            f" AND provenance.{column(provenance, 'gid')}\n"
-            f"   = stored.{column(storage, 'gid')}\n"
-            f"GROUP BY stored.{column(storage, 'analysis_id')}, "
-            f"stored.{column(storage, 'gid')}"
-        )
-    elif pattern == "gallery_observation_metadata_projection":
-        source_by_name = {source.relation: source for source in sources}
-        local = source_by_name["gallery_observation_metadata_local"]
-        access = source_by_name["gallery_source_name_access"]
-        name_gid = source_by_name["source_gallery_name_gid"]
-        upload = source_by_name["gallery_upload_time"]
-        expressions = {
-            "gallery_id": f"local.{column(local, 'gallery_id')}",
-            "observation_id": f"local.{column(local, 'observation_id')}",
-            "gid": f"name_gid.{column(name_gid, 'gid')}",
-            "upload_time": f"upload.{column(upload, 'upload_time')}",
-            "download_time": f"local.{column(local, 'download_time')}",
-            "modified_time": f"local.{column(local, 'modified_time')}",
-        }
-        from_sql = (
-            f"FROM {table(local)} AS local\n"
-            f"JOIN {table(access)} AS access\n"
-            f"  ON access.{column(access, 'gallery_id')}\n"
-            f"   = local.{column(local, 'gallery_id')}\n"
-            f"JOIN {table(name_gid)} AS name_gid\n"
-            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
-            f"   = access.{column(access, 'source_gallery_name')}\n"
-            f"JOIN {table(upload)} AS upload\n"
-            f"  ON upload.{column(upload, 'gid')}\n"
-            f"   = name_gid.{column(name_gid, 'gid')}"
-        )
-    elif pattern == "analysis_ancestry_endpoint":
-        (ancestry,) = sources
-        analysis_id = column(ancestry, "analysis_id")
-        ancestor_analysis_id = column(ancestry, "ancestor_analysis_id")
-        ancestor_depth = column(ancestry, "ancestor_depth")
-        expressions = {
-            "analysis_id": f"endpoint.{analysis_id}",
-            "anchor_analysis_id": f"endpoint.{ancestor_analysis_id}",
-            "overlay_depth": f"endpoint.{ancestor_depth}",
-        }
-        from_sql = (
-            f"FROM {table(ancestry)} AS endpoint\n"
-            "WHERE NOT EXISTS (\n"
-            "  SELECT 1\n"
-            f"  FROM {table(ancestry)} AS deeper\n"
-            f"  WHERE deeper.{analysis_id} = endpoint.{analysis_id}\n"
-            f"    AND deeper.{ancestor_depth} > endpoint.{ancestor_depth}\n"
-            ")"
-        )
-    elif pattern == "analysis_gid_winner_keyset":
-        source_by_name = {source.relation: source for source in sources}
-        selection = source_by_name["analysis_gid_winner_selection"]
-        impacted = source_by_name["analysis_impacted_gid"]
-        run_build = source_by_name["analysis_run_descriptor"]
-        build_gallery = source_by_name["source_build_gallery"]
-        metadata = source_by_name["gallery_observation_metadata"]
-        expressions = {
-            "analysis_id": f"selected.{column(selection, 'analysis_id')}",
-            "gid": f"metadata.{column(metadata, 'gid')}",
-            "winner_gallery_id": (f"selected.{column(selection, 'winner_gallery_id')}"),
-        }
-        from_sql = (
-            f"FROM {table(selection)} AS selected\n"
-            f"JOIN {table(run_build)} AS run_build\n"
-            f"  ON run_build.{column(run_build, 'analysis_id')}\n"
-            f"   = selected.{column(selection, 'analysis_id')}\n"
-            f"JOIN {table(build_gallery)} AS build_gallery\n"
-            f"  ON build_gallery.{column(build_gallery, 'build_id')}\n"
-            f"   = run_build.{column(run_build, 'build_id')}\n"
-            f" AND build_gallery.{column(build_gallery, 'gallery_id')}\n"
-            f"   = selected.{column(selection, 'winner_gallery_id')}\n"
-            f"JOIN {table(metadata)} AS metadata\n"
-            f"  ON metadata.{column(metadata, 'gallery_id')}\n"
-            f"   = build_gallery.{column(build_gallery, 'gallery_id')}\n"
-            f" AND metadata.{column(metadata, 'observation_id')}\n"
-            f"   = build_gallery.{column(build_gallery, 'observation_id')}\n"
-            f"JOIN {table(impacted)} AS impacted\n"
-            f"  ON impacted.{column(impacted, 'analysis_id')}\n"
-            f"   = selected.{column(selection, 'analysis_id')}\n"
-            f" AND impacted.{column(impacted, 'gid')}\n"
-            f"   = metadata.{column(metadata, 'gid')}"
-        )
-    elif pattern == "artifact_delta_old":
-        source_by_name = {source.relation: source for source in sources}
-        candidate = source_by_name["publication_candidate"]
-        base = source_by_name["publication_candidate_base_catalog"]
-        occurrence = source_by_name["catalog_artifact"]
-        expressions = {
-            "candidate_id": f"base.{column(base, 'candidate_id')}",
-            "publication_key": (f"occurrence.{column(occurrence, 'publication_key')}"),
-            "artifact_semantics_sha256": (
-                f"occurrence.{column(occurrence, 'artifact_semantics_sha256')}"
-            ),
-            "artifact_sha256": (f"occurrence.{column(occurrence, 'artifact_sha256')}"),
-        }
-        from_sql = (
-            f"FROM {table(base)} AS base\n"
-            f"JOIN {table(candidate)} AS candidate\n"
-            f"  ON candidate.{column(candidate, 'candidate_id')}\n"
-            f"   = base.{column(base, 'candidate_id')}\n"
-            f"JOIN {table(occurrence)} AS occurrence\n"
-            f"  ON occurrence.{column(occurrence, 'revision')}\n"
-            f"   = base.{column(base, 'base_revision')}"
-        )
-    elif pattern == "artifact_delta_new":
-        (artifact_input,) = sources
-        expressions = {
-            attribute: f"input.{column(artifact_input, attribute)}"
-            for attribute in (
-                "candidate_id",
-                "publication_key",
-                "artifact_semantics_sha256",
+            descriptor_attributes = {item.attribute for item in descriptor.columns}
+            state_attributes = {item.attribute for item in state.columns}
+            terminal_attributes = {item.attribute for item in terminal.columns}
+            expressions = {}
+            for item in relation.columns:
+                if item.attribute in descriptor_attributes:
+                    source, alias = descriptor, "descriptor"
+                elif item.attribute in state_attributes:
+                    source, alias = state, "mutable_state"
+                elif item.attribute in terminal_attributes:
+                    source, alias = terminal, "terminal"
+                else:
+                    raise ValueError(
+                        f"lifecycle projection cannot source {item.attribute!r}"
+                    )
+                expressions[item.attribute] = (
+                    f"{alias}.{column(source, item.attribute)}"
+                )
+            key_attributes = tuple(relation.primary_key)
+            state_join = "\n AND ".join(
+                f"mutable_state.{column(state, attribute)} "
+                f"= descriptor.{column(descriptor, attribute)}"
+                for attribute in key_attributes
             )
-        }
-        from_sql = f"FROM {table(artifact_input)} AS input"
-    elif pattern == "publication_candidate_projection":
-        source_by_name = {source.relation: source for source in sources}
-        seal = source_by_name["publication_candidate_projection_seal"]
-        checkpoint = source_by_name["publication_checkpoint"]
-        receipt = source_by_name["publication_batch_receipt"]
+            terminal_join = "\n AND ".join(
+                f"terminal.{column(terminal, attribute)} "
+                f"= descriptor.{column(descriptor, attribute)}"
+                for attribute in key_attributes
+            )
 
-        def stage_literal(value: str) -> str:
-            if backend == "sqlite":
-                return "X'" + value.encode("ascii").hex().upper() + "'"
-            return "'" + value.replace("'", "''") + "'"
+            def literal(value: str) -> str:
+                return "'" + value.replace("'", "''") + "'"
 
-        def state_literal(value: str) -> str:
-            return "'" + value.replace("'", "''") + "'"
-
-        count_stages = (
-            ("create_count", "VALIDATE_CREATE"),
-            ("rebuild_count", "VALIDATE_REBUILD"),
-            ("delete_count", "VALIDATE_DELETE"),
-            ("new_galleries", "VALIDATE_NEW_GALLERY"),
-            ("changed_galleries", "VALIDATE_CHANGED_GALLERY"),
-        )
-
-        if backend == "sqlite":
-            inner_expressions = {
-                "candidate_id": f"certified.{column(seal, 'candidate_id')}"
+            state_column = f"mutable_state.{column(state, 'state')}"
+            terminal_key = f"terminal.{column(terminal, key_attributes[0])}"
+            from_sql = (
+                f"FROM {table(descriptor)} AS descriptor\n"
+                f"JOIN {table(state)} AS mutable_state\n"
+                f"  ON {state_join}\n"
+                f"LEFT JOIN {table(terminal)} AS terminal\n"
+                f"  ON {terminal_join}\n"
+                f"WHERE {state_column} = {literal(present_state)} "
+                f"AND {terminal_key} IS NOT NULL\n"
+                f"   OR {state_column} IN ({literal('OPEN')}, "
+                f"{literal('ABANDONED')}) AND {terminal_key} IS NULL"
+            )
+        case "build_manifest_projection":
+            source_by_name = {source.relation: source for source in sources}
+            if set(source_by_name) != {
+                "build_manifest_core",
+                "source_build_discovery",
+                "source_build_sealed_at",
+            }:
+                raise ValueError("build_manifest_projection source set drift")
+            core = source_by_name["build_manifest_core"]
+            discovery = source_by_name["source_build_discovery"]
+            terminal = source_by_name["source_build_sealed_at"]
+            core_attributes = {item.attribute for item in core.columns}
+            expressions = {}
+            for item in relation.columns:
+                if item.attribute in core_attributes:
+                    expressions[item.attribute] = f"core.{column(core, item.attribute)}"
+                elif item.attribute == "gallery_count":
+                    expressions[item.attribute] = (
+                        f"discovery.{column(discovery, 'gallery_count')}"
+                    )
+                elif item.attribute == "computed_at":
+                    expressions[item.attribute] = (
+                        f"terminal.{column(terminal, 'sealed_at')}"
+                    )
+                else:
+                    raise ValueError(
+                        f"build_manifest_projection cannot source {item.attribute!r}"
+                    )
+            from_sql = (
+                f"FROM {table(core)} AS core\n"
+                f"JOIN {table(discovery)} AS discovery\n"
+                f"  ON discovery.{column(discovery, 'build_id')}\n"
+                f"   = core.{column(core, 'build_id')}\n"
+                f"JOIN {table(terminal)} AS terminal\n"
+                f"  ON terminal.{column(terminal, 'build_id')}\n"
+                f"   = core.{column(core, 'build_id')}"
+            )
+        case (
+            "publication_selection_occurrence_identity"
+            | "catalog_publication_occurrence_identity"
+        ):
+            source_by_name = {source.relation: source for source in sources}
+            storage_name = (
+                "publication_selection_storage"
+                if pattern == "publication_selection_occurrence_identity"
+                else "catalog_publication_storage"
+            )
+            storage = source_by_name[storage_name]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            publication = source_by_name["publication_identity"]
+            occurrence_attribute = (
+                "selection_occurrence_sha256"
+                if pattern == "publication_selection_occurrence_identity"
+                else "catalog_occurrence_sha256"
+            )
+            expressions = {
+                occurrence_attribute: f"stored.{column(storage, occurrence_attribute)}",
+                "publication_key": f"publication.{column(publication, 'publication_key')}",
             }
+            scope_attribute = (
+                "candidate_id"
+                if pattern == "publication_selection_occurrence_identity"
+                else "revision"
+            )
+            expressions[scope_attribute] = f"stored.{column(storage, scope_attribute)}"
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = stored.{column(storage, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}\n"
+                f"JOIN {table(publication)} AS publication\n"
+                f"  ON publication.{column(publication, 'gid')}\n"
+                f"   = name_gid.{column(name_gid, 'gid')}"
+            )
+        case "publication_selection_projection":
+            source_by_name = {source.relation: source for source in sources}
+            storage = source_by_name["publication_selection_storage"]
+            occurrence = source_by_name["publication_selection_occurrence_identity"]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            publication = source_by_name["publication_identity"]
+            expressions = {
+                "candidate_id": f"occurrence.{column(occurrence, 'candidate_id')}",
+                "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+                "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+            }
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(occurrence)} AS occurrence\n"
+                f"  ON occurrence.{column(occurrence, 'selection_occurrence_sha256')}\n"
+                f"   = stored.{column(storage, 'selection_occurrence_sha256')}\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = stored.{column(storage, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}\n"
+                f"JOIN {table(publication)} AS derived\n"
+                f"  ON derived.{column(publication, 'gid')}\n"
+                f"   = name_gid.{column(name_gid, 'gid')}\n"
+                f" AND derived.{column(publication, 'publication_key')}\n"
+                f"   = occurrence.{column(occurrence, 'publication_key')}"
+            )
+        case "catalog_publication_projection":
+            source_by_name = {source.relation: source for source in sources}
+            storage = source_by_name["catalog_publication_storage"]
+            occurrence = source_by_name["catalog_publication_occurrence_identity"]
+            download = source_by_name["catalog_publication_download_time"]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            publication = source_by_name["publication_identity"]
+            expressions = {
+                "revision": f"occurrence.{column(occurrence, 'revision')}",
+                "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+                "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+                "summary_sha256": f"stored.{column(storage, 'summary_sha256')}",
+                "language_sha256": f"stored.{column(storage, 'language_sha256')}",
+                "modified_at": f"stored.{column(storage, 'modified_at')}",
+                "download_time": f"download.{column(download, 'download_time')}",
+            }
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(occurrence)} AS occurrence\n"
+                f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+                f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
+                f"JOIN {table(download)} AS download\n"
+                f"  ON download.{column(download, 'catalog_occurrence_sha256')}\n"
+                f"   = occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = stored.{column(storage, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}\n"
+                f"JOIN {table(publication)} AS derived\n"
+                f"  ON derived.{column(publication, 'gid')}\n"
+                f"   = name_gid.{column(name_gid, 'gid')}\n"
+                f" AND derived.{column(publication, 'publication_key')}\n"
+                f"   = occurrence.{column(occurrence, 'publication_key')}"
+            )
+        case "catalog_publication_title_projection":
+            source_by_name = {source.relation: source for source in sources}
+            storage = source_by_name["catalog_publication_storage"]
+            occurrence = source_by_name["catalog_publication_occurrence_identity"]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            publication = source_by_name["publication_identity"]
+            expressions = {
+                "revision": f"occurrence.{column(occurrence, 'revision')}",
+                "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+                "source_title_sha256": f"stored.{column(storage, 'source_title_sha256')}",
+                "source_gallery_name": f"access.{column(access, 'source_gallery_name')}",
+            }
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(occurrence)} AS occurrence\n"
+                f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+                f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
+                "\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = stored.{column(storage, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}\n"
+                f"JOIN {table(publication)} AS derived\n"
+                f"  ON derived.{column(publication, 'gid')}\n"
+                f"   = name_gid.{column(name_gid, 'gid')}\n"
+                f" AND derived.{column(publication, 'publication_key')}\n"
+                f"   = occurrence.{column(occurrence, 'publication_key')}"
+            )
+        case "analysis_impacted_gid_provenance_projection":
+            source_by_name = {source.relation: source for source in sources}
+            storage = source_by_name["analysis_impacted_gid_provenance_storage"]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            expressions = {
+                "analysis_id": f"stored.{column(storage, 'analysis_id')}",
+                "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+                "gid": f"name_gid.{column(name_gid, 'gid')}",
+            }
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = stored.{column(storage, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}"
+            )
+        case "analysis_impacted_gid_projection":
+            source_by_name = {source.relation: source for source in sources}
+            storage = source_by_name["analysis_impacted_gid_storage"]
+            provenance = source_by_name["analysis_impacted_gid_provenance"]
+            expressions = {
+                "analysis_id": f"stored.{column(storage, 'analysis_id')}",
+                "gid": f"stored.{column(storage, 'gid')}",
+                "witness_gallery_id": (
+                    f"MIN(provenance.{column(provenance, 'gallery_id')})"
+                ),
+            }
+            from_sql = (
+                f"FROM {table(storage)} AS stored\n"
+                f"JOIN {table(provenance)} AS provenance\n"
+                f"  ON provenance.{column(provenance, 'analysis_id')}\n"
+                f"   = stored.{column(storage, 'analysis_id')}\n"
+                f" AND provenance.{column(provenance, 'gid')}\n"
+                f"   = stored.{column(storage, 'gid')}\n"
+                f"GROUP BY stored.{column(storage, 'analysis_id')}, "
+                f"stored.{column(storage, 'gid')}"
+            )
+        case "gallery_observation_metadata_projection":
+            source_by_name = {source.relation: source for source in sources}
+            local = source_by_name["gallery_observation_metadata_local"]
+            access = source_by_name["gallery_source_name_access"]
+            name_gid = source_by_name["source_gallery_name_gid"]
+            upload = source_by_name["gallery_upload_time"]
+            expressions = {
+                "gallery_id": f"local.{column(local, 'gallery_id')}",
+                "observation_id": f"local.{column(local, 'observation_id')}",
+                "gid": f"name_gid.{column(name_gid, 'gid')}",
+                "upload_time": f"upload.{column(upload, 'upload_time')}",
+                "download_time": f"local.{column(local, 'download_time')}",
+                "modified_time": f"local.{column(local, 'modified_time')}",
+            }
+            from_sql = (
+                f"FROM {table(local)} AS local\n"
+                f"JOIN {table(access)} AS access\n"
+                f"  ON access.{column(access, 'gallery_id')}\n"
+                f"   = local.{column(local, 'gallery_id')}\n"
+                f"JOIN {table(name_gid)} AS name_gid\n"
+                f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+                f"   = access.{column(access, 'source_gallery_name')}\n"
+                f"JOIN {table(upload)} AS upload\n"
+                f"  ON upload.{column(upload, 'gid')}\n"
+                f"   = name_gid.{column(name_gid, 'gid')}"
+            )
+        case "analysis_ancestry_endpoint":
+            (ancestry,) = sources
+            analysis_id = column(ancestry, "analysis_id")
+            ancestor_analysis_id = column(ancestry, "ancestor_analysis_id")
+            ancestor_depth = column(ancestry, "ancestor_depth")
+            expressions = {
+                "analysis_id": f"endpoint.{analysis_id}",
+                "anchor_analysis_id": f"endpoint.{ancestor_analysis_id}",
+                "overlay_depth": f"endpoint.{ancestor_depth}",
+            }
+            from_sql = (
+                f"FROM {table(ancestry)} AS endpoint\n"
+                "WHERE NOT EXISTS (\n"
+                "  SELECT 1\n"
+                f"  FROM {table(ancestry)} AS deeper\n"
+                f"  WHERE deeper.{analysis_id} = endpoint.{analysis_id}\n"
+                f"    AND deeper.{ancestor_depth} > endpoint.{ancestor_depth}\n"
+                ")"
+            )
+        case "analysis_gid_winner_keyset":
+            source_by_name = {source.relation: source for source in sources}
+            selection = source_by_name["analysis_gid_winner_selection"]
+            impacted = source_by_name["analysis_impacted_gid"]
+            run_build = source_by_name["analysis_run_descriptor"]
+            build_gallery = source_by_name["source_build_gallery"]
+            metadata = source_by_name["gallery_observation_metadata"]
+            expressions = {
+                "analysis_id": f"selected.{column(selection, 'analysis_id')}",
+                "gid": f"metadata.{column(metadata, 'gid')}",
+                "winner_gallery_id": (
+                    f"selected.{column(selection, 'winner_gallery_id')}"
+                ),
+            }
+            from_sql = (
+                f"FROM {table(selection)} AS selected\n"
+                f"JOIN {table(run_build)} AS run_build\n"
+                f"  ON run_build.{column(run_build, 'analysis_id')}\n"
+                f"   = selected.{column(selection, 'analysis_id')}\n"
+                f"JOIN {table(build_gallery)} AS build_gallery\n"
+                f"  ON build_gallery.{column(build_gallery, 'build_id')}\n"
+                f"   = run_build.{column(run_build, 'build_id')}\n"
+                f" AND build_gallery.{column(build_gallery, 'gallery_id')}\n"
+                f"   = selected.{column(selection, 'winner_gallery_id')}\n"
+                f"JOIN {table(metadata)} AS metadata\n"
+                f"  ON metadata.{column(metadata, 'gallery_id')}\n"
+                f"   = build_gallery.{column(build_gallery, 'gallery_id')}\n"
+                f" AND metadata.{column(metadata, 'observation_id')}\n"
+                f"   = build_gallery.{column(build_gallery, 'observation_id')}\n"
+                f"JOIN {table(impacted)} AS impacted\n"
+                f"  ON impacted.{column(impacted, 'analysis_id')}\n"
+                f"   = selected.{column(selection, 'analysis_id')}\n"
+                f" AND impacted.{column(impacted, 'gid')}\n"
+                f"   = metadata.{column(metadata, 'gid')}"
+            )
+        case "artifact_delta_old":
+            source_by_name = {source.relation: source for source in sources}
+            candidate = source_by_name["publication_candidate"]
+            base = source_by_name["publication_candidate_base_catalog"]
+            occurrence = source_by_name["catalog_artifact"]
+            expressions = {
+                "candidate_id": f"base.{column(base, 'candidate_id')}",
+                "publication_key": (
+                    f"occurrence.{column(occurrence, 'publication_key')}"
+                ),
+                "artifact_semantics_sha256": (
+                    f"occurrence.{column(occurrence, 'artifact_semantics_sha256')}"
+                ),
+                "artifact_sha256": (
+                    f"occurrence.{column(occurrence, 'artifact_sha256')}"
+                ),
+            }
+            from_sql = (
+                f"FROM {table(base)} AS base\n"
+                f"JOIN {table(candidate)} AS candidate\n"
+                f"  ON candidate.{column(candidate, 'candidate_id')}\n"
+                f"   = base.{column(base, 'candidate_id')}\n"
+                f"JOIN {table(occurrence)} AS occurrence\n"
+                f"  ON occurrence.{column(occurrence, 'revision')}\n"
+                f"   = base.{column(base, 'base_revision')}"
+            )
+        case "artifact_delta_new":
+            (artifact_input,) = sources
+            expressions = {
+                attribute: f"input.{column(artifact_input, attribute)}"
+                for attribute in (
+                    "candidate_id",
+                    "publication_key",
+                    "artifact_semantics_sha256",
+                )
+            }
+            from_sql = f"FROM {table(artifact_input)} AS input"
+        case "publication_candidate_projection":
+            source_by_name = {source.relation: source for source in sources}
+            seal = source_by_name["publication_candidate_projection_seal"]
+            checkpoint = source_by_name["publication_checkpoint"]
+            receipt = source_by_name["publication_batch_receipt"]
+
+            def stage_literal(value: str) -> str:
+                if backend == "sqlite":
+                    return "X'" + value.encode("ascii").hex().upper() + "'"
+                return "'" + value.replace("'", "''") + "'"
+
+            def state_literal(value: str) -> str:
+                return "'" + value.replace("'", "''") + "'"
+
+            count_stages = (
+                ("create_count", "VALIDATE_CREATE"),
+                ("rebuild_count", "VALIDATE_REBUILD"),
+                ("delete_count", "VALIDATE_DELETE"),
+                ("new_galleries", "VALIDATE_NEW_GALLERY"),
+                ("changed_galleries", "VALIDATE_CHANGED_GALLERY"),
+            )
+
+            if backend == "sqlite":
+                inner_expressions = {
+                    "candidate_id": f"certified.{column(seal, 'candidate_id')}"
+                }
+                for attribute, stage in count_stages:
+                    checkpoint_alias = f"checkpoint_{attribute}"
+                    receipt_alias = f"receipt_{attribute}"
+                    inner_expressions[attribute] = (
+                        f"(SELECT {receipt_alias}."
+                        f"{column(receipt, 'next_processed_count')}\n"
+                        f"   FROM {table(checkpoint)} AS {checkpoint_alias}\n"
+                        f"   JOIN {table(receipt)} AS {receipt_alias}\n"
+                        f"     ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
+                        f"      = {checkpoint_alias}."
+                        f"{column(checkpoint, 'candidate_id')}\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'stage')}\n"
+                        f"      = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
+                        f"    AND {receipt_alias}."
+                        f"{column(receipt, 'committed_generation')}\n"
+                        f"      = {checkpoint_alias}."
+                        f"{column(checkpoint, 'generation')}\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                        f"      = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                        f"      = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
+                        f"    AND {receipt_alias}."
+                        f"{column(receipt, 'next_processed_count')}\n"
+                        f"      = {checkpoint_alias}."
+                        f"{column(checkpoint, 'processed_count')}\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
+                        f"      = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
+                        f"    AND {receipt_alias}.{column(receipt, 'next_state')}\n"
+                        f"      = {checkpoint_alias}.{column(checkpoint, 'state')}\n"
+                        f"  WHERE {checkpoint_alias}."
+                        f"{column(checkpoint, 'candidate_id')}\n"
+                        f"      = certified.{column(seal, 'candidate_id')}\n"
+                        f"    AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
+                        f"= {stage_literal(stage)}\n"
+                        f"    AND {checkpoint_alias}.{column(checkpoint, 'state')} "
+                        f"= {state_literal('COMPLETE')})"
+                    )
+                inner_projection = ",\n    ".join(
+                    f"{inner_expressions[item.attribute]} AS {quote(item.column)}"
+                    for item in relation.columns
+                )
+                expressions = {
+                    item.attribute: f"exact.{quote(item.column)}"
+                    for item in relation.columns
+                }
+                complete_counts = "\n  AND ".join(
+                    f"exact.{column(relation, attribute)} IS NOT NULL"
+                    for attribute, _ in count_stages
+                )
+                from_sql = (
+                    f"FROM (\n"
+                    f"  SELECT\n"
+                    f"    {inner_projection}\n"
+                    f"  FROM {table(seal)} AS certified\n"
+                    f") AS exact\n"
+                    f"WHERE {complete_counts}"
+                )
+                return _render_derived_projection(
+                    relation,
+                    backend,
+                    expressions,
+                    from_sql,
+                    idempotent=idempotent,
+                )
+
+            expressions = {"candidate_id": f"certified.{column(seal, 'candidate_id')}"}
+            joins: list[str] = []
             for attribute, stage in count_stages:
                 checkpoint_alias = f"checkpoint_{attribute}"
                 receipt_alias = f"receipt_{attribute}"
-                inner_expressions[attribute] = (
-                    f"(SELECT {receipt_alias}."
-                    f"{column(receipt, 'next_processed_count')}\n"
-                    f"   FROM {table(checkpoint)} AS {checkpoint_alias}\n"
-                    f"   JOIN {table(receipt)} AS {receipt_alias}\n"
-                    f"     ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
-                    f"      = {checkpoint_alias}."
-                    f"{column(checkpoint, 'candidate_id')}\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'stage')}\n"
-                    f"      = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
-                    f"    AND {receipt_alias}."
-                    f"{column(receipt, 'committed_generation')}\n"
-                    f"      = {checkpoint_alias}."
-                    f"{column(checkpoint, 'generation')}\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
-                    f"      = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
-                    f"      = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
-                    f"    AND {receipt_alias}."
-                    f"{column(receipt, 'next_processed_count')}\n"
-                    f"      = {checkpoint_alias}."
-                    f"{column(checkpoint, 'processed_count')}\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
-                    f"      = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
-                    f"    AND {receipt_alias}.{column(receipt, 'next_state')}\n"
-                    f"      = {checkpoint_alias}.{column(checkpoint, 'state')}\n"
-                    f"  WHERE {checkpoint_alias}."
-                    f"{column(checkpoint, 'candidate_id')}\n"
-                    f"      = certified.{column(seal, 'candidate_id')}\n"
-                    f"    AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
-                    f"= {stage_literal(stage)}\n"
-                    f"    AND {checkpoint_alias}.{column(checkpoint, 'state')} "
-                    f"= {state_literal('COMPLETE')})"
+                expressions[attribute] = (
+                    f"{receipt_alias}.{column(receipt, 'next_processed_count')}"
                 )
-            inner_projection = ",\n    ".join(
-                f"{inner_expressions[item.attribute]} AS {quote(item.column)}"
-                for item in relation.columns
-            )
+                joins.append(
+                    f"JOIN {table(checkpoint)} AS {checkpoint_alias}\n"
+                    f"  ON {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
+                    f"   = certified.{column(seal, 'candidate_id')}\n"
+                    f" AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
+                    f"= {stage_literal(stage)}\n"
+                    f" AND {checkpoint_alias}.{column(checkpoint, 'state')} "
+                    f"= {state_literal('COMPLETE')}\n"
+                    f"JOIN {table(receipt)} AS {receipt_alias}\n"
+                    f"  ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'stage')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'committed_generation')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'generation')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                    f"   = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'next_processed_count')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'processed_count')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
+                    f" AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
+                    f" AND {receipt_alias}.{column(receipt, 'next_state')}\n"
+                    f"   = {checkpoint_alias}.{column(checkpoint, 'state')}"
+                )
+            from_sql = f"FROM {table(seal)} AS certified\n" + "\n".join(joins)
+        case "batch_receipt_derived":
+            (stored,) = sources
             expressions = {
-                item.attribute: f"exact.{quote(item.column)}"
-                for item in relation.columns
+                item.attribute: f"stored.{column(stored, item.attribute)}"
+                for item in stored.columns
             }
-            complete_counts = "\n  AND ".join(
-                f"exact.{column(relation, attribute)} IS NOT NULL"
-                for attribute, _ in count_stages
+            start_generation = spec.field("start_generation_attribute")
+            start_count = spec.field("start_processed_count_attribute")
+            row_count = spec.field("row_count_attribute")
+            start_generation_sql = f"stored.{column(stored, start_generation)}"
+            start_count_sql = f"stored.{column(stored, start_count)}"
+            row_count_sql = f"stored.{column(stored, row_count)}"
+            terminal_sql = f"CASE WHEN {row_count_sql} = 0 THEN 1 ELSE 0 END"
+            next_state_sql = (
+                f"CASE WHEN {row_count_sql} = 0 THEN 'COMPLETE' ELSE 'OPEN' END"
+            )
+            if backend == "mariadb":
+                terminal_sql = f"CAST({terminal_sql} AS UNSIGNED)"
+                next_state_sql = f"CAST({next_state_sql} AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
+            expressions.update(
+                {
+                    spec.field("committed_generation_attribute"): (
+                        f"{start_generation_sql} + 1"
+                    ),
+                    spec.field("next_processed_count_attribute"): (
+                        f"{start_count_sql} + {row_count_sql}"
+                    ),
+                    spec.field("terminal_attribute"): terminal_sql,
+                    spec.field("next_state_attribute"): next_state_sql,
+                }
+            )
+            from_sql = f"FROM {table(stored)} AS stored"
+        case "publication_commit_baseline":
+            base, commit = sources
+            base_attributes = {item.attribute for item in base.columns}
+            expressions = {}
+            for item in relation.columns:
+                attribute = item.attribute
+                if attribute in base_attributes:
+                    expressions[attribute] = f"base.{column(base, attribute)}"
+                elif attribute in {"base_source_revision", "base_revision"}:
+                    commit_attribute = (
+                        "source_revision"
+                        if attribute == "base_source_revision"
+                        else "revision"
+                    )
+                    expressions[attribute] = (
+                        f"committed.{column(commit, commit_attribute)}"
+                    )
+                elif attribute in {
+                    "base_source_generation",
+                    "base_catalog_generation",
+                }:
+                    expressions[attribute] = f"committed.{column(commit, 'generation')}"
+            from_sql = (
+                f"FROM {table(base)} AS base\nJOIN {table(commit)} AS committed\n"
+                f"  ON committed.{column(commit, 'receipt_id')}\n"
+                f"   = base.{column(base, 'base_receipt_id')}"
+            )
+        case "publication_commit_published_descriptor":
+            descriptor, commit = sources
+            descriptor_attributes = {item.attribute for item in descriptor.columns}
+            expressions = {
+                attribute: f"descriptor.{column(descriptor, attribute)}"
+                for attribute in descriptor_attributes
+            }
+            expressions["published_at"] = f"committed.{column(commit, 'committed_at')}"
+            join_attribute = (
+                "source_revision"
+                if "source_revision" in descriptor_attributes
+                else "revision"
             )
             from_sql = (
-                f"FROM (\n"
-                f"  SELECT\n"
-                f"    {inner_projection}\n"
-                f"  FROM {table(seal)} AS certified\n"
-                f") AS exact\n"
-                f"WHERE {complete_counts}"
+                f"FROM {table(descriptor)} AS descriptor\n"
+                f"JOIN {table(commit)} AS committed\n"
+                f"  ON committed.{column(commit, join_attribute)}\n"
+                f"   = descriptor.{column(descriptor, join_attribute)}"
             )
-            return _render_derived_projection(
-                relation,
-                backend,
-                expressions,
-                from_sql,
-                idempotent=idempotent,
-            )
-
-        expressions = {"candidate_id": f"certified.{column(seal, 'candidate_id')}"}
-        joins: list[str] = []
-        for attribute, stage in count_stages:
-            checkpoint_alias = f"checkpoint_{attribute}"
-            receipt_alias = f"receipt_{attribute}"
-            expressions[attribute] = (
-                f"{receipt_alias}.{column(receipt, 'next_processed_count')}"
-            )
-            joins.append(
-                f"JOIN {table(checkpoint)} AS {checkpoint_alias}\n"
-                f"  ON {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
-                f"   = certified.{column(seal, 'candidate_id')}\n"
-                f" AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
-                f"= {stage_literal(stage)}\n"
-                f" AND {checkpoint_alias}.{column(checkpoint, 'state')} "
-                f"= {state_literal('COMPLETE')}\n"
-                f"JOIN {table(receipt)} AS {receipt_alias}\n"
-                f"  ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'stage')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'committed_generation')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'generation')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
-                f"   = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'next_processed_count')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'processed_count')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
-                f" AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
-                f" AND {receipt_alias}.{column(receipt, 'next_state')}\n"
-                f"   = {checkpoint_alias}.{column(checkpoint, 'state')}"
-            )
-        from_sql = f"FROM {table(seal)} AS certified\n" + "\n".join(joins)
-    elif pattern == "batch_receipt_derived":
-        (stored,) = sources
-        expressions = {
-            item.attribute: f"stored.{column(stored, item.attribute)}"
-            for item in stored.columns
-        }
-        start_generation = spec.field("start_generation_attribute")
-        start_count = spec.field("start_processed_count_attribute")
-        row_count = spec.field("row_count_attribute")
-        start_generation_sql = f"stored.{column(stored, start_generation)}"
-        start_count_sql = f"stored.{column(stored, start_count)}"
-        row_count_sql = f"stored.{column(stored, row_count)}"
-        terminal_sql = f"CASE WHEN {row_count_sql} = 0 THEN 1 ELSE 0 END"
-        next_state_sql = (
-            f"CASE WHEN {row_count_sql} = 0 THEN 'COMPLETE' ELSE 'OPEN' END"
-        )
-        if backend == "mariadb":
-            terminal_sql = f"CAST({terminal_sql} AS UNSIGNED)"
-            next_state_sql = (
-                f"CAST({next_state_sql} AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
-            )
-        expressions.update(
-            {
-                spec.field("committed_generation_attribute"): (
-                    f"{start_generation_sql} + 1"
-                ),
-                spec.field("next_processed_count_attribute"): (
-                    f"{start_count_sql} + {row_count_sql}"
-                ),
-                spec.field("terminal_attribute"): terminal_sql,
-                spec.field("next_state_attribute"): next_state_sql,
+        case "publication_commit_generation":
+            (commit,) = sources
+            expressions = {
+                item.attribute: f"committed.{column(commit, item.attribute)}"
+                for item in relation.columns
             }
-        )
-        from_sql = f"FROM {table(stored)} AS stored"
-    elif pattern == "publication_commit_baseline":
-        base, commit = sources
-        base_attributes = {item.attribute for item in base.columns}
-        expressions = {}
-        for item in relation.columns:
-            attribute = item.attribute
-            if attribute in base_attributes:
-                expressions[attribute] = f"base.{column(base, attribute)}"
-            elif attribute in {"base_source_revision", "base_revision"}:
-                commit_attribute = (
-                    "source_revision"
-                    if attribute == "base_source_revision"
-                    else "revision"
+            from_sql = f"FROM {table(commit)} AS committed"
+        case "publication_commit_head":
+            head, commit, source_descriptor = sources
+            expressions = {
+                item.attribute: (
+                    f"head.{column(head, 'channel')}"
+                    if item.attribute == "channel"
+                    else f"committed.{column(commit, item.attribute)}"
                 )
-                expressions[attribute] = f"committed.{column(commit, commit_attribute)}"
-            elif attribute in {
-                "base_source_generation",
-                "base_catalog_generation",
-            }:
-                expressions[attribute] = f"committed.{column(commit, 'generation')}"
-        from_sql = (
-            f"FROM {table(base)} AS base\nJOIN {table(commit)} AS committed\n"
-            f"  ON committed.{column(commit, 'receipt_id')}\n"
-            f"   = base.{column(base, 'base_receipt_id')}"
-        )
-    elif pattern == "publication_commit_published_descriptor":
-        descriptor, commit = sources
-        descriptor_attributes = {item.attribute for item in descriptor.columns}
-        expressions = {
-            attribute: f"descriptor.{column(descriptor, attribute)}"
-            for attribute in descriptor_attributes
-        }
-        expressions["published_at"] = f"committed.{column(commit, 'committed_at')}"
-        join_attribute = (
-            "source_revision"
-            if "source_revision" in descriptor_attributes
-            else "revision"
-        )
-        from_sql = (
-            f"FROM {table(descriptor)} AS descriptor\n"
-            f"JOIN {table(commit)} AS committed\n"
-            f"  ON committed.{column(commit, join_attribute)}\n"
-            f"   = descriptor.{column(descriptor, join_attribute)}"
-        )
-    elif pattern == "publication_commit_generation":
-        (commit,) = sources
-        expressions = {
-            item.attribute: f"committed.{column(commit, item.attribute)}"
-            for item in relation.columns
-        }
-        from_sql = f"FROM {table(commit)} AS committed"
-    elif pattern == "publication_commit_head":
-        head, commit, source_descriptor = sources
-        expressions = {
-            item.attribute: (
-                f"head.{column(head, 'channel')}"
-                if item.attribute == "channel"
-                else f"committed.{column(commit, item.attribute)}"
-            )
-            for item in relation.columns
-        }
-        from_sql = (
-            f"FROM {table(head)} AS head\nJOIN {table(commit)} AS committed\n"
-            f"  ON committed.{column(commit, 'receipt_id')}\n"
-            f"   = head.{column(head, 'receipt_id')}\n"
-            f"JOIN {table(source_descriptor)} AS source_descriptor\n"
-            f"  ON source_descriptor.{column(source_descriptor, 'source_revision')}\n"
-            f"   = committed.{column(commit, 'source_revision')}\n"
-            f" AND source_descriptor.{column(source_descriptor, 'channel')}\n"
-            f"   = head.{column(head, 'channel')}"
-        )
-    elif pattern == "publication_commit_head_projection":
-        (head,) = sources
-        expressions = {
-            item.attribute: f"head.{column(head, 'committed_at' if item.attribute == 'advanced_at' else item.attribute)}"
-            for item in relation.columns
-        }
-        from_sql = f"FROM {table(head)} AS head"
-    elif pattern == "publication_receipt":
-        source_by_name = {source.relation: source for source in sources}
-        commit = source_by_name["publication_commit"]
-        catalog_descriptor = source_by_name["catalog_revision_descriptor"]
-        source_descriptor = source_by_name["source_revision_descriptor"]
-        finalization = source_by_name["publication_commit_finalization"]
-        checkpoint = source_by_name["publication_finalization_checkpoint"]
-        final_receipt = source_by_name["publication_finalization_batch_receipt"]
-
-        def finalization_literal(value: str) -> str:
-            return "'" + value.replace("'", "''") + "'"
-
-        expressions = {
-            item.attribute: f"committed.{column(commit, item.attribute)}"
-            for item in commit.columns
-        }
-        terminal_predicate = (
-            f"terminal.{column(final_receipt, 'receipt_id')}\n"
-            f"     = final_checkpoint.{column(checkpoint, 'receipt_id')}\n"
-            f" AND terminal.{column(final_receipt, 'committed_generation')}\n"
-            f"     = final_checkpoint.{column(checkpoint, 'generation')}\n"
-            f" AND terminal.{column(final_receipt, 'next_cursor')}\n"
-            f"     = final_checkpoint.{column(checkpoint, 'cursor')}\n"
-            f" AND terminal.{column(final_receipt, 'next_cursor')}\n"
-            f"     = terminal.{column(final_receipt, 'start_cursor')}\n"
-            f" AND terminal.{column(final_receipt, 'next_processed_count')}\n"
-            f"     = final_checkpoint.{column(checkpoint, 'processed_count')}\n"
-            f" AND terminal.{column(final_receipt, 'committed_at')}\n"
-            f"     = final_checkpoint.{column(checkpoint, 'updated_at')}\n"
-            f" AND terminal.{column(final_receipt, 'terminal')} = 1\n"
-            f" AND terminal.{column(final_receipt, 'row_count')} = 0\n"
-            f" AND terminal.{column(final_receipt, 'next_state')} "
-            f"= {finalization_literal('COMPLETE')}"
-        )
-        state_expression = (
-            f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "
-            f"IS NULL THEN {finalization_literal('DB_COMMITTED')} ELSE "
-            f"{finalization_literal('PUBLISHED')} END"
-        )
-        finalized_at_expression = (
-            f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "
-            "IS NULL THEN NULL ELSE (\n"
-            f"  SELECT terminal.{column(final_receipt, 'committed_at')}\n"
-            f"  FROM {table(final_receipt)} AS terminal\n"
-            f"  WHERE {terminal_predicate}\n"
-            ") END"
-        )
-        if backend == "mariadb":
-            state_expression = (
-                f"CAST({state_expression} AS CHAR(16) CHARSET ascii) COLLATE ascii_bin"
-            )
-            finalized_at_expression = f"CAST({finalized_at_expression} AS UNSIGNED)"
-        expressions.update(
-            {
-                "channel": f"source_descriptor.{column(source_descriptor, 'channel')}",
-                "publication_count": (
-                    f"catalog_descriptor.{column(catalog_descriptor, 'publication_count')}"
-                ),
-                "state": state_expression,
-                "finalized_at": finalized_at_expression,
+                for item in relation.columns
             }
-        )
-        from_sql = (
-            f"FROM {table(commit)} AS committed\n"
-            f"JOIN {table(catalog_descriptor)} AS catalog_descriptor\n"
-            f"  ON catalog_descriptor.{column(catalog_descriptor, 'revision')}\n"
-            f"   = committed.{column(commit, 'revision')}\n"
-            f"JOIN {table(source_descriptor)} AS source_descriptor\n"
-            f"  ON source_descriptor.{column(source_descriptor, 'source_revision')}\n"
-            f"   = committed.{column(commit, 'source_revision')}\n"
-            f"JOIN {table(checkpoint)} AS final_checkpoint\n"
-            f"  ON final_checkpoint.{column(checkpoint, 'receipt_id')}\n"
-            f"   = committed.{column(commit, 'receipt_id')}\n"
-            f"LEFT JOIN {table(finalization)} AS finalized\n"
-            f"  ON finalized.{column(finalization, 'receipt_id')}\n"
-            f"   = committed.{column(commit, 'receipt_id')}\n"
-            f"WHERE finalized.{column(finalization, 'receipt_id')} IS NULL\n"
-            f"       AND final_checkpoint.{column(checkpoint, 'state')} "
-            f"= {finalization_literal('OPEN')}\n"
-            f"   OR finalized.{column(finalization, 'receipt_id')} IS NOT NULL\n"
-            f"       AND final_checkpoint.{column(checkpoint, 'state')} "
-            f"= {finalization_literal('COMPLETE')}\n"
-            "       AND EXISTS (\n"
-            "         SELECT 1\n"
-            f"         FROM {table(final_receipt)} AS terminal\n"
-            f"         WHERE {terminal_predicate}\n"
-            "       )"
-        )
-    elif pattern == "publication_commit_activation":
-        source_by_name = {source.relation: source for source in sources}
-        if set(source_by_name) != {"publication_commit"}:
-            raise ValueError("publication commit activation source set drift")
-        commit = source_by_name["publication_commit"]
-        expressions = {
-            "source_revision": f"committed.{column(commit, 'source_revision')}",
-            "preparation_id": f"committed.{column(commit, 'preparation_id')}",
-            "operational_policy_id": (
-                f"committed.{column(commit, 'operational_policy_id')}"
-            ),
-            "activated_at": f"committed.{column(commit, 'committed_at')}",
-        }
-        from_sql = f"FROM {table(commit)} AS committed"
-    else:  # pragma: no cover - parser is closed-world
-        raise ValueError(f"unsupported derived view pattern {pattern!r}")
+            from_sql = (
+                f"FROM {table(head)} AS head\nJOIN {table(commit)} AS committed\n"
+                f"  ON committed.{column(commit, 'receipt_id')}\n"
+                f"   = head.{column(head, 'receipt_id')}\n"
+                f"JOIN {table(source_descriptor)} AS source_descriptor\n"
+                f"  ON source_descriptor.{column(source_descriptor, 'source_revision')}\n"
+                f"   = committed.{column(commit, 'source_revision')}\n"
+                f" AND source_descriptor.{column(source_descriptor, 'channel')}\n"
+                f"   = head.{column(head, 'channel')}"
+            )
+        case "publication_commit_head_projection":
+            (head,) = sources
+            expressions = {
+                item.attribute: f"head.{column(head, 'committed_at' if item.attribute == 'advanced_at' else item.attribute)}"
+                for item in relation.columns
+            }
+            from_sql = f"FROM {table(head)} AS head"
+        case "publication_receipt":
+            source_by_name = {source.relation: source for source in sources}
+            commit = source_by_name["publication_commit"]
+            catalog_descriptor = source_by_name["catalog_revision_descriptor"]
+            source_descriptor = source_by_name["source_revision_descriptor"]
+            finalization = source_by_name["publication_commit_finalization"]
+            checkpoint = source_by_name["publication_finalization_checkpoint"]
+            final_receipt = source_by_name["publication_finalization_batch_receipt"]
+
+            def finalization_literal(value: str) -> str:
+                return "'" + value.replace("'", "''") + "'"
+
+            expressions = {
+                item.attribute: f"committed.{column(commit, item.attribute)}"
+                for item in commit.columns
+            }
+            terminal_predicate = (
+                f"terminal.{column(final_receipt, 'receipt_id')}\n"
+                f"     = final_checkpoint.{column(checkpoint, 'receipt_id')}\n"
+                f" AND terminal.{column(final_receipt, 'committed_generation')}\n"
+                f"     = final_checkpoint.{column(checkpoint, 'generation')}\n"
+                f" AND terminal.{column(final_receipt, 'next_cursor')}\n"
+                f"     = final_checkpoint.{column(checkpoint, 'cursor')}\n"
+                f" AND terminal.{column(final_receipt, 'next_cursor')}\n"
+                f"     = terminal.{column(final_receipt, 'start_cursor')}\n"
+                f" AND terminal.{column(final_receipt, 'next_processed_count')}\n"
+                f"     = final_checkpoint.{column(checkpoint, 'processed_count')}\n"
+                f" AND terminal.{column(final_receipt, 'committed_at')}\n"
+                f"     = final_checkpoint.{column(checkpoint, 'updated_at')}\n"
+                f" AND terminal.{column(final_receipt, 'terminal')} = 1\n"
+                f" AND terminal.{column(final_receipt, 'row_count')} = 0\n"
+                f" AND terminal.{column(final_receipt, 'next_state')} "
+                f"= {finalization_literal('COMPLETE')}"
+            )
+            state_expression = (
+                f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "
+                f"IS NULL THEN {finalization_literal('DB_COMMITTED')} ELSE "
+                f"{finalization_literal('PUBLISHED')} END"
+            )
+            finalized_at_expression = (
+                f"CASE WHEN finalized.{column(finalization, 'receipt_id')} "
+                "IS NULL THEN NULL ELSE (\n"
+                f"  SELECT terminal.{column(final_receipt, 'committed_at')}\n"
+                f"  FROM {table(final_receipt)} AS terminal\n"
+                f"  WHERE {terminal_predicate}\n"
+                ") END"
+            )
+            if backend == "mariadb":
+                state_expression = f"CAST({state_expression} AS CHAR(16) CHARSET ascii) COLLATE ascii_bin"
+                finalized_at_expression = f"CAST({finalized_at_expression} AS UNSIGNED)"
+            expressions.update(
+                {
+                    "channel": f"source_descriptor.{column(source_descriptor, 'channel')}",
+                    "publication_count": (
+                        f"catalog_descriptor.{column(catalog_descriptor, 'publication_count')}"
+                    ),
+                    "state": state_expression,
+                    "finalized_at": finalized_at_expression,
+                }
+            )
+            from_sql = (
+                f"FROM {table(commit)} AS committed\n"
+                f"JOIN {table(catalog_descriptor)} AS catalog_descriptor\n"
+                f"  ON catalog_descriptor.{column(catalog_descriptor, 'revision')}\n"
+                f"   = committed.{column(commit, 'revision')}\n"
+                f"JOIN {table(source_descriptor)} AS source_descriptor\n"
+                f"  ON source_descriptor.{column(source_descriptor, 'source_revision')}\n"
+                f"   = committed.{column(commit, 'source_revision')}\n"
+                f"JOIN {table(checkpoint)} AS final_checkpoint\n"
+                f"  ON final_checkpoint.{column(checkpoint, 'receipt_id')}\n"
+                f"   = committed.{column(commit, 'receipt_id')}\n"
+                f"LEFT JOIN {table(finalization)} AS finalized\n"
+                f"  ON finalized.{column(finalization, 'receipt_id')}\n"
+                f"   = committed.{column(commit, 'receipt_id')}\n"
+                f"WHERE finalized.{column(finalization, 'receipt_id')} IS NULL\n"
+                f"       AND final_checkpoint.{column(checkpoint, 'state')} "
+                f"= {finalization_literal('OPEN')}\n"
+                f"   OR finalized.{column(finalization, 'receipt_id')} IS NOT NULL\n"
+                f"       AND final_checkpoint.{column(checkpoint, 'state')} "
+                f"= {finalization_literal('COMPLETE')}\n"
+                "       AND EXISTS (\n"
+                "         SELECT 1\n"
+                f"         FROM {table(final_receipt)} AS terminal\n"
+                f"         WHERE {terminal_predicate}\n"
+                "       )"
+            )
+        case "publication_commit_activation":
+            source_by_name = {source.relation: source for source in sources}
+            if set(source_by_name) != {"publication_commit"}:
+                raise ValueError("publication commit activation source set drift")
+            commit = source_by_name["publication_commit"]
+            expressions = {
+                "source_revision": f"committed.{column(commit, 'source_revision')}",
+                "preparation_id": f"committed.{column(commit, 'preparation_id')}",
+                "operational_policy_id": (
+                    f"committed.{column(commit, 'operational_policy_id')}"
+                ),
+                "activated_at": f"committed.{column(commit, 'committed_at')}",
+            }
+            from_sql = f"FROM {table(commit)} AS committed"
+        case _:  # pragma: no cover - parser is closed-world
+            raise ValueError(f"unsupported derived view pattern {pattern!r}")
 
     return _render_derived_projection(
         relation,
@@ -4570,142 +4592,149 @@ def _validate_physical_schema(
                 raise ValueError(
                     f"derived view {relation_spec.relation!r} cannot reference itself"
                 )
-            if derived.pattern == "gallery_observation_metadata_projection":
-                expected_sources: tuple[str, ...] = (
-                    "gallery_observation_metadata_local",
-                    "gallery_source_name_access",
-                    "source_gallery_name_gid",
-                    "gallery_upload_time",
-                )
-                if derived.source_relations != expected_sources:
-                    raise ValueError(
-                        "gallery observation metadata source authority drifted"
+            match derived.pattern:
+                case "gallery_observation_metadata_projection":
+                    expected_sources: tuple[str, ...] = (
+                        "gallery_observation_metadata_local",
+                        "gallery_source_name_access",
+                        "source_gallery_name_gid",
+                        "gallery_upload_time",
                     )
-                source_by_name = {
-                    source.relation: source for source in sources if source is not None
-                }
-                expected_shapes = {
-                    "gallery_observation_metadata_local": (
-                        "gallery_id",
-                        "observation_id",
-                        "download_time",
-                        "modified_time",
-                    ),
-                    "gallery_source_name_access": (
-                        "gallery_id",
-                        "source_gallery_name",
-                    ),
-                    "source_gallery_name_gid": ("source_gallery_name", "gid"),
-                    "gallery_upload_time": ("gid", "upload_time"),
-                }
-                for source_name, expected_shape in expected_shapes.items():
-                    source = source_by_name[source_name]
-                    if (
-                        tuple(column.attribute for column in source.columns)
-                        != expected_shape
-                    ):
+                    if derived.source_relations != expected_sources:
                         raise ValueError(
-                            "gallery observation metadata source shape drifted: "
-                            f"{source_name}"
+                            "gallery observation metadata source authority drifted"
                         )
-                if tuple(column.attribute for column in relation_spec.columns) != (
-                    "gallery_id",
-                    "observation_id",
-                    "gid",
-                    "upload_time",
-                    "download_time",
-                    "modified_time",
-                ):
-                    raise ValueError(
-                        "gallery observation metadata projection shape drifted"
-                    )
-            elif derived.pattern == "analysis_ancestry_endpoint":
-                if derived.source_relations != ("analysis_state_ancestry",):
-                    raise ValueError(
-                        "analysis ancestry endpoint must derive only from ancestry"
-                    )
-                (ancestry,) = sources
-                assert ancestry is not None
-                if ancestry.kind != "table" or tuple(
-                    column.attribute for column in ancestry.columns
-                ) != (
-                    "analysis_id",
-                    "ancestor_depth",
-                    "ancestor_analysis_id",
-                ):
-                    raise ValueError("analysis ancestry endpoint source shape drifted")
-                if tuple(column.attribute for column in relation_spec.columns) != (
-                    "analysis_id",
-                    "anchor_analysis_id",
-                    "overlay_depth",
-                ):
-                    raise ValueError(
-                        "analysis ancestry endpoint projection shape drifted"
-                    )
-            elif derived.pattern == "analysis_gid_winner_keyset":
-                expected_sources = (
-                    "analysis_gid_winner_selection",
-                    "analysis_impacted_gid",
-                    "analysis_run_descriptor",
-                    "source_build_gallery",
-                    "gallery_observation_metadata",
-                )
-                if derived.source_relations != expected_sources:
-                    raise ValueError(
-                        "analysis GID winner keyset source authority drifted"
-                    )
-                source_by_name = {
-                    source.relation: source for source in sources if source is not None
-                }
-                expected_shapes = {
-                    "analysis_gid_winner_selection": (
-                        "analysis_id",
-                        "winner_gallery_id",
-                    ),
-                    "analysis_impacted_gid": (
-                        "analysis_id",
-                        "gid",
-                        "witness_gallery_id",
-                    ),
-                    "analysis_run_descriptor": (
-                        "analysis_id",
-                        "build_id",
-                        "policy_id",
-                        "input_manifest_sha256",
-                        "started_at",
-                    ),
-                    "source_build_gallery": (
-                        "build_id",
-                        "gallery_id",
-                        "observation_id",
-                    ),
-                    "gallery_observation_metadata": (
+                    source_by_name = {
+                        source.relation: source
+                        for source in sources
+                        if source is not None
+                    }
+                    expected_shapes = {
+                        "gallery_observation_metadata_local": (
+                            "gallery_id",
+                            "observation_id",
+                            "download_time",
+                            "modified_time",
+                        ),
+                        "gallery_source_name_access": (
+                            "gallery_id",
+                            "source_gallery_name",
+                        ),
+                        "source_gallery_name_gid": ("source_gallery_name", "gid"),
+                        "gallery_upload_time": ("gid", "upload_time"),
+                    }
+                    for source_name, expected_shape in expected_shapes.items():
+                        source = source_by_name[source_name]
+                        if (
+                            tuple(column.attribute for column in source.columns)
+                            != expected_shape
+                        ):
+                            raise ValueError(
+                                "gallery observation metadata source shape drifted: "
+                                f"{source_name}"
+                            )
+                    if tuple(column.attribute for column in relation_spec.columns) != (
                         "gallery_id",
                         "observation_id",
                         "gid",
                         "upload_time",
                         "download_time",
                         "modified_time",
-                    ),
-                }
-                for source_name, expected_shape in expected_shapes.items():
-                    source = source_by_name[source_name]
-                    if (
-                        tuple(column.attribute for column in source.columns)
-                        != expected_shape
                     ):
                         raise ValueError(
-                            "analysis GID winner keyset source shape drifted: "
-                            f"{source_name}"
+                            "gallery observation metadata projection shape drifted"
                         )
-                if tuple(column.attribute for column in relation_spec.columns) != (
-                    "analysis_id",
-                    "gid",
-                    "winner_gallery_id",
-                ):
-                    raise ValueError(
-                        "analysis GID winner keyset projection shape drifted"
+                case "analysis_ancestry_endpoint":
+                    if derived.source_relations != ("analysis_state_ancestry",):
+                        raise ValueError(
+                            "analysis ancestry endpoint must derive only from ancestry"
+                        )
+                    (ancestry,) = sources
+                    assert ancestry is not None
+                    if ancestry.kind != "table" or tuple(
+                        column.attribute for column in ancestry.columns
+                    ) != (
+                        "analysis_id",
+                        "ancestor_depth",
+                        "ancestor_analysis_id",
+                    ):
+                        raise ValueError(
+                            "analysis ancestry endpoint source shape drifted"
+                        )
+                    if tuple(column.attribute for column in relation_spec.columns) != (
+                        "analysis_id",
+                        "anchor_analysis_id",
+                        "overlay_depth",
+                    ):
+                        raise ValueError(
+                            "analysis ancestry endpoint projection shape drifted"
+                        )
+                case "analysis_gid_winner_keyset":
+                    expected_sources = (
+                        "analysis_gid_winner_selection",
+                        "analysis_impacted_gid",
+                        "analysis_run_descriptor",
+                        "source_build_gallery",
+                        "gallery_observation_metadata",
                     )
+                    if derived.source_relations != expected_sources:
+                        raise ValueError(
+                            "analysis GID winner keyset source authority drifted"
+                        )
+                    source_by_name = {
+                        source.relation: source
+                        for source in sources
+                        if source is not None
+                    }
+                    expected_shapes = {
+                        "analysis_gid_winner_selection": (
+                            "analysis_id",
+                            "winner_gallery_id",
+                        ),
+                        "analysis_impacted_gid": (
+                            "analysis_id",
+                            "gid",
+                            "witness_gallery_id",
+                        ),
+                        "analysis_run_descriptor": (
+                            "analysis_id",
+                            "build_id",
+                            "policy_id",
+                            "input_manifest_sha256",
+                            "started_at",
+                        ),
+                        "source_build_gallery": (
+                            "build_id",
+                            "gallery_id",
+                            "observation_id",
+                        ),
+                        "gallery_observation_metadata": (
+                            "gallery_id",
+                            "observation_id",
+                            "gid",
+                            "upload_time",
+                            "download_time",
+                            "modified_time",
+                        ),
+                    }
+                    for source_name, expected_shape in expected_shapes.items():
+                        source = source_by_name[source_name]
+                        if (
+                            tuple(column.attribute for column in source.columns)
+                            != expected_shape
+                        ):
+                            raise ValueError(
+                                "analysis GID winner keyset source shape drifted: "
+                                f"{source_name}"
+                            )
+                    if tuple(column.attribute for column in relation_spec.columns) != (
+                        "analysis_id",
+                        "gid",
+                        "winner_gallery_id",
+                    ):
+                        raise ValueError(
+                            "analysis GID winner keyset projection shape drifted"
+                        )
 
 
 def _mariadb_index_column_bytes(
@@ -4974,10 +5003,11 @@ def _unquoted_open_parentheses(value: str) -> tuple[int, ...]:
             if character == quote:
                 quote = None
             continue
-        if character in {'"', "'", "`"}:
-            quote = character
-        elif character == "(":
-            openings.append(position)
+        match character:
+            case '"' | "'" | "`":
+                quote = character
+            case "(":
+                openings.append(position)
     return tuple(openings)
 
 
@@ -4993,17 +5023,18 @@ def _top_level_parenthesis_content(value: str) -> str:
                 quote = None
             result.append(character if depth == 0 else " ")
             continue
-        if character in {'"', "'", "`"}:
-            quote = character
-            result.append(character if depth == 0 else " ")
-        elif character == "(":
-            depth += 1
-            result.append(" ")
-        elif character == ")":
-            depth -= 1
-            result.append(" ")
-        else:
-            result.append(character if depth == 0 else " ")
+        match character:
+            case '"' | "'" | "`":
+                quote = character
+                result.append(character if depth == 0 else " ")
+            case "(":
+                depth += 1
+                result.append(" ")
+            case ")":
+                depth -= 1
+                result.append(" ")
+            case _:
+                result.append(character if depth == 0 else " ")
     return "".join(result)
 
 
@@ -5112,15 +5143,16 @@ def _sqlite_table_definitions(create_sql: str) -> tuple[str, ...]:
             if character == quote:
                 quote = None
             continue
-        if character in {'"', "'", "`"}:
-            quote = character
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-        elif character == "," and depth == 0:
-            definitions.append(body[start:position].strip())
-            start = position + 1
+        match character:
+            case '"' | "'" | "`":
+                quote = character
+            case "(":
+                depth += 1
+            case ")":
+                depth -= 1
+            case "," if depth == 0:
+                definitions.append(body[start:position].strip())
+                start = position + 1
     definitions.append(body[start:].strip())
     return tuple(definition for definition in definitions if definition)
 
@@ -5150,14 +5182,15 @@ def _matching_parenthesis(value: str, opening: int) -> int | None:
             if character == quote:
                 quote = None
             continue
-        if character in {'"', "'", "`"}:
-            quote = character
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            if depth == 0:
-                return position
+        match character:
+            case '"' | "'" | "`":
+                quote = character
+            case "(":
+                depth += 1
+            case ")":
+                depth -= 1
+                if depth == 0:
+                    return position
     return None
 
 

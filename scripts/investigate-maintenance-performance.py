@@ -159,10 +159,11 @@ class PhysicalObserver:
             rows = 0
             try:
                 result = original(connector, category, action, query)
-                if isinstance(result, list):
-                    rows = len(result)
-                elif isinstance(result, tuple) and result:
-                    rows = 1
+                match result:
+                    case list():
+                        rows = len(result)
+                    case tuple() if result:
+                        rows = 1
                 return result
             finally:
                 elapsed = time.perf_counter() - started
@@ -540,20 +541,21 @@ def provenance(output: Path) -> dict[str, str]:
 
 def compact_query_texts(value: Any, dictionary: dict[str, str]) -> None:
     """Deduplicate SQL text across measurements without truncating any counts."""
-    if isinstance(value, dict):
-        if "sql" in value and "fingerprint" in value:
-            sql = value.pop("sql")
-            fingerprint = value["fingerprint"]
-            if fingerprint in dictionary and dictionary[fingerprint] != sql:
-                raise RuntimeError(
-                    "SQL fingerprint collision invalidates report mapping"
-                )
-            dictionary[fingerprint] = sql
-        for child in value.values():
-            compact_query_texts(child, dictionary)
-    elif isinstance(value, list):
-        for child in value:
-            compact_query_texts(child, dictionary)
+    match value:
+        case dict():
+            if "sql" in value and "fingerprint" in value:
+                sql = value.pop("sql")
+                fingerprint = value["fingerprint"]
+                if fingerprint in dictionary and dictionary[fingerprint] != sql:
+                    raise RuntimeError(
+                        "SQL fingerprint collision invalidates report mapping"
+                    )
+                dictionary[fingerprint] = sql
+            for child in value.values():
+                compact_query_texts(child, dictionary)
+        case list():
+            for child in value:
+                compact_query_texts(child, dictionary)
 
 
 def verify_repeat_counts(cases: list[dict[str, Any]]) -> None:

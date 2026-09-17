@@ -3396,38 +3396,39 @@ def test_publication_commit_event_receipt_corruption_fails_full_check(
         event_batch = _advance(connector, gate, cycle, 1, b"s" * 32, now=80)
         assert event_batch.row_count == 1 and event_batch.generation == 2
         connector.execute("PRAGMA ignore_check_constraints = ON")
-        if corruption == "output":
-            statement = (
-                "UPDATE operational_cleanup_checkpoints SET chain_sha256 = %s "
-                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
-            )
-            parameters: tuple[object, ...] = (b"x" * 32, cycle.cleanup_id)
-        elif corruption == "over_budget":
-            statement = (
-                "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 9 "
-                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
-            )
-            parameters = (cycle.cleanup_id,)
-        elif corruption == "deleted_underflow":
-            statement = (
-                "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 2 "
-                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
-            )
-            parameters = (cycle.cleanup_id,)
-        elif corruption == "stationary_nonterminal":
-            statement = (
-                "UPDATE operational_cleanup_checkpoints "
-                "SET receipt_start_cursor = cursor_bytes "
-                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
-            )
-            parameters = (cycle.cleanup_id,)
-        else:
-            statement = (
-                "UPDATE operational_cleanup_checkpoints "
-                "SET receipt_start_cursor = %s, receipt_input_sha256 = %s "
-                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
-            )
-            parameters = (b"forged-but-moving", b"q" * 32, cycle.cleanup_id)
+        match corruption:
+            case "output":
+                statement = (
+                    "UPDATE operational_cleanup_checkpoints SET chain_sha256 = %s "
+                    "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+                )
+                parameters: tuple[object, ...] = (b"x" * 32, cycle.cleanup_id)
+            case "over_budget":
+                statement = (
+                    "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 9 "
+                    "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+                )
+                parameters = (cycle.cleanup_id,)
+            case "deleted_underflow":
+                statement = (
+                    "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 2 "
+                    "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+                )
+                parameters = (cycle.cleanup_id,)
+            case "stationary_nonterminal":
+                statement = (
+                    "UPDATE operational_cleanup_checkpoints "
+                    "SET receipt_start_cursor = cursor_bytes "
+                    "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+                )
+                parameters = (cycle.cleanup_id,)
+            case _:
+                statement = (
+                    "UPDATE operational_cleanup_checkpoints "
+                    "SET receipt_start_cursor = %s, receipt_input_sha256 = %s "
+                    "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+                )
+                parameters = (b"forged-but-moving", b"q" * 32, cycle.cleanup_id)
         connector.execute(statement, parameters)
 
         with pytest.raises(
@@ -3838,48 +3839,49 @@ def test_publication_commit_post_compound_phase_rejects_every_reappearing_family
         assert checkpoint.phase == "PCOM_FINALIZATION_CHECKPOINT"
         assert checkpoint.generation == 1
 
-        if reappearing_family == "finalization_checkpoint":
-            checkpoint = _advance(
-                connector,
-                gate,
-                cycle,
-                checkpoint.generation,
-                b"x" * 32,
-                now=92,
-            )
-            assert checkpoint.phase == "PCOM_FINALIZATION_CHECKPOINT"
-            assert checkpoint.row_count == 1 and checkpoint.generation == 2
-        elif reappearing_family == "anchor":
-            assert checkpoint.generation is not None
-            deleted_checkpoint = _advance(
-                connector,
-                gate,
-                cycle,
-                checkpoint.generation,
-                b"x" * 32,
-                now=92,
-            )
-            assert deleted_checkpoint.generation == 2
-            assert deleted_checkpoint.generation is not None
-            checkpoint = _advance(
-                connector,
-                gate,
-                cycle,
-                deleted_checkpoint.generation,
-                b"y" * 32,
-                now=93,
-            )
-            assert checkpoint.phase == "PCOM_ANCHOR" and checkpoint.generation == 1
-            checkpoint = _advance(
-                connector,
-                gate,
-                cycle,
-                checkpoint.generation,
-                b"z" * 32,
-                now=94,
-            )
-            assert checkpoint.phase == "PCOM_ANCHOR"
-            assert checkpoint.row_count == 1 and checkpoint.generation == 2
+        match reappearing_family:
+            case "finalization_checkpoint":
+                checkpoint = _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    checkpoint.generation,
+                    b"x" * 32,
+                    now=92,
+                )
+                assert checkpoint.phase == "PCOM_FINALIZATION_CHECKPOINT"
+                assert checkpoint.row_count == 1 and checkpoint.generation == 2
+            case "anchor":
+                assert checkpoint.generation is not None
+                deleted_checkpoint = _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    checkpoint.generation,
+                    b"x" * 32,
+                    now=92,
+                )
+                assert deleted_checkpoint.generation == 2
+                assert deleted_checkpoint.generation is not None
+                checkpoint = _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    deleted_checkpoint.generation,
+                    b"y" * 32,
+                    now=93,
+                )
+                assert checkpoint.phase == "PCOM_ANCHOR" and checkpoint.generation == 1
+                checkpoint = _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    checkpoint.generation,
+                    b"z" * 32,
+                    now=94,
+                )
+                assert checkpoint.phase == "PCOM_ANCHOR"
+                assert checkpoint.row_count == 1 and checkpoint.generation == 2
 
         statements_by_family: dict[str, list[tuple[str, tuple[object, ...]]]] = {
             "source_base": [
@@ -5903,57 +5905,58 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
 
         facet_insert: tuple[str, tuple[object, ...]]
         facet_delete: tuple[str, tuple[object, ...]]
-        if facet_family == "language":
-            facet_insert = (
-                "INSERT INTO catalog_language_facet_order "
-                "(revision, position, language_sha256, occurrence_count) "
-                "VALUES (99, 0, %s, 1)",
-                (value_sha256,),
-            )
-            facet_delete = (
-                "DELETE FROM catalog_language_facet_order WHERE revision = 99",
-                (),
-            )
-        elif facet_family == "contributor":
-            facet_insert = (
-                "INSERT INTO catalog_contributor_facet_order "
-                "(revision, position, contributor_name_sha256, role, "
-                "occurrence_count) VALUES (99, 0, %s, %s, 1)",
-                (value_sha256, b"author"),
-            )
-            facet_delete = (
-                "DELETE FROM catalog_contributor_facet_order WHERE revision = 99",
-                (),
-            )
-        else:
-            seed_tag_term(
-                connector,
-                tag_id=99,
-                namespace=b"genre",
-                tag_value_sha256=value_sha256,
-            )
-            if facet_family == "tag_directory":
+        match facet_family:
+            case "language":
                 facet_insert = (
-                    "INSERT INTO catalog_tag_directory_order "
-                    "(revision, namespace, position, tag_value_sha256) "
-                    "VALUES (99, %s, 0, %s)",
-                    (b"genre", value_sha256),
+                    "INSERT INTO catalog_language_facet_order "
+                    "(revision, position, language_sha256, occurrence_count) "
+                    "VALUES (99, 0, %s, 1)",
+                    (value_sha256,),
                 )
                 facet_delete = (
-                    "DELETE FROM catalog_tag_directory_order WHERE revision = 99",
+                    "DELETE FROM catalog_language_facet_order WHERE revision = 99",
                     (),
                 )
-            else:
+            case "contributor":
                 facet_insert = (
-                    "INSERT INTO catalog_subject_facet_order "
-                    "(revision, position, tag_id, occurrence_count) "
-                    "VALUES (99, 0, 99, 1)",
-                    (),
+                    "INSERT INTO catalog_contributor_facet_order "
+                    "(revision, position, contributor_name_sha256, role, "
+                    "occurrence_count) VALUES (99, 0, %s, %s, 1)",
+                    (value_sha256, b"author"),
                 )
                 facet_delete = (
-                    "DELETE FROM catalog_subject_facet_order WHERE revision = 99",
+                    "DELETE FROM catalog_contributor_facet_order WHERE revision = 99",
                     (),
                 )
+            case _:
+                seed_tag_term(
+                    connector,
+                    tag_id=99,
+                    namespace=b"genre",
+                    tag_value_sha256=value_sha256,
+                )
+                if facet_family == "tag_directory":
+                    facet_insert = (
+                        "INSERT INTO catalog_tag_directory_order "
+                        "(revision, namespace, position, tag_value_sha256) "
+                        "VALUES (99, %s, 0, %s)",
+                        (b"genre", value_sha256),
+                    )
+                    facet_delete = (
+                        "DELETE FROM catalog_tag_directory_order WHERE revision = 99",
+                        (),
+                    )
+                else:
+                    facet_insert = (
+                        "INSERT INTO catalog_subject_facet_order "
+                        "(revision, position, tag_id, occurrence_count) "
+                        "VALUES (99, 0, 99, 1)",
+                        (),
+                    )
+                    facet_delete = (
+                        "DELETE FROM catalog_subject_facet_order WHERE revision = 99",
+                        (),
+                    )
 
         connector.execute(
             "INSERT INTO catalog_revision_descriptors "

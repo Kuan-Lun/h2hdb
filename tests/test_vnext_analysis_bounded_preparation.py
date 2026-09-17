@@ -217,14 +217,15 @@ def test_effective_spool_rejects_disk_corruption(fault: str) -> None:
     with analysis._EffectiveContentSpool(digests) as spool:
         assert tuple(spool) == digests
         assert tuple(spool) == digests
-        if fault == "truncate":
-            spool._payload.truncate(63)
-        elif fault == "append":
-            spool._payload.seek(0, 2)
-            spool._payload.write(b"c")
-        else:
-            spool._payload.seek(0)
-            spool._payload.write(b"c")
+        match fault:
+            case "truncate":
+                spool._payload.truncate(63)
+            case "append":
+                spool._payload.seek(0, 2)
+                spool._payload.write(b"c")
+            case _:
+                spool._payload.seek(0)
+                spool._payload.write(b"c")
         with pytest.raises(analysis.AnalysisCorruptionError, match="spool"):
             tuple(spool)
     assert spool._payload.closed

@@ -318,21 +318,22 @@ def test_existing_window_rejects_corrupt_durable_values(
         # Simulate storage corruption beyond the normal FK-protected writer.
         connector.execute("PRAGMA foreign_keys = OFF")
         with connector.transaction():
-            if corruption == "payload":
-                connector.execute(
-                    "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s WHERE page_sha256 = %s",
-                    (b"corrupt", page.page_sha256),
-                )
-            elif corruption == "root":
-                connector.execute(
-                    "UPDATE catalog_canonical_value_identities SET root_page_sha256 = %s WHERE value_sha256 = %s",
-                    (b"z" * 32, item.plan.value_sha256),
-                )
-            else:
-                connector.execute(
-                    "DELETE FROM catalog_canonical_value_allocation_anchors WHERE value_sha256 = %s",
-                    (item.plan.value_sha256,),
-                )
+            match corruption:
+                case "payload":
+                    connector.execute(
+                        "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s WHERE page_sha256 = %s",
+                        (b"corrupt", page.page_sha256),
+                    )
+                case "root":
+                    connector.execute(
+                        "UPDATE catalog_canonical_value_identities SET root_page_sha256 = %s WHERE value_sha256 = %s",
+                        (b"z" * 32, item.plan.value_sha256),
+                    )
+                case _:
+                    connector.execute(
+                        "DELETE FROM catalog_canonical_value_allocation_anchors WHERE value_sha256 = %s",
+                        (item.plan.value_sha256,),
+                    )
         cache = _cache(projection)
         try:
             with _lease(cache) as owner:
