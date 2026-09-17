@@ -106,7 +106,12 @@ def test_already_uploaded_marker_rejects_cross_domain_canonical_value(
             b"r" * 32,
         )
         with (
-            patch.object(connector, "fetch_all", return_value=[(value,)]),
+            patch.object(connector, "fetch_all", return_value=[(0, value)]),
+            patch.object(
+                analysis_module,
+                "load_and_validate_single_page_canonical_values",
+                return_value={},
+            ),
             patch.object(
                 CanonicalValueRepository,
                 "stream_and_validate",

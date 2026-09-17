@@ -163,13 +163,14 @@ assumed bounds from the input structure; those fields and that theorem have
 been removed. Concrete storage and cost transitions live in
 `lean/ReadyAuditCacheCost.lean` instead.
 
-The performance evidence has three distinct parts:
+The performance evidence separates four contracts:
 
 | Contract | Formal scope | Implementation evidence |
 | --- | --- | --- |
 | READY cache capacity and read costs | State-threaded LRU transitions, charged-byte bounds, derived entry bound, and miss counts | `tests/test_ready_audit_cache_cost.py` compares the executable Lean model with the actual Python cache and counts real SQLite validation statements |
 | Repeated working sets | Arbitrary retained-key traces incur zero validations; finite cold-start regressions supplement this theorem | Three laps at 127, 128, 129, 256, 486, and 1,024 distinct keys; separate charged-budget boundary cases |
-| GID preparation | A distinct preparation kind omits canonical tag reads while content preparation retains marker validation | `tests/test_analysis_preparation_cost.py` measures both real GID stages across gallery/tag dimensions; `tests/test_gid_preparation.py` rejects corrupt metadata and forged capabilities |
+| GID preparation | A distinct preparation kind omits canonical tag reads | `tests/test_analysis_preparation_cost.py` measures both real GID stages across gallery/tag dimensions; `tests/test_gid_preparation.py` rejects corrupt metadata and forged capabilities |
+| Content marker preparation | Constructed keyset pages and canonical prefetch traces, successful single-leaf cost bound, tree/failure costs, and three independent stages | `tests/test_content_marker_cost.py` compares actual list/canonical SQL with executable Lean traces across page and payload boundaries |
 
 For valid single-leaf canonical values in the tested SQL implementation, each
 cache miss performs three validation queries. This is a shape-specific count,
@@ -195,16 +196,56 @@ qualification, exact-compares normalized GID, and independently repeats that
 work during validation. It does not build content plans or read canonical tag
 values or the separate title value. The canonical tag query budget is zero for
 both GID stages, including marker and multi-leaf tag inputs. Content stages
-still validate their marker dependencies. Metadata-stream pages can grow with
-encoded input bytes, so zero canonical tag queries does not imply constant total
-SQL or constant elapsed time. Content and GID commits reject the wrong
-capability, stale generation, changed membership and mismatched durable GID.
+still validate their marker dependencies through bounded batches. Metadata-stream
+pages can grow with encoded input bytes, so zero canonical tag queries does not
+imply constant total SQL or constant elapsed time. Content and GID commits reject
+the wrong capability, stale generation, changed membership and mismatched durable
+GID.
+
+Content marker preparation first reads one tag and validates its scalar value.
+A first marker returns after one list query and three canonical queries without
+prefetching the tail; empty input returns after one list query. After an
+unmatched first tag, it reads at most 128 remaining ordered tag references per
+keyset page. A valid nonempty single-leaf page costs one list query and three
+canonical-family queries, rather than three canonical queries per tag. A full
+last page requires a terminal empty list query; a short page or visited marker
+ends the scan. The constructed Lean trace proves a bound of
+`4 + 4 * ((tag_count - 1) / 128 + 1)` client SQL statements for arbitrary nonempty
+successful single-leaf tag sequences, with integer division. It also proves
+each page is hard-capped and that the chosen batch rounds cannot truncate work:
+any additional rounds produce the same trace. Three content stages
+independently repeat the stage trace; there is no cross-stage cache or skipped
+validation. The scout adds bounded work to marker-free inputs to avoid fetching
+up to 128 payloads when the first tag is already the marker.
+
+Multi-page values retain their streaming tree validation. The model explicitly
+constructs one identity read plus two reads per visited tree page, in addition
+to prefetch. When canonical batch validation fails, the runtime discards the
+batch results and validates the visited prefix in order, preserving a marker
+before a corrupt tail and rejecting corruption before a marker. Database
+errors propagate. The model includes selected family-validation failure phases
+and proves a general prefetch-plus-scalar bound. The SQL correspondence test
+mutates stored page bytes: the page-family hash check fails after two prefetch
+queries, followed by two scalar queries before a corrupt batch-prefix tag or
+three before a valid batch-prefix marker. With the unmatched scout, these cases
+cost seven or eight canonical queries. Later value-hash failures have a different
+trace; the model does not assign every corruption or database error the same cost.
+After the scout, prefetch may read later rows within the current bounded page
+before discovering a marker. Its row and payload limits are not a Python RSS or
+database memory theorem.
+The former scalar marker trace remains an explicit comparison model, not a
+claim about current content SQL costs. Run the executable content trace with
+`lean --error=warning --run verification/lean/AnalysisPreparationCost.lean --content`.
 
 The default merge tests exercise cost oracles with deliberately inefficient
 negative controls: always missing or restoring independent 128/512-entry caps
 must violate the retained-working-set budget, and restoring a GID marker scan
-must violate the zero-tag-query contract. Comparing actual Lean execution with Python avoids
-treating the presence of a theorem name as refinement evidence. The Lean gate
+must violate the zero-tag-query contract. Restoring scalar content reads or
+adding a real tag query outside the marker helper must violate the content cost
+oracle. The content cases cover 0, 1, 127, 128, 129, 130, 256, 512, and 1,024 tags,
+marker positions before/at/after the page boundary, mixed and multi-leaf values,
+and independent gallery/stage repetition. Comparing actual Lean execution with
+Python avoids treating the presence of a theorem name as refinement evidence. The Lean gate
 checks the proofs separately; finite conformance traces do not prove universal
 Python/SQL refinement. These files are part of the existing bounded merge
 profile, not a second release gate.
@@ -218,7 +259,8 @@ Run the focused implementation evidence with:
 ```bash
 .venv/bin/python -m pytest -n 0 \
   tests/test_ready_audit_cache_cost.py \
-  tests/test_analysis_preparation_cost.py tests/test_gid_preparation.py
+  tests/test_analysis_preparation_cost.py tests/test_gid_preparation.py \
+  tests/test_content_marker_cost.py tests/test_content_marker_validation.py
 ```
 
 Before reporting a performance investigation complete, state its cost unit,
