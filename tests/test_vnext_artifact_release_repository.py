@@ -853,9 +853,9 @@ def test_mariadb_page_shape_uses_typed_resource_keyset() -> None:
     )
     with (
         patch.object(
-            MaintenanceGateRepository,
-            "lock_and_require_live",
-            return_value=gate,
+            release_repository,
+            "_require_exclusive_gate",
+            return_value=2,
         ),
         patch.object(release_repository, "_require_cursor_authority"),
     ):

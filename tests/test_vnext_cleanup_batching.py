@@ -25,6 +25,7 @@ from h2hdb.vnext_cleanup_repository import (
 )
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
+    LockedGateRenewal,
     MaintenanceGateRepository,
     MaintenanceGateUnavailableError,
 )
@@ -79,15 +80,13 @@ def test_empty_phases_share_one_exact_gate_check_and_finish_fixed_cycle(
         gate = _claim(connector)
         cycle = _begin(connector, gate, kind)
         checks: list[int] = []
-        original = MaintenanceGateRepository.lock_and_require_live
+        original = LockedGateRenewal.require_live
 
         def checked(*args: Any, **kwargs: Any) -> GateLease:
             checks.append(kwargs["now"])
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(
-            MaintenanceGateRepository, "lock_and_require_live", staticmethod(checked)
-        )
+        monkeypatch.setattr(LockedGateRenewal, "require_live", checked)
         results = _advance(connector, gate, cycle)
         assert checks == [3]
         assert len(results) == len(cleanup._STRATEGIES[kind].phases)
@@ -190,7 +189,7 @@ def test_facade_renews_only_at_half_life_and_revalidates_each_batch(
     advances = 0
     renewals: list[int] = []
     original_advance = VNextCleanupRepository.advance_current_only_cycle
-    original_renew = MaintenanceGateRepository.renew
+    original_renew = LockedGateRenewal.renew
 
     def advance(*args: Any, **kwargs: Any) -> tuple[CleanupBatchResult, ...]:
         nonlocal now, advances
@@ -207,14 +206,15 @@ def test_facade_renews_only_at_half_life_and_revalidates_each_batch(
     monkeypatch.setattr(
         VNextCleanupRepository, "advance_current_only_cycle", staticmethod(advance)
     )
-    monkeypatch.setattr(MaintenanceGateRepository, "renew", staticmethod(renew))
+    monkeypatch.setattr(LockedGateRenewal, "renew", renew)
     with VNextIngestFacade(
         CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
         clock=lambda: now,
     ) as facade:
         if clock_after_first_batch == 1_100:
-            with pytest.raises(MaintenanceGateUnavailableError):
-                facade.drain_current_only_maintenance(1_000)
+            assert facade.drain_current_only_maintenance(1_000) is (
+                VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+            )
             assert advances == 1
             with SQLiteConnector(str(path)) as connector:
                 assert connector.fetch_one(
