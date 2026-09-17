@@ -555,7 +555,9 @@ def test_audit_cache_observer_preserves_lru_order_and_counts_eviction(
     original_open = owner.open
     observer = probe.AuditObserver()
     domain = b"title_utf8_v1"
-    capacity = probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    capacity = probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES // (
+        probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES + 1
+    )
     with observer.installed():
         cache = owner()
         for value in range(capacity + 1):
@@ -577,6 +579,9 @@ def test_audit_cache_observer_preserves_lru_order_and_counts_eviction(
     assert metric["admissions"] == capacity + 1
     assert metric["evictions_caused"] == 1
     assert metric["max_resident_entries"] == capacity
+    assert metric["max_resident_charged_bytes"] == capacity * (
+        probe.catalog_refinement._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES + 1
+    )
     assert report["observed_distinct_validated_bytes"] == capacity + 1
     assert report["observed_distinct_requested_keys"] == capacity + 1
 
@@ -603,7 +608,8 @@ def test_audit_cache_control_preserves_byte_caps_validators_and_restores_capacit
     probe: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = probe.catalog_refinement
-    original = runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    original = probe.cache_entry_capacity()
+    original_charge = runtime._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
     byte_caps = (
         runtime._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES,
         runtime._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES,
@@ -615,7 +621,7 @@ def test_audit_cache_control_preserves_byte_caps_validators_and_restores_capacit
     observed = []
 
     def measure(label: str) -> dict[str, Any]:
-        observed.append((label, runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES))
+        observed.append((label, probe.cache_entry_capacity()))
         assert byte_caps == (
             runtime._CANONICAL_VALIDATION_CACHE_MAX_VALUE_BYTES,
             runtime._CANONICAL_VALIDATION_CACHE_MAX_TOTAL_BYTES,
@@ -630,7 +636,8 @@ def test_audit_cache_control_preserves_byte_caps_validators_and_restores_capacit
     assert result["order"] == ["A_baseline", "B_capacity512", "A_restored"]
     assert result["same_published_oracle"]
     assert verification.call_count == 3
-    assert runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES == original
+    assert probe.cache_entry_capacity() == original
+    assert runtime._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES == original_charge
 
 
 @pytest.mark.parametrize("failure", ["measure", "oracle", "validators"])
@@ -638,7 +645,8 @@ def test_audit_cache_control_fails_closed_and_restores_capacity(
     probe: ModuleType, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     runtime = probe.catalog_refinement
-    original = runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES
+    original = probe.cache_entry_capacity()
+    original_charge = runtime._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES
     oracle = {"gids": [1]}
     monkeypatch.setattr(
         probe,
@@ -654,7 +662,8 @@ def test_audit_cache_control_fails_closed_and_restores_capacity(
 
     with pytest.raises(RuntimeError):
         probe.audit_cache_comparison(CoreConfig(), (), oracle, baseline, measure)
-    assert runtime._CANONICAL_VALIDATION_CACHE_MAX_ENTRIES == original
+    assert probe.cache_entry_capacity() == original
+    assert runtime._CANONICAL_VALIDATION_CACHE_ENTRY_BYTES == original_charge
 
 
 def test_server_diagnostics_preserve_unavailable_status_and_original_error(
