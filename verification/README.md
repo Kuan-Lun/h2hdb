@@ -190,7 +190,7 @@ assumed bounds from the input structure; those fields and that theorem have
 been removed. Concrete storage and cost transitions live in
 `lean/ReadyAuditCacheCost.lean` instead.
 
-The performance evidence separates four contracts:
+The performance evidence separates these contracts:
 
 | Contract | Formal scope | Implementation evidence |
 | --- | --- | --- |
@@ -198,6 +198,7 @@ The performance evidence separates four contracts:
 | Repeated working sets | Arbitrary retained-key traces incur zero validations; finite cold-start regressions supplement this theorem | Three laps at 127, 128, 129, 256, 486, and 1,024 distinct keys; separate charged-budget boundary cases |
 | GID preparation | A distinct preparation kind omits canonical tag reads | `tests/test_analysis_preparation_cost.py` measures both real GID stages across gallery/tag dimensions; `tests/test_gid_preparation.py` rejects corrupt metadata and forged capabilities |
 | Content marker preparation | Constructed keyset pages and canonical prefetch traces, successful single-leaf cost bound, tree/failure costs, and three independent stages | `tests/test_content_marker_cost.py` compares actual list/canonical SQL with executable Lean traces across page and payload boundaries |
+| Publication cleanup mutation | Constructed exact-key chunks preserve ordered keys, derive bind/row limits, and emit two SQL calls per nonempty chunk | `tests/test_publication_cleanup_costs.py` compares actual production-phase SQL with Lean traces, separately counting selection, cursor and terminal work |
 
 For valid single-leaf canonical values in the tested SQL implementation, each
 cache miss performs three validation queries. This is a shape-specific count,
@@ -299,6 +300,37 @@ plans, or full-pipeline speedup. The manual pipeline probe supplies separate
 cross-backend and full-READY evidence; deployment evidence remains necessary
 for deployment-specific claims. A passing characterization test cannot close
 an optimization target that it demonstrates is still violated.
+
+`lean/PublicationCleanupBatch.lean` models only the single-table exact-primary-key
+mutation selected for `CATALOG_PUBLICATION`. It constructs ordered chunks of
+capacity `min(64, (900 - fixed_binds - 1) / ordered_arity)`; the additional bind
+belongs to the locking `LIMIT`. A positive capacity is a query-shape admission
+condition, not an assumed performance result. Each constructed nonempty chunk
+emits one locking read and one exact-key delete. The proofs preserve all input
+keys, bound both statements' bindings, derive the SQL bound from the emitted
+trace, and show that independent cleanup cycles repeat their actual work.
+
+The correspondence tests count real `_run_static_phase` connector calls while
+the repository freezes roots and advances durable cycles. Selection, covered
+cursor checks and terminal absence probes have explicit separate budgets;
+gate, receipt and checkpoint statements remain outside the mutation theorem.
+The deep SQLite/MariaDB matrix covers 63/64/65 keys, 255/256/257 logical rows and
+256 frozen roots with the widest publication primary key (900 actual
+locking-read binds). SQLite additionally enforces a 999-variable connection
+limit and checks three fresh cycles. Live MariaDB cases require explicit
+service enablement; skipped cases are not backend evidence. A small merge
+negative control restores per-row locking and
+deletion, or adds one actual query per row: both preserve deletion results but
+must fail the same cost oracle. These focused fixtures enforce foreign keys
+during cleanup but omit unrelated source/publication families, so they do not
+claim a complete READY audit. Backend, recovery and retained-state tests are
+separate safety evidence. The model does not prove SQL plans, physical lock
+order, server rows examined, NAS latency or universal implementation refinement.
+
+```bash
+lean --error=warning --run verification/lean/PublicationCleanupBatch.lean
+.venv/bin/python -m pytest -n 0 -m '' tests/test_publication_cleanup_costs.py
+```
 
 When an optimization changes the algorithm, update the executable cost model
 and its correspondence tests together, retain the independent result and
