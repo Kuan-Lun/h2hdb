@@ -5,9 +5,12 @@ import Std
 
 Entries are stored oldest first. A hit removes and appends its entry; a miss
 performs one validation, then successful admissible values evict oldest entries
-until both budgets have room. Failed validations and oversized values do not
+until the charged byte budget has room. Failed validations and oversized values do not
 change retained entries. Keys abstract the complete (digest, expected-domain)
-pair, and byte lengths abstract already validated immutable payloads.
+pair, and byte lengths abstract already validated immutable payloads. Each
+admitted key also pays a fixed 512-byte bookkeeping allowance. The entry count
+is derived from that positive charge, not independently limited to 128.
+The allowance bounds logical accounting, not interpreter object sizes or RSS.
 
 Capacity theorems below follow from these executable transitions, starting with
 the empty list; bounds are not fields assumed by a cache structure. Validation
@@ -22,12 +25,12 @@ evidence, not a theorem about the Python interpreter.
 namespace H2HDB.Verification.ReadyAuditCacheCost
 
 structure Limits where
-  entries : Nat
+  entryCharge : Nat
   valueBytes : Nat
   totalBytes : Nat
   deriving Repr
 
-def productionLimits : Limits := ⟨128, 65536, 8388608⟩
+def productionLimits : Limits := ⟨512, 65536, 8388608⟩
 
 structure Entry where
   key : Nat
@@ -45,6 +48,15 @@ theorem retainedBytes_append (left right : Cache) :
   induction left with
   | nil => simp [retainedBytes]
   | cons entry rest ih => simp [retainedBytes, ih, Nat.add_assoc]
+
+def chargedBytes (limits : Limits) (cache : Cache) : Nat :=
+  retainedBytes cache + cache.length * limits.entryCharge
+
+theorem chargedBytes_append (limits : Limits) (left right : Cache) :
+    chargedBytes limits (left ++ right) =
+      chargedBytes limits left + chargedBytes limits right := by
+  simp only [chargedBytes, retainedBytes_append, List.length_append, Nat.add_mul]
+  omega
 
 def extract (key : Nat) : Cache → Option Entry × Cache
   | [] => (none, [])
@@ -96,25 +108,24 @@ theorem extract_some_accounting (key : Nat) (cache rest : Cache) (value : Entry)
 def trim (limits : Limits) (incomingBytes : Nat) : Cache → Cache
   | [] => []
   | entry :: rest =>
-      if (entry :: rest).length < limits.entries ∧
-          retainedBytes (entry :: rest) + incomingBytes ≤ limits.totalBytes then
+      if chargedBytes limits (entry :: rest) + incomingBytes + limits.entryCharge ≤
+          limits.totalBytes then
         entry :: rest
       else trim limits incomingBytes rest
 
 def Bounded (limits : Limits) (cache : Cache) : Prop :=
-  cache.length ≤ limits.entries ∧ retainedBytes cache ≤ limits.totalBytes
+  chargedBytes limits cache ≤ limits.totalBytes
 
 theorem empty_bounded (limits : Limits) : Bounded limits [] := by
-  simp [Bounded, retainedBytes]
+  simp [Bounded, chargedBytes, retainedBytes]
 
 theorem trim_makes_room (limits : Limits) (incomingBytes : Nat) (cache : Cache)
-    (positive : 0 < limits.entries)
-    (admissible : incomingBytes ≤ limits.totalBytes) :
-    (trim limits incomingBytes cache).length < limits.entries ∧
-      retainedBytes (trim limits incomingBytes cache) + incomingBytes ≤
+    (admissible : incomingBytes + limits.entryCharge ≤ limits.totalBytes) :
+      chargedBytes limits (trim limits incomingBytes cache) +
+        incomingBytes + limits.entryCharge ≤
         limits.totalBytes := by
   induction cache with
-  | nil => simpa [trim, retainedBytes] using And.intro positive admissible
+  | nil => simpa [trim, chargedBytes, retainedBytes] using admissible
   | cons entry rest ih =>
       simp only [trim]
       split
@@ -122,24 +133,24 @@ theorem trim_makes_room (limits : Limits) (incomingBytes : Nat) (cache : Cache)
       · exact ih
 
 def remember (limits : Limits) (cache : Cache) (value : Entry) : Cache :=
-  if value.bytes > limits.valueBytes then cache
+  if value.bytes > limits.valueBytes ∨
+      value.bytes + limits.entryCharge > limits.totalBytes then cache
   else trim limits value.bytes (extract value.key cache).2 ++ [value]
 
 theorem remember_preserves_capacity (limits : Limits) (cache : Cache) (value : Entry)
-    (positive : 0 < limits.entries)
-    (valueFits : limits.valueBytes ≤ limits.totalBytes)
     (bounded : Bounded limits cache) :
     Bounded limits (remember limits cache value) := by
   unfold remember
   split
   · exact bounded
   · rename_i admissible
-    have valueBound : value.bytes ≤ limits.totalBytes := by omega
-    obtain ⟨count, bytes⟩ := trim_makes_room limits value.bytes
-      (extract value.key cache).2 positive valueBound
-    simp only [Bounded, List.length_append, List.length_singleton,
-      retainedBytes_append, retainedBytes, Nat.add_zero]
-    constructor <;> omega
+    have valueBound : value.bytes + limits.entryCharge ≤ limits.totalBytes := by omega
+    have room := trim_makes_room limits value.bytes
+      (extract value.key cache).2 valueBound
+    simp only [Bounded, chargedBytes, retainedBytes_append, retainedBytes,
+      List.length_append, List.length_singleton, Nat.add_mul, Nat.one_mul,
+      Nat.add_zero] at *
+    omega
 
 structure Access where
   key : Nat
@@ -162,8 +173,6 @@ def read (limits : Limits) (cache : Cache) (access : Access) : ReadResult :=
 def validationUnits (result : ReadResult) : Nat := if result.hit then 0 else 1
 
 theorem read_preserves_capacity (limits : Limits) (cache : Cache) (access : Access)
-    (positive : 0 < limits.entries)
-    (valueFits : limits.valueBytes ≤ limits.totalBytes)
     (bounded : Bounded limits cache) :
     Bounded limits (read limits cache access).cache := by
   unfold read
@@ -173,14 +182,14 @@ theorem read_preserves_capacity (limits : Limits) (cache : Cache) (access : Acce
       | none =>
           simp only
           split
-          · exact remember_preserves_capacity limits cache _ positive valueFits bounded
+          · exact remember_preserves_capacity limits cache _ bounded
           · exact bounded
       | some value =>
           obtain ⟨count, bytes⟩ := extract_some_accounting access.key cache rest value extracted
-          simp only [Bounded, List.length_append, List.length_singleton,
+          simp only [Bounded, chargedBytes, List.length_append, List.length_singleton,
             retainedBytes_append, retainedBytes, Nat.add_zero]
-          simp only [Bounded] at bounded
-          constructor <;> omega
+          rw [count, bytes]
+          exact bounded
 
 theorem one_read_validation_units (result : ReadResult) :
     validationUnits result ≤ 1 := by
@@ -198,6 +207,12 @@ theorem oversized_miss_preserves_cache (limits : Limits) (cache rest : Cache)
     (read limits cache ⟨key, bytes, true⟩).cache = cache := by
   simp [read, absent, remember, oversized]
 
+theorem unaffordable_miss_preserves_cache (limits : Limits) (cache rest : Cache)
+    (key bytes : Nat) (absent : extract key cache = (none, rest))
+    (unaffordable : bytes + limits.entryCharge > limits.totalBytes) :
+    (read limits cache ⟨key, bytes, true⟩).cache = cache := by
+  simp [read, absent, remember, unaffordable]
+
 structure TraceResult where
   cache : Cache
   misses : Nat
@@ -211,14 +226,12 @@ def run (limits : Limits) (cache : Cache) : List Access → TraceResult
       ⟨tail.cache, validationUnits next + tail.misses⟩
 
 theorem trace_preserves_capacity (limits : Limits) (cache : Cache) (accesses : List Access)
-    (positive : 0 < limits.entries)
-    (valueFits : limits.valueBytes ≤ limits.totalBytes)
     (bounded : Bounded limits cache) :
     Bounded limits (run limits cache accesses).cache := by
   induction accesses generalizing cache with
   | nil => exact bounded
   | cons access rest ih =>
-      exact ih _ (read_preserves_capacity limits cache access positive valueFits bounded)
+      exact ih _ (read_preserves_capacity limits cache access bounded)
 
 theorem trace_validation_units_le_reads
     (limits : Limits) (cache : Cache) (accesses : List Access) :
@@ -232,10 +245,16 @@ theorem trace_validation_units_le_reads
       omega
 
 theorem production_trace_capacity (accesses : List Access) :
-    (run productionLimits [] accesses).cache.length ≤ 128 ∧
-      retainedBytes (run productionLimits [] accesses).cache ≤ 8388608 := by
-  exact trace_preserves_capacity productionLimits [] accesses (by decide) (by decide)
+    (run productionLimits [] accesses).cache.length ≤ 16384 ∧
+      chargedBytes productionLimits (run productionLimits [] accesses).cache ≤ 8388608 := by
+  have budget := trace_preserves_capacity productionLimits [] accesses
     (empty_bounded productionLimits)
+  have charged := budget
+  simp only [Bounded, chargedBytes, productionLimits] at charged
+  constructor
+  · simp only [productionLimits]
+    omega
+  · exact budget
 
 def sqlUnits (costPerMiss : Nat) (result : TraceResult) : Nat :=
   costPerMiss * result.misses
@@ -265,13 +284,71 @@ theorem fixed_cost_sql_units_le_reads
     sqlUnits costPerMiss (run limits cache accesses) ≤ costPerMiss * accesses.length := by
   exact Nat.mul_le_mul_left costPerMiss (trace_validation_units_le_reads limits cache accesses)
 
+def RetainsKey (cache : Cache) (key : Nat) : Prop :=
+  ∃ value ∈ cache, value.key = key
+
+theorem retained_key_extracts (key : Nat) (cache : Cache)
+    (present : RetainsKey cache key) :
+    ∃ value rest, extract key cache = (some value, rest) := by
+  induction cache with
+  | nil => simp [RetainsKey] at present
+  | cons entry tail ih =>
+      by_cases same : entry.key = key
+      · exact ⟨entry, tail, by simp [extract, same]⟩
+      · obtain ⟨value, member, keyEq⟩ := present
+        simp only [List.mem_cons] at member
+        rcases member with equal | member
+        · subst value
+          exact False.elim (same keyEq)
+        · obtain ⟨hit, rest, found⟩ := ih ⟨value, member, keyEq⟩
+          exact ⟨hit, entry :: rest, by simp [extract, same, found]⟩
+
+theorem hit_reorders_retained_entries (key : Nat) (cache rest : Cache) (value : Entry)
+    (found : extract key cache = (some value, rest)) :
+    (rest ++ [value]).Perm cache := by
+  induction cache generalizing rest with
+  | nil => simp [extract] at found
+  | cons entry tail ih =>
+      simp only [extract] at found
+      split at found
+      · cases found
+        exact List.perm_append_singleton value tail
+      · cases extracted : extract key tail with
+        | mk hit remaining =>
+            simp only [extracted] at found
+            cases hit with
+            | none => simp at found
+            | some value' =>
+                cases found
+                exact List.Perm.cons entry (ih remaining extracted)
+
+/-- After a working set is retained, any length or ordering of accesses confined
+    to it requires no validation. This premise concerns concrete initial entries,
+    not a claimed cost bound; hits preserve those entries by permutation. It does
+    not assume or prove that an arbitrary cold working set fits the byte budget. -/
+theorem retained_working_set_requires_no_validation
+    (limits : Limits) (cache : Cache) (accesses : List Access)
+    (retained : ∀ access ∈ accesses, RetainsKey cache access.key) :
+    (run limits cache accesses).misses = 0 := by
+  induction accesses generalizing cache with
+  | nil => simp [run]
+  | cons access rest ih =>
+      obtain ⟨value, remaining, found⟩ :=
+        retained_key_extracts access.key cache (retained access (by simp))
+      have perm := hit_reorders_retained_entries access.key cache remaining value found
+      have tailRetained : ∀ item ∈ rest, RetainsKey (remaining ++ [value]) item.key := by
+        intro item member
+        obtain ⟨entry, entryMember, keyEq⟩ := retained item (by simp [member])
+        exact ⟨entry, perm.mem_iff.mpr entryMember, keyEq⟩
+      simpa [run, read, found, validationUnits] using ih (remaining ++ [value]) tailRetained
+
 def cycle (workingSet laps : Nat) : List Access :=
   (List.replicate laps ((List.range workingSet).map fun key => Access.mk key 1 true)).flatten
 
-/- These are finite counterexample/threshold witnesses, not a universal LRU
+/- These are finite regression witnesses, not a universal LRU
    working-set theorem. All accesses succeed, values occupy one byte, and the
-   byte ceiling never causes an eviction. Three laps at 129 keys miss on every
-   read, disproving an unconditional "one validation per distinct key" claim. -/
+   charged ceiling never causes an eviction. The former 128-entry cliff is gone.
+   Working sets larger than the actual charged budget can still thrash. -/
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 4000000 in
 theorem finite_127_three_laps_warm :
@@ -284,13 +361,13 @@ theorem finite_128_three_laps_warm :
 
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 4000000 in
-theorem finite_129_three_laps_thrash :
-    (run productionLimits [] (cycle 129 3)).misses = 387 := by decide
+theorem finite_129_three_laps_warm :
+    (run productionLimits [] (cycle 129 3)).misses = 129 := by decide
 
-theorem distinct_key_bound_is_not_unconditional :
-    ¬ (run productionLimits [] (cycle 129 3)).misses ≤ 129 := by
-  rw [finite_129_three_laps_thrash]
-  omega
+-- A small real-budget boundary counterexample keeps the remaining limitation
+-- explicit without kernel-evaluating a 16,385-key production trace.
+theorem charged_budget_can_still_thrash :
+    (run ⟨512, 1, 1026⟩ [] (cycle 3 3)).misses = 9 := by decide
 
 private def parseNat (value : String) : IO Nat :=
   match value.toNat? with
@@ -307,15 +384,16 @@ private def parseAccess (value : String) : IO Access := do
 
 /-- Executable finite refinement oracle. One oldest-first state row per read:
     hit,cumulative_misses,symbolic_sql_units,entry_count,byte_count,key:bytes|...
-    The runner rejects limits for which production's insertion assumptions fail.
+    The runner requires a positive entry charge, as production uses 512 bytes.
+    Values whose charge cannot fit the total budget are validated but bypassed.
     Inputs and outputs contain no database authority or payload bytes. -/
 def runCli (args : List String) : IO Unit := do
   match args with
-  | entryLimit :: valueLimit :: byteLimit :: cost :: accesses =>
-      let limits := Limits.mk (← parseNat entryLimit) (← parseNat valueLimit)
+  | entryCharge :: valueLimit :: byteLimit :: cost :: accesses =>
+      let limits := Limits.mk (← parseNat entryCharge) (← parseNat valueLimit)
         (← parseNat byteLimit)
-      unless limits.entries > 0 && limits.valueBytes ≤ limits.totalBytes do
-        throw (IO.userError "limits require entries > 0 and valueBytes <= totalBytes")
+      unless limits.entryCharge > 0 do
+        throw (IO.userError "limits require positive entry charge")
       let costPerMiss ← parseNat cost
       let mut cache : Cache := []
       let mut misses := 0
@@ -327,9 +405,11 @@ def runCli (args : List String) : IO Unit := do
         let hit := if next.hit then 1 else 0
         IO.println s!"{hit},{misses},{costPerMiss * misses},{cache.length},{retainedBytes cache},{entries}"
   | _ => throw (IO.userError
-      "usage: lean --run ReadyAuditCacheCost.lean ENTRIES VALUE_BYTES TOTAL_BYTES COST_PER_MISS KEY:BYTES:SUCCESS ...")
+      "usage: lean --run ReadyAuditCacheCost.lean ENTRY_CHARGE VALUE_BYTES TOTAL_BYTES COST_PER_MISS KEY:BYTES:SUCCESS ...")
 
 end H2HDB.Verification.ReadyAuditCacheCost
 
-def main (args : List String) : IO Unit :=
-  H2HDB.Verification.ReadyAuditCacheCost.runCli args
+/-- Multiple finite scenarios reuse one model compilation; each starts empty. -/
+def main (args : List String) : IO Unit := do
+  for scenario in args.splitOn "--next-scenario" do
+    H2HDB.Verification.ReadyAuditCacheCost.runCli scenario
