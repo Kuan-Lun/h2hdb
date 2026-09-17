@@ -22,6 +22,7 @@ __all__ = [
     "AnalysisBatchResult",
     "AnalysisCorruptionError",
     "AnalysisGalleryPreparation",
+    "AnalysisGidPreparation",
     "AnalysisFileDecisionValidationPlan",
     "AnalysisFileDecisionValidationPage",
     "AnalysisNotReadyError",
@@ -110,6 +111,7 @@ from .vnext_identity import (
     GALLERY_OBSERVATION_METADATA_CODEC_VERSION,
     AnalysisTitleScalarReceipt,
     GalleryObservationMetadataDecoder,
+    GalleryObservationMetadataScalarReceipt,
     SourceSnapshotContentOwner,
     SourceSnapshotCounts,
     SourceSnapshotFileHashDecision,
@@ -841,6 +843,46 @@ class AnalysisGalleryPreparation:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisGidPreparation:
+    """Repository-issued GID facts, incapable of authorizing content writes.
+
+    The metadata stream and qualification are independently validated for each
+    stage. Marker tags, title ordering and effective-content payloads belong to
+    content preparation and are never consulted by this capability.
+    """
+
+    analysis_id: bytes
+    build_id: bytes
+    gallery_id: int
+    observation_id: int
+    gid: int
+    authority: AnalysisPreparationAuthority
+    _capability: object
+
+    def __post_init__(self) -> None:
+        if self._capability is not _PREPARATION_TOKEN:
+            raise TypeError("GID preparations are repository-issued only")
+        require_uuid16(self.analysis_id, field="GID preparation analysis_id")
+        require_uuid16(self.build_id, field="GID preparation build_id")
+        require_positive_int63(self.gallery_id, field="GID preparation gallery_id")
+        require_positive_int63(
+            self.observation_id, field="GID preparation observation_id"
+        )
+        require_positive_int63(self.gid, field="GID preparation gid")
+        if not isinstance(self.authority, AnalysisPreparationAuthority):
+            raise TypeError("GID preparation authority is missing")
+        self.authority.__post_init__()
+        if (
+            self.authority.analysis_id != self.analysis_id
+            or self.authority.build_id != self.build_id
+        ):
+            raise ValueError("GID preparation differs from its authority")
+
+
+type _GalleryPreparation = AnalysisGalleryPreparation | AnalysisGidPreparation
 
 
 @dataclass(frozen=True, slots=True)
@@ -1762,7 +1804,7 @@ class AnalysisRepository:
         gate_lease: GateLease,
         ingest_turn: IngestTurn,
         issue: AnalysisStageIssue,
-        preparations: Sequence[AnalysisGalleryPreparation | None],
+        preparations: Sequence[_GalleryPreparation | None],
         now: int,
         file_decision_validation: AnalysisFileDecisionValidationPage | None = None,
     ) -> AnalysisBatchResult:
@@ -1831,19 +1873,25 @@ class AnalysisRepository:
         elif issue.stage == _STAGE_IMPACTED_CONTENT:
             result = AnalysisRepository.process_impacted_content_batch(
                 work,
-                preparations=exact_preparations,
+                preparations=_require_preparation_kind(
+                    exact_preparations, AnalysisGalleryPreparation
+                ),
                 **common,
             )
         elif issue.stage == _STAGE_CONTENT_CANDIDATE:
             result = AnalysisRepository.process_content_owner_candidate_batch(
                 work,
-                preparations=exact_preparations,
+                preparations=_require_preparation_kind(
+                    exact_preparations, AnalysisGalleryPreparation
+                ),
                 **common,
             )
         elif issue.stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
             result = AnalysisRepository.validate_content_owner_candidate_batch(
                 work,
-                preparations=exact_preparations,
+                preparations=_require_preparation_kind(
+                    exact_preparations, AnalysisGalleryPreparation
+                ),
                 **common,
             )
         elif issue.stage == _STAGE_CONTENT_OWNER:
@@ -1855,13 +1903,17 @@ class AnalysisRepository:
         elif issue.stage == _STAGE_GID_CANDIDATE:
             result = AnalysisRepository.process_gid_candidate_batch(
                 work,
-                preparations=exact_preparations,
+                preparations=_require_preparation_kind(
+                    exact_preparations, AnalysisGidPreparation
+                ),
                 **common,
             )
         elif issue.stage == _STAGE_VALIDATE_GID_CANDIDATE:
             result = AnalysisRepository.validate_gid_candidate_batch(
                 work,
-                preparations=exact_preparations,
+                preparations=_require_preparation_kind(
+                    exact_preparations, AnalysisGidPreparation
+                ),
                 **common,
             )
         elif issue.stage == _STAGE_GID_WINNER:
@@ -1986,6 +2038,35 @@ class AnalysisRepository:
             work = VNextUnitOfWork(connector, backend=backend)
             run = _load_preparation_authority(work, authority)
             return _prepare_gallery(work, run, gallery, authority)
+
+    @staticmethod
+    def prepare_gid_gallery(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        authority: AnalysisPreparationAuthority,
+        gallery_id: int,
+    ) -> AnalysisGidPreparation:
+        """Validate GID authority without preparing unrelated content facts.
+
+        Full metadata decoding preserves the exact sealed GID and qualification
+        checks. Its chunk cost still scales with metadata bytes; no tag canonical
+        value, title comparator or effective-content plan is read or produced.
+        """
+
+        if not isinstance(authority, AnalysisPreparationAuthority):
+            raise TypeError("authority must be AnalysisPreparationAuthority")
+        authority.__post_init__()
+        required = {_COMPONENT_FILE_HASH, _COMPONENT_CONTENT_OWNER}
+        if not required.issubset({row[0] for row in authority.component_seals}):
+            raise AnalysisNotReadyError(
+                "GID preparation requires sealed file decisions and content owners"
+            )
+        gallery = require_positive_int63(gallery_id, field="GID preparation gallery_id")
+        with connector.read_transaction():
+            work = VNextUnitOfWork(connector, backend=backend)
+            run = _load_preparation_authority(work, authority)
+            return _prepare_gid_gallery(work, run, gallery, authority)
 
     @staticmethod
     def process_impacted_gallery_batch(
@@ -2119,6 +2200,7 @@ class AnalysisRepository:
             authority,
             selected,
             preparations,
+            kind=AnalysisGalleryPreparation,
             memberships=impact_page.current_observations,
         )
         provenance: list[tuple[int, bytes]] = []
@@ -2241,6 +2323,7 @@ class AnalysisRepository:
             authority,
             selected,
             preparations,
+            kind=AnalysisGalleryPreparation,
         )
         for (raw_gallery_id,), preparation in zip(
             selected,
@@ -2342,6 +2425,7 @@ class AnalysisRepository:
             authority,
             selected,
             preparations,
+            kind=AnalysisGalleryPreparation,
         )
         for (raw_gallery_id,), preparation in zip(
             selected,
@@ -2695,7 +2779,7 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
-        preparations: Sequence[AnalysisGalleryPreparation | None],
+        preparations: Sequence[AnalysisGidPreparation | None],
         now: int,
     ) -> AnalysisBatchResult:
         authority, checkpoint, replay = _prepare_batch(
@@ -2735,6 +2819,7 @@ class AnalysisRepository:
             authority,
             selected,
             preparations,
+            kind=AnalysisGidPreparation,
         )
         for (raw_gallery_id,), preparation in zip(
             selected,
@@ -2789,7 +2874,7 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
-        preparations: Sequence[AnalysisGalleryPreparation | None],
+        preparations: Sequence[AnalysisGidPreparation | None],
         now: int,
     ) -> AnalysisBatchResult:
         authority, checkpoint, replay = _prepare_batch(
@@ -2834,6 +2919,7 @@ class AnalysisRepository:
             authority,
             selected,
             preparations,
+            kind=AnalysisGidPreparation,
         )
         for (raw_gallery_id,), preparation in zip(
             selected,
@@ -3657,6 +3743,43 @@ def _prepare_gallery(
     )
 
 
+def _prepare_gid_gallery(
+    work: VNextUnitOfWork,
+    run: _RunAuthority,
+    gallery_id: int,
+    preparation_authority: AnalysisPreparationAuthority,
+) -> AnalysisGidPreparation:
+    row = work.connector.fetch_one(
+        "SELECT member.observation_id, metadata.gid "
+        "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
+        "JOIN catalog_gallery_observation_metadata AS metadata "
+        "ON metadata.gallery_id = member.gallery_id "
+        "AND metadata.observation_id = member.observation_id "
+        "WHERE member.build_id = %s AND member.gallery_id = %s",
+        (run.build_id, gallery_id),
+    )
+    if len(row) != 2:
+        raise AnalysisNotReadyError(
+            "GID preparation requires exact sealed membership and metadata"
+        )
+    observation_id = require_positive_int63(row[0], field="GID observation_id")
+    persisted_gid = require_positive_int63(row[1], field="GID normalized gid")
+    receipt = _validated_metadata_receipt(work, gallery_id, observation_id)
+    if receipt.gid != persisted_gid:
+        raise AnalysisCorruptionError(
+            "normalized GID differs from the exact metadata stream"
+        )
+    return AnalysisGidPreparation(
+        run.analysis_id,
+        run.build_id,
+        gallery_id,
+        observation_id,
+        persisted_gid,
+        preparation_authority,
+        _PREPARATION_TOKEN,
+    )
+
+
 class _EffectiveContentSpool:
     """One snapshot's fixed-width digests, never shared across analysis stages.
 
@@ -3902,11 +4025,11 @@ class _PartReader:
             remaining -= amount
 
 
-def _metadata_comparator_facts(
+def _validated_metadata_receipt(
     work: VNextUnitOfWork,
     gallery_id: int,
     observation_id: int,
-) -> tuple[int, int, AnalysisTitleScalarReceipt]:
+) -> GalleryObservationMetadataScalarReceipt:
     decoder = GalleryObservationMetadataDecoder()
     for chunk in _iter_metadata_chunks(work, gallery_id, observation_id):
         decoder.feed(chunk)
@@ -3919,6 +4042,16 @@ def _metadata_comparator_facts(
         raise AnalysisCorruptionError(str(error)) from error
     if not receipt.qualification.accepted:
         raise AnalysisNotReadyError("rejected source cannot be prepared for analysis")
+
+    return receipt
+
+
+def _metadata_comparator_facts(
+    work: VNextUnitOfWork,
+    gallery_id: int,
+    observation_id: int,
+) -> tuple[int, int, AnalysisTitleScalarReceipt]:
+    receipt = _validated_metadata_receipt(work, gallery_id, observation_id)
 
     reader = _PartReader(_iter_metadata_chunks(work, gallery_id, observation_id))
     if reader.read_exact(len(_METADATA_PREFIX)) != _METADATA_PREFIX:
@@ -5690,7 +5823,7 @@ def _validate_batch_replay(
     authority: _RunAuthority,
     replay: AnalysisBatchResult,
     *,
-    preparations: Sequence[AnalysisGalleryPreparation | None] = (),
+    preparations: Sequence[_GalleryPreparation | None] = (),
 ) -> None:
     """Rederive one committed page with its stored bound before replaying it."""
 
@@ -5714,7 +5847,7 @@ def _validate_batch_replay(
         selected=selected,
         limit=replay.page_limit + 1,
     )
-    exact_preparations: tuple[AnalysisGalleryPreparation | None, ...] = ()
+    exact_preparations: tuple[_GalleryPreparation | None, ...] = ()
     content_impact_page: _ContentImpactPage | None = None
     gid_impact_page: _GidImpactPage | None = None
     if replay.stage == _STAGE_IMPACTED_CONTENT:
@@ -5732,19 +5865,27 @@ def _validate_batch_replay(
             authority,
             selected,
             preparations,
+            kind=AnalysisGalleryPreparation,
             memberships=content_impact_page.current_observations,
         )
     elif replay.stage in {
         _STAGE_CONTENT_CANDIDATE,
         _STAGE_VALIDATE_CONTENT_CANDIDATE,
-        _STAGE_GID_CANDIDATE,
-        _STAGE_VALIDATE_GID_CANDIDATE,
     }:
         exact_preparations = _require_validation_preparations(
             work,
             authority,
             selected,
             preparations,
+            kind=AnalysisGalleryPreparation,
+        )
+    elif replay.stage in {_STAGE_GID_CANDIDATE, _STAGE_VALIDATE_GID_CANDIDATE}:
+        exact_preparations = _require_validation_preparations(
+            work,
+            authority,
+            selected,
+            preparations,
+            kind=AnalysisGidPreparation,
         )
     elif replay.stage == _STAGE_IMPACTED_GID:
         gallery_ids = tuple(
@@ -5974,7 +6115,7 @@ def _require_replay_page_materialized(
     stage: bytes,
     after: bytes | None,
     selected: Sequence[tuple[Any, ...]],
-    preparations: Sequence[AnalysisGalleryPreparation | None],
+    preparations: Sequence[_GalleryPreparation | None],
     live_count: int,
     content_impact_page: _ContentImpactPage | None = None,
     gid_impact_page: _GidImpactPage | None = None,
@@ -6037,7 +6178,9 @@ def _require_replay_page_materialized(
             authority,
             after=after,
             selected=selected,
-            preparations=preparations,
+            preparations=_require_preparation_kind(
+                preparations, AnalysisGalleryPreparation
+            ),
             impact_page=content_impact_page,
         )
         return live_count
@@ -6045,7 +6188,11 @@ def _require_replay_page_materialized(
         _STAGE_CONTENT_CANDIDATE,
         _STAGE_VALIDATE_CONTENT_CANDIDATE,
     }:
-        for row, preparation in zip(selected, preparations, strict=True):
+        for row, preparation in zip(
+            selected,
+            _require_preparation_kind(preparations, AnalysisGalleryPreparation),
+            strict=True,
+        ):
             gallery_id = require_positive_int63(
                 row[0],
                 field="replayed content candidate gallery_id",
@@ -6093,7 +6240,11 @@ def _require_replay_page_materialized(
         )
         return live_count
     if stage in {_STAGE_GID_CANDIDATE, _STAGE_VALIDATE_GID_CANDIDATE}:
-        for row, preparation in zip(selected, preparations, strict=True):
+        for row, gid_preparation in zip(
+            selected,
+            _require_preparation_kind(preparations, AnalysisGidPreparation),
+            strict=True,
+        ):
             gallery_id = require_positive_int63(
                 row[0],
                 field="replayed GID candidate gallery_id",
@@ -6102,7 +6253,7 @@ def _require_replay_page_materialized(
                 work,
                 authority,
                 gallery_id,
-                preparation,
+                gid_preparation,
             )
             if stage == _STAGE_VALIDATE_GID_CANDIDATE and gid_candidate is not None:
                 live_count = _sum_int63(
@@ -6668,7 +6819,7 @@ def _require_replay_gid_candidate(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     gallery_id: int,
-    preparation: AnalysisGalleryPreparation | None,
+    preparation: AnalysisGidPreparation | None,
 ) -> _GidCandidate | None:
     target = (
         None
@@ -7002,14 +7153,36 @@ def _current_memberships_for_page(
     return result
 
 
-def _require_transition_preparations(
+def _require_preparation_kind[
+    Preparation: (AnalysisGalleryPreparation, AnalysisGidPreparation)
+](
+    preparations: Sequence[_GalleryPreparation | None],
+    kind: type[Preparation],
+) -> tuple[Preparation | None, ...]:
+    exact: list[Preparation | None] = []
+    for preparation in preparations:
+        if preparation is None:
+            exact.append(None)
+        elif isinstance(preparation, kind):
+            exact.append(preparation)
+        else:
+            raise AnalysisNotReadyError(
+                "gallery preparation capability belongs to another stage family"
+            )
+    return tuple(exact)
+
+
+def _require_transition_preparations[
+    Preparation: (AnalysisGalleryPreparation, AnalysisGidPreparation)
+](
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     selected: Sequence[tuple[Any, ...]],
-    preparations: Sequence[AnalysisGalleryPreparation | None],
+    preparations: Sequence[_GalleryPreparation | None],
     *,
+    kind: type[Preparation],
     memberships: dict[int, int | None] | None = None,
-) -> tuple[AnalysisGalleryPreparation | None, ...]:
+) -> tuple[Preparation | None, ...]:
     """Require one live plan, or exact ``None``, for each current/removed key."""
 
     return _require_validation_preparations(
@@ -7017,19 +7190,23 @@ def _require_transition_preparations(
         authority,
         selected,
         preparations,
+        kind=kind,
         memberships=memberships,
     )
 
 
-def _require_validation_preparations(
+def _require_validation_preparations[
+    Preparation: (AnalysisGalleryPreparation, AnalysisGidPreparation)
+](
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     selected: Sequence[tuple[Any, ...]],
-    preparations: Sequence[AnalysisGalleryPreparation | None],
+    preparations: Sequence[_GalleryPreparation | None],
     *,
+    kind: type[Preparation],
     memberships: dict[int, int | None] | None = None,
-) -> tuple[AnalysisGalleryPreparation | None, ...]:
-    exact = tuple(preparations)
+) -> tuple[Preparation | None, ...]:
+    exact = _require_preparation_kind(preparations, kind)
     if len(exact) != len(selected):
         raise AnalysisNotReadyError(
             "validation preparations do not cover the exact server keyset"
@@ -7054,7 +7231,7 @@ def _require_validation_preparations(
                     "removed gallery received a live preparation"
                 )
             continue
-        if not isinstance(preparation, AnalysisGalleryPreparation):
+        if preparation is None:
             raise AnalysisNotReadyError(
                 "live validation gallery lacks a repository preparation"
             )
@@ -7179,7 +7356,7 @@ def _validate_preparation_authority(
     *,
     work: VNextUnitOfWork | None,
     run: _RunAuthority,
-    preparation: AnalysisGalleryPreparation,
+    preparation: _GalleryPreparation,
 ) -> None:
     receipt = preparation.authority
     if work is not None:
@@ -7949,7 +8126,7 @@ def _eligible_gallery_gid(
 def _gid_candidate_from_preparation(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    preparation: AnalysisGalleryPreparation,
+    preparation: AnalysisGidPreparation,
 ) -> _GidCandidate | None:
     _validate_preparation_authority(
         work=work,

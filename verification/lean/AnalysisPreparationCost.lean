@@ -1,7 +1,7 @@
 import Std
 
 /-!
-# GID preparation cost, including work that is currently unnecessary
+# Stage-specific preparation cost
 
 This model constructs the read trace of a marker scan: a single-leaf canonical
 value requires a descriptor read, a page read and a parent-edge read. It counts
@@ -14,9 +14,12 @@ the construction/independent-validation stages do not share a cache. These are
 explicit model choices, checked against real Python preparation in the separate
 finite SQL correspondence tests. Lean alone does not prove that correspondence.
 
-The six-times-gallery-times-tag theorem describes the current avoidable cost.
-It is not an efficiency guarantee. In particular, a tag-independent GID
-preparation budget is NOT satisfied by this model or the current implementation.
+Content preparation still needs marker reads. GID preparation has a distinct
+capability and omits that dependency. The stage selector below models that
+algorithmic choice; finite SQL tests establish correspondence with Python.
+The zero-cost theorem concerns canonical tag reads only: full metadata stream
+validation, qualification, membership and fencing remain required. Metadata
+pages can grow with input bytes; no theorem below claims constant total SQL.
 -/
 
 namespace H2HDB.Verification.AnalysisPreparationCost
@@ -90,13 +93,13 @@ theorem bounded_batches_do_not_remove_total_work
   | nil => rfl
   | cons page remaining ih => simp [pagedTrace, stage_trace_append, ih]
 
-def independentGidStages (galleries : List (List Bool)) : List Read :=
+def repeatedMarkerStages (galleries : List (List Bool)) : List Read :=
   stageTrace galleries ++ stageTrace galleries
 
 theorem independent_validation_repeats_preparation_cost
     (galleries : List (List Bool)) :
-    (independentGidStages galleries).length = 6 * stageVisits galleries := by
-  simp [independentGidStages, gallery_costs_are_additive]
+    (repeatedMarkerStages galleries).length = 6 * stageVisits galleries := by
+  simp [repeatedMarkerStages, gallery_costs_are_additive]
   omega
 
 theorem uniform_gallery_visits (galleries tags : Nat) :
@@ -108,19 +111,52 @@ theorem uniform_gallery_visits (galleries tags : Nat) :
       simp [List.replicate_succ, stageVisits, no_marker_visits_every_tag, ih,
         Nat.succ_mul, Nat.add_comm]
 
-theorem two_gid_stages_have_six_queries_per_gallery_tag (galleries tags : Nat) :
-    (independentGidStages
+theorem repeated_marker_stages_have_six_queries_per_gallery_tag (galleries tags : Nat) :
+    (repeatedMarkerStages
       (List.replicate galleries (List.replicate tags false))).length =
       6 * galleries * tags := by
   simp [independent_validation_repeats_preparation_cost, uniform_gallery_visits,
     Nat.mul_assoc]
 
-theorem positive_tags_contradict_zero_tag_read_budget
-    (galleries tags : Nat) (hasGalleries : 0 < galleries) (hasTags : 0 < tags) :
-    0 < (independentGidStages
-      (List.replicate galleries (List.replicate tags false))).length := by
-  rw [two_gid_stages_have_six_queries_per_gallery_tag]
-  exact Nat.mul_pos (Nat.mul_pos (by decide) hasGalleries) hasTags
+inductive PreparationKind where
+  | content
+  | gid
+
+def canonicalTagReads (kind : PreparationKind) (tags : List Bool) : List Read :=
+  match kind with
+  | .content => markerScan tags
+  | .gid => []
+
+def preparationTagTrace (kind : PreparationKind) : List (List Bool) → List Read
+  | [] => []
+  | gallery :: remaining =>
+      canonicalTagReads kind gallery ++ preparationTagTrace kind remaining
+
+theorem gid_preparation_does_not_read_canonical_tags (galleries : List (List Bool)) :
+    preparationTagTrace .gid galleries = [] := by
+  induction galleries with
+  | nil => rfl
+  | cons gallery remaining ih => simp [preparationTagTrace, canonicalTagReads, ih]
+
+theorem content_preparation_retains_marker_validation (galleries : List (List Bool)) :
+    preparationTagTrace .content galleries = stageTrace galleries := by
+  induction galleries with
+  | nil => rfl
+  | cons gallery remaining ih =>
+      simp [preparationTagTrace, canonicalTagReads, stageTrace, ih]
+
+def independentGidStages (galleries : List (List Bool)) : List Read :=
+  preparationTagTrace .gid galleries ++ preparationTagTrace .gid galleries
+
+theorem independent_gid_stages_have_zero_canonical_tag_queries
+    (galleries : List (List Bool)) :
+    (independentGidStages galleries).length = 0 := by
+  simp [independentGidStages, gid_preparation_does_not_read_canonical_tags]
+
+theorem gid_canonical_tag_cost_is_independent_of_tag_payloads
+    (left right : List (List Bool)) :
+    independentGidStages left = independentGidStages right := by
+  simp [independentGidStages, gid_preparation_does_not_read_canonical_tags]
 
 end H2HDB.Verification.AnalysisPreparationCost
 

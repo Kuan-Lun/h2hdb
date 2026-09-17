@@ -32,6 +32,7 @@ from .vnext_analysis_repository import (
     AnalysisFileDecisionValidationPage,
     AnalysisFileDecisionValidationPlan,
     AnalysisGalleryPreparation,
+    AnalysisGidPreparation,
     AnalysisRepository,
     AnalysisSnapshotPreparation,
     AnalysisStageIssue,
@@ -122,7 +123,7 @@ class VNextAnalysisAdvanceResult:
 @dataclass(slots=True)
 class _LocalAnalysisWork:
     issue: AnalysisStageIssue | None
-    preparations: tuple[AnalysisGalleryPreparation | None, ...]
+    preparations: tuple[AnalysisGalleryPreparation | AnalysisGidPreparation | None, ...]
     snapshot: AnalysisSnapshotPreparation | None
     plans: tuple[CanonicalValueUploadPlan, ...]
     file_decision_validation: AnalysisFileDecisionValidationPage | None = None
@@ -174,7 +175,7 @@ class _LocalAnalysisWork:
             self.snapshot.close()
             return
         for preparation in self.preparations:
-            if preparation is not None:
+            if isinstance(preparation, AnalysisGalleryPreparation):
                 preparation.close()
 
 
@@ -595,35 +596,44 @@ class VNextIngestAnalysisOrchestrator:
         self,
         issue: AnalysisStageIssue,
     ) -> _LocalAnalysisWork:
-        preparations: list[AnalysisGalleryPreparation | None] = []
+        preparations: list[
+            AnalysisGalleryPreparation | AnalysisGidPreparation | None
+        ] = []
         try:
             for gallery_id, observation_id in issue.memberships:
                 if observation_id is None:
                     preparations.append(None)
                     continue
                 with self.__context.SQLConnector() as connector:
-                    preparation = AnalysisRepository.prepare_gallery(
+                    prepare = (
+                        AnalysisRepository.prepare_gid_gallery
+                        if issue.stage in {b"gid_candidate", b"validate_gid_candidate"}
+                        else AnalysisRepository.prepare_gallery
+                    )
+                    preparation = prepare(
                         connector,
                         backend=self.__backend,
                         authority=issue.preparation_authority,
                         gallery_id=gallery_id,
                     )
                 if preparation.observation_id != observation_id:
-                    preparation.close()
+                    if isinstance(preparation, AnalysisGalleryPreparation):
+                        preparation.close()
                     raise RuntimeError(
                         "prepared gallery changed from its issued membership"
                     )
                 preparations.append(preparation)
         except BaseException:
             for prepared_gallery in preparations:
-                if prepared_gallery is not None:
+                if isinstance(prepared_gallery, AnalysisGalleryPreparation):
                     prepared_gallery.close()
             raise
         exact = tuple(preparations)
         plans = tuple(
             preparation.content_upload_plan
             for preparation in exact
-            if preparation is not None and preparation.content_upload_plan is not None
+            if isinstance(preparation, AnalysisGalleryPreparation)
+            and preparation.content_upload_plan is not None
         )
         return _LocalAnalysisWork(issue, exact, None, plans)
 
