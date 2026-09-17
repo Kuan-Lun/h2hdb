@@ -106,13 +106,19 @@ This runs formatting, type and Markdown checks; evidence metadata; schema and
 generated-artifact checks; Lean; the bounded pytest profile; small TLC profiles;
 and package distribution checks.
 
-The pytest portion shares a 300-second deadline across its ordinary
+The pytest portion shares a 300-second aggregate deadline across its ordinary
 non-MariaDB cases and a small, explicitly selected MariaDB smoke set, including
-owned pytest process cleanup. Docker resource cleanup can finish separately.
+owned pytest/xdist process cleanup. Docker daemon resource cleanup can finish
+separately and is outside this deadline.
 This deadline applies to the pytest portion, not the entire shell command.
 The receipt does not cover the full deep matrices, all live-MariaDB cases, or
 deep TLC runs. Evidence metadata in this profile uses `--validate-only`; use
 plain `coverage` above to additionally reject declared production blockers.
+
+On POSIX, cleanup covers the runner's process group; deliberately detached
+processes are outside that guarantee. Windows uses a Job Object to own the test
+process tree. Plain `pytest` has no aggregate deadline and does not enable live
+MariaDB tests. Use the release-check command above for the bounded profile.
 
 ### Optional extended checks
 

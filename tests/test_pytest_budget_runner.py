@@ -612,9 +612,10 @@ def test_server_crash_entry_states_scope_and_uses_a_hard_deadline() -> None:
 
 
 def test_deadline_contract_does_not_claim_docker_daemon_cleanup() -> None:
+    user_guide = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "](verification/README.md)" in user_guide
     documents = (
         (ROOT / "AGENTS.md").read_text(encoding="utf-8"),
-        (ROOT / "README.md").read_text(encoding="utf-8"),
         (ROOT / "verification" / "README.md").read_text(encoding="utf-8"),
     )
 
