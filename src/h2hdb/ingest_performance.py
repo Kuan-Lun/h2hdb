@@ -24,45 +24,17 @@ from .ingest_performance_format import (
     stage_description,
     workload,
 )
-from .sql_performance import execution_owner, measure_sql, read_clock
+from .sql_performance import (
+    SQLCounters,
+    SQLQueryStatistics,
+    execution_owner,
+    measure_sql,
+    read_clock,
+)
 
 _REPORT_INTERVAL_SECONDS = 60.0
 _QUERY_LIMIT = 64
 _NESTED_RECORD_LIMIT = 64
-
-
-@dataclass
-class _Counters:
-    sql_calls: int = 0
-    sql_seconds: float = 0.0
-    read_rows: int = 0
-    connection_calls: int = 0
-    connection_seconds: float = 0.0
-    transaction_calls: int = 0
-    transaction_seconds: float = 0.0
-
-    def add(self, other: _Counters) -> None:
-        self.sql_calls += other.sql_calls
-        self.sql_seconds += other.sql_seconds
-        self.read_rows += other.read_rows
-        self.connection_calls += other.connection_calls
-        self.connection_seconds += other.connection_seconds
-        self.transaction_calls += other.transaction_calls
-        self.transaction_seconds += other.transaction_seconds
-
-    @property
-    def seconds(self) -> float:
-        return self.sql_seconds + self.connection_seconds + self.transaction_seconds
-
-    def text(self) -> str:
-        return (
-            f"sql_calls={self.sql_calls} sql_seconds={self.sql_seconds:.6f} "
-            f"read_rows={self.read_rows} "
-            f"connection_calls={self.connection_calls} "
-            f"connection_seconds={self.connection_seconds:.6f} "
-            f"transaction_calls={self.transaction_calls} "
-            f"transaction_seconds={self.transaction_seconds:.6f}"
-        )
 
 
 @dataclass(frozen=True)
@@ -70,26 +42,6 @@ class _Diagnostic:
     owner: IngestPerformance
     message: str
     info_message: str | None
-
-
-@dataclass
-class _QueryStatistics:
-    calls: int = 0
-    seconds: float = 0.0
-    read_rows: int = 0
-    max_seconds: float = 0.0
-
-    def record(self, elapsed: float, rows: int) -> None:
-        self.calls += 1
-        self.seconds += elapsed
-        self.read_rows += rows
-        self.max_seconds = max(self.max_seconds, elapsed)
-
-    def text(self, fingerprint: str) -> str:
-        return (
-            f"{fingerprint}(calls={self.calls},seconds={self.seconds:.6f},"
-            f"returned_rows={self.read_rows},max_seconds={self.max_seconds:.6f})"
-        )
 
 
 @dataclass
@@ -104,8 +56,8 @@ class PerformanceStep:
     parent: PerformanceStep | None
     overlap_epoch: int = 0
     active: bool = True
-    counters: _Counters = field(default_factory=_Counters)
-    queries: dict[str, _QueryStatistics] = field(default_factory=dict)
+    counters: SQLCounters = field(default_factory=SQLCounters)
+    queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
     processed_rows: int = 0
     replayed: bool = False
     terminal: bool = False
@@ -140,7 +92,7 @@ class PerformanceStep:
                     key = "other"
                 statistics = self.queries.get(key)
                 if statistics is None:
-                    statistics = self.queries[key] = _QueryStatistics()
+                    statistics = self.queries[key] = SQLQueryStatistics()
                 statistics.record(elapsed, rows)
         elif category == "connection":
             counters.connection_calls += 1
@@ -288,7 +240,7 @@ class _Stage:
     calls: int = 0
     processed_rows: int = 0
     replayed: int = 0
-    counters: _Counters = field(default_factory=_Counters)
+    counters: SQLCounters = field(default_factory=SQLCounters)
     phases: dict[str, float] = field(default_factory=dict)
 
 

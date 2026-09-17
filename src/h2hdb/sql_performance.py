@@ -16,6 +16,60 @@ from .ports import _SQLPerformanceRecorder
 from .sql_connector import SQLConnector
 
 
+@dataclass
+class SQLCounters:
+    sql_calls: int = 0
+    sql_seconds: float = 0.0
+    read_rows: int = 0
+    connection_calls: int = 0
+    connection_seconds: float = 0.0
+    transaction_calls: int = 0
+    transaction_seconds: float = 0.0
+
+    def add(self, other: SQLCounters) -> None:
+        self.sql_calls += other.sql_calls
+        self.sql_seconds += other.sql_seconds
+        self.read_rows += other.read_rows
+        self.connection_calls += other.connection_calls
+        self.connection_seconds += other.connection_seconds
+        self.transaction_calls += other.transaction_calls
+        self.transaction_seconds += other.transaction_seconds
+
+    @property
+    def seconds(self) -> float:
+        return self.sql_seconds + self.connection_seconds + self.transaction_seconds
+
+    def text(self) -> str:
+        return (
+            f"sql_calls={self.sql_calls} sql_seconds={self.sql_seconds:.6f} "
+            f"read_rows={self.read_rows} "
+            f"connection_calls={self.connection_calls} "
+            f"connection_seconds={self.connection_seconds:.6f} "
+            f"transaction_calls={self.transaction_calls} "
+            f"transaction_seconds={self.transaction_seconds:.6f}"
+        )
+
+
+@dataclass
+class SQLQueryStatistics:
+    calls: int = 0
+    seconds: float = 0.0
+    read_rows: int = 0
+    max_seconds: float = 0.0
+
+    def record(self, elapsed: float, rows: int) -> None:
+        self.calls += 1
+        self.seconds += elapsed
+        self.read_rows += rows
+        self.max_seconds = max(self.max_seconds, elapsed)
+
+    def text(self, fingerprint: str) -> str:
+        return (
+            f"{fingerprint}(calls={self.calls},seconds={self.seconds:.6f},"
+            f"returned_rows={self.read_rows},max_seconds={self.max_seconds:.6f})"
+        )
+
+
 def execution_owner() -> tuple[int, object | None]:
     """Copied contexts cannot make another thread/task own an active scope."""
     try:
@@ -39,6 +93,8 @@ class _MeasurementScope:
     recorder: _SQLPerformanceRecorder
     clock: Callable[[], float]
     owner: tuple[int, object | None]
+    parent: _MeasurementScope | None = None
+    observe_nested: bool = False
     active: bool = True
 
 
@@ -59,9 +115,17 @@ def measure_sql(
     recorder: _SQLPerformanceRecorder,
     *,
     clock: Callable[[], float] = perf_counter,
+    observe_nested: bool = False,
 ) -> Iterator[None]:
-    """Measure only synchronous calls owned by this live execution scope."""
-    scope = _MeasurementScope(recorder, clock, execution_owner())
+    """Measure synchronous owned calls, optionally including nested scopes.
+
+    Ordinary step recorders remain exclusive across nested scopes. Whole
+    operation observers opt into inclusive delivery, so another instrumentation
+    family cannot silently hide SQL from its enclosing operation's totals.
+    """
+    scope = _MeasurementScope(
+        recorder, clock, execution_owner(), _current_scope(), observe_nested
+    )
     token = _active_scope.set(scope)
     try:
         yield
@@ -96,7 +160,16 @@ class _MeasuredConnector(SQLConnector):
         scope = _current_scope()
         if scope is None:
             return action()
-        started = read_clock(scope.clock)
+        observers = [(scope, read_clock(scope.clock))]
+        ancestor = scope.parent
+        while ancestor is not None:
+            if (
+                ancestor.active
+                and ancestor.observe_nested
+                and ancestor.owner == scope.owner
+            ):
+                observers.append((ancestor, read_clock(ancestor.clock)))
+            ancestor = ancestor.parent
         rows = 0
         try:
             result = action()
@@ -106,17 +179,23 @@ class _MeasuredConnector(SQLConnector):
                 rows = 1
             return result
         finally:
-            finished = read_clock(scope.clock)
-            elapsed = (
-                max(0.0, finished - started)
-                if started is not None and finished is not None
-                else 0.0
-            )
-            try:
-                scope.recorder.record_sql_operation(category, elapsed, query, rows)
-            except Exception:
-                # Counters and fingerprints are not transaction/retry authority.
-                pass
+            finished_observers = [
+                (observer, started, read_clock(observer.clock))
+                for observer, started in observers
+            ]
+            for observer, started, finished in finished_observers:
+                elapsed = (
+                    max(0.0, finished - started)
+                    if started is not None and finished is not None
+                    else 0.0
+                )
+                try:
+                    observer.recorder.record_sql_operation(
+                        category, elapsed, query, rows
+                    )
+                except Exception:
+                    # Counters and fingerprints are not transaction/retry authority.
+                    pass
 
     def connect(self) -> None:
         self._call("connection", self._connector.connect)
