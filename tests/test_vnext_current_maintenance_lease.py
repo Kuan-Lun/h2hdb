@@ -11,6 +11,7 @@ import pytest
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 
+import h2hdb.vnext_ingest_facade as facade_module
 import h2hdb.vnext_maintenance_gate_repository as gate_module
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
 from h2hdb.vnext_cleanup_repository import (
@@ -164,6 +165,10 @@ def test_gate_wait_expiry_yields_without_mutating_under_stale_time(
     db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
     _seed_open_cycle(db_config)
+    if phase == "state":
+        # Three one-row batches plus the terminal empty batch exhaust this
+        # budget. Only budget exhaustion needs a separate final-state scan.
+        monkeypatch.setattr(facade_module, "_CURRENT_ONLY_BATCHES_PER_ATTEMPT", 4)
     clock = _Clock()
     method = {
         "next_cycle": "__next_current_only_cycle",

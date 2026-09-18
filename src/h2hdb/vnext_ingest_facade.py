@@ -41,6 +41,7 @@ from .database_performance import (
     database_phase,
 )
 from .domain import (
+    CurrentOnlyCleanupTerminalState,
     VNextIngestAdvanceResult,
     VNextIngestCompletionReceipt,
     VNextIngestPage,
@@ -1842,6 +1843,7 @@ class VNextIngestFacade:
                     outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
                 else:
                     advanced_batches = 0
+                    remaining: CatalogPublicationMaintenanceState | None = None
                     while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
                         lease = self.__renew_current_only_lease(
                             connector, lease, duration=duration
@@ -1851,7 +1853,8 @@ class VNextIngestFacade:
                             lease,
                             cycle_cutoff_at=cycle_cutoff_at,
                         )
-                        if cycle is None:
+                        if isinstance(cycle, CurrentOnlyCleanupTerminalState):
+                            remaining = CatalogPublicationMaintenanceState(cycle.value)
                             break
                         while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
                             lease = self.__renew_current_only_lease(
@@ -1878,14 +1881,20 @@ class VNextIngestFacade:
                         # A later target can release a foreign-key blocker for
                         # an earlier one, so every completed cycle restarts the
                         # exact priority scan.
-                    lease = self.__renew_current_only_lease(
-                        connector, lease, duration=duration
-                    )
-                    remaining = self.__current_only_state(
-                        connector,
-                        lease,
-                        cycle_cutoff_at=cycle_cutoff_at,
-                    )
+                    if remaining is None:
+                        # Reaching the batch budget leaves the fixed point
+                        # unknown. A terminal selection already classified it
+                        # in its fenced transaction, so only that path avoids
+                        # repeating the complete candidate scan. Fresh release
+                        # below still rejects an expired or replaced owner.
+                        lease = self.__renew_current_only_lease(
+                            connector, lease, duration=duration
+                        )
+                        remaining = self.__current_only_state(
+                            connector,
+                            lease,
+                            cycle_cutoff_at=cycle_cutoff_at,
+                        )
                     if remaining is CatalogPublicationMaintenanceState.DONE:
                         outcome = VNextCurrentOnlyMaintenanceOutcome.DONE
                     elif advanced_batches:
@@ -1985,7 +1994,7 @@ class VNextIngestFacade:
         lease: GateLease,
         *,
         cycle_cutoff_at: int,
-    ) -> CleanupCycle | None:
+    ) -> CleanupCycle | CurrentOnlyCleanupTerminalState:
         with database_phase("next_cycle", transaction_outcome="unconfirmed") as step:
             with connector.transaction():
                 work = VNextUnitOfWork(connector, backend=self.__backend)
@@ -1995,9 +2004,13 @@ class VNextIngestFacade:
                     cycle_cutoff_at=cycle_cutoff_at,
                     now=self.__clock,
                 )
-            step.describe(transaction_outcome="committed", found=cycle is not None)
-            if cycle is not None:
+            step.describe(
+                transaction_outcome="committed", found=isinstance(cycle, CleanupCycle)
+            )
+            if isinstance(cycle, CleanupCycle):
                 step.describe(target=cycle.target_kind.value, shard=cycle.shard_no)
+            else:
+                step.describe(state=cycle.value)
         return cycle
 
     def __advance_current_only_shard(
