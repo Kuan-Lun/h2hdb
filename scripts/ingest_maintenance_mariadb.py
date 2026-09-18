@@ -23,6 +23,18 @@ HANDLER_STATUS = (
     "SHOW SESSION STATUS WHERE Variable_name LIKE 'Handler_read_%' "
     "AND Variable_name <> 'Handler_read_retry'"
 )
+HANDLER_COUNTERS = frozenset(
+    {
+        "Handler_read_first",
+        "Handler_read_key",
+        "Handler_read_last",
+        "Handler_read_next",
+        "Handler_read_prev",
+        "Handler_read_rnd",
+        "Handler_read_rnd_deleted",
+        "Handler_read_rnd_next",
+    }
+)
 LOCK_STATUS = "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'Innodb_row_lock%'"
 
 
@@ -36,9 +48,20 @@ def raw_mariadb(connector: SQLConnector) -> MariaDBConnector:
 
 
 def counters(connector: MariaDBConnector, query: str) -> dict[str, int]:
-    result = {str(name): int(value) for name, value in connector.fetch_all(query)}
+    rows = connector.fetch_all(query)
+    result = {}
+    for name, value in rows:
+        if type(value) not in (int, str) or (
+            isinstance(value, str) and (not value.isascii() or not value.isdigit())
+        ):
+            raise RuntimeError("MariaDB diagnostic counter is not an exact integer")
+        result[str(name)] = int(value)
     if not result or any(value < 0 for value in result.values()):
         raise RuntimeError("MariaDB diagnostic counters were missing or invalid")
+    if len(result) != len(rows):
+        raise RuntimeError("MariaDB diagnostic counters contain duplicate names")
+    if query == HANDLER_STATUS and not HANDLER_COUNTERS <= result.keys():
+        raise RuntimeError("MariaDB handler counter set is incomplete")
     return result
 
 
@@ -103,6 +126,8 @@ def plan_table_nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
                                     "r_table_time_ms",
                                     "r_other_time_ms",
                                     "r_engine_stats",
+                                    "index_condition",
+                                    "rowid_filter",
                                 )
                                 if key in value
                             },
@@ -164,7 +189,7 @@ def profile_candidate[T](
     started = time.perf_counter()
     analyzed = decode_plan(original("ANALYZE FORMAT=JSON " + query, parameters))
     analyze_seconds = time.perf_counter() - started
-    return result, {
+    report = {
         "sql_fingerprint": sha256(query.encode()).hexdigest()[:16],
         "parameter_count": len(parameters),
         "returned_rows": len(replayed),
@@ -180,6 +205,11 @@ def profile_candidate[T](
         ),
         "analyze_table_nodes": plan_table_nodes(analyzed),
     }
+    if "FROM catalog_canonical_value_allocation_anchors AS r" in query:
+        from ingest_canonical_cost import compare_eligibility
+
+        report["canonical_comparison"] = compare_eligibility(raw, query, parameters)
+    return result, report
 
 
 def roundtrip_control(

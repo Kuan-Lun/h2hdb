@@ -293,10 +293,12 @@ def test_mariadb_candidate_diagnostics_separate_replay_and_server_nodes(
 
     original = Mock(side_effect=fetch)
     raw.fetch_one = original
+    zeros = dict.fromkeys(module.HANDLER_COUNTERS, 0)
+    deltas = {**zeros, "Handler_read_key": 3, "Handler_read_next": 7}
     raw.fetch_all.side_effect = [
-        [("Handler_read_key", "0"), ("Handler_read_next", "0")],
-        [("Handler_read_key", "0"), ("Handler_read_next", "0")],
-        [("Handler_read_key", "3"), ("Handler_read_next", "7")],
+        list(zeros.items()),
+        list(zeros.items()),
+        list(deltas.items()),
     ]
     result, report = module.profile_candidate(
         raw,
@@ -308,14 +310,8 @@ def test_mariadb_candidate_diagnostics_separate_replay_and_server_nodes(
     assert raw.fetch_one is original
     assert report["parameter_count"] == 1
     assert report["returned_rows"] == 0
-    assert report["handler_status_control_delta"] == {
-        "Handler_read_key": 0,
-        "Handler_read_next": 0,
-    }
-    assert report["handler_read_delta"] == {
-        "Handler_read_key": 3,
-        "Handler_read_next": 7,
-    }
+    assert report["handler_status_control_delta"] == zeros
+    assert report["handler_read_delta"] == deltas
     assert report["analyze_root_server_time_ms"] == 1.25
     assert report["analyze_table_nodes"][0]["r_rows"] == 3
     assert report["analyze_table_nodes"][0]["r_loops"] == 2
@@ -326,6 +322,36 @@ def test_mariadb_candidate_diagnostics_separate_replay_and_server_nodes(
         "EXPLAIN",
         "ANALYZE",
     ]
+
+
+def test_mariadb_handler_counters_reject_consistently_missing_fields(
+    probe: ModuleType,
+) -> None:
+    module = probe.maria_diagnostics
+    raw = Mock(spec=module.MariaDBConnector)
+    for omitted in module.HANDLER_COUNTERS:
+        raw.fetch_all.return_value = [
+            (name, "0") for name in module.HANDLER_COUNTERS if name != omitted
+        ]
+        # A stable but incomplete set would evade before/after key equality.
+        for _repeat in range(2):
+            with pytest.raises(RuntimeError, match="incomplete"):
+                module.counters(raw, module.HANDLER_STATUS)
+
+
+@pytest.mark.parametrize("invalid", [True, 1.5, "1.5", "NaN", -1, None])
+def test_mariadb_handler_counters_reject_non_integer_values(
+    probe: ModuleType, invalid: object
+) -> None:
+    module = probe.maria_diagnostics
+    raw = Mock(spec=module.MariaDBConnector)
+    values = dict.fromkeys(module.HANDLER_COUNTERS, 0)
+    raw.fetch_all.return_value = [
+        (name, invalid if name == "Handler_read_next" else value)
+        for name, value in values.items()
+    ]
+    with pytest.raises(RuntimeError):
+        module.counters(raw, module.HANDLER_STATUS)
 
 
 @pytest.mark.parametrize(

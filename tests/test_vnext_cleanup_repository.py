@@ -45,6 +45,7 @@ from vnext_publication_fixtures import (
 import h2hdb.operational_refinement as operational_refinement_module
 import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import vnext_identity as identity
+from h2hdb.domain import CurrentOnlyCleanupTerminalState
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
@@ -1767,7 +1768,9 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
                 cycle_cutoff_at=100,
                 now=2,
             )
-        assert first is None
+        # A retained build without historical publication/artifact payload is
+        # a quiescent fixed point, not a blocked publication cleanup.
+        assert first is CurrentOnlyCleanupTerminalState.DONE
         assert connector.fetch_one(
             "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
             (build_id,),
@@ -1790,7 +1793,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
                 cycle_cutoff_at=100,
                 now=100,
             )
-        assert second is not None
+        assert isinstance(second, CleanupCycle)
         assert second.target_kind is CleanupTargetKind.PUBLICATION_CANDIDATE
         _drain(connector, gate, second, now=101)
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
@@ -1802,7 +1805,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
                 cycle_cutoff_at=100,
                 now=200,
             )
-        assert third is not None
+        assert isinstance(third, CleanupCycle)
         assert third.target_kind is CleanupTargetKind.SOURCE_BUILD
         _drain(connector, gate, third, now=201)
         assert (
@@ -2859,7 +2862,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
                 now=3,
             )
         assert resumed == opened
-        assert resumed is not None
+        assert isinstance(resumed, CleanupCycle)
         _drain(connector, gate, resumed, now=4)
     finally:
         connector.close()

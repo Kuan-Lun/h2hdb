@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .database_performance import database_phase
+from .domain import CurrentOnlyCleanupTerminalState
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -476,14 +477,9 @@ class VNextCleanupRepository:
             return CatalogPublicationMaintenanceState.ACTIONABLE
         if _next_current_only_candidate(work, cycle_cutoff_at=cutoff) is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
-        with database_phase("maintenance_blocked_publication"):
-            blocked = _catalog_publication_payload_is_blocked(work)
-        if not blocked:
-            with database_phase("maintenance_blocked_candidate"):
-                blocked = _publication_candidate_payload_is_blocked(work)
-        if blocked:
-            return CatalogPublicationMaintenanceState.BLOCKED
-        return CatalogPublicationMaintenanceState.DONE
+        return CatalogPublicationMaintenanceState(
+            _current_only_terminal_state(work).value
+        )
 
     @staticmethod
     def next_current_only_cycle(
@@ -492,15 +488,19 @@ class VNextCleanupRepository:
         gate_lease: GateLease,
         cycle_cutoff_at: int,
         now: int | Callable[[], int],
-    ) -> CleanupCycle | None:
-        """Resume the sole OPEN job or begin the first actionable target.
+    ) -> CleanupCycle | CurrentOnlyCleanupTerminalState:
+        """Select work or classify its absence in the same fenced transaction.
 
         The exact candidate probe and cycle creation share the EXCLUSIVE
         transaction.  A completed cycle is followed by a new call, which
         restarts the priority scan from the first target and therefore reaches
         a dependency fixed point without walking all 5,888 target shards.  A
         previously opened hash-cache cycle is resumed as a liveness handoff;
-        this path never starts new hash-cache work.
+        this path never starts new hash-cache work. A terminal result includes
+        blocked-payload classification and needs no second candidate scan.
+        It is valid only while the exact EXCLUSIVE lease remains live; callers
+        must freshly validate release before reporting completion and must not
+        reuse it for a subsequent SHARED claim.
         """
 
         cutoff = require_int63(
@@ -515,7 +515,7 @@ class VNextCleanupRepository:
 
         candidate = _next_current_only_candidate(work, cycle_cutoff_at=cutoff)
         if candidate is None:
-            return None
+            return _current_only_terminal_state(work)
         kind, shard = candidate
         return _begin_cycle_under_exclusive(
             work,
@@ -1044,6 +1044,23 @@ def _require_batch_bound(value: object) -> int:
     if bound > _MAX_BATCH_ROWS:
         raise ValueError(f"cleanup batches are capped at {_MAX_BATCH_ROWS} rows")
     return bound
+
+
+def _current_only_terminal_state(
+    work: VNextUnitOfWork,
+) -> CurrentOnlyCleanupTerminalState:
+    """Classify blocked payload after this transaction found no cleanup work."""
+
+    with database_phase("maintenance_blocked_publication"):
+        blocked = _catalog_publication_payload_is_blocked(work)
+    if not blocked:
+        with database_phase("maintenance_blocked_candidate"):
+            blocked = _publication_candidate_payload_is_blocked(work)
+    return (
+        CurrentOnlyCleanupTerminalState.BLOCKED
+        if blocked
+        else CurrentOnlyCleanupTerminalState.DONE
+    )
 
 
 def _require_exclusive_gate(
@@ -6179,24 +6196,33 @@ def _live_display_title_choice(alias: str) -> str:
 
 def _live_title_sort(alias: str) -> str:
     child = _identifier(alias)
+    # Start from the reverse title-digest index. Joining policy first can scan
+    # every choice under a shared policy for every canonical root being tested.
+    # The same choice must satisfy both its policy and publication liveness.
     return f"""
     EXISTS (
         SELECT 1
         FROM catalog_display_title_choices choice
-        JOIN catalog_display_title_policies policy
-          ON policy.display_title_policy_id = choice.display_title_policy_id
-        WHERE policy.title_sort_policy_id = {child}.title_sort_policy_id
-          AND choice.title_sha256 = {child}.title_sha256
+        WHERE choice.title_sha256 = {child}.title_sha256
+          AND EXISTS (
+              SELECT 1 FROM catalog_display_title_policies policy
+              WHERE policy.display_title_policy_id = choice.display_title_policy_id
+                AND policy.title_sort_policy_id = {child}.title_sort_policy_id)
           AND ({_live_display_title_choice("choice")}))
     """
 
 
+# Keep reverse references as separate anti-joins: a two-column OR can turn
+# empty-candidate discovery into a full cache scan for each canonical root.
+# Each arm retains its complete liveness predicate, including exact policy,
+# source title, and gallery name; only the access path changes.
 _CANONICAL_VALUE_ELIGIBILITY = f"""
 NOT EXISTS (SELECT 1 FROM operational_canonical_value_uploads x
             WHERE x.value_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM operational_hash_cache_observations x
-                WHERE x.source_identity_sha256 = r.value_sha256
-                   OR x.fingerprint_sha256 = r.value_sha256)
+                WHERE x.source_identity_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM operational_hash_cache_observations x
+                WHERE x.fingerprint_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_scopes scope_root
     JOIN catalog_source_build_descriptor build
@@ -6311,13 +6337,19 @@ AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.source_title_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_display_title_choices choice
-    WHERE (choice.source_title_sha256 = r.value_sha256
-           OR choice.title_sha256 = r.value_sha256)
+    WHERE choice.source_title_sha256 = r.value_sha256
+      AND ({_live_display_title_choice("choice")}))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_display_title_choices choice
+    WHERE choice.title_sha256 = r.value_sha256
       AND ({_live_display_title_choice("choice")}))
 AND NOT EXISTS (
     SELECT 1 FROM catalog_title_sorts title_sort
-    WHERE (title_sort.title_sha256 = r.value_sha256
-           OR title_sort.sort_title_sha256 = r.value_sha256)
+    WHERE title_sort.title_sha256 = r.value_sha256
+      AND ({_live_title_sort("title_sort")}))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_title_sorts title_sort
+    WHERE title_sort.sort_title_sha256 = r.value_sha256
       AND ({_live_title_sort("title_sort")}))
 """
 

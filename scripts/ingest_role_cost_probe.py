@@ -3,8 +3,8 @@
 This manual diagnostic never opens an existing database. The fixture contains
 FK-valid file families and exact hash occurrences, not complete observation
 descriptors, publication seals, or a full READY/E2E scenario. Production SQL is
-measured unchanged; candidate SQL is experimental. A completed investigation
-may correctly report a violated production performance target.
+measured unchanged against an independent fixture oracle. The former tuple
+seek and a degraded ordering are dev-only baselines, never runtime fallbacks.
 """
 
 from __future__ import annotations
@@ -266,6 +266,37 @@ def stream_sizes(facts: list[FileFact]) -> dict[str, int]:
     }
 
 
+def expected_stream_rows(facts: list[FileFact]) -> dict[str, list[Parameters]]:
+    """Construct each complete ordered stream from fixture facts, without SQL."""
+    ordered = sorted(facts, key=lambda fact: fact.coordinate)
+    return {
+        "anchors": [
+            (
+                *fact.coordinate,
+                fact.number,
+                fact.digest,
+                b"metadata" if fact.name == b"galleryinfo.txt" else b"page",
+                fact.key,
+                fact.key,
+                fact.name,
+            )
+            for fact in ordered
+        ],
+        **{
+            kind: [(*fact.coordinate, fact.key) for fact in ordered]
+            for kind in STREAMS[1:5]
+        },
+        "derived_hash_occurrences": sorted(
+            (fact.gallery, fact.observation, fact.digest, fact.key)
+            for fact in facts
+            if fact.name != b"galleryinfo.txt"
+        ),
+        "stored_hash_occurrences": [
+            (*key, count) for key, count in sorted(content_occurrences(facts).items())
+        ],
+    }
+
+
 def query_kind(sql: str) -> str | None:
     if "FROM catalog_gallery_observation_file_anchors AS anchor" in sql:
         return "anchors"
@@ -279,31 +310,43 @@ def query_kind(sql: str) -> str | None:
     return None
 
 
-def expanded_seek(sql: str, parameters: Parameters) -> tuple[str, Parameters]:
-    """Equivalent only for these manifest-owned non-NULL numeric/binary keys."""
-    matches = list(re.finditer(r"\(([\w.,\s]+)\)\s*>\s*\(((?:%s,?\s*)+)\)", sql))
-    if len(matches) != 1:
-        raise ValueError("expected exactly one tuple keyset comparison")
-    match = matches[0]
-    columns = [value.strip() for value in match[1].split(",")]
-    offset = sql[: match.start()].count("%s")
-    values = parameters[offset : offset + len(columns)]
-    if len(values) != len(columns) or any(value is None for value in values):
+def tuple_seek_baseline(sql: str, parameters: Parameters) -> tuple[str, Parameters]:
+    """Restore only the recognized former non-NULL keyset for cost comparison."""
+    matched = re.fullmatch(
+        r"(.* WHERE )(.*)( ORDER BY ([\w., ]+) LIMIT %s)", " ".join(sql.split())
+    )
+    if matched is None:
+        raise ValueError("expected exactly one recognized role keyset")
+    columns = [value.strip() for value in matched[4].split(",")]
+    offset = int(len(columns) == 4)
+    prefix = "name.name_bytes <> %s AND " if offset else ""
+    if len(columns) not in {3, 4} or len(parameters) != (
+        offset + len(columns) * (len(columns) + 1) // 2 + len(columns) + 1
+    ):
         raise ValueError("keyset parameters must be complete and non-NULL")
-    clauses = []
+    values = parameters[-len(columns) - 1 : -1]
+    if any(value is None for value in values):
+        raise ValueError("keyset parameters must be complete and non-NULL")
+    clauses: list[str] = []
     expanded: list[Any] = []
     for index, column in enumerate(columns):
-        clauses.append(
-            "("
-            + " AND ".join(
-                [*(f"{prior} = %s" for prior in columns[:index]), f"{column} > %s"]
-            )
-            + ")"
+        clause = " AND ".join(
+            [*(f"{prior} = %s" for prior in columns[:index]), f"{column} > %s"]
         )
+        clauses.append(f"({clause})" if index else clause)
         expanded.extend(values[: index + 1])
+    tuple_comparison = (
+        "(" + ", ".join(columns) + ") > (" + ", ".join("%s" for _ in columns) + ")"
+    )
+    if (
+        matched[2]
+        != (prefix + "(" + " OR ".join(clauses) + ") AND " + tuple_comparison)
+        or tuple(expanded) != parameters[offset : -len(columns) - 1]
+    ):
+        raise ValueError("expected exactly one recognized role keyset")
     return (
-        sql[: match.start()] + "(" + " OR ".join(clauses) + ")" + sql[match.end() :],
-        (*parameters[:offset], *expanded, *parameters[offset + len(columns) :]),
+        matched[1] + prefix + tuple_comparison + matched[3],
+        (*parameters[:offset], *values, parameters[-1]),
     )
 
 
@@ -471,6 +514,7 @@ def capture_validator(
     connector: SQLConnector, facts: list[FileFact]
 ) -> tuple[dict[str, list[CapturedQuery]], dict[str, Any]]:
     captured: dict[str, list[CapturedQuery]] = defaultdict(list)
+    expected_rows = expected_stream_rows(facts)
     all_calls = 0
     original = connector.fetch_all
 
@@ -482,6 +526,9 @@ def capture_validator(
         all_calls += 1
         kind = query_kind(sql)
         if kind is not None:
+            offset = len(captured[kind]) * PAGE_SIZE
+            if rows != expected_rows[kind][offset : offset + PAGE_SIZE]:
+                raise RuntimeError(f"role stream differs from fixture facts: {kind}")
             captured[kind].append(CapturedQuery(sql, parameters, len(rows), elapsed))
         return rows
 
@@ -591,20 +638,27 @@ def measure_case(
     facts = file_facts(shape)
     seed_fixture(connector, facts)
     raw = raw_mariadb(connector)
-    before = counters(raw, HANDLER_STATUS)
-    captured, validator = capture_validator(connector, facts)
-    validator["handler_delta"] = counter_delta(before, counters(raw, HANDLER_STATUS))
+    cycles = []
+    for _cycle in range(3):
+        before = counters(raw, HANDLER_STATUS)
+        captured, validator = capture_validator(connector, facts)
+        validator["handler_delta"] = counter_delta(
+            before, counters(raw, HANDLER_STATUS)
+        )
+        cycles.append(validator)
+    expected_rows = expected_stream_rows(facts)
     samples: list[dict[str, Any]] = []
     for kind, queries in captured.items():
         positions = sample_positions(queries)
         # One measurement per unique cursor; labels can alias on a one-page set.
         for index in dict.fromkeys(positions.values()):
             query = queries[index]
-            expected = connector.fetch_all(query.sql, query.parameters)
+            offset = index * PAGE_SIZE
+            expected = expected_rows[kind][offset : offset + PAGE_SIZE]
             variants = {}
             for name, (sql, parameters) in {
                 "production": (query.sql, query.parameters),
-                "expanded_seek": expanded_seek(query.sql, query.parameters),
+                "tuple_seek_baseline": tuple_seek_baseline(query.sql, query.parameters),
                 "negative_order": degraded_order(query.sql, query.parameters),
             }.items():
                 variants[name] = profile_query(
@@ -635,6 +689,7 @@ def measure_case(
             "hash_occurrence_groups": len(content_occurrences(facts)),
         },
         "validator": validator,
+        "validator_cycles": cycles,
         "expected_stream_rows": stream_sizes(facts),
         "samples": samples,
         "production_verdict": "violated"
@@ -668,13 +723,14 @@ def contract() -> dict[str, Any]:
         "target": "Avoid prefix-length work: seek descent plus bounded pages/point joins, not strict O(1) physical storage work.",
         "budget": "8*(128 + fixture metadata exclusions for derived stream + 1)+32. Derived stream pages raw CONTENT files; stored stream pages distinct observation/hash groups, whose counts differ under duplication.",
         "stream_call_model": "Sum ceil(stream_rows/128)+1 across five raw-file streams, one CONTENT-file stream, and one distinct observation/hash-group stream, including each terminal empty page. For distinct CONTENT-only inputs this is 7*(ceil(N/128)+1).",
-        "counterexample": "Same-output +0 numeric ORDER BY denies ordered-index shortcut; every stream at the largest default shape must reject this control.",
+        "counterexample": "Former tuple seek is a dev-only prefix-rescan baseline. Same-output +0 numeric ORDER BY denies ordered-index shortcut; every stream at the largest default shape must reject this control.",
+        "independent_oracle": "Every production validator page and every profiled SELECT is compared to ordered rows built directly from fixture facts. Three complete validator cycles reuse unchanged input; each sampled query has three SELECT repetitions by default.",
         "limitations": [
             "FK-valid role file families only; not full observation descriptors, READY audit, publication or recovery.",
             "Warm local MariaDB 10.11.11; fixed variant order; elapsed ratios are not NAS speedup predictions.",
             "ANALYZE r_rows*r_loops is not distinct examined rows and may exclude pushed filters; Handler counts are requests.",
             "Metadata and duplicate regimes have independent stream cardinalities; LIMIT 128 alone is not a server-work bound.",
-            "Sampled candidate equality is not a full equivalence or asymptotic proof. No production query is replaced.",
+            "Full fixture stream equality and sampled cost bounds are finite implementation evidence, not an unbounded equivalence or asymptotic proof. Captured production SQL is profiled unchanged; baseline transforms exist only in this dev probe.",
             "Completed means investigation completed; violated production cost targets remain violated.",
         ],
     }

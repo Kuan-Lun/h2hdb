@@ -163,6 +163,22 @@ includes driver, transport, execution and waits. Use the manual cost probes to
 measure backend work across input sizes; a fixed page size or SQL-call count is
 not evidence of bounded database scanning.
 
+Current-only cleanup tests each canonical reverse reference with its own indexed
+equality and preserves the full live-publication checks. A no-work selection
+classifies DONE or BLOCKED in the same exclusive transaction; it avoids a second
+candidate scan only while that exact lease remains live. Final release still
+checks the lease, and the next ingest claim performs a fresh check. Reaching the
+cleanup batch budget still requires the final full state check.
+
+Role audit pagination includes equivalent tuple and expanded seek predicates in
+one query so SQLite and MariaDB can use their composite indexes. Manual role and
+cleanup probes compare actual engine work with historical or deliberately slow
+queries while requiring identical results. The MariaDB cleanup diagnostic also
+compares three alternating executions of the current canonical candidate query
+and the historical test predicate. Its title-cache visit target applies to the
+probe's unique-title, single-policy fixture; it is not an arbitrary-data or NAS
+latency guarantee.
+
 ## Upgrade or restore a database
 
 This release uses **epoch 3, schema version 7**. `migrate` initializes this

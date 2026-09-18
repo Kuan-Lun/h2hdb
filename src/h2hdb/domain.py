@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "CurrentOnlyCleanupTerminalState",
     "DatabaseAuditPolicy",
     "DatabaseAuditReason",
     "DatabaseAuditReport",
@@ -252,6 +253,13 @@ def _validate_build_id(value: str) -> None:
         raise ValueError("Catalog build ID must be a UUID") from error
     if parsed.hex != value:
         raise ValueError("Catalog build ID must be a normalized 32-character UUID")
+
+
+class CurrentOnlyCleanupTerminalState(StrEnum):
+    """No candidate in one fenced snapshot; authority ends with its lease."""
+
+    DONE = "DONE"
+    BLOCKED = "BLOCKED"
 
 
 class SchemaProvisioningOutcome(StrEnum):
