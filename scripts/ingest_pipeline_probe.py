@@ -209,13 +209,19 @@ class Observer:
 
     def flush(self, sample: PerformanceStep) -> None:
         for (category, query), recorded in self.pending.pop(id(sample), {}).items():
-            value = self.query_group(
-                (sample.pipeline, sample.phase, sample.operation, category, query)
-            )
+            value = self.query_group((*self.sample_key(sample), category, query))
             value.calls += recorded.calls
             value.seconds += recorded.seconds
             value.returned_rows += recorded.returned_rows
             value.max_seconds = max(value.max_seconds, recorded.max_seconds)
+
+    @staticmethod
+    def sample_key(sample: PerformanceStep) -> tuple[str, str, str]:
+        if sample.pipeline == "source":
+            action, separator, phase = sample.phase.rpartition(".")
+            if separator and phase in {"issue", "prepare", "commit"}:
+                return "source", phase, action
+        return sample.pipeline, sample.phase, sample.operation
 
     def record_sql_operation(
         self,
@@ -265,7 +271,7 @@ class Observer:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             sample = self.active
             key = (
-                (sample.pipeline, sample.phase, sample.operation, name)
+                (*self.sample_key(sample), name)
                 if sample is not None
                 else (self.phase, "outside", "outside", name)
             )
@@ -291,8 +297,17 @@ class Observer:
             phase: str,
             operation: str,
             generation: int,
+            *,
+            correlation_id: str | None = None,
         ) -> Iterator[PerformanceStep]:
-            with original_step(owner, pipeline, phase, operation, generation) as sample:
+            with original_step(
+                owner,
+                pipeline,
+                phase,
+                operation,
+                generation,
+                correlation_id=correlation_id,
+            ) as sample:
                 previous = observer.active
                 observer.active = sample
                 try:
@@ -301,9 +316,7 @@ class Observer:
                     own_seconds = max(
                         0.0, sample.elapsed(time.perf_counter()) - sample.nested_seconds
                     )
-                    value = observer.operations[
-                        (sample.pipeline, sample.phase, sample.operation)
-                    ]
+                    value = observer.operations[observer.sample_key(sample)]
                     value.calls += 1
                     value.seconds += own_seconds
                     try:
@@ -314,19 +327,17 @@ class Observer:
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(IngestPerformance, "step", step))
-            for name in (
-                "prepare_source",
-                "issue_source_step",
-                "prepare_source_step",
-                "commit_source_step",
-            ):
-                stack.enter_context(
-                    patch.object(
-                        VNextIngestFacade,
-                        name,
-                        self.wrap_source(name, getattr(VNextIngestFacade, name)),
-                    )
+            # The runtime now measures each source step. Wrapping those same
+            # calls here would count their elapsed time a second time.
+            stack.enter_context(
+                patch.object(
+                    VNextIngestFacade,
+                    "prepare_source",
+                    self.wrap_source(
+                        "prepare_source", VNextIngestFacade.prepare_source
+                    ),
                 )
+            )
             target = VNextIngestAnalysisOrchestrator
             name = "_prepare_gallery_work"
             stack.enter_context(
