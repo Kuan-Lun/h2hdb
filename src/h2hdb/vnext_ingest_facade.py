@@ -51,6 +51,7 @@ from .domain import (
     VNextResolvedIngestPolicy,
     VNextSourceCompletionMarker,
     VNextSourcePreparationOperation,
+    VNextSourcePreparationProgress,
 )
 from .ingest_performance import IngestPerformance
 from .ports import (
@@ -323,6 +324,7 @@ class VNextPreparedSource:
         "_machine",
         "_manifest_summary",
         "_plan",
+        "_performance_id",
         "_snapshot",
         "_source_root_components",
     )
@@ -342,6 +344,8 @@ class VNextPreparedSource:
         if _constructor_token is not _PREPARED_SOURCE_TOKEN:
             raise TypeError("use VNextIngestFacade.prepare_source")
         self._snapshot = snapshot
+        # Process-local preparation correlation, never a durable capability.
+        self._performance_id = ""
         self._plan = plan
         self._manifest_summary = manifest_summary
         self._source_root_components = source_root_components
@@ -502,16 +506,58 @@ class VNextIngestFacade:
         self.__require_open()
         if progress is not None and not callable(progress):
             raise TypeError("progress must be a callable source preparation observer")
+        correlation_id = secrets.token_hex(16)
+        with self.__database_performance.operation(
+            "source_prepare",
+            correlation_id=correlation_id,
+            max_new_galleries=max_new_galleries,
+        ) as measurement:
+
+            def observe(value: VNextSourcePreparationProgress) -> None:
+                measurement.describe(
+                    source_operation=value.operation.value,
+                    completed_galleries=value.completed,
+                    total_galleries=value.total,
+                )
+                if progress is not None:
+                    progress(value)
+
+            result = self.__prepare_source(
+                adapter,
+                policy=policy,
+                max_new_galleries=max_new_galleries,
+                progress=observe,
+            )
+            result._performance_id = correlation_id
+            summary = result._manifest_summary
+            measurement.describe(
+                admitted_galleries=summary.gallery_count,
+                admitted_files=summary.file_count,
+                admitted_bytes=summary.byte_count,
+                deferred_galleries=result.deferred_gallery_count,
+                waiting_galleries=result.waiting_gallery_count,
+            )
+            return result
+
+    def __prepare_source(
+        self,
+        adapter: VNextIngestSourceAdapter,
+        *,
+        policy: VNextResolvedIngestPolicy,
+        max_new_galleries: int | None,
+        progress: VNextSourcePreparationObserver,
+    ) -> VNextPreparedSource:
         if max_new_galleries is not None:
             require_source_batch_limit(max_new_galleries)
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
         _require_resolved_source_policy(policy)
-        trusted_policy = self.__read(
-            lambda connector: VNextIngestPolicyRepository.require_exact(
-                VNextUnitOfWork(connector, backend=self.__backend), policy
+        with database_phase("policy_authority"):
+            trusted_policy = self.__read(
+                lambda connector: VNextIngestPolicyRepository.require_exact(
+                    VNextUnitOfWork(connector, backend=self.__backend), policy
+                )
             )
-        )
         qualification_policy = sha256(
             b"h2hdb-source-qualification-policy-v1\0"
             + trusted_policy.artifact_policy_sha256
@@ -522,9 +568,10 @@ class VNextIngestFacade:
             raise TypeError("adapter source_root_components must be an exact tuple")
         # SourceDiscoveryPlan validates the root-independent locator codec and
         # owns cleanup if page consumption fails midway.
-        plan = SourceDiscoveryPlan.from_locators(
-            _iter_source_locators(adapter), progress=progress
-        )
+        with database_phase("discovery"):
+            plan = SourceDiscoveryPlan.from_locators(
+                _iter_source_locators(adapter), progress=progress
+            )
         snapshot: FrozenSourceObservationSpool | None = None
         baseline: SourceBatchBaseline | None = None
         deferred_gallery_count = 0
@@ -547,7 +594,7 @@ class VNextIngestFacade:
                     VNextSourcePreparationOperation.DISCOVERY_RECONCILIATION
                 )
                 report_source_progress(progress, reconciliation, 0)
-                with connection().read_transaction():
+                with database_phase("source_baseline"), connection().read_transaction():
                     baseline = SourceBatchRepository.load_baseline(
                         connection(), source_root_components=root
                     )
@@ -557,7 +604,10 @@ class VNextIngestFacade:
                     after_gallery_id = 0
                     checked = 0
                     while True:
-                        with connection().read_transaction():
+                        with (
+                            database_phase("published_inventory_page"),
+                            connection().read_transaction(),
+                        ):
                             page = SourceBatchRepository.list_locators(
                                 connection(),
                                 baseline,
@@ -622,7 +672,10 @@ class VNextIngestFacade:
                     locators: tuple[tuple[str, ...], ...],
                 ) -> tuple[bool, ...]:
                     assert baseline is not None
-                    with connection().read_transaction():
+                    with (
+                        database_phase("published_membership", probes=len(locators)),
+                        connection().read_transaction(),
+                    ):
                         return SourceBatchRepository.lookup_members(
                             connection(), baseline, locators
                         )
@@ -631,7 +684,10 @@ class VNextIngestFacade:
                     locator: tuple[str, ...],
                 ) -> CachedSourceObservation | None:
                     assert baseline is not None
-                    with connection().read_transaction():
+                    with (
+                        database_phase("published_fallback"),
+                        connection().read_transaction(),
+                    ):
                         return SourceBatchRepository.lookup_observations(
                             connection(),
                             baseline,
@@ -644,7 +700,10 @@ class VNextIngestFacade:
                         tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
                     ],
                 ) -> tuple[CachedSourceObservation | None, ...]:
-                    with connection().read_transaction():
+                    with (
+                        database_phase("marker_lookup", probes=len(probes)),
+                        connection().read_transaction(),
+                    ):
                         candidates = SourceMarkerRepository.lookup_batch(
                             connection(),
                             source_root_components=root,
@@ -660,17 +719,20 @@ class VNextIngestFacade:
                             )
                         return candidates
 
-                snapshot = FrozenSourceObservationSpool.freeze(
-                    adapter,
-                    plan=plan,
-                    source_root_components=root,
-                    cache_lookup=lookup,
-                    membership_lookup=membership,
-                    fallback_lookup=fallback,
-                    max_new_galleries=max_new_galleries,
-                    progress=progress,
-                    qualification_policy_sha256=qualification_policy,
-                )
+                with database_phase(
+                    "source_freeze", inventory_galleries=plan.gallery_count
+                ):
+                    snapshot = FrozenSourceObservationSpool.freeze(
+                        adapter,
+                        plan=plan,
+                        source_root_components=root,
+                        cache_lookup=lookup,
+                        membership_lookup=membership,
+                        fallback_lookup=fallback,
+                        max_new_galleries=max_new_galleries,
+                        progress=progress,
+                        qualification_policy_sha256=qualification_policy,
+                    )
                 deferred_gallery_count = snapshot.deferred_gallery_count
                 if snapshot.manifest_summary.gallery_count != plan.gallery_count:
                     selected = SourceDiscoveryPlan.from_locators(
@@ -693,7 +755,10 @@ class VNextIngestFacade:
                         previous_plan.gallery_count,
                         previous_plan.gallery_count,
                     )
-                with connection().read_transaction():
+                with (
+                    database_phase("source_baseline_recheck"),
+                    connection().read_transaction(),
+                ):
                     SourceBatchRepository.require_current(connection(), baseline)
             prepared = VNextPreparedSource(
                 snapshot=snapshot,
@@ -725,84 +790,110 @@ class VNextIngestFacade:
         source = _require_prepared_source(prepared)
         _require_resolved_source_policy(policy)
         machine = source._machine
-        if machine.policy is not None and not _same_resolved_policy(
-            machine.policy,
-            policy,
-        ):
-            raise ValueError("prepared source is bound to another ingest policy")
-        active = source._active_issue
-        if active is not None:
-            _require_same_session_authority(active._session, session)
-            self.__write(lambda work: _resume_authority(work, session, self.__clock()))
-            return active
-
-        action = machine.action
-        bind_policy = machine.policy is None
-        trusted_policy: VNextResolvedIngestPolicy | None = None
-
-        def issue(work: VNextUnitOfWork) -> object:
-            nonlocal trusted_policy
-            now = self.__clock()
-            if action is _SourceAction.STAGING_FIND:
-                # The staging repository owns this operation's outer gate/fence
-                # authorization, so delegate before acquiring any facade locks.
-                if machine.build_id is None:
-                    raise RuntimeError("source build is not initialized")
-                gate, turn = _repository_authority(session)
-                retirement = (
-                    GalleryObservationStagingRepository.find_pending_retirement(
-                        work,
-                        gate_lease=gate,
-                        ingest_turn=turn.ingest_turn,
-                        build_id=machine.build_id,
-                        now=now,
-                    )
-                )
-                if retirement is not None:
-                    return retirement
-                return SourceBuildRepository.get_pending_source_gallery(
-                    work.connector,
-                    build_id=machine.build_id,
-                )
-            _resume_authority(work, session, now)
-            if (
-                action is _SourceAction.INITIALIZE
-                and source._batch_baseline is not None
-            ):
-                SourceBatchRepository.require_current(
-                    work.connector, source._batch_baseline
-                )
-            if bind_policy:
-                trusted_policy = VNextIngestPolicyRepository.require_exact(
-                    work,
-                    policy,
-                )
-            if action is _SourceAction.DISCOVERY_BATCH:
-                if machine.build_id is None:
-                    raise RuntimeError("source build is not initialized")
-                return SourceBuildRepository.prepare_discovery_batch(
-                    work.connector,
-                    build_id=machine.build_id,
-                    plan=source._plan,
-                )
-            if action is _SourceAction.COMPLETE:
-                raise ValueError("prepared source is already complete")
-            return None
-
-        payload = self.__write(issue)
-        if bind_policy:
-            if trusted_policy is None:  # pragma: no cover - invariant
-                raise AssertionError("source policy authority was not rebound")
-            machine.policy = trusted_policy
-        issued = VNextIssuedSourceStep(
-            source=source,
-            action=action,
-            payload=payload,
-            session=session,
-            _constructor_token=_ISSUED_SOURCE_STEP_TOKEN,
+        generation = (
+            session.ingest_generation if isinstance(session, VNextIngestSession) else 0
         )
-        source._active_issue = issued
-        return issued
+        with (
+            self.__database_performance.operation(
+                "source_step",
+                quiet=True,
+                action=machine.action.value,
+                step_phase="issue",
+                ingest_generation=generation,
+                correlation_id=source._performance_id,
+                build_id=machine.build_id.hex()
+                if machine.build_id is not None
+                else None,
+            ),
+            self.__performance.step(
+                "source",
+                f"{machine.action.value}.issue",
+                "SOURCE",
+                generation,
+                correlation_id=source._performance_id,
+            ) as measurement,
+        ):
+            if machine.policy is not None and not _same_resolved_policy(
+                machine.policy,
+                policy,
+            ):
+                raise ValueError("prepared source is bound to another ingest policy")
+            active = source._active_issue
+            if active is not None:
+                _require_same_session_authority(active._session, session)
+                self.__write(
+                    lambda work: _resume_authority(work, session, self.__clock())
+                )
+                measurement.replayed = True
+                return active
+
+            action = machine.action
+            bind_policy = machine.policy is None
+            trusted_policy: VNextResolvedIngestPolicy | None = None
+
+            def issue(work: VNextUnitOfWork) -> object:
+                nonlocal trusted_policy
+                now = self.__clock()
+                if action is _SourceAction.STAGING_FIND:
+                    # The staging repository owns this operation's outer gate/fence
+                    # authorization, so delegate before acquiring any facade locks.
+                    if machine.build_id is None:
+                        raise RuntimeError("source build is not initialized")
+                    gate, turn = _repository_authority(session)
+                    retirement = (
+                        GalleryObservationStagingRepository.find_pending_retirement(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            build_id=machine.build_id,
+                            now=now,
+                        )
+                    )
+                    if retirement is not None:
+                        return retirement
+                    return SourceBuildRepository.get_pending_source_gallery(
+                        work.connector,
+                        build_id=machine.build_id,
+                    )
+                _resume_authority(work, session, now)
+                if (
+                    action is _SourceAction.INITIALIZE
+                    and source._batch_baseline is not None
+                ):
+                    SourceBatchRepository.require_current(
+                        work.connector, source._batch_baseline
+                    )
+                if bind_policy:
+                    trusted_policy = VNextIngestPolicyRepository.require_exact(
+                        work,
+                        policy,
+                    )
+                if action is _SourceAction.DISCOVERY_BATCH:
+                    if machine.build_id is None:
+                        raise RuntimeError("source build is not initialized")
+                    return SourceBuildRepository.prepare_discovery_batch(
+                        work.connector,
+                        build_id=machine.build_id,
+                        plan=source._plan,
+                    )
+                if action is _SourceAction.COMPLETE:
+                    raise ValueError("prepared source is already complete")
+                return None
+
+            payload = self.__write(issue)
+            if bind_policy:
+                if trusted_policy is None:  # pragma: no cover - invariant
+                    raise AssertionError("source policy authority was not rebound")
+                machine.policy = trusted_policy
+            issued = VNextIssuedSourceStep(
+                source=source,
+                action=action,
+                payload=payload,
+                session=session,
+                _constructor_token=_ISSUED_SOURCE_STEP_TOKEN,
+            )
+            source._active_issue = issued
+            return issued
 
     def prepare_source_step(
         self,
@@ -817,101 +908,126 @@ class VNextIngestFacade:
             raise TypeError("issued must be VNextIssuedSourceStep")
         if issued._source is not source or source._active_issue is not issued:
             raise ValueError("issued source step is stale or belongs to another source")
-        if source._active_step is not None:
-            return source._active_step
+        with (
+            self.__database_performance.operation(
+                "source_step",
+                quiet=True,
+                action=issued._action.value,
+                step_phase="prepare",
+                ingest_generation=issued._session.ingest_generation,
+                correlation_id=source._performance_id,
+                build_id=(
+                    source._machine.build_id.hex()
+                    if source._machine.build_id is not None
+                    else None
+                ),
+            ),
+            self.__performance.step(
+                "source",
+                f"{issued._action.value}.prepare",
+                "SOURCE",
+                issued._session.ingest_generation,
+                correlation_id=source._performance_id,
+            ) as measurement,
+        ):
+            if source._active_step is not None:
+                measurement.replayed = True
+                return source._active_step
 
-        machine = source._machine
-        action = issued._action
-        local_action = action
-        payload = issued._payload
-        if action is _SourceAction.INITIALIZE:
-            policy = machine.policy
-            if policy is None:
-                raise RuntimeError("source policy binding is absent")
-            command = SourceRootBuildCommand(
-                source._source_root_components,
-                source._manifest_summary,
-            )
-            build_id = command.build_attempt_id
-            upload = command.prepare_root_upload()
-            payload = (build_id, command, upload, upload.iter_pages())
-        elif action is _SourceAction.ROOT_PAGE:
-            if machine.root_pages is None:
-                raise RuntimeError("source-root page iterator is absent")
-            try:
-                payload = next(machine.root_pages)
-                local_action = _SourceAction.ROOT_PUT_PAGE
-            except StopIteration:
-                payload = None
-                local_action = _SourceAction.ROOT_SEAL
-        elif action is _SourceAction.LOCATOR_INITIALIZE:
-            batch = _require_discovery_batch(machine)
-            locator = batch.locators[machine.locator_index]
-            upload = source._plan.prepare_locator_upload(locator)
-            payload = (upload, upload.iter_pages())
-        elif action is _SourceAction.LOCATOR_PAGE:
-            if machine.locator_pages is None:
-                raise RuntimeError("source-locator page iterator is absent")
-            try:
-                payload = next(machine.locator_pages)
-                local_action = _SourceAction.LOCATOR_PUT_PAGE
-            except StopIteration:
-                payload = None
-                local_action = _SourceAction.LOCATOR_SEAL
-        elif action is _SourceAction.STAGING_FIND:
-            pending = issued._payload
-            match pending:
-                case GalleryStagingPendingRetirement():
-                    payload = pending.seal
-                    local_action = (
-                        _SourceAction.STAGING_RETIRE
-                        if pending.acknowledged
-                        else _SourceAction.STAGING_RECOVER
-                    )
-                case None:
+            machine = source._machine
+            action = issued._action
+            local_action = action
+            payload = issued._payload
+            if action is _SourceAction.INITIALIZE:
+                policy = machine.policy
+                if policy is None:
+                    raise RuntimeError("source policy binding is absent")
+                command = SourceRootBuildCommand(
+                    source._source_root_components,
+                    source._manifest_summary,
+                )
+                build_id = command.build_attempt_id
+                upload = command.prepare_root_upload()
+                payload = (build_id, command, upload, upload.iter_pages())
+            elif action is _SourceAction.ROOT_PAGE:
+                if machine.root_pages is None:
+                    raise RuntimeError("source-root page iterator is absent")
+                try:
+                    payload = next(machine.root_pages)
+                    local_action = _SourceAction.ROOT_PUT_PAGE
+                except StopIteration:
                     payload = None
-                    local_action = _SourceAction.STAGING_COMPLETE
-                case _:
-                    if not isinstance(pending, PendingSourceGallery):
-                        raise RuntimeError("pending source gallery receipt is invalid")
-                    decoded_locator = source._plan._decode_locator(
-                        pending.position,
-                        pending.locator_sha256,
-                    )
-                    observation = source._snapshot.open_gallery(
-                        position=pending.position,
-                        locator_sha256=pending.locator_sha256,
-                        locator_components=decoded_locator,
-                    )
-                    payload = (pending, decoded_locator, observation)
-                    local_action = _SourceAction.STAGING_SELECT
-        elif action is _SourceAction.STAGING_RETIRE:
-            if machine.staging_seal is None:
-                raise RuntimeError("terminal gallery staging seal is absent")
-            payload = machine.staging_seal
-        elif action in {
-            _SourceAction.FILE_PAGE,
-            _SourceAction.DIRECTORY_PAGE,
-            _SourceAction.TAG_PAGE,
-            _SourceAction.METADATA_PAGE,
-        }:
-            payload = _prepare_observation_component(source, action)
-        elif action is _SourceAction.MATCH:
-            payload = MatchBatchCommand(
-                secrets.token_bytes(16),
-                machine.match_previous_operation_id,
-            )
-        elif action is _SourceAction.ASSEMBLY:
-            payload = SourceBuildRepository.issue_assembly_batch()
+                    local_action = _SourceAction.ROOT_SEAL
+            elif action is _SourceAction.LOCATOR_INITIALIZE:
+                batch = _require_discovery_batch(machine)
+                locator = batch.locators[machine.locator_index]
+                upload = source._plan.prepare_locator_upload(locator)
+                payload = (upload, upload.iter_pages())
+            elif action is _SourceAction.LOCATOR_PAGE:
+                if machine.locator_pages is None:
+                    raise RuntimeError("source-locator page iterator is absent")
+                try:
+                    payload = next(machine.locator_pages)
+                    local_action = _SourceAction.LOCATOR_PUT_PAGE
+                except StopIteration:
+                    payload = None
+                    local_action = _SourceAction.LOCATOR_SEAL
+            elif action is _SourceAction.STAGING_FIND:
+                pending = issued._payload
+                match pending:
+                    case GalleryStagingPendingRetirement():
+                        payload = pending.seal
+                        local_action = (
+                            _SourceAction.STAGING_RETIRE
+                            if pending.acknowledged
+                            else _SourceAction.STAGING_RECOVER
+                        )
+                    case None:
+                        payload = None
+                        local_action = _SourceAction.STAGING_COMPLETE
+                    case _:
+                        if not isinstance(pending, PendingSourceGallery):
+                            raise RuntimeError(
+                                "pending source gallery receipt is invalid"
+                            )
+                        decoded_locator = source._plan._decode_locator(
+                            pending.position,
+                            pending.locator_sha256,
+                        )
+                        observation = source._snapshot.open_gallery(
+                            position=pending.position,
+                            locator_sha256=pending.locator_sha256,
+                            locator_components=decoded_locator,
+                        )
+                        payload = (pending, decoded_locator, observation)
+                        local_action = _SourceAction.STAGING_SELECT
+            elif action is _SourceAction.STAGING_RETIRE:
+                if machine.staging_seal is None:
+                    raise RuntimeError("terminal gallery staging seal is absent")
+                payload = machine.staging_seal
+            elif action in {
+                _SourceAction.FILE_PAGE,
+                _SourceAction.DIRECTORY_PAGE,
+                _SourceAction.TAG_PAGE,
+                _SourceAction.METADATA_PAGE,
+            }:
+                payload = _prepare_observation_component(source, action)
+            elif action is _SourceAction.MATCH:
+                payload = MatchBatchCommand(
+                    secrets.token_bytes(16),
+                    machine.match_previous_operation_id,
+                )
+            elif action is _SourceAction.ASSEMBLY:
+                payload = SourceBuildRepository.issue_assembly_batch()
 
-        step = VNextPreparedSourceStep(
-            issued=issued,
-            action=local_action,
-            payload=payload,
-            _constructor_token=_PREPARED_SOURCE_STEP_TOKEN,
-        )
-        source._active_step = step
-        return step
+            step = VNextPreparedSourceStep(
+                issued=issued,
+                action=local_action,
+                payload=payload,
+                _constructor_token=_PREPARED_SOURCE_STEP_TOKEN,
+            )
+            source._active_step = step
+            return step
 
     def commit_source_step(
         self,
@@ -934,312 +1050,338 @@ class VNextIngestFacade:
         gate, turn = _repository_authority(session)
         machine = source._machine
         action = prepared_step._action
-        now = require_int63(self.__clock(), field="source step commit now")
+        with (
+            self.__database_performance.operation(
+                "source_step",
+                quiet=True,
+                action=action.value,
+                step_phase="commit",
+                ingest_generation=session.ingest_generation,
+                correlation_id=source._performance_id,
+                build_id=machine.build_id.hex()
+                if machine.build_id is not None
+                else None,
+            ),
+            self.__performance.step(
+                "source",
+                f"{action.value}.commit",
+                "SOURCE",
+                session.ingest_generation,
+                correlation_id=source._performance_id,
+            ) as measurement,
+        ):
+            now = require_int63(self.__clock(), field="source step commit now")
 
-        def commit(work: VNextUnitOfWork) -> object:
-            if action in {
-                _SourceAction.INITIALIZE,
-                _SourceAction.LOCATOR_INITIALIZE,
-            }:
-                authority = _resume_authority(work, session, now)
-                if (
-                    action is _SourceAction.INITIALIZE
-                    and source._batch_baseline is not None
-                ):
-                    SourceBatchRepository.require_current(
-                        work.connector, source._batch_baseline
+            def commit(work: VNextUnitOfWork) -> object:
+                if action in {
+                    _SourceAction.INITIALIZE,
+                    _SourceAction.LOCATOR_INITIALIZE,
+                }:
+                    authority = _resume_authority(work, session, now)
+                    if (
+                        action is _SourceAction.INITIALIZE
+                        and source._batch_baseline is not None
+                    ):
+                        SourceBatchRepository.require_current(
+                            work.connector, source._batch_baseline
+                        )
+                    return authority
+                if action is _SourceAction.ROOT_ALLOCATE:
+                    return CanonicalValueRepository.allocate(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_root_upload(machine),
+                        now=now,
                     )
-                return authority
-            if action is _SourceAction.ROOT_ALLOCATE:
-                return CanonicalValueRepository.allocate(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_root_upload(machine),
-                    now=now,
-                )
-            if action is _SourceAction.ROOT_PUT_PAGE:
-                return CanonicalValueRepository.put_page(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_root_upload(machine),
-                    prepared_page=_require_canonical_page(prepared_step._payload),
-                    now=now,
-                )
-            if action is _SourceAction.ROOT_SEAL:
-                return CanonicalValueRepository.seal(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_root_upload(machine),
-                    now=now,
-                )
-            if action is _SourceAction.ROOT_HANDOFF:
-                if machine.root_command is None:
-                    raise RuntimeError("source-root command is absent")
-                if machine.policy is None:
-                    raise RuntimeError("source machine lacks its resolved policy")
-                return SourceBuildRepository.handoff_root_or_drain(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    command=machine.root_command,
-                    root_plan=_require_root_upload(machine),
-                    policy=_source_build_policy_authority(machine.policy),
-                    drained_page=machine.drained_page,
-                    now=now,
-                    batch_baseline=source._batch_baseline,
-                )
-            if action is _SourceAction.DISCOVERY_BATCH:
-                batch = _require_exact_discovery_batch(prepared_step._payload)
-                if batch.terminal:
+                if action is _SourceAction.ROOT_PUT_PAGE:
+                    return CanonicalValueRepository.put_page(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_root_upload(machine),
+                        prepared_page=_require_canonical_page(prepared_step._payload),
+                        now=now,
+                    )
+                if action is _SourceAction.ROOT_SEAL:
+                    return CanonicalValueRepository.seal(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_root_upload(machine),
+                        now=now,
+                    )
+                if action is _SourceAction.ROOT_HANDOFF:
+                    if machine.root_command is None:
+                        raise RuntimeError("source-root command is absent")
+                    if machine.policy is None:
+                        raise RuntimeError("source machine lacks its resolved policy")
+                    return SourceBuildRepository.handoff_root_or_drain(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        command=machine.root_command,
+                        root_plan=_require_root_upload(machine),
+                        policy=_source_build_policy_authority(machine.policy),
+                        drained_page=machine.drained_page,
+                        now=now,
+                        batch_baseline=source._batch_baseline,
+                    )
+                if action is _SourceAction.DISCOVERY_BATCH:
+                    batch = _require_exact_discovery_batch(prepared_step._payload)
+                    if batch.terminal:
+                        return SourceBuildRepository.commit_discovery_batch(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            batch=batch,
+                            resolved=(),
+                            now=now,
+                        )
+                    return _resume_authority(work, session, now)
+                if action is _SourceAction.LOCATOR_ALLOCATE:
+                    return CanonicalValueRepository.allocate(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_locator_upload(machine),
+                        now=now,
+                    )
+                if action is _SourceAction.LOCATOR_PUT_PAGE:
+                    return CanonicalValueRepository.put_page(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_locator_upload(machine),
+                        prepared_page=_require_canonical_page(prepared_step._payload),
+                        now=now,
+                    )
+                if action is _SourceAction.LOCATOR_SEAL:
+                    return CanonicalValueRepository.seal(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        plan=_require_locator_upload(machine),
+                        now=now,
+                    )
+                if action is _SourceAction.LOCATOR_RESOLVE:
+                    batch = _require_discovery_batch(machine)
+                    locator = batch.locators[machine.locator_index]
+                    return SourceBuildRepository.resolve_discovery_locator(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        batch=batch,
+                        locator=locator,
+                        upload_plan=_require_locator_upload(machine),
+                        now=now,
+                    )
+                if action is _SourceAction.DISCOVERY_COMMIT:
+                    batch = _require_discovery_batch(machine)
+                    resolved = machine.resolved
+                    if resolved is None:
+                        raise RuntimeError("resolved discovery workset is absent")
                     return SourceBuildRepository.commit_discovery_batch(
                         work,
                         gate_lease=gate,
                         ingest_turn=turn.ingest_turn,
                         batch=batch,
-                        resolved=(),
+                        resolved=tuple(resolved),
                         now=now,
                     )
-                return _resume_authority(work, session, now)
-            if action is _SourceAction.LOCATOR_ALLOCATE:
-                return CanonicalValueRepository.allocate(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_locator_upload(machine),
-                    now=now,
-                )
-            if action is _SourceAction.LOCATOR_PUT_PAGE:
-                return CanonicalValueRepository.put_page(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_locator_upload(machine),
-                    prepared_page=_require_canonical_page(prepared_step._payload),
-                    now=now,
-                )
-            if action is _SourceAction.LOCATOR_SEAL:
-                return CanonicalValueRepository.seal(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    plan=_require_locator_upload(machine),
-                    now=now,
-                )
-            if action is _SourceAction.LOCATOR_RESOLVE:
-                batch = _require_discovery_batch(machine)
-                locator = batch.locators[machine.locator_index]
-                return SourceBuildRepository.resolve_discovery_locator(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    batch=batch,
-                    locator=locator,
-                    upload_plan=_require_locator_upload(machine),
-                    now=now,
-                )
-            if action is _SourceAction.DISCOVERY_COMMIT:
-                batch = _require_discovery_batch(machine)
-                resolved = machine.resolved
-                if resolved is None:
-                    raise RuntimeError("resolved discovery workset is absent")
-                return SourceBuildRepository.commit_discovery_batch(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    batch=batch,
-                    resolved=tuple(resolved),
-                    now=now,
-                )
-            if action in {
-                _SourceAction.STAGING_SELECT,
-                _SourceAction.STAGING_COMPLETE,
-                _SourceAction.STAGING_RECOVER,
-            }:
-                return _resume_authority(work, session, now)
-            if action is _SourceAction.STAGING_BEGIN:
-                pending = _require_pending_gallery(machine)
-                return GalleryObservationStagingRepository.begin_or_resume(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    build_id=pending.build_id,
-                    gallery_id=pending.gallery_id,
-                    now=now,
-                )
-            if action is _SourceAction.STAGING_REUSE:
-                observation = machine.observation
-                if observation is None or observation.cached is None:
-                    raise RuntimeError("source reuse lacks its cached observation")
-                pending = _require_pending_gallery(machine)
-                if observation.cached.gallery_id != pending.gallery_id:
-                    raise SourceMarkerConflictError(
-                        "cached gallery differs from pending durable membership"
+                if action in {
+                    _SourceAction.STAGING_SELECT,
+                    _SourceAction.STAGING_COMPLETE,
+                    _SourceAction.STAGING_RECOVER,
+                }:
+                    return _resume_authority(work, session, now)
+                if action is _SourceAction.STAGING_BEGIN:
+                    pending = _require_pending_gallery(machine)
+                    return GalleryObservationStagingRepository.begin_or_resume(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        build_id=pending.build_id,
+                        gallery_id=pending.gallery_id,
+                        now=now,
                     )
-                return SourceMarkerRepository.reuse(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    build_id=pending.build_id,
-                    cached=observation.cached,
-                    now=now,
-                )
-            if action is _SourceAction.FILE_PAGE:
-                component_step = _require_component_step(prepared_step._payload)
-                command = component_step.command
-                if not isinstance(command, FileBatchCommand):
-                    raise TypeError("FILE source step has an invalid command")
-                return GalleryObservationStagingRepository.put_files(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    command=command,
-                    now=now,
-                )
-            if action is _SourceAction.DIRECTORY_PAGE:
-                component_step = _require_component_step(prepared_step._payload)
-                command = component_step.command
-                if not isinstance(command, DirectoryBatchCommand):
-                    raise TypeError("DIRECTORY source step has an invalid command")
-                return GalleryObservationStagingRepository.put_directories(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    command=command,
-                    now=now,
-                )
-            if action is _SourceAction.TAG_PAGE:
-                component_step = _require_component_step(prepared_step._payload)
-                command = component_step.command
-                if not isinstance(command, TagBatchCommand):
-                    raise TypeError("TAG source step has an invalid command")
-                return GalleryObservationStagingRepository.put_tags(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    command=command,
-                    now=now,
-                )
-            if action is _SourceAction.METADATA_PAGE:
-                component_step = _require_component_step(prepared_step._payload)
-                command = component_step.command
-                if not isinstance(command, MetadataBatchCommand):
-                    raise TypeError("METADATA source step has an invalid command")
-                return GalleryObservationStagingRepository.put_metadata(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    command=command,
-                    now=now,
-                )
-            if action is _SourceAction.MATCH:
-                match_command = prepared_step._payload
-                if not isinstance(match_command, MatchBatchCommand):
-                    raise TypeError("MATCH source step has an invalid command")
-                return GalleryObservationStagingRepository.match_files_to_directory(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    command=match_command,
-                    now=now,
-                )
-            if action is _SourceAction.STAGING_SEAL:
-                observation = machine.observation
-                if observation is None:
-                    raise RuntimeError("gallery seal lacks its frozen observation")
-                marker_seal = GalleryObservationStagingRepository.seal(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    handle=_require_staging_handle(machine),
-                    now=now,
-                    completion_marker=observation.completion_marker,
-                )
-                return marker_seal
-            if action is _SourceAction.STAGING_RETIRE:
-                seal = prepared_step._payload
-                if not isinstance(seal, GalleryStagingSeal):
-                    raise TypeError("STAGING_RETIRE source step has an invalid seal")
-                return GalleryObservationStagingRepository.retire_sealed(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    seal=seal,
-                    now=now,
-                )
-            if action is _SourceAction.ASSEMBLY:
-                attempt = prepared_step._payload
-                if not isinstance(attempt, AssemblyBatchAttempt):
-                    raise TypeError("ASSEMBLY source step has an invalid attempt")
-                if machine.build_id is None:
-                    raise RuntimeError("source build is not initialized")
-                receipt = SourceBuildRepository.assemble_batch(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    build_id=machine.build_id,
-                    attempt=attempt,
-                    now=now,
-                )
-                if receipt.terminal:
-                    _require_source_manifest_summary(
-                        receipt,
-                        source._manifest_summary,
+                if action is _SourceAction.STAGING_REUSE:
+                    observation = machine.observation
+                    if observation is None or observation.cached is None:
+                        raise RuntimeError("source reuse lacks its cached observation")
+                    pending = _require_pending_gallery(machine)
+                    if observation.cached.gallery_id != pending.gallery_id:
+                        raise SourceMarkerConflictError(
+                            "cached gallery differs from pending durable membership"
+                        )
+                    return SourceMarkerRepository.reuse(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        build_id=pending.build_id,
+                        cached=observation.cached,
+                        now=now,
                     )
-                return receipt
-            raise RuntimeError(f"unsupported source action {action.value}")
+                if action is _SourceAction.FILE_PAGE:
+                    component_step = _require_component_step(prepared_step._payload)
+                    command = component_step.command
+                    if not isinstance(command, FileBatchCommand):
+                        raise TypeError("FILE source step has an invalid command")
+                    return GalleryObservationStagingRepository.put_files(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        command=command,
+                        now=now,
+                    )
+                if action is _SourceAction.DIRECTORY_PAGE:
+                    component_step = _require_component_step(prepared_step._payload)
+                    command = component_step.command
+                    if not isinstance(command, DirectoryBatchCommand):
+                        raise TypeError("DIRECTORY source step has an invalid command")
+                    return GalleryObservationStagingRepository.put_directories(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        command=command,
+                        now=now,
+                    )
+                if action is _SourceAction.TAG_PAGE:
+                    component_step = _require_component_step(prepared_step._payload)
+                    command = component_step.command
+                    if not isinstance(command, TagBatchCommand):
+                        raise TypeError("TAG source step has an invalid command")
+                    return GalleryObservationStagingRepository.put_tags(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        command=command,
+                        now=now,
+                    )
+                if action is _SourceAction.METADATA_PAGE:
+                    component_step = _require_component_step(prepared_step._payload)
+                    command = component_step.command
+                    if not isinstance(command, MetadataBatchCommand):
+                        raise TypeError("METADATA source step has an invalid command")
+                    return GalleryObservationStagingRepository.put_metadata(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        command=command,
+                        now=now,
+                    )
+                if action is _SourceAction.MATCH:
+                    match_command = prepared_step._payload
+                    if not isinstance(match_command, MatchBatchCommand):
+                        raise TypeError("MATCH source step has an invalid command")
+                    return GalleryObservationStagingRepository.match_files_to_directory(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        command=match_command,
+                        now=now,
+                    )
+                if action is _SourceAction.STAGING_SEAL:
+                    observation = machine.observation
+                    if observation is None:
+                        raise RuntimeError("gallery seal lacks its frozen observation")
+                    marker_seal = GalleryObservationStagingRepository.seal(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        handle=_require_staging_handle(machine),
+                        now=now,
+                        completion_marker=observation.completion_marker,
+                    )
+                    return marker_seal
+                if action is _SourceAction.STAGING_RETIRE:
+                    seal = prepared_step._payload
+                    if not isinstance(seal, GalleryStagingSeal):
+                        raise TypeError(
+                            "STAGING_RETIRE source step has an invalid seal"
+                        )
+                    return GalleryObservationStagingRepository.retire_sealed(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        seal=seal,
+                        now=now,
+                    )
+                if action is _SourceAction.ASSEMBLY:
+                    attempt = prepared_step._payload
+                    if not isinstance(attempt, AssemblyBatchAttempt):
+                        raise TypeError("ASSEMBLY source step has an invalid attempt")
+                    if machine.build_id is None:
+                        raise RuntimeError("source build is not initialized")
+                    receipt = SourceBuildRepository.assemble_batch(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        build_id=machine.build_id,
+                        attempt=attempt,
+                        now=now,
+                    )
+                    if receipt.terminal:
+                        _require_source_manifest_summary(
+                            receipt,
+                            source._manifest_summary,
+                        )
+                    return receipt
+                raise RuntimeError(f"unsupported source action {action.value}")
 
-        try:
-            outcome = self.__write(commit)
-        except (
-            SourceBuildSnapshotMismatchError,
-            VNextSourceManifestMismatchError,
-            VNextSourceChangedError,
-        ) as mismatch:
-            build_id = machine.build_id
-            if build_id is None:
-                raise RuntimeError(
-                    "source manifest mismatch has no build authority"
-                ) from None
-            # The failed terminal assembly transaction has already rolled back.
-            # Release only the exact OPEN build still mapped to this live
-            # generation; SourceBuildRepository.abandon retains the generation
-            # mapping as response-loss evidence and rejects foreign authority.
-            self.__write(
-                lambda work: SourceBuildRepository.abandon(
-                    work,
-                    gate_lease=gate,
-                    ingest_turn=turn.ingest_turn,
-                    build_id=build_id,
-                    now=now,
+            try:
+                outcome = self.__write(commit)
+            except (
+                SourceBuildSnapshotMismatchError,
+                VNextSourceManifestMismatchError,
+                VNextSourceChangedError,
+            ) as mismatch:
+                build_id = machine.build_id
+                if build_id is None:
+                    raise RuntimeError(
+                        "source manifest mismatch has no build authority"
+                    ) from None
+                # The failed terminal assembly transaction has already rolled back.
+                # Release only the exact OPEN build still mapped to this live
+                # generation; SourceBuildRepository.abandon retains the generation
+                # mapping as response-loss evidence and rejects foreign authority.
+                self.__write(
+                    lambda work: SourceBuildRepository.abandon(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        build_id=build_id,
+                        now=now,
+                    )
                 )
+                source.close()
+                if isinstance(mismatch, SourceBuildSnapshotMismatchError):
+                    raise VNextSourceManifestMismatchError(
+                        "durable source build manifest differs from its frozen "
+                        "preflight snapshot"
+                    ) from mismatch
+                raise
+            processed_rows, replayed = _apply_source_outcome(
+                source,
+                prepared_step,
+                outcome,
             )
-            source.close()
-            if isinstance(mismatch, SourceBuildSnapshotMismatchError):
-                raise VNextSourceManifestMismatchError(
-                    "durable source build manifest differs from its frozen "
-                    "preflight snapshot"
-                ) from mismatch
-            raise
-        processed_rows, replayed = _apply_source_outcome(
-            source,
-            prepared_step,
-            outcome,
-        )
-        source._active_step = None
-        source._active_issue = None
-        return _source_advance_result(
-            source,
-            processed_rows=processed_rows,
-            replayed=replayed,
-        )
+            source._active_step = None
+            source._active_issue = None
+            result = _source_advance_result(
+                source,
+                processed_rows=processed_rows,
+                replayed=replayed,
+            )
+            measurement.processed_rows = result.processed_rows
+            measurement.replayed = result.replayed
+            measurement.terminal = result.terminal
+            return result
 
     def prepare_analysis(
         self,
@@ -1409,43 +1551,62 @@ class VNextIngestFacade:
         def claim(work: VNextUnitOfWork) -> VNextIngestSession:
             # Serialize the maintenance proof without starting a lease while
             # connection, query and lock waits are still in progress.
-            gate_claim = MaintenanceGateRepository.lock_shared_claim(work)
+            with database_phase("shared_gate_lock"):
+                gate_claim = MaintenanceGateRepository.lock_shared_claim(work)
             inspected_at = require_int63(self.__clock(), field="ingest inspection now")
             gate_claim.require_available(now=inspected_at)
-            maintenance_state = VNextCleanupRepository.current_only_maintenance_state(
-                work,
-                cycle_cutoff_at=inspected_at,
-            )
+            with database_phase("maintenance_proof") as proof:
+                maintenance_state = (
+                    VNextCleanupRepository.current_only_maintenance_state(
+                        work,
+                        cycle_cutoff_at=inspected_at,
+                    )
+                )
+                proof.describe(state=maintenance_state.value)
             if maintenance_state is CatalogPublicationMaintenanceState.ACTIONABLE:
                 # A bounded EXCLUSIVE attempt may have
                 # removed an entire shard and closed its job while other old
                 # payload remains, so OPEN jobs alone are not a sufficient
                 # fence against recreating a predecessor pin.
                 raise _CurrentOnlyMaintenancePending
-            turn_claim = DownloadIngestRepository.lock_ingest_claim(
-                work,
-                initialized_at=require_int63(
-                    self.__clock(), field="ingest bootstrap now"
-                ),
-                periodic=periodic,
-            )
+            with database_phase("ingest_turn_lock"):
+                turn_claim = DownloadIngestRepository.lock_ingest_claim(
+                    work,
+                    initialized_at=require_int63(
+                        self.__clock(), field="ingest bootstrap now"
+                    ),
+                    periodic=periodic,
+                )
             granted_at = require_int63(self.__clock(), field="ingest session grant now")
-            gate = gate_claim.grant(now=granted_at, lease_duration=duration)
-            turn = turn_claim.claim(now=granted_at, lease_duration=duration)
+            with database_phase("session_grant"):
+                gate = gate_claim.grant(now=granted_at, lease_duration=duration)
+                turn = turn_claim.claim(now=granted_at, lease_duration=duration)
             return _public_session(gate, turn)
 
-        try:
-            session = self.__write(claim)
-        except MaintenanceGateTokenCollisionError:
-            raise
-        except (
-            _CurrentOnlyMaintenancePending,
-            MaintenanceGateUnavailableError,
-            DownloadIngestUnavailableError,
-        ):
-            return None
-        self.__require_session_live_at_return(session)
-        return session
+        with self.__database_performance.operation(
+            "ingest_claim", periodic=periodic, lease_duration_us=duration
+        ) as measurement:
+            try:
+                session = self.__write(claim)
+            except MaintenanceGateTokenCollisionError:
+                raise
+            except (
+                _CurrentOnlyMaintenancePending,
+                MaintenanceGateUnavailableError,
+                DownloadIngestUnavailableError,
+            ) as unavailable:
+                measurement.describe(
+                    quiet=True,
+                    outcome="unavailable",
+                    reason=type(unavailable).__name__,
+                )
+                return None
+            with database_phase("session_live_at_return"):
+                self.__require_session_live_at_return(session)
+            measurement.describe(
+                outcome="claimed", ingest_generation=session.ingest_generation
+            )
+            return session
 
     def resume_ingest(self, session: VNextIngestSession) -> VNextIngestSession:
         """Revalidate an exact public ingest capability."""

@@ -149,6 +149,20 @@ Logs go to the console by default. Set `logger.file` to save them to a file and
 a long full audit, progress records identify the active phase. Timing records
 help diagnose a delay; they do not establish that the audit has finished.
 
+INFO diagnostics cover source preparation and action costs, ingest claims,
+cleanup candidate selection and audit scans. Long-operation progress includes a
+pending connector call's category, fingerprint and age; completed counters do
+not include that call yet. Bounded slow-call samples retain expensive queries
+even after the detailed query-statistics capacity is reached. No query parameters
+or source payloads are logged. Phase totals expose repeated small costs that a
+list of the slowest individual phases can miss.
+
+`sql_calls` counts connector method calls, not server statements or network
+round trips. `read_rows` counts returned rows, not examined rows. Client SQL time
+includes driver, transport, execution and waits. Use the manual cost probes to
+measure backend work across input sizes; a fixed page size or SQL-call count is
+not evidence of bounded database scanning.
+
 ## Upgrade or restore a database
 
 This release uses **epoch 3, schema version 7**. `migrate` initializes this

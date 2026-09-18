@@ -53,7 +53,10 @@ from .domain import (
 
 
 class _SQLPerformanceRecorder(Protocol):
-    """Process-local SQL diagnostics; observers never own database outcomes."""
+    """Completed connector calls, not server statements or examined-row counts.
+
+    Observers only update local counters and never own database outcomes.
+    """
 
     def record_sql_operation(
         self,

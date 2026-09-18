@@ -30,6 +30,12 @@ def _call_malformed(
 ) -> object:
     foreign = cast(Any, malformed)
     match operation:
+        case "source_issue":
+            return facade.issue_source_step(foreign, foreign, foreign)
+        case "source_prepare":
+            return facade.prepare_source_step(foreign, foreign)
+        case "source_commit":
+            return facade.commit_source_step(foreign, foreign)
         case "analysis_issue":
             return facade.issue_analysis_step(foreign, foreign)
         case "analysis_prepare":
@@ -56,6 +62,9 @@ def _call_malformed(
 @pytest.mark.parametrize(
     ("operation", "message"),
     [
+        ("source_issue", "prepared must be VNextPreparedSource"),
+        ("source_prepare", "prepared must be VNextPreparedSource"),
+        ("source_commit", "prepared_step must be VNextPreparedSourceStep"),
         ("analysis_issue", "prepared must be VNextPreparedAnalysis"),
         ("analysis_prepare", "prepared must be VNextPreparedAnalysis"),
         ("analysis_commit", "prepared_step must be VNextPreparedAnalysisStep"),
