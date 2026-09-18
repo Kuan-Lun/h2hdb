@@ -470,13 +470,18 @@ class VNextCleanupRepository:
             assert now is not None
             _require_exclusive_gate(work, gate_lease, now=now)
 
-        if _load_open_current_only_cycle(work) is not None:
+        with database_phase("maintenance_open_cycle"):
+            open_cycle = _load_open_current_only_cycle(work)
+        if open_cycle is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
         if _next_current_only_candidate(work, cycle_cutoff_at=cutoff) is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
-        if _catalog_publication_payload_is_blocked(
-            work
-        ) or _publication_candidate_payload_is_blocked(work):
+        with database_phase("maintenance_blocked_publication"):
+            blocked = _catalog_publication_payload_is_blocked(work)
+        if not blocked:
+            with database_phase("maintenance_blocked_candidate"):
+                blocked = _publication_candidate_payload_is_blocked(work)
+        if blocked:
             return CatalogPublicationMaintenanceState.BLOCKED
         return CatalogPublicationMaintenanceState.DONE
 
@@ -6885,13 +6890,15 @@ def _next_current_only_candidate(
         CleanupTargetKind.CONTENT_BLOB: _next_content_blob_candidate_shard,
     }
     for kind in _CURRENT_ONLY_TARGET_PRIORITY:
-        plan = _STATIC_PLANS.get(kind)
-        if plan is not None:
-            shard = _next_static_candidate_shard(
-                work, plan, cycle_cutoff_at=cycle_cutoff_at
-            )
-        else:
-            shard = dynamic[kind](work)
+        with database_phase("maintenance_eligibility", target=kind.value) as phase:
+            plan = _STATIC_PLANS.get(kind)
+            if plan is not None:
+                shard = _next_static_candidate_shard(
+                    work, plan, cycle_cutoff_at=cycle_cutoff_at
+                )
+            else:
+                shard = dynamic[kind](work)
+            phase.describe(candidate_found=shard is not None)
         if shard is not None:
             return kind, shard
     return None

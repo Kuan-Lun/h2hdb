@@ -80,7 +80,10 @@ def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
     assert "elapsed 2.0s; database work" in text
     assert "records processed" not in text
     assert "query calls" not in text
-    assert "rows returned" not in text
+    assert (
+        "5 completed SQL connector calls; 3 rows returned (not rows examined)" in text
+    )
+    assert "phases commit: 2.0s, SQL 0ms, 5 SQL calls, 3 rows returned" in text
     assert "ingest_db_performance" not in text
     assert "sql_calls=" not in text
     assert "commit_seconds=" not in text
@@ -180,8 +183,76 @@ def test_info_does_not_collect_query_statistics(
     with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
         sample.record_sql_operation("sql", 2.0, "SELECT private_payload", 128)
         assert not sample.queries
+        assert len(sample.slowest.snapshot()) == 1
         assert sample.counters.read_rows == 128
     performance.close()
+
+
+def test_info_slowest_queries_do_not_disappear_after_64_fingerprints(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    clock = _Clock()
+    performance = IngestPerformance(performance_log, backend="mariadb", clock=clock)
+    with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 1) as sample:
+        for _cycle in range(3):
+            for index in range(130):
+                seconds = 9.0 if index == 129 else 8.0 if index == 64 else 0.0
+                sample.record_sql_operation("sql", seconds, f"SELECT {index}", 1)
+                clock.now += seconds
+        sample.terminal = True
+        assert not sample.queries
+        assert len(sample.slowest._entries) == 5
+    info = "\n".join(
+        record.message for record in caplog.records if record.levelno == logging.INFO
+    )
+    assert "390 completed SQL connector calls; 390 rows returned" in info
+    assert sha256(b"SELECT 129").hexdigest()[:16] in info
+    assert sha256(b"SELECT 64").hexdigest()[:16] in info
+    assert "SELECT" not in info
+    performance.close()
+
+
+@pytest.mark.parametrize("phases", [127, 128, 129, 260])
+def test_stage_phase_costs_are_bounded_and_repeated_cycles_conserve_totals(
+    phases: int, performance_log: logging.Logger
+) -> None:
+    clock = _Clock()
+    performance = IngestPerformance(performance_log, backend="sqlite", clock=clock)
+    for _cycle in range(3):
+        for index in range(phases):
+            with performance.step("source", f"action_{index}", "SOURCE", 1) as sample:
+                sample.record_sql_operation("sql", 0.5, "SELECT %s", 2)
+                clock.now += 1.0
+    stage = performance._stage
+    assert stage is not None
+    assert len(stage.phases) == min(phases, 128) + int(phases > 128)
+    assert stage.phase_counters.keys() == stage.phases.keys()
+    assert sum(stage.phases.values()) == phases * 3
+    assert sum(item.sql_calls for item in stage.phase_counters.values()) == phases * 3
+    assert (
+        sum(item.sql_seconds for item in stage.phase_counters.values()) == phases * 1.5
+    )
+    assert sum(item.read_rows for item in stage.phase_counters.values()) == phases * 6
+    performance.close()
+
+
+def test_correlation_separates_sources_with_the_same_generation(
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(performance_log, backend="sqlite")
+    for correlation_id in ("a" * 32, "b" * 32):
+        for phase in ("TAG_PAGE.prepare", "TAG_PAGE.commit"):
+            with performance.step(
+                "source", phase, "SOURCE", 1, correlation_id=correlation_id
+            ) as sample:
+                sample.record_sql_operation("sql", 0.5, "SELECT %s", 128)
+        assert performance._stage is not None
+        assert performance._stage.calls == 2
+        assert performance._stage.counters.read_rows == 256
+    performance.close()
+    assert f"correlation {'a' * 32}" in caplog.text
+    assert f"correlation {'b' * 32}" in caplog.text
+    assert caplog.text.count("2 completed SQL connector calls; 256 rows returned") == 2
 
 
 def test_info_reports_time_based_progress_without_per_batch_messages(
@@ -253,13 +324,15 @@ def test_nested_scopes_and_threads_do_not_mix_metrics(
 
 
 def test_configured_error_level_suppresses_info_and_debug(
-    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+    caplog: pytest.LogCaptureFixture, performance_log: logging.Logger, tmp_path: Path
 ) -> None:
     performance = IngestPerformance(
         performance_log, backend="sqlite", level=logging.ERROR
     )
-    with performance.step("publication", "commit", "BUILD_CATALOG", 1):
-        pass
+    with performance.step("publication", "commit", "BUILD_CATALOG", 1) as sample:
+        raw = SQLiteConnector(str(tmp_path / "disabled"))
+        assert instrument_connector(raw) is raw
+        assert not sample.active
     performance.close()
     assert not caplog.records
 
@@ -560,15 +633,15 @@ def test_info_explains_slow_connections_and_debug_preserves_all_stage_measuremen
         info[0]
         == "Ingest analysis stage started: preparing the analysis snapshot; ingest generation 51."
     )
-    assert info[1] == (
+    assert info[1].startswith(
         "Ingest analysis stage finished: preparing the analysis snapshot; ingest generation 51; "
         "elapsed 33m 20s; database work 33m 00s "
         "(queries 2m 00s, connections 30m 00s, transaction boundaries 1m 00s); "
-        "includes reused results."
+        "includes reused results; 1 completed SQL connector calls; "
+        "128 rows returned (not rows examined); phases prepare: 33m 20s, "
+        "SQL 2m 00s, 1 SQL calls, 128 rows returned; slowest SQL calls "
     )
-    assert all(
-        "=" not in message and "PREPARE_SNAPSHOT" not in message for message in info
-    )
+    assert all("PREPARE_SNAPSHOT" not in message for message in info)
     terminal = next(
         message for message in technical if "event=stage_terminal " in message
     )

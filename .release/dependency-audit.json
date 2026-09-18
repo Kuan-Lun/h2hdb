@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-17T14:39:00+00:00",
+  "checked_at": "2026-09-18T05:22:00+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,12 +9,12 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.8",
+  "project_version": "0.39.9",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
       "group": "build",
-      "latest": "1.32.0",
+      "latest": "1.32.3",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -50,7 +50,7 @@
     {
       "declared": "hatchling>=1.32.0",
       "group": "optional:dev",
-      "latest": "1.32.0",
+      "latest": "1.32.3",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 13 direct Python/Node dependency entries for Core 0.39.8 against fresh public PyPI/npm metadata, including candidates outside declared bounds. Candidates and the dependency manifest are unchanged from the reviewed 0.39.7 receipt; all candidates satisfy existing bounds and Python packages declare Python 3.14 support. The existing official Ruff 0.16.8 release-note review remains applicable (https://github.com/astral-sh/ruff/releases/tag/0.16.8). Installed Ruff 0.16.8 in the repository-local environment; whole-tree Ruff lint and format checks pass. uv pip check and npm ls are clean. The 293 focused codec, identity, MariaDB connector, and performance telemetry tests passed; the exact-tree full gate and manual backend/deployment acceptance are separate evidence. No dependency constraints changed. The runtime change uses equivalent structural pattern dispatch; generated provider provenance changes, while both backend SchemaEpochDefinitions, DDL, bootstrap seeds, semantic obligations and READY marker checksums compare equal to the previous release. This patch release accounts for changed shipped runtime/provider artifacts and does not require a data migration.",
+    "note": "Reviewed all direct build/runtime/optional/development and Node dependency candidates against fresh public PyPI/npm metadata, including candidates outside upper bounds. Since the committed 0.39.8 receipt only Hatchling changed (1.32.0 to 1.32.3). Reviewed the official release https://github.com/pypa/hatch/releases/tag/hatchling-v1.32.3: it preserves literal metadata versions while wheel/dist-info names remain normalized; the project X.Y.Z contract is unaffected. Installed Hatchling 1.32.3 locally and built the candidate wheel successfully. All candidates satisfy existing bounds; other reviewed candidates are unchanged. uv pip check (36 packages) and npm ls passed. Focused observer and lifecycle tests pass including real SQLite and private MariaDB 10.11.11; exact-tree full gate and manual cleanup/deployment/cost evidence are separate. This additive telemetry patch leaves SQL business logic, schema, facade results and durable formats unchanged. No dependency constraints changed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

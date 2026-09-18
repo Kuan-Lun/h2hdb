@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import heapq
 from asyncio import current_task
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from hashlib import sha256
 from math import isfinite
 from threading import get_ident
 from time import perf_counter
@@ -18,6 +20,8 @@ from .sql_connector import SQLConnector
 
 @dataclass
 class SQLCounters:
+    """Completed connector method calls, not server statements or examined rows."""
+
     sql_calls: int = 0
     sql_seconds: float = 0.0
     read_rows: int = 0
@@ -70,6 +74,70 @@ class SQLQueryStatistics:
         )
 
 
+def query_fingerprint(query: str) -> str | None:
+    """Keep SQL text/parameters out of diagnostics, including encoding failures."""
+    try:
+        return sha256(query.encode()).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+@dataclass
+class SQLSlowQueries:
+    """Exact five slowest completed calls, independent of fingerprint cardinality."""
+
+    _entries: list[tuple[float, int, str, int]] = field(default_factory=list)
+    _sequence: int = 0
+
+    def record(self, fingerprint: str | None, elapsed: float, rows: int) -> None:
+        if fingerprint is None:
+            return
+        self._sequence += 1
+        entry = (elapsed, self._sequence, fingerprint, rows)
+        if len(self._entries) < 5:
+            heapq.heappush(self._entries, entry)
+        elif entry[:2] > self._entries[0][:2]:
+            heapq.heapreplace(self._entries, entry)
+
+    def add(self, other: SQLSlowQueries) -> None:
+        for elapsed, _sequence, fingerprint, rows in sorted(other._entries):
+            self.record(fingerprint, elapsed, rows)
+
+    def snapshot(self) -> list[dict[str, str | float | int]]:
+        return [
+            {"fingerprint": fingerprint, "seconds": elapsed, "returned_rows": rows}
+            for elapsed, _sequence, fingerprint, rows in sorted(
+                self._entries, reverse=True
+            )
+        ]
+
+    def text(self) -> str:
+        return ";".join(
+            f"{fingerprint}(seconds={elapsed:.6f},returned_rows={rows})"
+            for elapsed, _sequence, fingerprint, rows in sorted(
+                self._entries, reverse=True
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _PendingCall:
+    category: str
+    operation: str
+    fingerprint: str | None
+    started: float | None
+
+    def snapshot(self, now: float | None) -> dict[str, str | float | None]:
+        return {
+            "category": self.category,
+            "operation": self.operation,
+            "fingerprint": self.fingerprint,
+            "age_seconds": max(0.0, now - self.started)
+            if now is not None and self.started is not None
+            else None,
+        }
+
+
 def execution_owner() -> tuple[int, object | None]:
     """Copied contexts cannot make another thread/task own an active scope."""
     try:
@@ -89,21 +157,30 @@ def read_clock(clock: Callable[[], float]) -> float | None:
 
 
 @dataclass
-class _MeasurementScope:
+class SQLMeasurement:
+    """An owned scope; a heartbeat may read its immutable pending-call snapshot."""
+
     recorder: _SQLPerformanceRecorder
     clock: Callable[[], float]
     owner: tuple[int, object | None]
-    parent: _MeasurementScope | None = None
+    parent: SQLMeasurement | None = None
     observe_nested: bool = False
     active: bool = True
+    _pending: _PendingCall | None = None
+
+    def pending_snapshot(
+        self, now: float | None
+    ) -> dict[str, str | float | None] | None:
+        pending = self._pending
+        return pending.snapshot(now) if self.active and pending is not None else None
 
 
-_active_scope: ContextVar[_MeasurementScope | None] = ContextVar(
+_active_scope: ContextVar[SQLMeasurement | None] = ContextVar(
     "h2hdb_sql_performance", default=None
 )
 
 
-def _current_scope() -> _MeasurementScope | None:
+def _current_scope() -> SQLMeasurement | None:
     scope = _active_scope.get()
     if scope is None or not scope.active or scope.owner != execution_owner():
         return None
@@ -116,21 +193,22 @@ def measure_sql(
     *,
     clock: Callable[[], float] = perf_counter,
     observe_nested: bool = False,
-) -> Iterator[None]:
+) -> Iterator[SQLMeasurement]:
     """Measure synchronous owned calls, optionally including nested scopes.
 
     Ordinary step recorders remain exclusive across nested scopes. Whole
     operation observers opt into inclusive delivery, so another instrumentation
     family cannot silently hide SQL from its enclosing operation's totals.
     """
-    scope = _MeasurementScope(
+    scope = SQLMeasurement(
         recorder, clock, execution_owner(), _current_scope(), observe_nested
     )
     token = _active_scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         scope.active = False
+        scope._pending = None
         _active_scope.reset(token)
 
 
@@ -160,6 +238,7 @@ class _MeasuredConnector(SQLConnector):
         scope = _current_scope()
         if scope is None:
             return action()
+        fingerprint = query_fingerprint(query) if category == "sql" else None
         observers = [(scope, read_clock(scope.clock))]
         ancestor = scope.parent
         while ancestor is not None:
@@ -170,6 +249,14 @@ class _MeasuredConnector(SQLConnector):
             ):
                 observers.append((ancestor, read_clock(ancestor.clock)))
             ancestor = ancestor.parent
+        previous = [observer._pending for observer, _started in observers]
+        for observer, started in observers:
+            observer._pending = _PendingCall(
+                category,
+                query if category != "sql" else "query",
+                fingerprint,
+                started,
+            )
         rows = 0
         try:
             result = action()
@@ -184,6 +271,8 @@ class _MeasuredConnector(SQLConnector):
                 (observer, started, read_clock(observer.clock))
                 for observer, started in observers
             ]
+            for (observer, _started), pending in zip(observers, previous, strict=True):
+                observer._pending = pending if observer.active else None
             for observer, started, finished in finished_observers:
                 elapsed = (
                     max(0.0, finished - started)
@@ -199,22 +288,22 @@ class _MeasuredConnector(SQLConnector):
                     pass
 
     def connect(self) -> None:
-        self._call("connection", self._connector.connect)
+        self._call("connection", self._connector.connect, "connect")
 
     def close(self) -> None:
-        self._call("connection", self._connector.close)
+        self._call("connection", self._connector.close, "close")
 
     def begin(self) -> None:
-        self._call("transaction", self._connector.begin)
+        self._call("transaction", self._connector.begin, "begin")
 
     def begin_read(self) -> None:
-        self._call("transaction", self._connector.begin_read)
+        self._call("transaction", self._connector.begin_read, "begin_read")
 
     def commit(self) -> None:
-        self._call("transaction", self._connector.commit)
+        self._call("transaction", self._connector.commit, "commit")
 
     def rollback(self) -> None:
-        self._call("transaction", self._connector.rollback)
+        self._call("transaction", self._connector.rollback, "rollback")
 
     def check_table_exists(self, table_name: str) -> bool:
         return self._call(

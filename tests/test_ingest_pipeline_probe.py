@@ -148,6 +148,44 @@ def test_swallowed_sql_observer_failure_invalidates_report(
     assert isinstance(error.value.__cause__, ValueError)
 
 
+def test_source_scope_preserves_correlation_action_and_exclusive_cost(
+    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(probe.time, "perf_counter", lambda: clock[0])
+    performance = IngestPerformance(
+        logging.getLogger("source-probe"), backend="sqlite", clock=lambda: clock[0]
+    )
+    observer = probe.Observer()
+    original_source_step = probe.VNextIngestFacade.commit_source_step
+    correlation_id = "c" * 32
+    with observer.installed():
+        assert probe.VNextIngestFacade.commit_source_step is original_source_step
+        with instrument_connector(
+            SQLiteConnector(str(tmp_path / "source-correlation.db"))
+        ) as connector:
+            with performance.step(
+                "source",
+                "TAG_PAGE.commit",
+                "SOURCE",
+                7,
+                correlation_id=correlation_id,
+            ) as sample:
+                assert sample.correlation_id == correlation_id
+                connector.fetch_one("SELECT 1")
+                clock[0] = 3.0
+    report = observer.report()
+    assert report["sql_calls"] == report["returned_rows"] == 1
+    source_operations = [
+        item for item in report["operations"] if item["pipeline"] == "source"
+    ]
+    assert len(source_operations) == 1
+    measured = source_operations[0]
+    assert (measured["phase"], measured["operation"]) == ("commit", "TAG_PAGE")
+    assert measured["calls"] == 1 and measured["exclusive_seconds"] == 3.0
+    assert measured["sql_calls"] == 1
+
+
 @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG, logging.WARNING])
 def test_mixed_diagnostics_preserve_exact_sql_boundaries_and_validated_labels(
     probe: ModuleType, tmp_path: Path, level: int

@@ -42,11 +42,11 @@ def _records(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
 
 
 def _performance(
-    caplog: pytest.LogCaptureFixture, **kwargs: Any
+    caplog: pytest.LogCaptureFixture, *, level: int = logging.DEBUG, **kwargs: Any
 ) -> DatabasePerformance:
     logger = logging.getLogger("h2hdb.database_performance.unit")
     caplog.set_level(logging.DEBUG, logger=logger.name)
-    return DatabasePerformance(logger, backend="sqlite", level=logging.DEBUG, **kwargs)
+    return DatabasePerformance(logger, backend="sqlite", level=level, **kwargs)
 
 
 def test_nested_sql_conservation_and_known_delay_attribution(
@@ -101,6 +101,94 @@ def test_nested_sql_conservation_and_known_delay_attribution(
     }
     assert "private-value" not in caplog.text
     assert "SELECT" not in caplog.text
+
+
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_additive_diagnostics_preserve_schema_one_field_meaning(
+    level: int,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing consumers can project the same fields at either log level.
+
+    One connector fetch returns three rows, so this also rejects confusing
+    calls with returned rows. Repeated SQL retains its cumulative DEBUG shape;
+    INFO already omitted cumulative fingerprints before the added diagnostics.
+    """
+    clock = _Clock()
+    performance = _performance(caplog, level=level, clock=clock)
+    fetch = SQLiteConnector.fetch_all
+    query = "SELECT %s UNION ALL SELECT %s UNION ALL SELECT %s"
+
+    def delayed(
+        self: SQLiteConnector, sql: str, data: tuple[Any, ...] = ()
+    ) -> list[tuple[Any, ...]]:
+        rows = fetch(self, sql, data)
+        clock.now += 2.0
+        return rows
+
+    monkeypatch.setattr(SQLiteConnector, "fetch_all", delayed)
+    with performance.operation("audit", fixture="contract"):
+        with instrument_connector(SQLiteConnector(str(tmp_path / "v1.db"))) as db:
+            with db.read_transaction():
+                assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+                with database_phase("component", validator="contract"):
+                    assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+                assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+    terminal = _records(caplog)[-1]
+    previous_fields = {
+        "schema": 1,
+        "event": "completed",
+        "backend": "sqlite",
+        "operation": "audit",
+        "sequence": 2,
+        "phase": "audit",
+        "span_id": 0,
+        "parent_id": None,
+        "labels": {"fixture": "contract"},
+        "elapsed_seconds": 6.0,
+        "exclusive_seconds": 4.0,
+        "sql_calls": 3,
+        "sql_seconds": 6.0,
+        "read_rows": 9,
+        "connection_calls": 2,
+        "transaction_calls": 2,
+        "exclusive_sql_calls": 2,
+        "exclusive_sql_seconds": 4.0,
+        "exclusive_read_rows": 6,
+        "phase_count": 1,
+        "omitted_phase_records": 0,
+        "omitted_depth": 0,
+        "query_top": [
+            {
+                "fingerprint": sha256(query.encode()).hexdigest()[:16],
+                "calls": 3,
+                "seconds": 6.0,
+                "max_seconds": 2.0,
+                "returned_rows": 9,
+            }
+        ]
+        if level == logging.DEBUG
+        else [],
+    }
+    assert {key: terminal[key] for key in previous_fields} == previous_fields
+    previous_phase_fields = {
+        "phase": "component",
+        "span_id": 1,
+        "labels": {"validator": "contract"},
+        "elapsed_seconds": 2.0,
+        "exclusive_seconds": 2.0,
+        "status": "completed",
+    }
+    assert {
+        key: terminal["phase_top"][0][key] for key in previous_phase_fields
+    } == previous_phase_fields
+    assert terminal["sql_calls_unit"] == "completed_connector_method_calls"
+    assert terminal["read_rows_unit"] == "returned_rows_not_examined_rows"
+    assert terminal["pending_call"] is None
+    assert len(terminal["query_slowest"]) == 3
+    assert terminal["phase_totals"][0]["exclusive_sql_calls"] == 1
 
 
 @pytest.mark.parametrize("phase_count", [255, 256, 257, 520])
@@ -309,6 +397,39 @@ def test_slow_quiet_completion_remains_visible_at_info(
     assert _records(caplog)[-1]["elapsed_seconds"] == 61
 
 
+def test_quiet_completion_does_not_build_suppressed_snapshots(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    performance = _performance(caplog, level=logging.INFO, clock=_Clock())
+    snapshots: list[bool] = []
+    original = diagnostics._Statistics.snapshot
+
+    def snapshot(self: Any) -> dict[str, Any]:
+        snapshots.append(True)
+        return original(self)
+
+    monkeypatch.setattr(diagnostics._Statistics, "snapshot", snapshot)
+    with performance.operation("source_step", quiet=True) as span:
+        root = span._root
+    assert not snapshots
+    assert not _records(caplog)
+    assert root is not None and not root.active
+    assert not diagnostics._pulse_operations
+
+
+def test_unknown_clock_cannot_classify_quiet_work_as_fast(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken_clock() -> float:
+        raise RuntimeError("clock failed")
+
+    performance = _performance(caplog, level=logging.INFO, clock=broken_clock)
+    with performance.operation("source_step", quiet=True):
+        pass
+    assert _records(caplog)[-1]["event"] == "completed"
+    assert _records(caplog)[-1]["timing_available"] is False
+
+
 def test_heartbeat_releases_completed_operation_snapshots(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -469,3 +590,161 @@ assert reference() is None, 'completed operation retained by daemon context'
         text=True,
         timeout=15,
     )
+
+
+def test_info_heartbeat_identifies_blocked_sql_before_completion(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    performance = _performance(
+        caplog, level=logging.INFO, clock=clock, interval_seconds=0.01
+    )
+    reported = Event()
+    reporting_threads: list[int] = []
+    fetch = SQLiteConnector.fetch_one
+
+    def blocked(
+        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+    ) -> tuple[Any, ...]:
+        clock.now = 12.0
+        assert reported.wait(10), "pending SQL must appear before driver returns"
+        return fetch(self, query, data)
+
+    class Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            payload = json.loads(
+                record.getMessage().removeprefix("database_performance ")
+            )
+            pending = payload.get("pending_call")
+            if isinstance(pending, dict) and pending.get("category") == "sql":
+                reporting_threads.append(get_ident())
+                reported.set()
+
+    handler = Handler()
+    performance.logger.addHandler(handler)
+    monkeypatch.setattr(SQLiteConnector, "fetch_one", blocked)
+    try:
+        with performance.operation("claim"):
+            with instrument_connector(
+                SQLiteConnector(str(tmp_path / "db"))
+            ) as connector:
+                with connector.read_transaction(), database_phase("maintenance_proof"):
+                    assert connector.fetch_one("SELECT %s", ("private-payload",)) == (
+                        "private-payload",
+                    )
+        progress = next(
+            record
+            for record in _records(caplog)
+            if record["event"] == "progress" and record["pending_call"] is not None
+        )
+        assert progress["active_phase"] == "maintenance_proof"
+        assert progress["sql_calls"] == progress["sql_seconds"] == 0
+        assert progress["pending_call"] == {
+            "category": "sql",
+            "operation": "query",
+            "fingerprint": sha256(b"SELECT %s").hexdigest()[:16],
+            "age_seconds": 12.0,
+        }
+        terminal = _records(caplog)[-1]
+        assert terminal["sql_calls"] == 1
+        assert terminal["sql_seconds"] == 12.0
+        assert terminal["pending_call"] is None
+        assert terminal["query_top"] == []
+        assert terminal["query_slowest"][0]["seconds"] == 12.0
+        assert terminal["phase_top"][0]["sql_seconds"] == 12.0
+        assert reporting_threads and all(
+            thread != get_ident() for thread in reporting_threads
+        )
+        assert "private-payload" not in caplog.text
+        assert "SELECT" not in caplog.text
+    finally:
+        performance.logger.removeHandler(handler)
+
+
+@pytest.mark.parametrize("queries", [63, 64, 65, 130])
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_slow_queries_after_fingerprint_capacity_remain_identifiable(
+    queries: int,
+    level: int,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    performance = _performance(caplog, level=level, clock=clock)
+    fetch = SQLiteConnector.fetch_one
+
+    def delayed(
+        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+    ) -> tuple[Any, ...]:
+        result = fetch(self, query, data)
+        clock.now += 9.0 if data[0] == queries - 1 else 8.0 if data[0] == 64 else 0.0
+        return result
+
+    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    with performance.operation("audit") as span:
+        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+            for _cycle in range(3):
+                for index in range(queries):
+                    connector.fetch_one(f"SELECT %s AS q_{index}", (index,))
+        assert len(span._inclusive.slowest._entries) == 5
+    terminal = _records(caplog)[-1]
+    slow = terminal["query_slowest"]
+    expected = sha256(f"SELECT %s AS q_{queries - 1}".encode()).hexdigest()[:16]
+    assert [item["fingerprint"] for item in slow[:3]] == [expected] * 3
+    if queries == 130:
+        assert [item["fingerprint"] for item in slow[3:]] == [
+            sha256(b"SELECT %s AS q_64").hexdigest()[:16]
+        ] * 2
+    assert terminal["sql_calls"] == terminal["read_rows"] == queries * 3
+    assert bool(terminal["query_top"]) == (level == logging.DEBUG)
+
+
+@pytest.mark.parametrize("keys", [63, 64, 65, 130])
+def test_phase_totals_bound_dimensions_and_preserve_repeated_work(
+    keys: int, caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    clock = _Clock()
+    performance = _performance(caplog, clock=clock)
+    with performance.operation("cleanup"):
+        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+            for _cycle in range(3):
+                for index in range(keys):
+                    with database_phase(
+                        "eligibility", target=f"target_{index}", phase="select"
+                    ):
+                        connector.fetch_one("SELECT 1")
+                        clock.now += 1.0
+    totals = _records(caplog)[-1]["phase_totals"]
+    assert len(totals) == min(keys, 64) + int(keys > 64)
+    assert sum(item["calls"] for item in totals) == keys * 3
+    assert sum(item["exclusive_seconds"] for item in totals) == keys * 3
+    assert sum(item["exclusive_sql_calls"] for item in totals) == keys * 3
+    assert sum(item["exclusive_read_rows"] for item in totals) == keys * 3
+    assert all(item["calls"] == 3 for item in totals if item["phase"] != "other")
+    if keys > 64:
+        overflow = next(item for item in totals if item["phase"] == "other")
+        assert overflow["calls"] == (keys - 64) * 3
+
+
+def test_finish_failure_releases_pending_scope_and_heartbeat(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    performance = _performance(caplog)
+
+    def broken(self: Any, *args: Any) -> None:
+        raise RuntimeError("diagnostic completion failed")
+
+    monkeypatch.setattr(diagnostics._Operation, "finish", broken)
+    original = ValueError("original failure")
+    with pytest.raises(ValueError) as caught:
+        with performance.operation("audit") as span:
+            root = span._root
+            assert root is not None
+            assert root.measurement is not None
+            raise original
+    assert caught.value is original
+    assert root is not None
+    assert root.measurement is None
+    assert not root.active
+    assert not diagnostics._pulse_operations

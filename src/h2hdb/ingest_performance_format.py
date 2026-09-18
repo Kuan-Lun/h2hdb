@@ -76,6 +76,8 @@ _PUBLICATION_ACTIVITIES = {
 
 def activity(pipeline: str, operation: str) -> str:
     match pipeline:
+        case "source":
+            return "preparing and persisting the selected source batch"
         case "analysis":
             return _ANALYSIS_ACTIVITIES.get(operation, "processing analysis work")
         case "publication":
@@ -84,7 +86,7 @@ def activity(pipeline: str, operation: str) -> str:
 
 
 def pipeline_name(pipeline: str) -> str:
-    return pipeline if pipeline in {"analysis", "publication"} else "work"
+    return pipeline if pipeline in {"source", "analysis", "publication"} else "work"
 
 
 def duration(seconds: float | None) -> str:

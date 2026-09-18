@@ -56,6 +56,7 @@ from .catalog_search import (
     require_search_runtime_policy,
 )
 from .catalog_writer import validate_artifact_writer_manifest
+from .database_performance import database_phase
 from .domain import (
     ByteExtent,
     CatalogArtifact,
@@ -7170,43 +7171,49 @@ def _validate_file_family_totality(connector: SQLConnector) -> None:
     after_observation_id = 0
     after_file_key = b""
     while True:
-        rows = connector.fetch_all(
-            """
-            SELECT anchor.gallery_id, anchor.observation_id, anchor.file_key,
-                   file_no.file_no, file_sha.file_sha256,
-                   stored_role.artifact_role, sealed.file_key,
-                   name.file_key, name.name_bytes
-            FROM catalog_gallery_observation_file_anchors AS anchor
-            LEFT JOIN catalog_gallery_observation_file_file_nos AS file_no
-              ON file_no.gallery_id = anchor.gallery_id
-             AND file_no.observation_id = anchor.observation_id
-             AND file_no.file_key = anchor.file_key
-            LEFT JOIN catalog_gallery_observation_file_file_sha256s AS file_sha
-              ON file_sha.gallery_id = anchor.gallery_id
-             AND file_sha.observation_id = anchor.observation_id
-             AND file_sha.file_key = anchor.file_key
-            LEFT JOIN catalog_gallery_observation_file_artifact_role AS stored_role
-              ON stored_role.gallery_id = anchor.gallery_id
-             AND stored_role.observation_id = anchor.observation_id
-             AND stored_role.file_key = anchor.file_key
-            LEFT JOIN catalog_gallery_observation_file_seals AS sealed
-              ON sealed.gallery_id = anchor.gallery_id
-             AND sealed.observation_id = anchor.observation_id
-             AND sealed.file_key = anchor.file_key
-            LEFT JOIN catalog_file_name_identities AS name
-              ON name.file_key = anchor.file_key
-            WHERE (anchor.gallery_id, anchor.observation_id, anchor.file_key)
-                  > (%s, %s, %s)
-            ORDER BY anchor.gallery_id, anchor.observation_id, anchor.file_key
-            LIMIT %s
-            """,
-            (
-                after_gallery_id,
-                after_observation_id,
-                after_file_key,
-                _CATALOG_RESOURCE_PAGE_LIMIT,
-            ),
-        )
+        with database_phase(
+            "role_scan.file_family",
+            continuation=after_gallery_id > 0,
+            page_limit=_CATALOG_RESOURCE_PAGE_LIMIT,
+        ) as measurement:
+            rows = connector.fetch_all(
+                """
+                SELECT anchor.gallery_id, anchor.observation_id, anchor.file_key,
+                       file_no.file_no, file_sha.file_sha256,
+                       stored_role.artifact_role, sealed.file_key,
+                       name.file_key, name.name_bytes
+                FROM catalog_gallery_observation_file_anchors AS anchor
+                LEFT JOIN catalog_gallery_observation_file_file_nos AS file_no
+                  ON file_no.gallery_id = anchor.gallery_id
+                 AND file_no.observation_id = anchor.observation_id
+                 AND file_no.file_key = anchor.file_key
+                LEFT JOIN catalog_gallery_observation_file_file_sha256s AS file_sha
+                  ON file_sha.gallery_id = anchor.gallery_id
+                 AND file_sha.observation_id = anchor.observation_id
+                 AND file_sha.file_key = anchor.file_key
+                LEFT JOIN catalog_gallery_observation_file_artifact_role AS stored_role
+                  ON stored_role.gallery_id = anchor.gallery_id
+                 AND stored_role.observation_id = anchor.observation_id
+                 AND stored_role.file_key = anchor.file_key
+                LEFT JOIN catalog_gallery_observation_file_seals AS sealed
+                  ON sealed.gallery_id = anchor.gallery_id
+                 AND sealed.observation_id = anchor.observation_id
+                 AND sealed.file_key = anchor.file_key
+                LEFT JOIN catalog_file_name_identities AS name
+                  ON name.file_key = anchor.file_key
+                WHERE (anchor.gallery_id, anchor.observation_id, anchor.file_key)
+                      > (%s, %s, %s)
+                ORDER BY anchor.gallery_id, anchor.observation_id, anchor.file_key
+                LIMIT %s
+                """,
+                (
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_key,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            measurement.describe(returned_rows=len(rows))
         if not rows:
             break
         for row in rows:
@@ -7260,27 +7267,33 @@ def _validate_file_family_totality(connector: SQLConnector) -> None:
         after_observation_id = 0
         after_file_key = b""
         while True:
-            rows = connector.fetch_all(
-                f"""
-                SELECT member.gallery_id, member.observation_id, member.file_key,
-                       anchor.file_key
-                FROM {table} AS member
-                LEFT JOIN catalog_gallery_observation_file_anchors AS anchor
-                  ON anchor.gallery_id = member.gallery_id
-                 AND anchor.observation_id = member.observation_id
-                 AND anchor.file_key = member.file_key
-                WHERE (member.gallery_id, member.observation_id, member.file_key)
-                      > (%s, %s, %s)
-                ORDER BY member.gallery_id, member.observation_id, member.file_key
-                LIMIT %s
-                """,
-                (
-                    after_gallery_id,
-                    after_observation_id,
-                    after_file_key,
-                    _CATALOG_RESOURCE_PAGE_LIMIT,
-                ),
-            )
+            with database_phase(
+                "role_scan." + table.removeprefix("catalog_gallery_observation_"),
+                continuation=after_gallery_id > 0,
+                page_limit=_CATALOG_RESOURCE_PAGE_LIMIT,
+            ) as measurement:
+                rows = connector.fetch_all(
+                    f"""
+                    SELECT member.gallery_id, member.observation_id, member.file_key,
+                           anchor.file_key
+                    FROM {table} AS member
+                    LEFT JOIN catalog_gallery_observation_file_anchors AS anchor
+                      ON anchor.gallery_id = member.gallery_id
+                     AND anchor.observation_id = member.observation_id
+                     AND anchor.file_key = member.file_key
+                    WHERE (member.gallery_id, member.observation_id, member.file_key)
+                          > (%s, %s, %s)
+                    ORDER BY member.gallery_id, member.observation_id, member.file_key
+                    LIMIT %s
+                    """,
+                    (
+                        after_gallery_id,
+                        after_observation_id,
+                        after_file_key,
+                        _CATALOG_RESOURCE_PAGE_LIMIT,
+                    ),
+                )
+                measurement.describe(returned_rows=len(rows))
             if not rows:
                 break
             for row in rows:
@@ -7319,33 +7332,39 @@ def _iter_derived_file_hash_occurrences(
     current_key: tuple[int, int, bytes] | None = None
     current_count = 0
     while True:
-        rows = connector.fetch_all(
-            """
-            SELECT file_sha.gallery_id, file_sha.observation_id,
-                   file_sha.file_sha256, file_sha.file_key
-            FROM catalog_gallery_observation_file_file_sha256s AS file_sha
-            JOIN catalog_gallery_observation_file_seals AS sealed
-              ON sealed.gallery_id = file_sha.gallery_id
-             AND sealed.observation_id = file_sha.observation_id
-             AND sealed.file_key = file_sha.file_key
-            JOIN catalog_file_name_identities AS name
-              ON name.file_key = file_sha.file_key
-            WHERE name.name_bytes <> %s
-              AND (file_sha.gallery_id, file_sha.observation_id,
-                   file_sha.file_sha256, file_sha.file_key) > (%s, %s, %s, %s)
-            ORDER BY file_sha.gallery_id, file_sha.observation_id,
-                     file_sha.file_sha256, file_sha.file_key
-            LIMIT %s
-            """,
-            (
-                b"galleryinfo.txt",
-                after_gallery_id,
-                after_observation_id,
-                after_file_sha256,
-                after_file_key,
-                _CATALOG_RESOURCE_PAGE_LIMIT,
-            ),
-        )
+        with database_phase(
+            "role_scan.derived_content",
+            continuation=after_gallery_id > 0,
+            page_limit=_CATALOG_RESOURCE_PAGE_LIMIT,
+        ) as measurement:
+            rows = connector.fetch_all(
+                """
+                SELECT file_sha.gallery_id, file_sha.observation_id,
+                       file_sha.file_sha256, file_sha.file_key
+                FROM catalog_gallery_observation_file_file_sha256s AS file_sha
+                JOIN catalog_gallery_observation_file_seals AS sealed
+                  ON sealed.gallery_id = file_sha.gallery_id
+                 AND sealed.observation_id = file_sha.observation_id
+                 AND sealed.file_key = file_sha.file_key
+                JOIN catalog_file_name_identities AS name
+                  ON name.file_key = file_sha.file_key
+                WHERE name.name_bytes <> %s
+                  AND (file_sha.gallery_id, file_sha.observation_id,
+                       file_sha.file_sha256, file_sha.file_key) > (%s, %s, %s, %s)
+                ORDER BY file_sha.gallery_id, file_sha.observation_id,
+                         file_sha.file_sha256, file_sha.file_key
+                LIMIT %s
+                """,
+                (
+                    b"galleryinfo.txt",
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_sha256,
+                    after_file_key,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            measurement.describe(returned_rows=len(rows))
         if not rows:
             break
         for row in rows:
@@ -7378,21 +7397,27 @@ def _iter_stored_file_hash_occurrences(
     after_observation_id = 0
     after_file_sha256 = b""
     while True:
-        rows = connector.fetch_all(
-            """
-            SELECT gallery_id, observation_id, file_sha256, occurrence_count
-            FROM catalog_gallery_observation_file_hash_occurrences
-            WHERE (gallery_id, observation_id, file_sha256) > (%s, %s, %s)
-            ORDER BY gallery_id, observation_id, file_sha256
-            LIMIT %s
-            """,
-            (
-                after_gallery_id,
-                after_observation_id,
-                after_file_sha256,
-                _CATALOG_RESOURCE_PAGE_LIMIT,
-            ),
-        )
+        with database_phase(
+            "role_scan.stored_occurrences",
+            continuation=after_gallery_id > 0,
+            page_limit=_CATALOG_RESOURCE_PAGE_LIMIT,
+        ) as measurement:
+            rows = connector.fetch_all(
+                """
+                SELECT gallery_id, observation_id, file_sha256, occurrence_count
+                FROM catalog_gallery_observation_file_hash_occurrences
+                WHERE (gallery_id, observation_id, file_sha256) > (%s, %s, %s)
+                ORDER BY gallery_id, observation_id, file_sha256
+                LIMIT %s
+                """,
+                (
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_sha256,
+                    _CATALOG_RESOURCE_PAGE_LIMIT,
+                ),
+            )
+            measurement.describe(returned_rows=len(rows))
         if not rows:
             return
         for row in rows:
