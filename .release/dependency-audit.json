@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-18T05:22:00+00:00",
+  "checked_at": "2026-09-18T06:44:13+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.9",
+  "project_version": "0.39.10",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build/runtime/optional/development and Node dependency candidates against fresh public PyPI/npm metadata, including candidates outside upper bounds. Since the committed 0.39.8 receipt only Hatchling changed (1.32.0 to 1.32.3). Reviewed the official release https://github.com/pypa/hatch/releases/tag/hatchling-v1.32.3: it preserves literal metadata versions while wheel/dist-info names remain normalized; the project X.Y.Z contract is unaffected. Installed Hatchling 1.32.3 locally and built the candidate wheel successfully. All candidates satisfy existing bounds; other reviewed candidates are unchanged. uv pip check (36 packages) and npm ls passed. Focused observer and lifecycle tests pass including real SQLite and private MariaDB 10.11.11; exact-tree full gate and manual cleanup/deployment/cost evidence are separate. This additive telemetry patch leaves SQL business logic, schema, facade results and durable formats unchanged. No dependency constraints changed.",
+    "note": "Reviewed fresh public PyPI/npm candidate metadata for every direct build/runtime/optional/development and Node dependency, including candidates outside existing upper bounds. All 12 Python requirement entries (11 unique packages) and the Node dependency are unchanged from the committed 0.39.9 receipt checked at 2026-09-18T05:22:00+00:00; no new upstream release required additional release-note review or compatibility changes. The repository environment already contains every discovered latest Python candidate and markdownlint-cli2 0.23.2. All candidates satisfy the existing constraints and all Python candidates support Python 3.14. uv pip check passed for 36 installed packages, and npm ls --depth=0 passed. No dependency manifest or environment was changed by this audit. This review carries forward the committed upstream release-note assessment only for the identical versions; it does not claim a new release-note review. Exact-tree release checks and this task's cleanup/deployment/cost evidence are separate and must be reported with their own actual outcomes.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
