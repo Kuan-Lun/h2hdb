@@ -238,7 +238,7 @@ class _Operation:
     def _envelope(self, event: str) -> dict[str, Any]:
         self.sequence += 1
         return {
-            "schema": 2,
+            "schema": 1,
             "event": event,
             "backend": self.owner.backend,
             "operation": self.name,

@@ -103,6 +103,94 @@ def test_nested_sql_conservation_and_known_delay_attribution(
     assert "SELECT" not in caplog.text
 
 
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_additive_diagnostics_preserve_schema_one_field_meaning(
+    level: int,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing consumers can project the same fields at either log level.
+
+    One connector fetch returns three rows, so this also rejects confusing
+    calls with returned rows. Repeated SQL retains its cumulative DEBUG shape;
+    INFO already omitted cumulative fingerprints before the added diagnostics.
+    """
+    clock = _Clock()
+    performance = _performance(caplog, level=level, clock=clock)
+    fetch = SQLiteConnector.fetch_all
+    query = "SELECT %s UNION ALL SELECT %s UNION ALL SELECT %s"
+
+    def delayed(
+        self: SQLiteConnector, sql: str, data: tuple[Any, ...] = ()
+    ) -> list[tuple[Any, ...]]:
+        rows = fetch(self, sql, data)
+        clock.now += 2.0
+        return rows
+
+    monkeypatch.setattr(SQLiteConnector, "fetch_all", delayed)
+    with performance.operation("audit", fixture="contract"):
+        with instrument_connector(SQLiteConnector(str(tmp_path / "v1.db"))) as db:
+            with db.read_transaction():
+                assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+                with database_phase("component", validator="contract"):
+                    assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+                assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
+    terminal = _records(caplog)[-1]
+    previous_fields = {
+        "schema": 1,
+        "event": "completed",
+        "backend": "sqlite",
+        "operation": "audit",
+        "sequence": 2,
+        "phase": "audit",
+        "span_id": 0,
+        "parent_id": None,
+        "labels": {"fixture": "contract"},
+        "elapsed_seconds": 6.0,
+        "exclusive_seconds": 4.0,
+        "sql_calls": 3,
+        "sql_seconds": 6.0,
+        "read_rows": 9,
+        "connection_calls": 2,
+        "transaction_calls": 2,
+        "exclusive_sql_calls": 2,
+        "exclusive_sql_seconds": 4.0,
+        "exclusive_read_rows": 6,
+        "phase_count": 1,
+        "omitted_phase_records": 0,
+        "omitted_depth": 0,
+        "query_top": [
+            {
+                "fingerprint": sha256(query.encode()).hexdigest()[:16],
+                "calls": 3,
+                "seconds": 6.0,
+                "max_seconds": 2.0,
+                "returned_rows": 9,
+            }
+        ]
+        if level == logging.DEBUG
+        else [],
+    }
+    assert {key: terminal[key] for key in previous_fields} == previous_fields
+    previous_phase_fields = {
+        "phase": "component",
+        "span_id": 1,
+        "labels": {"validator": "contract"},
+        "elapsed_seconds": 2.0,
+        "exclusive_seconds": 2.0,
+        "status": "completed",
+    }
+    assert {
+        key: terminal["phase_top"][0][key] for key in previous_phase_fields
+    } == previous_phase_fields
+    assert terminal["sql_calls_unit"] == "completed_connector_method_calls"
+    assert terminal["read_rows_unit"] == "returned_rows_not_examined_rows"
+    assert terminal["pending_call"] is None
+    assert len(terminal["query_slowest"]) == 3
+    assert terminal["phase_totals"][0]["exclusive_sql_calls"] == 1
+
+
 @pytest.mark.parametrize("phase_count", [255, 256, 257, 520])
 def test_phase_budget_retains_slow_and_failed_work_without_losing_totals(
     phase_count: int, tmp_path: Path, caplog: pytest.LogCaptureFixture
