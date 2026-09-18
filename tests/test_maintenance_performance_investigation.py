@@ -111,6 +111,33 @@ def test_added_n_plus_one_sql_is_rejected_by_the_same_cost_budget(
     assert degraded["sql_calls"] - baseline["sql_calls"] == 2
 
 
+def test_source_batch_aggregation_keeps_independent_action_cost_labels(
+    probe: ModuleType, tmp_path: Path
+) -> None:
+    telemetry = IngestPerformance(
+        logging.getLogger("h2hdb.probe-source"), backend="sqlite"
+    )
+
+    def action() -> None:
+        with instrument_connector(
+            SQLiteConnector(str(tmp_path / "source-phases.db"))
+        ) as connector:
+            for component in ("FILE_PAGE", "TAG_PAGE"):
+                for phase in ("issue", "prepare", "commit"):
+                    with telemetry.step("source", f"{component}.{phase}", "SOURCE", 1):
+                        connector.fetch_one("SELECT %s", (1,))
+
+    _, result = probe.measured(action)
+    assert result["sql_calls"] == result["returned_rows"] == 6
+    sql = [item for item in result["queries"] if item["category"] == "sql"]
+    assert {item["operation"] for item in sql} == {
+        f"source.{phase}:{component}"
+        for component in ("FILE_PAGE", "TAG_PAGE")
+        for phase in ("issue", "prepare", "commit")
+    }
+    assert all(item["calls"] == 1 for item in sql)
+
+
 def test_known_query_delay_is_attributed_to_the_delayed_fingerprint(
     probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

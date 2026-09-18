@@ -146,6 +146,14 @@ class PhysicalObserver:
             recorder = scope.recorder if scope is not None else None
             fallback = observer.label() if observer.label is not None else "outside"
             label = str(getattr(recorder, "operation", fallback))
+            if getattr(recorder, "pipeline", None) == "source":
+                # Runtime INFO groups the complete batch under SOURCE. Keep
+                # the independent observer's action boundary for cost pairing.
+                action_name, separator, phase_name = str(
+                    getattr(recorder, "phase", "")
+                ).rpartition(".")
+                if separator and phase_name in {"issue", "prepare", "commit"}:
+                    label = f"source.{phase_name}:{action_name}"
             stack = getattr(recorder, "stack", ())
             if stack:
                 span = stack[-1]
