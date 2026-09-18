@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import signal
 import sqlite3
 import sys
@@ -110,6 +111,138 @@ def test_real_validator_accepts_duplicate_groups_and_metadata_filter(
         assert expected["derived_hash_occurrences"] == 97
 
 
+@pytest.mark.parametrize("files", (127, 128, 129))
+@pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
+def test_production_boundary_pages_match_fixture_facts_in_repeated_cycles(
+    probe: ModuleType, files: int, regime: str
+) -> None:
+    facts = probe.file_facts(probe.Shape(files, regime))
+    expected = probe.stream_sizes(facts)
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+        for _ in range(3):
+            captured, measured = probe.capture_validator(connector, facts)
+            assert measured["stream_select_calls"] == sum(
+                (size + 127) // 128 + 1 for size in expected.values()
+            )
+            for queries in captured.values():
+                assert queries[-1].returned_rows == 0
+                for query in queries:
+                    # This also rejects accidental removal of either optimizer
+                    # predicate; the baseline recognizer checks both bindings.
+                    probe.tuple_seek_baseline(query.sql, query.parameters)
+
+
+def test_equal_count_wrong_rows_fail_the_independent_fixture_oracle(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    facts = probe.file_facts(probe.Shape(129))
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+        original = connector.fetch_all
+
+        def reordered(
+            sql: str, parameters: tuple[Any, ...] = ()
+        ) -> list[tuple[Any, ...]]:
+            rows = original(sql, parameters)
+            return list(reversed(rows)) if probe.query_kind(sql) == "anchors" else rows
+
+        monkeypatch.setattr(connector, "fetch_all", reordered)
+        with pytest.raises(RuntimeError, match="differs from fixture facts"):
+            probe.capture_validator(connector, facts)
+
+
+@pytest.mark.deep
+@pytest.mark.parametrize("files", (4096, 32768))
+@pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
+def test_sqlite_production_seek_cost_and_removed_tuple_negative_control(
+    probe: ModuleType, tmp_path: Path, files: int, regime: str
+) -> None:
+    facts = probe.file_facts(probe.Shape(files, regime))
+    expected = probe.expected_stream_rows(facts)
+    receipts = []
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+
+        def measured(sql: str, parameters: tuple[Any, ...]) -> tuple[list[Any], int]:
+            steps = 0
+
+            def progress() -> int:
+                nonlocal steps
+                steps += 100
+                return 0
+
+            connector.connection.set_progress_handler(progress, 100)
+            try:
+                rows = connector.fetch_all(sql, parameters)
+            finally:
+                connector.connection.set_progress_handler(None, 0)
+            # The progress callback counts complete 100-opcode blocks. Add one
+            # block to bound the unobserved partial block instead of hiding it.
+            return rows, steps + 100
+
+        for _cycle in range(3):
+            captured, _ = probe.capture_validator(connector, facts)
+            for kind, queries in captured.items():
+                metadata = (
+                    sum(fact.name == b"galleryinfo.txt" for fact in facts)
+                    if kind == "derived_hash_occurrences"
+                    else 0
+                )
+                # An independently declared generous VM budget for bounded
+                # row work and point joins, not an elapsed-time threshold.
+                budget = 128 * (128 + metadata + 1) + 256
+                rejected = False
+                for index in set(probe.sample_positions(queries).values()):
+                    query = queries[index]
+                    page = expected[kind][index * 128 : (index + 1) * 128]
+                    rows, steps = measured(query.sql, query.parameters)
+                    assert rows == page
+                    assert steps <= budget, (kind, index, steps, budget)
+                    production_steps = steps
+                    # Removing the row constructor preserves non-NULL ordering
+                    # but regresses SQLite into rescanning a growing prefix.
+                    degraded, count = re.subn(
+                        r"\s+AND\s+\([\w.,\s]+\)\s*>\s*\((?:%s,?\s*)+\)",
+                        "",
+                        query.sql,
+                    )
+                    assert count == 1
+                    key_size = 4 if kind == "derived_hash_occurrences" else 3
+                    parameters = (*query.parameters[: -key_size - 1], 128)
+                    rows, steps = measured(degraded, parameters)
+                    assert rows == page
+                    rejected |= steps > budget
+                    receipts.append(
+                        {
+                            "cycle": _cycle,
+                            "stream": kind,
+                            "page": index,
+                            "returned_rows": len(rows),
+                            "production_vm_upper_bound": production_steps,
+                            "removed_tuple_vm_upper_bound": steps,
+                            "budget": budget,
+                        }
+                    )
+                # Duplicate 4096 input has only 32 stored hash groups, so its
+                # entire stream legitimately fits inside the page-work budget.
+                if len(expected[kind]) > 128:
+                    assert rejected, (kind, files, regime)
+    (tmp_path / "sqlite-seek-cost.json").write_text(
+        json.dumps(
+            {
+                "files": files,
+                "regime": regime,
+                "sqlite_version": sqlite3.sqlite_version,
+                "samples": receipts,
+            }
+        )
+    )
+
+
 def test_missing_scope_is_rejected_instead_of_reporting_success(
     probe: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -128,15 +261,19 @@ def test_missing_scope_is_rejected_instead_of_reporting_success(
 @pytest.mark.parametrize(
     "after", [(0, 0, b""), (1, 1, b"a"), (1, 2, b"b"), (2, 2, b"z")]
 )
-def test_candidate_and_negative_control_preserve_ordered_output(
+def test_production_predicates_and_controls_preserve_independent_ordered_output(
     probe: ModuleType, after: tuple[int, int, bytes]
 ) -> None:
     query = (
         "SELECT gallery_id, observation_id, file_key FROM facts "
-        "WHERE file_key <> %s AND (gallery_id, observation_id, file_key) > (%s,%s,%s) "
+        "WHERE (gallery_id > %s OR (gallery_id = %s AND observation_id > %s) "
+        "OR (gallery_id = %s AND observation_id = %s AND file_key > %s)) "
+        "AND (gallery_id, observation_id, file_key) > (%s, %s, %s) "
         "ORDER BY gallery_id, observation_id, file_key LIMIT %s"
     )
-    parameters = (b"c", *after, 4)
+    gallery, observation, key = after
+    parameters = (gallery, gallery, observation, gallery, observation, key, *after, 4)
+    facts = list(product((1, 2), (1, 2), (b"a", b"b", b"c")))
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute(
@@ -144,10 +281,14 @@ def test_candidate_and_negative_control_preserve_ordered_output(
         )
         connection.executemany(
             "INSERT INTO facts VALUES (?,?,?)",
-            product((1, 2), (1, 2), (b"a", b"b", b"c")),
+            facts,
         )
-        expected = connection.execute(query.replace("%s", "?"), parameters).fetchall()
-        for rewrite in (probe.expanded_seek, probe.degraded_order):
+        expected = sorted(row for row in facts if row > after)[:4]
+        assert (
+            connection.execute(query.replace("%s", "?"), parameters).fetchall()
+            == expected
+        )
+        for rewrite in (probe.tuple_seek_baseline, probe.degraded_order):
             sql, args = rewrite(query, parameters)
             assert (
                 connection.execute(sql.replace("%s", "?"), args).fetchall() == expected
@@ -156,11 +297,14 @@ def test_candidate_and_negative_control_preserve_ordered_output(
         connection.close()
 
 
-def test_candidate_refuses_unknown_or_null_keysets(probe: ModuleType) -> None:
+def test_baseline_refuses_unknown_or_null_keysets(probe: ModuleType) -> None:
     with pytest.raises(ValueError, match="exactly one"):
-        probe.expanded_seek("SELECT 1", ())
+        probe.tuple_seek_baseline("SELECT 1", ())
     with pytest.raises(ValueError, match="non-NULL"):
-        probe.expanded_seek("SELECT * FROM f WHERE (a,b) > (%s,%s)", (1, None))
+        probe.tuple_seek_baseline(
+            "SELECT * FROM f WHERE unknown ORDER BY a, b, c LIMIT %s",
+            (1, 1, 1, 1, 1, None, 1, 1, None, 128),
+        )
 
 
 def test_cost_oracle_rejects_degraded_work_without_relabeling_production(

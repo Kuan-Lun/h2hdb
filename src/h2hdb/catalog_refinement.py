@@ -7167,6 +7167,10 @@ _FILE_FAMILY_MEMBER_TABLES = (
 def _validate_file_family_totality(connector: SQLConnector) -> None:
     """Prove every retained file anchor has one complete sealed family."""
 
+    # These equivalent predicates serve different optimizers: MariaDB 10.11
+    # seeks the explicit ranges, while SQLite seeks the row constructor. Either
+    # predicate alone causes the other backend to rescan the index prefix. All
+    # key components are non-NULL; their conjunction preserves the exact order.
     after_gallery_id = 0
     after_observation_id = 0
     after_file_key = b""
@@ -7201,12 +7205,22 @@ def _validate_file_family_totality(connector: SQLConnector) -> None:
                  AND sealed.file_key = anchor.file_key
                 LEFT JOIN catalog_file_name_identities AS name
                   ON name.file_key = anchor.file_key
-                WHERE (anchor.gallery_id, anchor.observation_id, anchor.file_key)
+                WHERE (anchor.gallery_id > %s
+                    OR (anchor.gallery_id = %s AND anchor.observation_id > %s)
+                    OR (anchor.gallery_id = %s AND anchor.observation_id = %s
+                        AND anchor.file_key > %s))
+                  AND (anchor.gallery_id, anchor.observation_id, anchor.file_key)
                       > (%s, %s, %s)
                 ORDER BY anchor.gallery_id, anchor.observation_id, anchor.file_key
                 LIMIT %s
                 """,
                 (
+                    after_gallery_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_key,
                     after_gallery_id,
                     after_observation_id,
                     after_file_key,
@@ -7281,12 +7295,22 @@ def _validate_file_family_totality(connector: SQLConnector) -> None:
                       ON anchor.gallery_id = member.gallery_id
                      AND anchor.observation_id = member.observation_id
                      AND anchor.file_key = member.file_key
-                    WHERE (member.gallery_id, member.observation_id, member.file_key)
+                    WHERE (member.gallery_id > %s
+                        OR (member.gallery_id = %s AND member.observation_id > %s)
+                        OR (member.gallery_id = %s AND member.observation_id = %s
+                            AND member.file_key > %s))
+                      AND (member.gallery_id, member.observation_id, member.file_key)
                           > (%s, %s, %s)
                     ORDER BY member.gallery_id, member.observation_id, member.file_key
                     LIMIT %s
                     """,
                     (
+                        after_gallery_id,
+                        after_gallery_id,
+                        after_observation_id,
+                        after_gallery_id,
+                        after_observation_id,
+                        after_file_key,
                         after_gallery_id,
                         after_observation_id,
                         after_file_key,
@@ -7349,6 +7373,12 @@ def _iter_derived_file_hash_occurrences(
                 JOIN catalog_file_name_identities AS name
                   ON name.file_key = file_sha.file_key
                 WHERE name.name_bytes <> %s
+                  AND (file_sha.gallery_id > %s
+                    OR (file_sha.gallery_id = %s AND file_sha.observation_id > %s)
+                    OR (file_sha.gallery_id = %s AND file_sha.observation_id = %s
+                        AND file_sha.file_sha256 > %s)
+                    OR (file_sha.gallery_id = %s AND file_sha.observation_id = %s
+                        AND file_sha.file_sha256 = %s AND file_sha.file_key > %s))
                   AND (file_sha.gallery_id, file_sha.observation_id,
                        file_sha.file_sha256, file_sha.file_key) > (%s, %s, %s, %s)
                 ORDER BY file_sha.gallery_id, file_sha.observation_id,
@@ -7357,6 +7387,16 @@ def _iter_derived_file_hash_occurrences(
                 """,
                 (
                     b"galleryinfo.txt",
+                    after_gallery_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_sha256,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_sha256,
+                    after_file_key,
                     after_gallery_id,
                     after_observation_id,
                     after_file_sha256,
@@ -7406,11 +7446,21 @@ def _iter_stored_file_hash_occurrences(
                 """
                 SELECT gallery_id, observation_id, file_sha256, occurrence_count
                 FROM catalog_gallery_observation_file_hash_occurrences
-                WHERE (gallery_id, observation_id, file_sha256) > (%s, %s, %s)
+                WHERE (gallery_id > %s
+                    OR (gallery_id = %s AND observation_id > %s)
+                    OR (gallery_id = %s AND observation_id = %s
+                        AND file_sha256 > %s))
+                  AND (gallery_id, observation_id, file_sha256) > (%s, %s, %s)
                 ORDER BY gallery_id, observation_id, file_sha256
                 LIMIT %s
                 """,
                 (
+                    after_gallery_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_gallery_id,
+                    after_observation_id,
+                    after_file_sha256,
                     after_gallery_id,
                     after_observation_id,
                     after_file_sha256,
