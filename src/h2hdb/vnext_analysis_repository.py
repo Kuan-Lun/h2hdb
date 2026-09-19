@@ -53,6 +53,8 @@ from .vnext_analysis_decision_reader import iter_resolved_file_decisions
 from .vnext_analysis_family import (
     AnalysisExclusionDeltaFamily,
     AnalysisFamilyCollisionError,
+    AnalysisRunFamily,
+    AnalysisStateComponentFamily,
     cas_analysis_run_state,
     ensure_analysis_run_family,
     ensure_analysis_state_component_family,
@@ -5321,6 +5323,27 @@ def _require_exact_component_seals(work: VNextUnitOfWork, analysis_id: bytes) ->
             )
 
 
+def _ancestor_rows(
+    work: VNextUnitOfWork,
+    *,
+    ancestry: tuple[bytes, ...],
+    projection: str,
+    relation: str,
+    limit: int,
+    predicate: str = "",
+    parameters: tuple[Any, ...] = (),
+) -> list[tuple[Any, ...]]:
+    """Read only the bounded authority of this transaction's inherited suffix."""
+
+    placeholders = ", ".join("%s" for _ in ancestry)
+    return work.connector.fetch_all(
+        f"SELECT {projection} FROM {relation} "
+        f"WHERE analysis_id IN ({placeholders}) {predicate} "
+        "ORDER BY analysis_id LIMIT %s",
+        (*ancestry, *parameters, limit),
+    )
+
+
 def _validate_ancestry_suffixes(
     work: VNextUnitOfWork,
     *,
@@ -5328,46 +5351,166 @@ def _validate_ancestry_suffixes(
     anchor_analysis_id: bytes,
     policy_id: int,
 ) -> None:
-    """Require every inherited ancestor to materialize its exact sealed suffix."""
+    """Check complete suffix authority in six fresh, hard-capped SQL reads.
 
+    Every check is local to this invocation inside the caller's fenced
+    transaction. No receipt, lifecycle state or checkpoint survives it as a
+    cached authority. Missing physical family members must remain visible, so
+    the requested-key query uses LEFT JOINs rather than the complete-run view.
+    """
+
+    if not 1 <= len(ancestry) <= _MAX_OVERLAY_DEPTH + 1 or len(set(ancestry)) != len(
+        ancestry
+    ):
+        raise AnalysisCorruptionError("inherited analysis suffix is not bounded")
+    requested = " UNION ALL ".join(
+        f"SELECT {work.connector.binary_parameter_expression(16)}" for _ in ancestry
+    )
+    run_rows = work.connector.fetch_all(
+        f"WITH requested_ancestors(analysis_id) AS ({requested}) "
+        "SELECT requested.analysis_id, descriptor.analysis_id, descriptor.build_id, "
+        "descriptor.policy_id, descriptor.input_manifest_sha256, "
+        "descriptor.started_at, state.analysis_id, state.state, "
+        "completed.analysis_id, completed.completed_at, source.sealed_at, "
+        "sibling.analysis_id "
+        "FROM requested_ancestors AS requested "
+        "LEFT JOIN catalog_analysis_run_descriptor AS descriptor "
+        "ON descriptor.analysis_id = requested.analysis_id "
+        "LEFT JOIN catalog_analysis_run_states AS state "
+        "ON state.analysis_id = requested.analysis_id "
+        "LEFT JOIN catalog_analysis_run_completed_ats AS completed "
+        "ON completed.analysis_id = requested.analysis_id "
+        "LEFT JOIN catalog_source_build_sealed_ats AS source "
+        "ON source.build_id = descriptor.build_id "
+        "LEFT JOIN catalog_analysis_run_descriptor AS sibling "
+        "ON sibling.build_id = descriptor.build_id "
+        "ORDER BY requested.analysis_id, sibling.analysis_id LIMIT %s",
+        (*ancestry, len(ancestry) + 1),
+    )
+    if len(run_rows) != len(ancestry):
+        raise AnalysisCorruptionError("inherited analysis build has multiple runs")
+    runs = {}
+    for row in run_rows:
+        if len(row) != 12 or any(row[index] != row[0] for index in (1, 6, 8, 11)):
+            raise AnalysisCorruptionError("inherited analysis family is incomplete")
+        try:
+            run = AnalysisRunFamily(
+                row[0], row[2], row[3], row[4], row[5], row[7], row[9]
+            )
+            source_sealed_at = require_int63(row[10], field="analysis source sealed_at")
+        except (TypeError, ValueError) as error:
+            raise AnalysisCorruptionError(
+                "inherited analysis family is malformed"
+            ) from error
+        if run.started_at < source_sealed_at:
+            raise AnalysisCorruptionError("inherited analysis precedes source seal")
+        runs[run.analysis_id] = run
+    if set(runs) != set(ancestry):
+        raise AnalysisCorruptionError("inherited analysis family keys differ")
+    layouts = _ancestor_rows(
+        work,
+        ancestry=ancestry,
+        projection="analysis_id, ancestor_depth, ancestor_analysis_id",
+        relation="catalog_analysis_state_ancestry",
+        limit=(_MAX_OVERLAY_DEPTH + 1) ** 2 + 1,
+    )
+    baselines = _ancestor_rows(
+        work,
+        ancestry=ancestry,
+        projection="analysis_id, base_analysis_id",
+        relation="catalog_analysis_baselines",
+        limit=len(ancestry) + 1,
+    )
+    seals = _ancestor_rows(
+        work,
+        ancestry=ancestry,
+        projection="analysis_id, state_component, row_count, sealed_at",
+        relation="catalog_analysis_state_component_seals",
+        limit=5 * len(ancestry) + 1,
+    )
+    stages = tuple(
+        b"validate_" + component for component in sorted(ANALYSIS_COMPONENTS)
+    )
+    stage_predicate = "AND stage IN (%s, %s, %s, %s, %s)"
+    terminal_rows = _ancestor_rows(
+        work,
+        ancestry=ancestry,
+        projection="analysis_id, stage, start_cursor, start_processed_count, "
+        "page_limit, next_cursor, next_processed_count, next_state, row_count, "
+        "terminal, committed_at",
+        relation="catalog_analysis_batch_receipts",
+        limit=5 * len(ancestry) + 1,
+        predicate="AND row_count = 0 " + stage_predicate,
+        parameters=stages,
+    )
+    checkpoints = _ancestor_rows(
+        work,
+        ancestry=ancestry,
+        projection="analysis_id, stage, `cursor`, processed_count, state, updated_at",
+        relation="catalog_analysis_checkpoints",
+        limit=5 * len(ancestry) + 1,
+        predicate=stage_predicate,
+        parameters=stages,
+    )
     for offset, ancestor in enumerate(ancestry):
         suffix = ancestry[offset:]
-        try:
-            run = load_analysis_run_family(
-                work.connector,
-                analysis_id=ancestor,
+        run = runs[ancestor]
+        materialized = sorted(
+            (
+                require_int63(row[1], field="persisted ancestor_depth"),
+                require_uuid16(row[2], field="persisted ancestor_analysis_id"),
             )
-        except AnalysisFamilyCollisionError as error:
-            raise AnalysisCorruptionError(str(error)) from error
-        if run is None:
-            raise AnalysisCorruptionError("inherited analysis anchor is missing")
-        _baseline, derived_anchor, derived_depth, materialized = _load_layout(
-            work,
-            ancestor,
+            for row in layouts
+            if row[0] == ancestor
         )
+        expected = list(enumerate(suffix))
         if (
             run.policy_id != policy_id
             or run.state != "COMPLETE"
-            or derived_anchor != anchor_analysis_id
-            or derived_depth != len(suffix) - 1
+            or suffix[-1] != anchor_analysis_id
         ):
             raise AnalysisCorruptionError(
                 "inherited analysis does not match the complete policy suffix"
             )
-        if materialized != suffix:
+        if materialized != expected:
             raise AnalysisCorruptionError(
                 "inherited analysis ancestry is not the complete parent suffix"
             )
-        baseline_row = work.connector.fetch_one(
-            "SELECT base_analysis_id FROM catalog_analysis_baselines "
-            "WHERE analysis_id = %s",
-            (ancestor,),
-        )
-        if len(suffix) > 1 and baseline_row != (suffix[1],):
+        parent_rows = [row[1:] for row in baselines if row[0] == ancestor]
+        if len(parent_rows) > 1 or (len(suffix) > 1 and parent_rows != [(suffix[1],)]):
             raise AnalysisCorruptionError(
                 "inherited analysis baseline is not its immediate parent"
             )
-        _require_exact_component_seals(work, ancestor)
+        if parent_rows:
+            require_uuid16(parent_rows[0][0], field="persisted baseline_analysis_id")
+        component_rows = [row for row in seals if row[0] == ancestor]
+        if (
+            len(component_rows) != 5
+            or {row[1] for row in component_rows} != ANALYSIS_COMPONENTS
+        ):
+            raise AnalysisNotReadyError(
+                "baseline analysis is not sealed in all five components"
+            )
+        for row in component_rows:
+            try:
+                family = AnalysisStateComponentFamily(*row)
+            except (TypeError, ValueError) as error:
+                raise AnalysisCorruptionError(
+                    "inherited component seal is malformed"
+                ) from error
+            stage = b"validate_" + family.state_component
+            receipts = [
+                value[2:] for value in terminal_rows if value[:2] == (ancestor, stage)
+            ]
+            checkpoint = [
+                value[2:] for value in checkpoints if value[:2] == (ancestor, stage)
+            ]
+            _require_component_terminal_authority(
+                family,
+                stage=stage,
+                rows=receipts,
+                checkpoint=checkpoint[0] if len(checkpoint) == 1 else (),
+            )
 
 
 def _initialize_checkpoint(
@@ -9233,6 +9376,27 @@ def _component_is_sealed(
         "ORDER BY start_generation DESC LIMIT 2",
         (analysis_id, stage, 0),
     )
+    checkpoint = work.connector.fetch_one(
+        "SELECT `cursor`, processed_count, state, updated_at "
+        "FROM catalog_analysis_checkpoints WHERE analysis_id = %s AND stage = %s",
+        (analysis_id, stage),
+    )
+    _require_component_terminal_authority(
+        family, stage=stage, rows=rows, checkpoint=checkpoint
+    )
+    return True
+
+
+def _require_component_terminal_authority(
+    family: AnalysisStateComponentFamily,
+    *,
+    stage: bytes,
+    rows: list[tuple[Any, ...]],
+    checkpoint: tuple[Any, ...],
+) -> None:
+    """Exact scalar validation shared by point and bounded ancestry reads."""
+
+    component = family.state_component
     if len(rows) != 1 or len(rows[0]) != 9:
         raise AnalysisCorruptionError(
             f"component {component!r} has no unique terminal receipt"
@@ -9275,11 +9439,6 @@ def _component_is_sealed(
         raise AnalysisCorruptionError(
             f"component {component!r} differs from its terminal receipt"
         )
-    checkpoint = work.connector.fetch_one(
-        "SELECT `cursor`, processed_count, state, updated_at "
-        "FROM catalog_analysis_checkpoints WHERE analysis_id = %s AND stage = %s",
-        (analysis_id, stage),
-    )
     if checkpoint != (
         receipt[3],
         next_count,
@@ -9289,7 +9448,6 @@ def _component_is_sealed(
         raise AnalysisCorruptionError(
             f"component {component!r} terminal checkpoint differs from its receipt"
         )
-    return True
 
 
 def _require_exact_stage_registry(work: VNextUnitOfWork) -> None:
