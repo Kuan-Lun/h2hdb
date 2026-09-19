@@ -23,6 +23,7 @@ from .ingest_performance_format import (
     stage_description,
     workload,
 )
+from .ingest_work_performance import WorkCosts, collect_ingest_work
 from .sql_performance import (
     SQLCounters,
     SQLQueryStatistics,
@@ -84,6 +85,7 @@ class PerformanceStep:
     overlap_epoch: int = 0
     active: bool = True
     counters: SQLCounters = field(default_factory=SQLCounters)
+    work_costs: WorkCosts = field(default_factory=WorkCosts)
     queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
     transactions: SQLTransactionStatistics = field(
@@ -284,6 +286,7 @@ class _Stage:
     processed_rows: int = 0
     replayed: int = 0
     counters: SQLCounters = field(default_factory=SQLCounters)
+    work_costs: WorkCosts = field(default_factory=WorkCosts)
     phases: dict[str, float] = field(default_factory=dict)
     phase_counters: dict[str, SQLCounters] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
@@ -366,7 +369,10 @@ class IngestPerformance:
         token = _active_step.set(sample)
         failure: Literal["failed", "interrupted"] | None = None
         try:
-            with measure_sql(sample, clock=self.clock):
+            with (
+                measure_sql(sample, clock=self.clock),
+                collect_ingest_work(sample.work_costs, self.clock),
+            ):
                 yield sample
         except BaseException as error:
             failure = "failed" if isinstance(error, Exception) else "interrupted"
@@ -419,6 +425,8 @@ class IngestPerformance:
         if sample.slowest.snapshot():
             message += " query_slowest=" + sample.slowest.text()
         message += " transaction_breakdown=" + sample.transactions.text()
+        if sample.work_costs.operations:
+            message += " local_work=" + sample.work_costs.text()
         if self.debug and sample.queries:
             top = sorted(
                 sample.queries.items(), key=lambda item: item[1].seconds, reverse=True
@@ -463,6 +471,11 @@ class IngestPerformance:
             if sample.omitted_records:
                 info_message += "; some nested diagnostic details omitted"
             info_message += _sql_cost_details(sample.queries, sample.transactions)
+            if sample.work_costs.operations:
+                info_message += (
+                    "; local work (inclusive/exclusive wall, logical bytes; overlaps SQL): "
+                    + sample.work_costs.text()
+                )
             info_message += "; stage completion not confirmed."
         return _Diagnostic(self, message, info_message)
 
@@ -524,6 +537,7 @@ class IngestPerformance:
             stage.processed_rows += sample.processed_rows
             stage.replayed += int(sample.replayed)
             stage.counters.add(sample.counters)
+            stage.work_costs.add(sample.work_costs)
             stage.slowest.add(sample.slowest)
             stage.transactions.add(sample.transactions)
             for fingerprint, statistics in sample.queries.items():
@@ -579,6 +593,8 @@ class IngestPerformance:
             message += f" correlation_id={correlation_id}"
         message += " query_slowest=" + stage.slowest.text()
         message += " transaction_breakdown=" + stage.transactions.text()
+        if stage.work_costs.operations:
+            message += " local_work=" + stage.work_costs.text()
         stage.reported = now
         info_message = stage_description(pipeline, operation, generation, event)
         if event != "started":
@@ -605,6 +621,11 @@ class IngestPerformance:
             if stage.slowest.snapshot():
                 info_message += "; slowest SQL calls " + stage.slowest.text()
             info_message += _sql_cost_details(stage.queries, stage.transactions)
+            if stage.work_costs.operations:
+                info_message += (
+                    "; local work (inclusive/exclusive wall, logical bytes; overlaps SQL): "
+                    + stage.work_costs.text()
+                )
             if stage.transactions.operations:
                 info_message += "; transaction operations by phase " + ", ".join(
                     f"{phase}: {counts.text()}"

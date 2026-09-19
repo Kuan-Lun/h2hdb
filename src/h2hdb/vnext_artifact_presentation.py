@@ -26,6 +26,7 @@ from .domain import (
     StorageObjectDescriptor,
     StorageObjectKey,
 )
+from .ingest_work_performance import measure_ingest_work, record_ingest_transfer
 from .ports import ArtifactStorageAdapter
 from .vnext_artifact_render import (
     ArtifactRenderConflictError,
@@ -206,7 +207,9 @@ def prepare_presentation(
             "thumbnail key must exist exactly when rendered pages exist"
         )
     expected_archive = (bytes.fromhex(acquisition.sha256), acquisition.size_bytes)
-    if _hash_stream(archive) != expected_archive:
+    with measure_ingest_work("artifact_presentation_hash"):
+        actual_archive = _hash_stream(archive)
+    if actual_archive != expected_archive:
         raise ArtifactRenderConflictError(
             "acquisition descriptor disagrees with rendered archive bytes"
         )
@@ -214,11 +217,12 @@ def prepare_presentation(
     thumbnail = cast(BinaryIO, TemporaryFile(mode="w+b"))
     try:
         try:
-            evidence = adapter.render_presentation(
-                cast(BinaryIO, _ReadOnlyArchive(archive, acquisition.size_bytes)),
-                cast(BinaryIO, _BoundedThumbnailWriter(thumbnail)),
-                rendered_pages=rendered,
-            )
+            with measure_ingest_work("artifact_presentation_render"):
+                evidence = adapter.render_presentation(
+                    cast(BinaryIO, _ReadOnlyArchive(archive, acquisition.size_bytes)),
+                    cast(BinaryIO, _BoundedThumbnailWriter(thumbnail)),
+                    rendered_pages=rendered,
+                )
         except ArtifactRenderConflictError, ArtifactRenderNotReadyError:
             raise
         except (OSError, ValueError) as error:
@@ -230,7 +234,9 @@ def prepare_presentation(
                 "artifact adapter returned invalid presentation evidence"
             )
         evidence.__post_init__()
-        if _hash_stream(archive) != expected_archive:
+        with measure_ingest_work("artifact_presentation_hash"):
+            actual_archive = _hash_stream(archive)
+        if actual_archive != expected_archive:
             raise ArtifactRenderConflictError(
                 "artifact adapter changed the acquisition archive"
             )
@@ -259,6 +265,7 @@ def prepare_presentation(
         raise
 
 
+@measure_ingest_work("artifact_page_extent_hash")
 def _verify_pages(
     archive: BinaryIO,
     *,
@@ -307,6 +314,7 @@ def _verify_pages(
     return tuple(prepared)
 
 
+@measure_ingest_work("artifact_thumbnail_hash")
 def _verify_thumbnail(
     thumbnail: BinaryIO,
     *,
@@ -355,6 +363,8 @@ def _hash_extent(stream: BinaryIO, extent: ByteExtent) -> tuple[bytes, int]:
     digest = sha256()
     while remaining:
         part = stream.read(min(remaining, _COPY_CHUNK_BYTES))
+        if isinstance(part, bytes):
+            record_ingest_transfer(read_bytes=len(part))
         if not isinstance(part, bytes) or not part:
             raise ArtifactRenderConflictError("presentation page extent is truncated")
         if len(part) > remaining:
@@ -374,6 +384,7 @@ def _hash_stream(stream: BinaryIO) -> tuple[bytes, int]:
         part = stream.read(_COPY_CHUNK_BYTES)
         if not isinstance(part, bytes):
             raise ArtifactRenderConflictError("resource stream returned non-bytes")
+        record_ingest_transfer(read_bytes=len(part))
         if not part:
             break
         digest.update(part)

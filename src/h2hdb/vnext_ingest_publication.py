@@ -43,6 +43,7 @@ from .domain import (
     VNextResolvedIngestPolicy,
 )
 from .ingest_performance import describe_ingest_step
+from .ingest_work_performance import measure_ingest_work, record_ingest_cache
 from .ports import ArtifactReleaseAdapter, ArtifactStorageAdapter
 from .repository import RepositoryContext
 from .sql_connector import SQLConnector
@@ -1366,17 +1367,19 @@ class VNextIngestPublication:
             )
         families = work.families
         # A cache hit never replaces the fresh durable input audit above.
-        owner = (
-            None
-            if families is None
-            else self.__take_artifact_receipt(authority, families)
-        )
-        if owner is not None and owner.receipt.audit != audit:
-            # The durable authority/family key still matches, but the cached
-            # receipt no longer refines the freshly audited inputs.  Dispose
-            # the hint and take the same renderer path as a cache miss.
-            owner.close()
-            owner = None
+        with measure_ingest_work("artifact_cache_lookup"):
+            owner = (
+                None
+                if families is None
+                else self.__take_artifact_receipt(authority, families)
+            )
+            invalidated = owner is not None and owner.receipt.audit != audit
+            if invalidated:
+                # A stale hint must take the renderer path after the fresh audit.
+                assert owner is not None
+                owner.close()
+                owner = None
+            record_ingest_cache(hit=owner is not None, invalidated=invalidated)
         if owner is not None:
             try:
                 ArtifactPreparationRepository.revalidate_cached_sources(
@@ -1403,7 +1406,10 @@ class VNextIngestPublication:
                 )
             if families is None:
                 return _ArtifactPrepared(owner, work.effect_seal, (), ())
-            with self.__context.SQLConnector() as connector:
+            with (
+                measure_ingest_work("artifact_intent_lookup"),
+                self.__context.SQLConnector() as connector,
+            ):
                 with connector.read_transaction():
                     intents = tuple(
                         _protection_intent_from_family(
