@@ -67,6 +67,7 @@ from h2hdb import (
     VNextResolvedIngestPolicy,
     VNextSourceCompletionMarker,
 )
+from h2hdb.vnext_identity import encode_source_relative_locator
 
 LEASE_MICROSECONDS = 10**9
 ADAPTER_ID = b"memory-library-v1"
@@ -228,7 +229,10 @@ class MemorySource:
 
     @property
     def galleries(self) -> tuple[MemoryGallery, ...]:
-        return tuple(self._galleries[key] for key in sorted(self._galleries))
+        return tuple(
+            self._galleries[key]
+            for key in sorted(self._galleries, key=encode_source_relative_locator)
+        )
 
     def put(self, value: MemoryGallery) -> None:
         if not isinstance(value, MemoryGallery):
@@ -248,9 +252,12 @@ class MemorySource:
         limit: int,
     ) -> VNextIngestPage[tuple[str, ...]]:
         self.page_calls += 1
-        keys = sorted(self._galleries)
+        keys = sorted(self._galleries, key=encode_source_relative_locator)
         if after_locator is not None:
-            keys = [key for key in keys if key > after_locator]
+            after_key = encode_source_relative_locator(after_locator)
+            keys = [
+                key for key in keys if encode_source_relative_locator(key) > after_key
+            ]
         items = tuple(keys[:limit])
         terminal = len(keys) <= limit
         return VNextIngestPage(items, None if terminal else items[-1], terminal)

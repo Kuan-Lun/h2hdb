@@ -134,6 +134,7 @@ _AUTHORITY_TOKEN = object()
 _AUDIT_TOKEN = object()
 _MAX_READ_BYTES = 64 * 1024
 _MAX_SOURCE_PAGE = 128
+_MAX_CATALOG_PAGE_INSERT_ROWS = 64
 _MAX_MEMBER_PLAN_BYTES = 2 * 1024 * 1024
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _PREPARATION_RECEIPT_TOKEN = object()
@@ -3091,33 +3092,12 @@ def _insert_catalog_artifact_occurrence(
             key_parameters=(revision, publication_key, row[0]),
             conflict_label="unchanged catalog storage object",
         )
-    pages = work.connector.fetch_all(
-        "SELECT resource_kind, page_index, extent_offset, extent_length, "
-        "media_type, image_sha256, width, height FROM catalog_pages "
-        "WHERE revision = %s AND publication_key = %s ORDER BY page_index",
-        (base_revision, publication_key),
+    _copy_unchanged_catalog_pages(
+        work,
+        base_revision=base_revision,
+        revision=revision,
+        publication_key=publication_key,
     )
-    for row in pages:
-        _insert_or_compare(
-            work,
-            "catalog_pages",
-            (
-                "revision",
-                "publication_key",
-                "resource_kind",
-                "page_index",
-                "extent_offset",
-                "extent_length",
-                "media_type",
-                "image_sha256",
-                "width",
-                "height",
-            ),
-            (revision, publication_key, *row),
-            key_where=("revision = %s AND publication_key = %s AND page_index = %s"),
-            key_parameters=(revision, publication_key, row[1]),
-            conflict_label="unchanged catalog page",
-        )
     thumbnails = work.connector.fetch_all(
         "SELECT resource_kind, extent_offset, extent_length, media_type, "
         "image_sha256, width, height FROM catalog_thumbnails "
@@ -3148,6 +3128,91 @@ def _insert_catalog_artifact_occurrence(
             key_parameters=(revision, publication_key),
             conflict_label="unchanged catalog thumbnail",
         )
+
+
+_CATALOG_PAGE_COLUMNS = (
+    "revision",
+    "publication_key",
+    "resource_kind",
+    "page_index",
+    "extent_offset",
+    "extent_length",
+    "media_type",
+    "image_sha256",
+    "width",
+    "height",
+)
+
+
+def _copy_unchanged_catalog_pages(
+    work: VNextUnitOfWork,
+    *,
+    base_revision: int,
+    revision: int,
+    publication_key: bytes,
+) -> None:
+    """Copy immutable descriptors in bounded keyset windows under the caller fence."""
+    after = -1
+    while True:
+        source = work.connector.fetch_all(
+            f"SELECT {', '.join(_CATALOG_PAGE_COLUMNS[2:])} FROM catalog_pages "
+            "WHERE revision = %s AND publication_key = %s AND page_index > %s "
+            "ORDER BY page_index LIMIT 128",
+            (base_revision, publication_key, after),
+        )
+        if not source:
+            return
+        expected = {row[1]: (revision, publication_key, *row) for row in source}
+        actual = work.connector.fetch_all(
+            f"SELECT {', '.join(_CATALOG_PAGE_COLUMNS)} FROM catalog_pages "
+            "WHERE revision = %s AND publication_key = %s "
+            f"AND page_index IN ({', '.join('%s' for _ in expected)}) "
+            "ORDER BY page_index LIMIT 128",
+            (revision, publication_key, *expected),
+        )
+        for row in actual:
+            if expected.pop(row[3], None) != row:
+                raise ArtifactPreparationConflictError(
+                    "unchanged catalog page collides with different exact facts"
+                )
+        missing = tuple(expected.values())
+        for start in range(0, len(missing), _MAX_CATALOG_PAGE_INSERT_ROWS):
+            _insert_unchanged_catalog_pages(
+                work, missing[start : start + _MAX_CATALOG_PAGE_INSERT_ROWS]
+            )
+        if len(source) < _MAX_SOURCE_PAGE:
+            return
+        after = source[-1][1]
+
+
+def _insert_unchanged_catalog_pages(
+    work: VNextUnitOfWork, rows: tuple[tuple[Any, ...], ...]
+) -> None:
+    if not 1 <= len(rows) <= _MAX_CATALOG_PAGE_INSERT_ROWS:
+        raise ValueError("catalog page insert must contain 1..64 rows")
+    # A single statement is atomic on both backends.  Ten columns * 64 rows also
+    # stays below SQLite's historical 999-variable floor.
+    values_sql = f"({', '.join('%s' for _ in _CATALOG_PAGE_COLUMNS)})"
+    try:
+        work.connector.execute(
+            f"INSERT INTO catalog_pages ({', '.join(_CATALOG_PAGE_COLUMNS)}) "
+            f"VALUES {', '.join(values_sql for _ in rows)}",
+            tuple(value for row in rows for value in row),
+        )
+    except DatabaseDuplicateKeyError:
+        # A competing exact insert may cover only part of this window. Reuse
+        # the existing locking collision comparison for this bounded race path;
+        # never suppress other database errors or leave its missing rows behind.
+        for row in rows:
+            _insert_or_compare(
+                work,
+                "catalog_pages",
+                _CATALOG_PAGE_COLUMNS,
+                row,
+                key_where="revision = %s AND publication_key = %s AND page_index = %s",
+                key_parameters=(row[0], row[1], row[3]),
+                conflict_label="unchanged catalog page",
+            )
 
 
 def _compare_delta_for_input(

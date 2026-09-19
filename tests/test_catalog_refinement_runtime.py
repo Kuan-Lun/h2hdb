@@ -22,12 +22,19 @@ def _generated_catalog_database(path: Path) -> SQLiteConnector:
     connector.connect()
     payload: Any = ARTIFACT["backends"]
     payload = payload["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        if seed["seed_id"].startswith("catalog."):
-            connector.execute(seed["sql"], seed["parameters"])
+    # Validators consume the completed fixture, not intermediate bootstrap
+    # states. Commit once before callers change PRAGMAs or begin transactions.
+    try:
+        with connector.transaction():
+            for _slice_id, statements in payload["slices"]:
+                for _statement_id, _kind, _name, sql in statements:
+                    connector.execute(sql)
+            for seed in payload["bootstrap_seeds"]:
+                if seed["seed_id"].startswith("catalog."):
+                    connector.execute(seed["sql"], seed["parameters"])
+    except BaseException:
+        connector.close()
+        raise
     return connector
 
 

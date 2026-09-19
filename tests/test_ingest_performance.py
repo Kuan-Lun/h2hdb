@@ -176,13 +176,13 @@ def test_debug_query_top_distinguishes_repeated_work_from_one_slow_call(
     performance.close()
 
 
-def test_info_does_not_collect_query_statistics(
+def test_info_collects_cumulative_query_statistics(
     performance_log: logging.Logger,
 ) -> None:
     performance = IngestPerformance(performance_log, backend="mariadb")
     with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
         sample.record_sql_operation("sql", 2.0, "SELECT private_payload", 128)
-        assert not sample.queries
+        assert sum(item.calls for item in sample.queries.values()) == 1
         assert len(sample.slowest.snapshot()) == 1
         assert sample.counters.read_rows == 128
     performance.close()
@@ -200,7 +200,9 @@ def test_info_slowest_queries_do_not_disappear_after_64_fingerprints(
                 sample.record_sql_operation("sql", seconds, f"SELECT {index}", 1)
                 clock.now += seconds
         sample.terminal = True
-        assert not sample.queries
+        assert len(sample.queries) == 65
+        assert sum(item.calls for item in sample.queries.values()) == 390
+        assert sample.queries["other"].calls == 198
         assert len(sample.slowest._entries) == 5
     info = "\n".join(
         record.message for record in caplog.records if record.levelno == logging.INFO

@@ -28,9 +28,11 @@ from .sql_performance import (
     SQLMeasurement,
     SQLQueryStatistics,
     SQLSlowQueries,
+    SQLTransactionStatistics,
     execution_owner,
     measure_sql,
     query_fingerprint,
+    query_totals_snapshot,
     read_clock,
 )
 
@@ -70,6 +72,9 @@ class _Statistics:
     counters: SQLCounters = field(default_factory=SQLCounters)
     queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
+    transactions: SQLTransactionStatistics = field(
+        default_factory=SQLTransactionStatistics
+    )
 
     def record(
         self,
@@ -78,7 +83,7 @@ class _Statistics:
         fingerprint: str | None,
         rows: int,
         *,
-        debug: bool,
+        operation: str,
     ) -> None:
         match category:
             case "sql":
@@ -86,7 +91,7 @@ class _Statistics:
                 self.counters.sql_seconds += elapsed
                 self.counters.read_rows += rows
                 self.slowest.record(fingerprint, elapsed, rows)
-                if debug and fingerprint is not None:
+                if fingerprint is not None:
                     if (
                         fingerprint not in self.queries
                         and len(self.queries) >= _QUERY_LIMIT
@@ -102,22 +107,19 @@ class _Statistics:
             case _:
                 self.counters.transaction_calls += 1
                 self.counters.transaction_seconds += elapsed
+                self.transactions.record(operation, elapsed)
 
     def snapshot(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self.counters)
         result["query_slowest"] = self.slowest.snapshot()
-        result["query_top"] = [
-            {
-                "fingerprint": key,
-                "calls": item.calls,
-                "seconds": item.seconds,
-                "max_seconds": item.max_seconds,
-                "returned_rows": item.read_rows,
-            }
-            for key, item in sorted(
-                self.queries.items(), key=lambda pair: pair[1].seconds, reverse=True
-            )[:5]
-        ]
+        result["query_top"] = query_totals_snapshot(self.queries)
+        overflow = self.queries.get("other", SQLQueryStatistics())
+        result["query_overflow"] = {
+            "calls": overflow.calls,
+            "seconds": overflow.seconds,
+            "returned_rows": overflow.read_rows,
+        }
+        result["transaction_breakdown"] = self.transactions.snapshot()
         return result
 
 
@@ -163,6 +165,7 @@ class DatabaseSpan:
             ),
             "labels": dict(self.labels),
             **self._inclusive.snapshot(),
+            "exclusive_transaction_breakdown": self._exclusive.transactions.snapshot(),
             **{
                 "exclusive_" + key: value
                 for key, value in asdict(self._exclusive.counters).items()
@@ -177,6 +180,9 @@ class _PhaseTotal:
     calls: int = 0
     exclusive_seconds: float = 0.0
     counters: SQLCounters = field(default_factory=SQLCounters)
+    transactions: SQLTransactionStatistics = field(
+        default_factory=SQLTransactionStatistics
+    )
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -184,6 +190,7 @@ class _PhaseTotal:
             "labels": self.labels,
             "calls": self.calls,
             "exclusive_seconds": self.exclusive_seconds,
+            "exclusive_transaction_breakdown": self.transactions.snapshot(),
             **{
                 "exclusive_" + key: value
                 for key, value in asdict(self.counters).items()
@@ -229,10 +236,10 @@ class _Operation:
         with self.lock:
             for span in self.stack:
                 span._inclusive.record(
-                    category, elapsed, fingerprint, rows, debug=self.owner.debug
+                    category, elapsed, fingerprint, rows, operation=query
                 )
             self.stack[-1]._exclusive.record(
-                category, elapsed, fingerprint, rows, debug=self.owner.debug
+                category, elapsed, fingerprint, rows, operation=query
             )
 
     def _envelope(self, event: str) -> dict[str, Any]:
@@ -341,6 +348,9 @@ class _Operation:
                             "exclusive_sql_seconds",
                             "exclusive_read_rows",
                             "query_slowest",
+                            "query_top",
+                            "query_overflow",
+                            "transaction_breakdown",
                         )
                     }
                     for phase in sorted(
@@ -448,6 +458,7 @@ def database_phase(name: str, **fields: DiagnosticValue) -> Iterator[DatabaseSpa
             total.calls += 1
             total.exclusive_seconds += record["exclusive_seconds"]
             total.counters.add(span._exclusive.counters)
+            total.transactions.add(span._exclusive.transactions)
             ranked = (
                 status != "completed",
                 record["elapsed_seconds"],

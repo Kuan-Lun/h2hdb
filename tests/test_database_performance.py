@@ -113,8 +113,8 @@ def test_additive_diagnostics_preserve_schema_one_field_meaning(
     """Existing consumers can project the same fields at either log level.
 
     One connector fetch returns three rows, so this also rejects confusing
-    calls with returned rows. Repeated SQL retains its cumulative DEBUG shape;
-    INFO already omitted cumulative fingerprints before the added diagnostics.
+    calls with returned rows. INFO now includes the same bounded cumulative
+    fingerprints as DEBUG; counts retain their meaning at both levels.
     """
     clock = _Clock()
     performance = _performance(caplog, level=level, clock=clock)
@@ -168,9 +168,7 @@ def test_additive_diagnostics_preserve_schema_one_field_meaning(
                 "max_seconds": 2.0,
                 "returned_rows": 9,
             }
-        ]
-        if level == logging.DEBUG
-        else [],
+        ],
     }
     assert {key: terminal[key] for key in previous_fields} == previous_fields
     previous_phase_fields = {
@@ -649,7 +647,7 @@ def test_info_heartbeat_identifies_blocked_sql_before_completion(
         assert terminal["sql_calls"] == 1
         assert terminal["sql_seconds"] == 12.0
         assert terminal["pending_call"] is None
-        assert terminal["query_top"] == []
+        assert terminal["query_top"][0]["calls"] == 1
         assert terminal["query_slowest"][0]["seconds"] == 12.0
         assert terminal["phase_top"][0]["sql_seconds"] == 12.0
         assert reporting_threads and all(
@@ -697,7 +695,8 @@ def test_slow_queries_after_fingerprint_capacity_remain_identifiable(
             sha256(b"SELECT %s AS q_64").hexdigest()[:16]
         ] * 2
     assert terminal["sql_calls"] == terminal["read_rows"] == queries * 3
-    assert bool(terminal["query_top"]) == (level == logging.DEBUG)
+    assert terminal["query_top"]
+    assert terminal["query_overflow"]["calls"] == max(0, queries - 64) * 3
 
 
 @pytest.mark.parametrize("keys", [63, 64, 65, 130])

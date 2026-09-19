@@ -134,6 +134,20 @@ def test_cleanup_acceptance_is_explicit_serial_and_covers_both_backends() -> Non
     assert not any(phase in runner.MERGE_PHASES for phase in phases)
 
 
+def test_performance_acceptance_keeps_deep_public_paths_serial_and_manual() -> None:
+    arguments = runner._arguments(["performance-acceptance"])
+    phases = runner._phases(arguments.profile)
+    assert arguments.budget_seconds is None
+    assert [phase.marker_expression for phase in phases] == [
+        "performance_acceptance and not mariadb",
+        "performance_acceptance and mariadb",
+    ]
+    assert [phase.mariadb_enabled for phase in phases] == [False, True]
+    assert all(phase.worker_count == "0" for phase in phases)
+    assert all("not deep" not in phase.marker_expression for phase in phases)
+    assert not any(phase in runner.MERGE_PHASES for phase in phases)
+
+
 def test_phase_environment_isolates_backend_and_pytest_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

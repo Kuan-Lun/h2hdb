@@ -30,7 +30,13 @@ TERMINATION_FAILED_EXIT_CODE = 125
 INTERRUPTED_EXIT_CODE = 130
 _WINDOWS_SUPERVISOR_MODE: Final = "--internal-windows-supervisor"
 _WINDOWS_START_TOKEN: Final = b"\x01"
-ProfileName = Literal["merge", "deep", "mariadb-server-crash", "cleanup-acceptance"]
+ProfileName = Literal[
+    "merge",
+    "deep",
+    "mariadb-server-crash",
+    "cleanup-acceptance",
+    "performance-acceptance",
+]
 
 
 class RunnerSignalInterrupt(BaseException):
@@ -367,6 +373,23 @@ CLEANUP_ACCEPTANCE_PHASES = tuple(
     )
 )
 
+# Includes deep matrices and the public issue/prepare/commit paths. Keeping each
+# backend serial avoids making the runner itself a competing benchmark load.
+PERFORMANCE_ACCEPTANCE_PHASES = tuple(
+    PytestPhase(
+        label=f"{backend} measured ingest cost acceptance profile",
+        marker_expression=f"performance_acceptance and {selector}",
+        worker_count="0",
+        mariadb_enabled=backend == "MariaDB 10.11.11",
+        durations=20,
+        stop_after_first_failure=True,
+    )
+    for backend, selector in (
+        ("SQLite", "not mariadb"),
+        ("MariaDB 10.11.11", "mariadb"),
+    )
+)
+
 DEEP_PHASES = (
     PytestPhase(
         label="SQLite complete manual profile",
@@ -408,6 +431,8 @@ def _phases(profile: ProfileName) -> tuple[PytestPhase, ...]:
             return (MARIADB_SERVER_CRASH_PHASE,)
         case "cleanup-acceptance":
             return CLEANUP_ACCEPTANCE_PHASES
+        case "performance-acceptance":
+            return PERFORMANCE_ACCEPTANCE_PHASES
     return DEEP_PHASES
 
 
@@ -981,13 +1006,20 @@ def _arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "profile",
-        choices=("merge", "deep", "mariadb-server-crash", "cleanup-acceptance"),
+        choices=(
+            "merge",
+            "deep",
+            "mariadb-server-crash",
+            "cleanup-acceptance",
+            "performance-acceptance",
+        ),
         nargs="?",
         default="merge",
         help=(
             "merge is bounded and selective; deep is complete and manual-only; "
             "mariadb-server-crash is its isolated destructive-container phase; "
-            "cleanup-acceptance is the manual two-backend compaction/cleanup contract"
+            "cleanup-acceptance is the manual two-backend compaction/cleanup contract; "
+            "performance-acceptance runs serial cost and latency experiments on both backends"
         ),
     )
     parser.add_argument(

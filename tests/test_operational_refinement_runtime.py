@@ -43,31 +43,34 @@ ARTIFACT_DATA = ARTIFACT
 def greenfield(tmp_path: Path) -> Iterator[SQLiteConnector]:
     connector = SQLiteConnector(str(tmp_path / "operational-refinement.sqlite3"))
     connector.connect()
-    SQLiteSchemaEpochCatalog().create_control_table(connector)
-    connector.execute(
-        """
-        INSERT INTO h2hdb_schema_epoch
-            (singleton_id, epoch, schema_version, state, manifest_sha256,
-             started_at, ready_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            1,
-            ARTIFACT_DATA["epoch"],
-            ARTIFACT_DATA["schema_version"],
-            "BUILDING",
-            _manifest_sha256("sqlite"),
-            0,
-            None,
-        ),
-    )
-    payload = ARTIFACT_DATA["backends"]["sqlite"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
     try:
+        # This fixture supplies completed state; bootstrap crash boundaries are
+        # covered by the schema lifecycle tests, not by these read validators.
+        with connector.transaction():
+            SQLiteSchemaEpochCatalog().create_control_table(connector)
+            connector.execute(
+                """
+                INSERT INTO h2hdb_schema_epoch
+                    (singleton_id, epoch, schema_version, state, manifest_sha256,
+                     started_at, ready_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    1,
+                    ARTIFACT_DATA["epoch"],
+                    ARTIFACT_DATA["schema_version"],
+                    "BUILDING",
+                    _manifest_sha256("sqlite"),
+                    0,
+                    None,
+                ),
+            )
+            payload = ARTIFACT_DATA["backends"]["sqlite"]
+            for _slice_id, statements in payload["slices"]:
+                for _statement_id, _kind, _name, sql in statements:
+                    connector.execute(sql)
+            for seed in payload["bootstrap_seeds"]:
+                connector.execute(seed["sql"], seed["parameters"])
         yield connector
     finally:
         connector.close()
@@ -397,7 +400,10 @@ def test_full_check_rejects_operational_effect_roots_without_live_owner(
 def test_runtime_blockers_name_every_delegated_high_cardinality_duty() -> None:
     assert set(OPERATIONAL_RUNTIME_WRITER_BLOCKERS) == set(
         builtin_operational_semantic_validators()
-    ) - {"h2hdb.operational.epoch-manifest.v1"}
+    ) - {
+        "h2hdb.operational.epoch-manifest.v1",
+        "h2hdb.operational.database-audit-schedule.v1",
+    }
     cache = OPERATIONAL_RUNTIME_WRITER_BLOCKERS[
         "h2hdb.operational.canonical-hash-cache.v1"
     ]
@@ -1039,6 +1045,8 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         validator(recording)
 
     allowed_relations = {
+        "database_audit_state",
+        "storage_instance_binding",
         "ingest_coordination_head",
         "ingest_generation",
         "ingest_generation_owner",
@@ -1085,6 +1093,8 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
     fixed_scan_tables = {
         _table_name(name)
         for name in {
+            "database_audit_state",
+            "storage_instance_binding",
             "maintenance_gate_holder",
             "cleanup_target_kind",
             "cleanup_sweep_target",
