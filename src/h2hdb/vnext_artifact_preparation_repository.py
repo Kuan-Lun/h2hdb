@@ -50,6 +50,7 @@ from .domain import (
     StorageObjectDescriptor,
     StorageObjectKey,
 )
+from .ingest_work_performance import measure_ingest_work, record_ingest_transfer
 from .ports import ArtifactStorageAdapter
 from .sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from .vnext_analysis_family import (
@@ -1240,6 +1241,7 @@ class ArtifactPreparationRepository:
         return _artifact_authority(work, projection, publication, now=timestamp)
 
     @staticmethod
+    @measure_ingest_work("artifact_input_audit")
     def audit_inputs(
         connector: SQLConnector,
         *,
@@ -1446,19 +1448,22 @@ class ArtifactPreparationRepository:
             bytes.fromhex(intent.storage_object.sha256),
             intent.storage_object.size_bytes,
         )
-        if _hash_stream(stream) != expected:
+        with measure_ingest_work("artifact_protection_before_hash"):
+            actual = _hash_stream(stream)
+        if actual != expected:
             raise ArtifactPreparationConflictError(
                 "prepared resource bytes changed before protection"
             )
         stream.seek(0)
-        raw = adapter.protect(
-            stream,
-            intent.storage_object.key,
-            expected[0],
-            expected[1],
-            intent.storage_object.modified_at,
-            intent.protection_token,
-        )
+        with measure_ingest_work("artifact_protection_adapter"):
+            raw = adapter.protect(
+                stream,
+                intent.storage_object.key,
+                expected[0],
+                expected[1],
+                intent.storage_object.modified_at,
+                intent.protection_token,
+            )
         if (
             not isinstance(raw, ArtifactStorageEvidence)
             or not raw.stored
@@ -1468,7 +1473,9 @@ class ArtifactPreparationRepository:
                 "storage adapter did not acknowledge the exact verified resource"
             )
         raw.__post_init__()
-        if _hash_stream(stream) != expected:
+        with measure_ingest_work("artifact_protection_after_hash"):
+            actual = _hash_stream(stream)
+        if actual != expected:
             raise ArtifactPreparationConflictError(
                 "storage adapter changed the verified resource"
             )
@@ -1975,6 +1982,7 @@ def _hash_stream(stream: BinaryIO) -> tuple[bytes, int]:
             raise ArtifactPreparationConflictError(
                 "artifact stream returned non-bytes data"
             )
+        record_ingest_transfer(read_bytes=len(part))
         if not part:
             break
         digest.update(part)

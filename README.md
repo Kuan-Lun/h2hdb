@@ -163,6 +163,17 @@ it is not a complete ranking of every query shape. Transaction timings distingui
 `begin`, `begin_read`, `commit` and `rollback`, including failed calls. They measure
 client elapsed time, not database lock waits or filesystem flush time separately.
 
+Publication INFO summaries also attribute artifact input audits, source copying
+and revalidation, rendering, output verification and storage protection. Each
+operation reports completed calls, failures, inclusive/exclusive wall time and
+actual logical read/write bytes; cache lookup includes hits, misses and
+invalidations. Exclusive time subtracts nested local-work spans, but these spans
+can still contain SQL and adapter measurements. Do not add the different layers
+or interpret logical transfers as physical disk I/O. An unfinished step has no
+completed local-work summary yet; existing progress records identify its active
+operation. Ingest's adapter and image-worker summaries provide the filesystem
+and codec details that Core intentionally does not interpret.
+
 `sql_calls` counts connector method calls, not server statements or network
 round trips. `read_rows` counts returned rows, not examined rows. Client SQL time
 includes driver, transport, execution and waits. Use the manual cost probes to
@@ -205,6 +216,26 @@ image encoding, OPDS HTTP reads or deployment mounts: use the ingest source
 snapshot probes and the separate instrumented deployment acceptance for those.
 Passing one phase or a small correctness case does not complete this matrix or
 establish NAS throughput.
+
+The development catch-up probe compares publication batch sizes on disposable
+databases while forbidding deep reads of unchanged source markers:
+
+```bash
+.venv/bin/python scripts/ingest_batch_scaling_probe.py \
+  --case 256:64:64 --case 256:256:64 --output /tmp/catchup-sqlite.json
+```
+
+Cases are `galleries:publication_batch:pages_per_gallery`. Each turn checks the
+public catalog and cleanup `DONE`; each case ends with a full READY audit. Use
+`--backend mariadb` explicitly for a local MariaDB 10.11.11 testcontainer, and
+`--artifacts` for neutral in-memory artifacts. These synthetic pages do not
+exercise image decoding or real archive I/O. The separate development-only
+`ingest_locator_reuse_probe.py --case 64:8:4 --output /tmp/locator-reuse.json`
+compares a scoped locator-reuse counterfactual with the actual implementation,
+restoring the original methods afterward. It is not installed runtime behavior.
+Query-count savings and small local timings do not establish a full-library
+completion target; input size, page distribution, duplicate patterns, retained
+history and storage latency all matter.
 
 ## Upgrade or restore a database
 

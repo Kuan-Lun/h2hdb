@@ -21,6 +21,7 @@ from h2hdb.domain import (
     VNextIngestAdvanceResult,
     VNextIngestSession,
 )
+from h2hdb.ingest_work_performance import WorkCosts, collect_ingest_work
 from h2hdb.ports import ArtifactStorageAdapter
 from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_artifact_family import PreparedArtifactFamily
@@ -343,23 +344,30 @@ def test_optional_receipt_cache_is_differentially_equivalent_and_renders_once(
     harness = _ArtifactHarness(authority, intent)
     harness.install(monkeypatch)
 
-    optimized, optimized_renders, optimized_durable = _run_two_phase(
-        _context(tmp_path / "optimized.sqlite3"),
-        harness,
-        family,
-        restart_after_pending=False,
-    )
-    reference, reference_renders, reference_durable = _run_two_phase(
-        _context(tmp_path / "restart-reference.sqlite3"),
-        harness,
-        family,
-        restart_after_pending=True,
-    )
+    optimized_costs, reference_costs = WorkCosts(), WorkCosts()
+    with collect_ingest_work(optimized_costs, lambda: 0.0):
+        optimized, optimized_renders, optimized_durable = _run_two_phase(
+            _context(tmp_path / "optimized.sqlite3"),
+            harness,
+            family,
+            restart_after_pending=False,
+        )
+    with collect_ingest_work(reference_costs, lambda: 0.0):
+        reference, reference_renders, reference_durable = _run_two_phase(
+            _context(tmp_path / "restart-reference.sqlite3"),
+            harness,
+            family,
+            restart_after_pending=True,
+        )
 
     assert optimized == reference
     assert optimized_durable == reference_durable
     assert optimized_renders == 1
     assert reference_renders == 2
+    optimized_cache = optimized_costs.operations["artifact_cache_lookup"]
+    reference_cache = reference_costs.operations["artifact_cache_lookup"]
+    assert (optimized_cache.cache_hits, optimized_cache.cache_misses) == (1, 1)
+    assert (reference_cache.cache_hits, reference_cache.cache_misses) == (0, 2)
     assert harness.source_revalidation_count == 1
     assert harness.protected == [intent, intent]
     assert all(receipt.close_count == 1 for receipt in harness.receipts)
@@ -580,7 +588,15 @@ def test_authority_drift_and_cached_audit_drift_use_reference_rerender(
     audit_receipt = harness.receipts[-1]
     harness.audit_snapshot = b"changed-after-persist"
     pending = _work(authority, (family,))
-    rerendered = _prepare(audit_machine, pending)
+    costs = WorkCosts()
+    with collect_ingest_work(costs, lambda: 0.0):
+        rerendered = _prepare(audit_machine, pending)
+    cache = costs.operations["artifact_cache_lookup"]
+    assert (cache.cache_hits, cache.cache_misses, cache.cache_invalidations) == (
+        0,
+        1,
+        1,
+    )
     rerendered_receipt = cast(_TrackedReceipt, cast(object, rerendered.receipt))
 
     assert audit_receipt.close_count == 1

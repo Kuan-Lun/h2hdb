@@ -33,6 +33,7 @@ from .domain import (
     ArtifactSourceMember,
     ArtifactSourceRole,
 )
+from .ingest_work_performance import measure_ingest_work, record_ingest_transfer
 from .ports import ArtifactStorageAdapter
 from .source_errors import VNextSourceChangedError
 from .vnext_domains import (
@@ -342,11 +343,12 @@ def _render_artifact(
             ),
         )
         try:
-            evidence = adapter.render_archive(
-                staged.members,
-                destination,
-                gid=exact_gid,
-            )
+            with measure_ingest_work("artifact_archive_render"):
+                evidence = adapter.render_archive(
+                    staged.members,
+                    destination,
+                    gid=exact_gid,
+                )
         except ArtifactRenderConflictError, ArtifactRenderNotReadyError:
             raise
         except (OSError, ValueError) as error:
@@ -385,6 +387,7 @@ def _render_artifact(
         raise
 
 
+@measure_ingest_work("artifact_cached_source_verify")
 def verify_artifact_sources(
     adapter: ArtifactStorageAdapter,
     *,
@@ -474,6 +477,7 @@ class _StagedMembers:
         self.members = members
         self._closed = False
 
+    @measure_ingest_work("artifact_source_rehash")
     def verify_unchanged(self) -> None:
         offset = 0
         for row in self._rows:
@@ -492,6 +496,7 @@ class _StagedMembers:
             )
 
 
+@measure_ingest_work("artifact_source_copy")
 def _stage_verified_members(
     adapter: ArtifactStorageAdapter,
     rows: tuple[ArtifactSourceReference, ...],
@@ -562,6 +567,7 @@ def _stage_verified_members(
         raise
 
 
+@measure_ingest_work("artifact_source_open")
 def _open_verified_source(
     adapter: ArtifactStorageAdapter,
     row: ArtifactSourceReference,
@@ -605,6 +611,7 @@ def _read_verified_source(
             raise ArtifactRenderConflictError(
                 "artifact source returned a non-bytes chunk"
             )
+        record_ingest_transfer(read_bytes=len(part))
         if not part:
             raise VNextSourceChangedError(
                 "artifact source ended before its sealed size"
@@ -615,6 +622,7 @@ def _read_verified_source(
             )
         if destination is not None:
             written = destination.write(part)
+            record_ingest_transfer(write_bytes=written)
             if written != len(part):
                 raise ArtifactRenderConflictError(
                     "artifact source spool accepted a partial write"
@@ -626,6 +634,7 @@ def _read_verified_source(
         raise ArtifactRenderConflictError(
             "artifact source returned a non-bytes EOF probe"
         )
+    record_ingest_transfer(read_bytes=len(trailing))
     if trailing:
         raise VNextSourceChangedError(
             "artifact source contains bytes beyond its sealed size"
@@ -645,6 +654,8 @@ def _hash_extent(stream: BinaryIO, offset: int, length: int) -> tuple[bytes, int
     digest = sha256()
     while remaining:
         part = stream.read(min(remaining, _COPY_CHUNK_BYTES))
+        if isinstance(part, bytes):
+            record_ingest_transfer(read_bytes=len(part))
         if not isinstance(part, bytes) or not part:
             raise ArtifactRenderConflictError(
                 "verified artifact spool extent is truncated"
@@ -654,6 +665,7 @@ def _hash_extent(stream: BinaryIO, offset: int, length: int) -> tuple[bytes, int
     return digest.digest(), length
 
 
+@measure_ingest_work("artifact_archive_hash")
 def _hash_exact_stream(stream: BinaryIO) -> tuple[bytes, int]:
     stream.seek(0)
     digest = sha256()
@@ -664,6 +676,7 @@ def _hash_exact_stream(stream: BinaryIO) -> tuple[bytes, int]:
             raise ArtifactRenderConflictError(
                 "rendered artifact returned a non-bytes chunk"
             )
+        record_ingest_transfer(read_bytes=len(part))
         if not part:
             break
         if count > INT63_MAX - len(part):
