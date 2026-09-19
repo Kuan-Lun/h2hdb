@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-19T02:27:10+00:00",
+  "checked_at": "2026-09-19T14:47:45+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.11",
+  "project_version": "0.39.12",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed fresh public PyPI/npm candidate metadata for every direct build/runtime/optional/development and Node dependency, including latest candidates outside the declared upper bounds. All 12 Python requirement entries (11 unique packages) and the Node dependency are unchanged from the committed 0.39.10 receipt checked at 2026-09-18T06:44:13+00:00. The existing environment already contains every discovered latest candidate, including markdownlint-cli2 0.23.2. All candidates satisfy the declared constraints and Python metadata supports 3.14. uv pip check passed for 36 installed packages; npm ls --depth=0 passed. The identical-version upstream review is carried forward; no new third-party release-note review or dependency change was necessary. This audit did not modify manifests or installed packages. Runtime changes, exact-tree release checks and manual performance/deployment evidence require their own actual outcomes and are not implied by this dependency review.",
+    "note": "Reviewed fresh PyPI/npm candidates for every direct build, runtime, optional/development and Node dependency, including candidates outside declared upper bounds. All 12 Python requirement entries (11 unique packages) and markdownlint-cli2 are identical to the committed 0.39.11 audit; identical-version upstream reviews carry forward. Installed direct dependencies match all registry latest candidates, all satisfy the declared bounds, and Python metadata supports 3.14. uv pip check passed for 36 packages; npm ls reports markdownlint-cli2 0.23.2. No dependency upgrade or manifest change was needed. Runtime instrumentation, local synthetic performance evidence and exact-tree release validation have separate results; this dependency receipt does not claim those tests passed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
