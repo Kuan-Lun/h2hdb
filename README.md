@@ -157,6 +157,12 @@ even after the detailed query-statistics capacity is reached. No query parameter
 or source payloads are logged. Phase totals expose repeated small costs that a
 list of the slowest individual phases can miss.
 
+INFO now also reports cumulative time for the first 64 SQL fingerprints and an
+explicit overflow total. This can expose thousands of individually fast calls;
+it is not a complete ranking of every query shape. Transaction timings distinguish
+`begin`, `begin_read`, `commit` and `rollback`, including failed calls. They measure
+client elapsed time, not database lock waits or filesystem flush time separately.
+
 `sql_calls` counts connector method calls, not server statements or network
 round trips. `read_rows` counts returned rows, not examined rows. Client SQL time
 includes driver, transport, execution and waits. Use the manual cost probes to
@@ -178,6 +184,27 @@ compares three alternating executions of the current canonical candidate query
 and the historical test predicate. Its title-cache visit target applies to the
 probe's unique-title, single-policy fixture; it is not an arbitrary-data or NAS
 latency guarantee.
+
+For changes to analysis ancestry validation or unchanged artifact descriptors,
+run `python scripts/run-pytest.py performance-acceptance` explicitly with Docker
+available. It runs serial SQLite and MariaDB 10.11.11 experiments, including deep
+cases; it is separate from the bounded merge receipt. Do not run other tests or
+benchmarks concurrently when interpreting elapsed times. The matrix includes
+127/128/129 source-page boundaries across 19 actual publication/cleanup rounds,
+ancestry depth through compaction, descriptor copy boundaries through 4096 pages,
+and fixed additions of 100 galleries to different retained catalogs. Public-path
+experiments exercise the facade's issue/prepare/commit orchestration and verify
+publication, cleanup and READY; writer-only inputs are reported separately.
+
+Historical implementations serve as negative controls for operation-count
+regressions. JSON reports under pytest's temporary directory retain alternating
+baseline/candidate elapsed samples, exact-output checks and source hashes. An
+elapsed-time improvement is an experimental result, not a timing assertion in
+the merge gate. This profile does not exercise source filesystem bytes, real
+image encoding, OPDS HTTP reads or deployment mounts: use the ingest source
+snapshot probes and the separate instrumented deployment acceptance for those.
+Passing one phase or a small correctness case does not complete this matrix or
+establish NAS throughput.
 
 ## Upgrade or restore a database
 
