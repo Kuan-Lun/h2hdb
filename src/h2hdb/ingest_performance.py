@@ -27,6 +27,8 @@ from .sql_performance import (
     SQLCounters,
     SQLQueryStatistics,
     SQLSlowQueries,
+    SQLTransactionStatistics,
+    accumulate_query,
     execution_owner,
     measure_sql,
     query_fingerprint,
@@ -37,6 +39,28 @@ _REPORT_INTERVAL_SECONDS = 60.0
 _QUERY_LIMIT = 64
 _NESTED_RECORD_LIMIT = 64
 _PHASE_LIMIT = 128
+
+
+def _sql_cost_details(
+    queries: dict[str, SQLQueryStatistics],
+    transactions: SQLTransactionStatistics,
+) -> str:
+    """One bounded INFO representation for stages, preparation and isolated calls."""
+
+    details = ""
+    if queries:
+        top = sorted(queries.items(), key=lambda item: item[1].seconds, reverse=True)[
+            :5
+        ]
+        details += (
+            f"; cumulative SQL (first {_QUERY_LIMIT} fingerprints per step/stage plus other): "
+            + ";".join(item.text(key) for key, item in top)
+        )
+        overflow = queries.get("other", SQLQueryStatistics())
+        details += "; cumulative SQL overflow " + overflow.text("other")
+    if transactions.operations:
+        details += "; transaction operations " + transactions.text()
+    return details
 
 
 @dataclass(frozen=True)
@@ -62,6 +86,9 @@ class PerformanceStep:
     counters: SQLCounters = field(default_factory=SQLCounters)
     queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
+    transactions: SQLTransactionStatistics = field(
+        default_factory=SQLTransactionStatistics
+    )
     processed_rows: int = 0
     replayed: bool = False
     terminal: bool = False
@@ -95,7 +122,7 @@ class PerformanceStep:
                 counters.read_rows += rows
                 key = query_fingerprint(query)
                 self.slowest.record(key, elapsed, rows)
-                if self.owner.debug and key is not None:
+                if key is not None:
                     if key not in self.queries and len(self.queries) >= _QUERY_LIMIT:
                         key = "other"
                     statistics = self.queries.get(key)
@@ -108,6 +135,7 @@ class PerformanceStep:
             case _:
                 counters.transaction_calls += 1
                 counters.transaction_seconds += elapsed
+                self.transactions.record(query, elapsed)
 
     def defer(self, records: list[_Diagnostic]) -> None:
         remaining = _NESTED_RECORD_LIMIT - len(self.deferred)
@@ -198,6 +226,7 @@ class _PreparationProgress:
                 transaction_seconds=sample.counters.transaction_seconds,
                 includes_reused_results=False,
             )
+            message += _sql_cost_details(sample.queries, sample.transactions)
         sample.owner._emit(
             _Diagnostic(
                 sample.owner,
@@ -258,6 +287,13 @@ class _Stage:
     phases: dict[str, float] = field(default_factory=dict)
     phase_counters: dict[str, SQLCounters] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
+    queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
+    transactions: SQLTransactionStatistics = field(
+        default_factory=SQLTransactionStatistics
+    )
+    phase_transactions: dict[str, SQLTransactionStatistics] = field(
+        default_factory=dict
+    )
 
 
 class IngestPerformance:
@@ -382,6 +418,7 @@ class IngestPerformance:
             message += f" correlation_id={sample.correlation_id}"
         if sample.slowest.snapshot():
             message += " query_slowest=" + sample.slowest.text()
+        message += " transaction_breakdown=" + sample.transactions.text()
         if self.debug and sample.queries:
             top = sorted(
                 sample.queries.items(), key=lambda item: item[1].seconds, reverse=True
@@ -425,6 +462,7 @@ class IngestPerformance:
                 info_message += f"; nested work {duration(sample.nested_seconds)}"
             if sample.omitted_records:
                 info_message += "; some nested diagnostic details omitted"
+            info_message += _sql_cost_details(sample.queries, sample.transactions)
             info_message += "; stage completion not confirmed."
         return _Diagnostic(self, message, info_message)
 
@@ -487,6 +525,9 @@ class IngestPerformance:
             stage.replayed += int(sample.replayed)
             stage.counters.add(sample.counters)
             stage.slowest.add(sample.slowest)
+            stage.transactions.add(sample.transactions)
+            for fingerprint, statistics in sample.queries.items():
+                accumulate_query(stage.queries, fingerprint, statistics)
             stage.finished = now
             phase = sample.phase
             if phase not in stage.phases and len(stage.phases) >= _PHASE_LIMIT:
@@ -495,6 +536,9 @@ class IngestPerformance:
                 0.0, sample.elapsed(now) - sample.nested_seconds
             )
             stage.phase_counters.setdefault(phase, SQLCounters()).add(sample.counters)
+            stage.phase_transactions.setdefault(phase, SQLTransactionStatistics()).add(
+                sample.transactions
+            )
             if failure is not None or sample.terminal:
                 records.extend(self._flush(failure or "terminal", now))
             elif (
@@ -534,6 +578,7 @@ class IngestPerformance:
         if correlation_id is not None:
             message += f" correlation_id={correlation_id}"
         message += " query_slowest=" + stage.slowest.text()
+        message += " transaction_breakdown=" + stage.transactions.text()
         stage.reported = now
         info_message = stage_description(pipeline, operation, generation, event)
         if event != "started":
@@ -559,6 +604,12 @@ class IngestPerformance:
             )
             if stage.slowest.snapshot():
                 info_message += "; slowest SQL calls " + stage.slowest.text()
+            info_message += _sql_cost_details(stage.queries, stage.transactions)
+            if stage.transactions.operations:
+                info_message += "; transaction operations by phase " + ", ".join(
+                    f"{phase}: {counts.text()}"
+                    for phase, counts in sorted(stage.phase_transactions.items())
+                )
         if correlation_id is not None:
             info_message += f"; correlation {correlation_id}"
         if event == "overlap":

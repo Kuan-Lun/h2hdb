@@ -67,10 +67,93 @@ class SQLQueryStatistics:
         self.read_rows += rows
         self.max_seconds = max(self.max_seconds, elapsed)
 
+    def add(self, other: SQLQueryStatistics) -> None:
+        self.calls += other.calls
+        self.seconds += other.seconds
+        self.read_rows += other.read_rows
+        self.max_seconds = max(self.max_seconds, other.max_seconds)
+
     def text(self, fingerprint: str) -> str:
         return (
             f"{fingerprint}(calls={self.calls},seconds={self.seconds:.6f},"
             f"returned_rows={self.read_rows},max_seconds={self.max_seconds:.6f})"
+        )
+
+
+def accumulate_query(
+    queries: dict[str, SQLQueryStatistics],
+    fingerprint: str,
+    statistics: SQLQueryStatistics,
+    *,
+    limit: int = 64,
+) -> None:
+    """Exact first-admitted fingerprints plus an explicit, conserved overflow.
+
+    This is not an all-fingerprint heavy-hitter algorithm. In particular, the
+    overflow is emitted even when it would not rank among the displayed top five.
+    Merging a bounded child cannot recover identities already in its overflow.
+    """
+    if fingerprint not in queries and len(queries) >= limit:
+        fingerprint = "other"
+    queries.setdefault(fingerprint, SQLQueryStatistics()).add(statistics)
+
+
+def query_totals_snapshot(
+    queries: dict[str, SQLQueryStatistics],
+) -> list[dict[str, str | int | float]]:
+    return [
+        {
+            "fingerprint": key,
+            "calls": item.calls,
+            "seconds": item.seconds,
+            "max_seconds": item.max_seconds,
+            "returned_rows": item.read_rows,
+        }
+        for key, item in sorted(
+            queries.items(), key=lambda pair: pair[1].seconds, reverse=True
+        )[:5]
+    ]
+
+
+@dataclass
+class SQLTransactionStatistics:
+    """Fixed connector boundary names, including failed completed attempts.
+
+    Client elapsed includes all driver/server/transport waiting. These counters
+    identify a slow commit versus begin; they do not identify fsync or lock waits.
+    """
+
+    operations: dict[str, SQLQueryStatistics] = field(default_factory=dict)
+
+    def record(self, operation: str, elapsed: float) -> None:
+        key: str
+        match operation:
+            case "begin" | "begin_read" | "commit" | "rollback":
+                key = operation
+            case _:
+                key = "other"
+        self.operations.setdefault(key, SQLQueryStatistics()).record(elapsed, 0)
+
+    def add(self, other: SQLTransactionStatistics) -> None:
+        for key, value in other.operations.items():
+            self.operations.setdefault(key, SQLQueryStatistics()).add(value)
+
+    def snapshot(self) -> list[dict[str, str | int | float]]:
+        return [
+            {
+                "operation": key,
+                "calls": value.calls,
+                "seconds": value.seconds,
+                "max_seconds": value.max_seconds,
+            }
+            for key, value in sorted(self.operations.items())
+        ]
+
+    def text(self) -> str:
+        return ";".join(
+            f"{key}(calls={value.calls},seconds={value.seconds:.6f},"
+            f"max_seconds={value.max_seconds:.6f})"
+            for key, value in sorted(self.operations.items())
         )
 
 
