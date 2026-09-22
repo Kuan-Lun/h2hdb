@@ -492,6 +492,8 @@ class VNextIngestFacade:
         policy: VNextResolvedIngestPolicy,
         max_new_galleries: int | None = None,
         progress: VNextSourcePreparationObserver | None = None,
+        reobserve_gallery_locators: tuple[tuple[str, ...], ...] = (),
+        reuse_sealed_observations: bool = True,
     ) -> VNextPreparedSource:
         """Freeze a complete source cut outside database transactions.
 
@@ -502,6 +504,15 @@ class VNextIngestFacade:
         adapter.gallery_exists probe. Only False removes it; presence or
         temporary uncertainty restores it for observation or published fallback.
         Omit the limit to admit every complete gallery in the inventory.
+
+        Exact completion-marker and qualification-policy matches reuse sealed
+        observations, including unpublished ones. Artifact preparation must still
+        verify the source bytes against those immutable observations. At most 128
+        distinct ``reobserve_gallery_locators`` can bypass marker reuse after a
+        source failure; these are observation hints, never publication authority.
+        Set ``reuse_sealed_observations=False`` with no locator hints to observe
+        every admitted gallery afresh. Deferred galleries still use only the
+        current published fallback.
         """
 
         self.__require_open()
@@ -528,6 +539,8 @@ class VNextIngestFacade:
                 policy=policy,
                 max_new_galleries=max_new_galleries,
                 progress=observe,
+                reobserve_gallery_locators=reobserve_gallery_locators,
+                reuse_sealed_observations=reuse_sealed_observations,
             )
             result._performance_id = correlation_id
             summary = result._manifest_summary
@@ -547,9 +560,27 @@ class VNextIngestFacade:
         policy: VNextResolvedIngestPolicy,
         max_new_galleries: int | None,
         progress: VNextSourcePreparationObserver,
+        reobserve_gallery_locators: tuple[tuple[str, ...], ...],
+        reuse_sealed_observations: bool,
     ) -> VNextPreparedSource:
         if max_new_galleries is not None:
             require_source_batch_limit(max_new_galleries)
+        if type(reuse_sealed_observations) is not bool:
+            raise TypeError("reuse_sealed_observations must be bool")
+        if type(reobserve_gallery_locators) is not tuple:
+            raise TypeError("reobserve_gallery_locators must be an exact tuple")
+        if len(reobserve_gallery_locators) > 128:
+            raise ValueError("reobserve_gallery_locators accepts at most 128 locators")
+        if not reuse_sealed_observations and reobserve_gallery_locators:
+            raise ValueError("full source refresh cannot include targeted locators")
+        reobserve_keys: set[bytes] = set()
+        for locator in reobserve_gallery_locators:
+            if type(locator) is not tuple:
+                raise TypeError("reobserve gallery locator must be an exact tuple")
+            key = encode_source_relative_locator(locator)
+            if key in reobserve_keys:
+                raise ValueError("reobserve gallery locators must be distinct")
+            reobserve_keys.add(key)
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
         _require_resolved_source_policy(policy)
@@ -701,6 +732,8 @@ class VNextIngestFacade:
                         tuple[tuple[str, ...], VNextSourceCompletionMarker], ...
                     ],
                 ) -> tuple[CachedSourceObservation | None, ...]:
+                    if not reuse_sealed_observations:
+                        return (None,) * len(probes)
                     with (
                         database_phase("marker_lookup", probes=len(probes)),
                         connection().read_transaction(),
@@ -711,14 +744,14 @@ class VNextIngestFacade:
                             probes=probes,
                             qualification_policy_sha256=qualification_policy,
                         )
-                        if trusted_policy.policy.artifacts_required:
-                            assert baseline is not None
-                            return SourceBatchRepository.retain_published_observations(
-                                connection(),
-                                baseline,
-                                candidates,
+                        return tuple(
+                            None
+                            if encode_source_relative_locator(locator) in reobserve_keys
+                            else candidate
+                            for (locator, _marker), candidate in zip(
+                                probes, candidates, strict=True
                             )
-                        return candidates
+                        )
 
                 with database_phase(
                     "source_freeze", inventory_galleries=plan.gallery_count
