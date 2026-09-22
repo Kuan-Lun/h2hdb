@@ -114,9 +114,11 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_analysis_bounded_preparation.py",
             "test_live_mariadb_bounded_preparation_matches_reference",
         ),
+        # One parameter retains the pre-build collection checkpoint across a
+        # new generation. Full source/publication retry matrices remain deep.
         (
-            "test_vnext_source_marker.py",
-            "test_marker_cache_survives_restart_and_reuses_prior_membership",
+            "test_vnext_source_collection.py",
+            "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work",
         ),
         # One gallery verifies that the restarted batch driver timestamps
         # facade calls in the DB clock domain even when the host is behind.
@@ -178,15 +180,16 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
-                if (
-                    isinstance(decorator, ast.Attribute)
-                    and decorator.attr == "mariadb_smoke"
-                    and isinstance(decorator.value, ast.Attribute)
-                    and decorator.value.attr == "mark"
-                    and isinstance(decorator.value.value, ast.Name)
-                    and decorator.value.value.id == "pytest"
-                ):
-                    observed.add((path.name, node.name))
+                for marker in ast.walk(decorator):
+                    if (
+                        isinstance(marker, ast.Attribute)
+                        and marker.attr == "mariadb_smoke"
+                        and isinstance(marker.value, ast.Attribute)
+                        and marker.value.attr == "mark"
+                        and isinstance(marker.value.value, ast.Name)
+                        and marker.value.value.id == "pytest"
+                    ):
+                        observed.add((path.name, node.name))
 
     assert observed == expected
 

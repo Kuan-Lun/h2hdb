@@ -92,9 +92,7 @@ class UpdatingSource(MarkerSource):
         )
 
 
-@pytest.mark.parametrize(
-    "defer_at", [pytest.param("marker", marks=pytest.mark.mariadb_smoke), "directory"]
-)
+@pytest.mark.parametrize("defer_at", ["marker", "directory"])
 def test_updating_gallery_keeps_published_version_while_other_galleries_advance(
     db_config: CoreConfig, defer_at: Literal["marker", "directory"]
 ) -> None:

@@ -169,7 +169,6 @@ def _turn(config: CoreConfig, source: MarkerSource, library: MemoryLibrary) -> b
     return receipts.source.replayed
 
 
-@pytest.mark.mariadb_smoke
 def test_marker_cache_survives_restart_and_reuses_prior_membership(
     db_config: CoreConfig,
 ) -> None:

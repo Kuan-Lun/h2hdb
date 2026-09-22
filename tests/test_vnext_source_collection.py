@@ -204,8 +204,17 @@ def test_failed_prepare_cannot_retry_same_issue_as_a_partial_source_seal(
     assert full_check(db_config).state == "READY"
 
 
-@pytest.mark.parametrize("boundary", ["sealed_gallery", "partial_next_gallery"])
-@pytest.mark.parametrize("source_change", ["unchanged", "changed", "deleted"])
+@pytest.mark.parametrize(
+    ("boundary", "source_change"),
+    [
+        pytest.param("sealed_gallery", "unchanged", marks=pytest.mark.mariadb_smoke),
+        ("sealed_gallery", "changed"),
+        ("sealed_gallery", "deleted"),
+        ("partial_next_gallery", "unchanged"),
+        ("partial_next_gallery", "changed"),
+        ("partial_next_gallery", "deleted"),
+    ],
+)
 def test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work(
     db_config: CoreConfig,
     boundary: str,

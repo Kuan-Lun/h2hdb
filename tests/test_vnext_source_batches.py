@@ -114,10 +114,7 @@ def _publications(config: CoreConfig) -> tuple[CatalogPublication, ...]:
         return tuple(sorted(page.publications, key=lambda item: item.gid))
 
 
-@pytest.mark.parametrize(
-    "gallery_count",
-    (pytest.param(3, marks=pytest.mark.mariadb_smoke), 5),
-)
+@pytest.mark.parametrize("gallery_count", (3, 5))
 def test_source_batches_accumulate_after_restart_without_reobserving_known_galleries(
     db_config: CoreConfig, gallery_count: int
 ) -> None:

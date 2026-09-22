@@ -1874,18 +1874,23 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
     """A live READY audit accepts exact OPEN PCOM and PG crash authority."""
 
     initialize_database(mariadb_config)
-    source = MemorySource(_corpus())
+    # These cleanup control checkpoints require two real revisions, but no
+    # artifact bytes or multi-gallery selection. Keep their public pipeline
+    # provenance while isolating the PCOM/PG authority from unrelated rendering.
+    original = gallery(1001, pages=[], artists=[], language=None)
+    source = MemorySource([original])
     pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
-    pipeline.turn(drain=False)
+    policy = ingest_policy(artifacts_required=False)
+    first, _ = pipeline.turn(policy=policy, drain=False)
     source.put(
-        gallery(
-            1001,
-            pages=[b"p0-a", b"p1-a-live-cleanup"],
-            artists=["alice"],
-            extra_tags=[("female", "glasses")],
+        replace(
+            original,
+            title="metadata changed before cleanup",
+            modified_time=original.modified_time + 1,
         )
     )
-    second, _ = pipeline.turn(drain=False)
+    second, _ = pipeline.turn(policy=policy, drain=False)
+    assert second.source.build_id != first.source.build_id
     clock = takeover_clock()
     connector = open_connector(mariadb_config)
 

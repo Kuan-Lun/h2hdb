@@ -3141,7 +3141,7 @@ layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
 claim = "Public preparation survives facade restart and reuses retained verified observations, preserves complete current source membership, and reclaims removed-gallery marker bindings through normal child-first cleanup. Exact unpublished retry preserves the working candidate's prepared artifacts; explicit bounded hints refresh only selected galleries while unchanged markers and qualification policy permit reuse of the rest. Finite 127/128/129-gallery cost cases exercise three retry cycles and reject a full-refresh counterexample to the targeted deep-read budget."
-assumptions = ["The public workflow is exercised on SQLite; the restart case is also an explicit live MariaDB smoke case when H2HDB_TEST_MARIADB=1. The other MariaDB cases require the manual deep profile and are not implied by a bounded release receipt."]
+assumptions = ["The public workflows are exercised on SQLite. The exact unpublished artifact retry is a live MariaDB smoke case when H2HDB_TEST_MARIADB=1; cumulative publication batches, prior published membership reuse, and the remaining MariaDB matrices require the manual deep profile and are not implied by a bounded release receipt."]
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
 symbol = "test_marker_cache_survives_restart_and_reuses_prior_membership"
@@ -4503,7 +4503,7 @@ layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
 claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
-assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run; a bounded release receipt is not evidence of every deep matrix."]
+assumptions = ["The cited SQLite scenarios exercise sealed and partially staged restart with unchanged, changed, and deleted sources; markerless exact attachment; collection retention and retirement; and preserving offline conversion. Bounded release evidence covers only their selected non-deep cases, not separate manual depth matrices or live MariaDB execution."]
 
 [[evidence.location]]
 path = "tests/test_vnext_source_collection.py"
@@ -4534,7 +4534,7 @@ layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
 claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
-assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run; a bounded release receipt is not evidence of every deep matrix."]
+assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run. The sealed_gallery/unchanged first-scan restart parameter is the bounded smoke representative: it preserves one sealed observation before a source build exists, reopens in a new generation, observes only the remaining gallery, consumes the collection, and passes READY. Partial staging, changed/deleted sources, cleanup retirement, and offline conversion remain manual deep evidence; a bounded release receipt does not attest to those matrices."]
 
 [[evidence.location]]
 path = "tests/test_vnext_source_collection.py"
