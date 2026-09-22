@@ -1112,8 +1112,11 @@ def test_live_mariadb_operational_writer_workflows(
     with SourceDiscoveryPlan.from_locators(()) as discovery_plan:
         with connector.read_transaction():
             discovery_batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=discovery_plan,
+                ),
                 plan=discovery_plan,
             )
         assert discovery_batch.terminal

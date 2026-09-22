@@ -24,14 +24,14 @@ stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
 selected_catalog_physical_relations_after = 54
-catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source"]
+catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "source_collection", "source_collection_manifest_policy", "source_collection_qualification_policy", "source_collection_created_at", "source_collection_observation", "source_collection_consumption"]
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 178
+catalog_physical_table_count_after = 184
 operational_physical_table_count_before = 75
-operational_physical_table_count_after = 68
+operational_physical_table_count_after = 73
 total_physical_table_count_before = 381
-total_physical_table_count_after = 246
-conditional_one_gigabyte_limit_required = false
+total_physical_table_count_after = 257
+conditional_one_gigabyte_limit_required = true
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
   "analysis_stage",
@@ -111,9 +111,9 @@ publication_checkpoint_peak_rows = 32
 publication_receipt_peak_rows = 32
 finalization_receipt_peak_rows = 18
 singleton_owner_peak_rows = 1
-cleanup_job_peak_rows = 5888
+cleanup_job_peak_rows = 6144
 cleanup_job_accounted_bytes_per_row = 8192
-cleanup_job_conservative_peak_bytes = 48234496
+cleanup_job_conservative_peak_bytes = 50331648
 cleanup_cycle_root_peak_rows = 256
 cleanup_frozen_root_key_maximum_bytes = 260
 cleanup_cycle_root_accounted_bytes_per_row = 1280
@@ -197,7 +197,7 @@ branch_record = "raw32(child_page_sha256) || u64be(child_subtree_byte_count_int6
 canonical_tree_rule = "page_position is zero-based contiguous independently at every level; every nonfinal branch is full fanout 256, the final branch has 1..256 children, root height is minimal with no unary root wrapper, subtree counts use unbounded host arithmetic then signed-int63 without wrap, and the page frame includes owner_value_sha256 so pages cannot be shared across canonical values and every nonroot deterministic page has exactly one parent"
 collision_obligation = "page_sha256 is raw SHA-256 of the exact owner-prefixed page frame; on every existing digest compare page bytes byte-for-byte and reject cross-owner reuse; any payload, decoded-coordinate, or subtree-count mismatch performs zero durable writes"
 seal_obligation = "canonical_value_page_seal reverse-references the page anchor, collision-checked payload, true coordinate, and subtree-count fact so both historical page views expose exactly the same complete page family; canonical_value_identity(value_sha256,root_page_sha256) is inserted last only after allocation domain/count congruence, complete deterministic tree validation, exact root owner/count equality, and incremental recomputation of the canonical wrapper digest; identity seal alone retains the canonical_value_upload claim until the first retention-blocking external consumer handoff transaction; a phase-owned dictionary or type row alone never releases the claim; existing canonical foreign keys reference only completion seals"
-cleanup_rule = "CANONICAL_VALUE cleanup is rooted at canonical_value_allocation_anchor; final-identity foreign keys and operational canonical_value_upload(generation,value_sha256), keyed only by that pair so multiple takeover generations may protect the same value, block cleanup; generation is SQL-bound to the ingest-generation owner; the first allocation family plus upload claim commits atomically under the exact live coordination head, owner, and lease; source_root_v1 is the sole pre-mapping exception because its final identity is required before source_scope, source_build_descriptor, and source_build_generation can exist, and the same live turn creates that mapping after sealing the root; every other digest domain requires its durable source_build_generation mapping before allocation or claim; a newer-generation resume exact-compares the existing allocation domain/count and every deterministic page conflict; every allocation fact, page family, and seal holds the shared canonical-value maintenance gate and rechecks the live head/owner/lease/claim, while a cleanup cycle holds its exclusive form; inserting or validating the final identity never releases its upload claim by itself; the first retention-blocking external consumer and deletion of only that generation claim commit atomically, while a phase-owned dictionary or type row alone never releases the claim; for source_root_v1 that handoff transaction inserts the wide source_scope row, source_build_descriptor, and source_build_generation before deleting the claim; source-scope ownership is reached through source_scope.source_root_sha256 = canonical_value_allocation_anchor.value_sha256, never through scope_key; if any source_build_descriptor or gallery_identity consumes any scope mapped to that root, all same-root scope rows and the canonical root remain retained, otherwise each unowned wide source_scope row is deleted in one bounded child-first statement before the canonical identity, page families, allocation facts, and allocation anchor; independent bounded cleanup removes residual claims only after their generation is completed or strictly superseded, including a crash after identity seal but before consumer handoff and a crashed source_root_v1 pre-mapping claim whose generation has no source_build_generation row, and only then may source-build cleanup delete a mapping that does exist; finally delete an unblocked identity, parent edges, page seals, page facts, allocation seal and facts, and allocation anchor child-first; owner-prefixed pages are never shared across allocations"
+cleanup_rule = "CANONICAL_VALUE cleanup is rooted at canonical_value_allocation_anchor; final-identity foreign keys and operational canonical_value_upload(generation,value_sha256), keyed only by that pair so multiple takeover generations may protect the same value, block cleanup; generation is SQL-bound to the ingest-generation owner; the first allocation family plus upload claim commits atomically under the exact live coordination head, owner, and lease; source_root_v1 can precede any build or collection because its final identity is required by source_scope; source_relative_locator_v1 may also precede build mapping only under an exact OPEN working collection and its current ingest-generation claim; every other digest domain requires its durable source_build_generation mapping before allocation or claim; a newer-generation resume exact-compares the existing allocation domain/count and every deterministic page conflict; every allocation fact, page family, and seal holds the shared canonical-value maintenance gate and rechecks the live head/owner/lease/claim, while a cleanup cycle holds its exclusive form; inserting or validating the final identity never releases its upload claim by itself; the first retention-blocking external consumer and deletion of only that generation claim commit atomically, while a phase-owned dictionary or type row alone never releases the claim; for source_root_v1 that handoff transaction inserts the source_scope plus a source collection or complete source build consumer before deleting the claim; source-scope ownership is reached through source_scope.source_root_sha256 = canonical_value_allocation_anchor.value_sha256, never through scope_key; if any source_build_descriptor or gallery_identity consumes any scope mapped to that root, all same-root scope rows and the canonical root remain retained, otherwise each unowned wide source_scope row is deleted in one bounded child-first statement before the canonical identity, page families, allocation facts, and allocation anchor; independent bounded cleanup removes residual claims only after their generation is completed or strictly superseded, including a crash after identity seal but before consumer handoff and a crashed source_root_v1 pre-mapping claim whose generation has no source_build_generation row, and only then may source-build cleanup delete a mapping that does exist; finally delete an unblocked identity, parent edges, page seals, page facts, allocation seal and facts, and allocation anchor child-first; owner-prefixed pages are never shared across allocations"
 
 [source_locator_contract]
 identity_relation = "source_locator_identity"
@@ -802,10 +802,25 @@ phase_selectors = [
 ]
 
 [[retention_target]]
+target = "SOURCE_COLLECTION"
+root_relation = "source_collection"
+root_key = ["collection_id"]
+external_blockers = []
+retained_outliving = []
+semantic_blockers = []
+derived_views = []
+child_phases = [
+  ["source_collection_consumption", "source_collection_observation"],
+  ["source_collection_created_at", "source_collection_qualification_policy", "source_collection_manifest_policy"],
+  ["source_collection"],
+]
+
+[[retention_target]]
 target = "SOURCE_BUILD"
 root_relation = "source_build_descriptor"
 root_key = ["build_id"]
 external_blockers = [
+  { relation = "source_collection_consumption", attributes = ["build_id"], referenced_relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
   { relation = "analysis_run_descriptor", attributes = ["build_id"], referenced_relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
 ]
 retained_outliving = []
@@ -825,6 +840,7 @@ target = "GALLERY_OBSERVATION"
 root_relation = "gallery_observation_allocation"
 root_key = ["gallery_id", "observation_id"]
 external_blockers = [
+  { relation = "source_collection_observation", attributes = ["gallery_id", "observation_id"], referenced_relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
   { relation = "source_build_gallery", attributes = ["gallery_id", "observation_id"], referenced_relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
 ]
 retained_outliving = []
@@ -878,6 +894,7 @@ target = "CANONICAL_VALUE"
 root_relation = "canonical_value_allocation_anchor"
 root_key = ["value_sha256"]
 external_blockers = [
+  { relation = "source_collection", attributes = ["scope_key"], referenced_relation = "source_scope", referenced_attributes = ["scope_key"] },
   { relation = "source_build_descriptor", attributes = ["scope_key"], referenced_relation = "source_scope", referenced_attributes = ["scope_key"] },
   { relation = "gallery_identity", attributes = ["scope_key"], referenced_relation = "source_scope", referenced_attributes = ["scope_key"] },
   { relation = "gallery_identity", attributes = ["locator_sha256"], referenced_relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
@@ -2066,6 +2083,13 @@ writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
 relations = [
+  "source_collection",
+  "source_collection_manifest_policy",
+  "source_collection_qualification_policy",
+  "source_collection_created_at",
+  "source_collection_observation",
+  "source_collection_consumption",
+
   "canonical_value_allocation_anchor",
   "canonical_value_allocation_digest_domain",
   "canonical_value_allocation_byte_count",
@@ -6604,3 +6628,114 @@ projections = [
   { relation = "gallery_observation_page_descriptor", attributes = ["page_sha256", "component", "level", "subtree_item_count"] },
 ]
 rationale = "Separate exact bounded page bytes from their decoded header descriptor. The shared page digest is a key of both projections, so the decomposition is lossless, dependency-preserving, and does not repeat descriptor facts beside every page edge or observation root."
+
+[[relation]]
+name = "source_collection"
+kind = "source_of_truth"
+attributes = ["collection_id", "scope_key"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["scope_key"] },
+]
+foreign_keys = [
+  { attributes = ["scope_key"], relation = "source_scope", referenced_attributes = ["scope_key"] },
+]
+rationale = "Immutable identity and exact source scope for one resumable observation collection, allocated independently of a complete source snapshot manifest."
+
+[[relation]]
+name = "source_collection_manifest_policy"
+kind = "source_of_truth"
+attributes = ["collection_id", "manifest_policy_id"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["manifest_policy_id"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+  { attributes = ["manifest_policy_id"], relation = "manifest_policy", referenced_attributes = ["manifest_policy_id"] },
+]
+rationale = "One immutable manifest policy for all retained gallery observations."
+
+[[relation]]
+name = "source_collection_qualification_policy"
+kind = "source_of_truth"
+attributes = ["collection_id", "qualification_policy_sha256"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["qualification_policy_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+]
+rationale = "One immutable qualification policy digest; changing qualification starts a new collection without treating old observations as current."
+
+[[relation]]
+name = "source_collection_created_at"
+kind = "source_of_truth"
+attributes = ["collection_id", "created_at"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["created_at"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+]
+rationale = "One immutable database creation timestamp, also the exact working-slot assignment time."
+
+[[relation]]
+name = "source_collection_observation"
+kind = "source_of_truth"
+attributes = ["collection_id", "gallery_id", "observation_id"]
+declared_keys = [["collection_id", "gallery_id", "observation_id"]]
+fds = [
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+  { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
+]
+rationale = "Immutable retention membership, not snapshot selection: retries may retain several sealed observations for one gallery. A complete source cut separately selects one exact observation per gallery; collection membership never implies latest-observation authority."
+
+[[relation]]
+name = "source_collection_consumption"
+kind = "source_of_truth"
+attributes = ["collection_id", "build_id"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["build_id"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+  { attributes = ["build_id"], relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
+]
+rationale = "Immutable completion binding to a SEALED source build of the same scope and manifest policy. It is inserted exactly with CONSUMED and working-slot release."
+
+[[semantic_obligation]]
+id = "catalog.source-collection-durable-observations.v1"
+version = 1
+class = "source_observation_reuse"
+lifecycle = "ready_and_runtime"
+ready_check = "catalog_refinement.check_source_collection_durable_observations_v1"
+writer_hook = "source_collection_writer.retain_observation"
+writer_hook_version = 1
+scope = "catalog.source-collection-durable-observations"
+relations = ["source_collection", "source_collection_manifest_policy", "source_collection_qualification_policy", "source_collection_created_at", "source_collection_observation"]
+covers = ["machine_contract.source-collection-durable-observations"]
+description = "Each collection has total immutable scope, manifest and qualification policies and creation time. Its immutable members reference complete sealed observations with the same scope and qualification policy and an exact manifest under the collection policy. Marker-based reuse may bypass external reads only after fresh completion-marker validation; collection membership alone never proves current external bytes."
+
+[[semantic_obligation]]
+id = "catalog.source-collection-consumption-fencing.v1"
+version = 1
+class = "transaction_protocol"
+lifecycle = "ready_and_runtime"
+ready_check = "catalog_refinement.check_source_collection_consumption_fencing_v1"
+writer_hook = "source_collection_writer.consume_collection"
+writer_hook_version = 1
+scope = "catalog.source-collection-consumption-fencing"
+relations = ["source_collection", "source_collection_consumption", "source_build_descriptor", "source_build_state"]
+covers = ["machine_contract.source-collection-consumption-fencing"]
+description = "A collection consumption refers to a SEALED source build with the exact collection scope and manifest policy. Mutation requires fresh ingest and maintenance fencing; completion is one atomic state transition and immutable consumption insert, and stale handles cannot affect replacement collections."
+
+[[attribute_semantic]]
+name = "collection_id"
+classification = "surrogate_identifier"
+rationale = "Repository-issued opaque identity of a resumable observation collection, independent of complete source snapshot identity."

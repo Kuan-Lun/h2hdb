@@ -97,11 +97,11 @@ def _install(stack: ExitStack) -> None:
     )
     code = replace_once(
         code,
-        "            payload = (upload, upload.iter_pages())",
-        """            pages = upload.iter_pages()
-            if upload.byte_count <= CANONICAL_VALUE_CHUNK_BYTES:
-                pages = iter(tuple(pages))
-            payload = (upload, pages)""",
+        "                payload = (upload, upload.iter_pages())",
+        """                pages = upload.iter_pages()
+                if upload.byte_count <= CANONICAL_VALUE_CHUNK_BYTES:
+                    pages = iter(tuple(pages))
+                payload = (upload, pages)""",
     )
     scope = {
         **facade.__dict__,
@@ -127,7 +127,7 @@ def _install(stack: ExitStack) -> None:
     code = replace_once(
         code,
         needle,
-        """            if action is _SourceAction.LOCATOR_INITIALIZE:
+        """            if action is _SourceAction.LOCATOR_INITIALIZE and not machine.collecting:
                 batch = _require_discovery_batch(machine)
                 locator = batch.locators[machine.locator_index]
                 upload, _pages = prepared_step._payload
@@ -138,7 +138,7 @@ def _install(stack: ExitStack) -> None:
                         now=now, existing_only=True,
                     )
                 return _resume_authority(work, session, now)
-            if action is _SourceAction.INITIALIZE:""",
+            if action in {_SourceAction.INITIALIZE, _SourceAction.LOCATOR_INITIALIZE}:""",
     )
     scope = {
         **facade.__dict__,

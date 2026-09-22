@@ -126,6 +126,7 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
     from test_vnext_source_marker import MarkerSource
     from vnext_pipeline import (
         claim_session,
+        collect_source,
         gallery,
         ingest_policy,
         initialize_database,
@@ -172,15 +173,23 @@ def test_public_preparation_reports_selected_cut_outside_transactions(
         with facade.prepare_source(
             source, policy=policy, max_new_galleries=10, progress=observe
         ) as cut:
+            collect_source(facade, session, policy, cut)
             assert cut.deferred_gallery_count == 3
     assert len(source.deep_reads) == 10
     assert opened_during == [
-        Progress(Operation.BATCH_SELECTION, count, 10) for count in range(10)
-    ]
+        Progress(Operation.SOURCE_FREEZE, count, 13) for count in range(1, 11)
+    ] + [Progress(Operation.BATCH_SELECTION, count, 10) for count in range(10)]
     assert callback_reads and not any(callback_reads)
     assert Progress(Operation.DISCOVERY_CLEANUP, 0, 13) in observations
     assert Progress(Operation.DISCOVERY_CLEANUP, 13, 13) in observations
     assert Progress(Operation.SOURCE_FREEZE, 13, 13) in observations
+    assert [
+        value
+        for value in observations
+        if value.operation == Operation.SOURCE_CHECKPOINT
+    ] == [Progress(Operation.SOURCE_CHECKPOINT, count) for count in range(1, 11)] + [
+        Progress(Operation.SOURCE_CHECKPOINT, 10, 10)
+    ]
     assert [
         value for value in observations if value.operation == Operation.BATCH_SELECTION
     ] == [Progress(Operation.BATCH_SELECTION, count, 10) for count in range(11)]
@@ -205,6 +214,7 @@ def test_published_inventory_reconciliation_progress_preserves_source_cut(
     from vnext_pipeline import (
         MemoryLibrary,
         claim_session,
+        collect_source,
         gallery,
         ingest_policy,
         initialize_database,
@@ -259,6 +269,7 @@ def test_published_inventory_reconciliation_progress_preserves_source_cut(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         with facade.prepare_source(source, policy=policy, progress=observe) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.gallery_count == 1
             assert prepared.waiting_gallery_count == 0
             assert prepared.deferred_gallery_count == 0

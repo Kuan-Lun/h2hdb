@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "23efe4402ba9f9e69776f0b11f36d12d4118d02f5fbe8bdc4d7cb6eac1d9217b"
+def catalogManifestSha256 : String := "cc0df40437304f1e89edd5718709110137b334c03bfe0e493591845e3a3f927b"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -11232,6 +11232,281 @@ theorem publication_head_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_head_contract
     publication_head_closure_fixed_check
 
+def source_collection_contract : RelationContract where
+  name := "source_collection"
+  attributes := ["collection_id", "scope_key"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["scope_key"] }
+  ]
+
+theorem source_collection_schema_well_formed :
+    schemaWellFormedCheck source_collection_contract = true := by
+  native_decide
+
+theorem source_collection_candidate_keys_check :
+    keysDetermineAllCheck source_collection_contract = true := by
+  native_decide
+
+theorem source_collection_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_contract :=
+  keysDetermineAllCheck_sound source_collection_contract
+    source_collection_candidate_keys_check
+
+theorem source_collection_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_contract = true := by
+  native_decide
+
+theorem source_collection_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_contract :=
+  declaredKeysMinimalCheck_sound source_collection_contract
+    source_collection_candidate_keys_minimal_check
+
+theorem source_collection_closure_fixed_check :
+    closureFixedPointCheck source_collection_contract = true := by
+  native_decide
+
+theorem source_collection_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_contract :=
+  closureFixedPointCheck_sound source_collection_contract
+    source_collection_closure_fixed_check
+
+theorem source_collection_bcnf_check :
+    bcnfCheck source_collection_contract = true := by
+  native_decide
+
+theorem source_collection_bcnf : BCNF source_collection_contract :=
+  bcnfCheck_sound source_collection_contract source_collection_bcnf_check
+
+def source_collection_manifest_policy_contract : RelationContract where
+  name := "source_collection_manifest_policy"
+  attributes := ["collection_id", "manifest_policy_id"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["manifest_policy_id"] }
+  ]
+
+theorem source_collection_manifest_policy_schema_well_formed :
+    schemaWellFormedCheck source_collection_manifest_policy_contract = true := by
+  native_decide
+
+theorem source_collection_manifest_policy_candidate_keys_check :
+    keysDetermineAllCheck source_collection_manifest_policy_contract = true := by
+  native_decide
+
+theorem source_collection_manifest_policy_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_manifest_policy_contract :=
+  keysDetermineAllCheck_sound source_collection_manifest_policy_contract
+    source_collection_manifest_policy_candidate_keys_check
+
+theorem source_collection_manifest_policy_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_manifest_policy_contract = true := by
+  native_decide
+
+theorem source_collection_manifest_policy_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_manifest_policy_contract :=
+  declaredKeysMinimalCheck_sound source_collection_manifest_policy_contract
+    source_collection_manifest_policy_candidate_keys_minimal_check
+
+theorem source_collection_manifest_policy_closure_fixed_check :
+    closureFixedPointCheck source_collection_manifest_policy_contract = true := by
+  native_decide
+
+theorem source_collection_manifest_policy_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_manifest_policy_contract :=
+  closureFixedPointCheck_sound source_collection_manifest_policy_contract
+    source_collection_manifest_policy_closure_fixed_check
+
+theorem source_collection_manifest_policy_bcnf_check :
+    bcnfCheck source_collection_manifest_policy_contract = true := by
+  native_decide
+
+theorem source_collection_manifest_policy_bcnf : BCNF source_collection_manifest_policy_contract :=
+  bcnfCheck_sound source_collection_manifest_policy_contract source_collection_manifest_policy_bcnf_check
+
+def source_collection_qualification_policy_contract : RelationContract where
+  name := "source_collection_qualification_policy"
+  attributes := ["collection_id", "qualification_policy_sha256"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["qualification_policy_sha256"] }
+  ]
+
+theorem source_collection_qualification_policy_schema_well_formed :
+    schemaWellFormedCheck source_collection_qualification_policy_contract = true := by
+  native_decide
+
+theorem source_collection_qualification_policy_candidate_keys_check :
+    keysDetermineAllCheck source_collection_qualification_policy_contract = true := by
+  native_decide
+
+theorem source_collection_qualification_policy_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_qualification_policy_contract :=
+  keysDetermineAllCheck_sound source_collection_qualification_policy_contract
+    source_collection_qualification_policy_candidate_keys_check
+
+theorem source_collection_qualification_policy_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_qualification_policy_contract = true := by
+  native_decide
+
+theorem source_collection_qualification_policy_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_qualification_policy_contract :=
+  declaredKeysMinimalCheck_sound source_collection_qualification_policy_contract
+    source_collection_qualification_policy_candidate_keys_minimal_check
+
+theorem source_collection_qualification_policy_closure_fixed_check :
+    closureFixedPointCheck source_collection_qualification_policy_contract = true := by
+  native_decide
+
+theorem source_collection_qualification_policy_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_qualification_policy_contract :=
+  closureFixedPointCheck_sound source_collection_qualification_policy_contract
+    source_collection_qualification_policy_closure_fixed_check
+
+theorem source_collection_qualification_policy_bcnf_check :
+    bcnfCheck source_collection_qualification_policy_contract = true := by
+  native_decide
+
+theorem source_collection_qualification_policy_bcnf : BCNF source_collection_qualification_policy_contract :=
+  bcnfCheck_sound source_collection_qualification_policy_contract source_collection_qualification_policy_bcnf_check
+
+def source_collection_created_at_contract : RelationContract where
+  name := "source_collection_created_at"
+  attributes := ["collection_id", "created_at"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["created_at"] }
+  ]
+
+theorem source_collection_created_at_schema_well_formed :
+    schemaWellFormedCheck source_collection_created_at_contract = true := by
+  native_decide
+
+theorem source_collection_created_at_candidate_keys_check :
+    keysDetermineAllCheck source_collection_created_at_contract = true := by
+  native_decide
+
+theorem source_collection_created_at_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_created_at_contract :=
+  keysDetermineAllCheck_sound source_collection_created_at_contract
+    source_collection_created_at_candidate_keys_check
+
+theorem source_collection_created_at_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_created_at_contract = true := by
+  native_decide
+
+theorem source_collection_created_at_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_created_at_contract :=
+  declaredKeysMinimalCheck_sound source_collection_created_at_contract
+    source_collection_created_at_candidate_keys_minimal_check
+
+theorem source_collection_created_at_closure_fixed_check :
+    closureFixedPointCheck source_collection_created_at_contract = true := by
+  native_decide
+
+theorem source_collection_created_at_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_created_at_contract :=
+  closureFixedPointCheck_sound source_collection_created_at_contract
+    source_collection_created_at_closure_fixed_check
+
+theorem source_collection_created_at_bcnf_check :
+    bcnfCheck source_collection_created_at_contract = true := by
+  native_decide
+
+theorem source_collection_created_at_bcnf : BCNF source_collection_created_at_contract :=
+  bcnfCheck_sound source_collection_created_at_contract source_collection_created_at_bcnf_check
+
+def source_collection_observation_contract : RelationContract where
+  name := "source_collection_observation"
+  attributes := ["collection_id", "gallery_id", "observation_id"]
+  declaredKeys := [["collection_id", "gallery_id", "observation_id"]]
+  declaredFDs := [
+  ]
+
+theorem source_collection_observation_schema_well_formed :
+    schemaWellFormedCheck source_collection_observation_contract = true := by
+  native_decide
+
+theorem source_collection_observation_candidate_keys_check :
+    keysDetermineAllCheck source_collection_observation_contract = true := by
+  native_decide
+
+theorem source_collection_observation_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_observation_contract :=
+  keysDetermineAllCheck_sound source_collection_observation_contract
+    source_collection_observation_candidate_keys_check
+
+theorem source_collection_observation_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_observation_contract = true := by
+  native_decide
+
+theorem source_collection_observation_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_observation_contract :=
+  declaredKeysMinimalCheck_sound source_collection_observation_contract
+    source_collection_observation_candidate_keys_minimal_check
+
+theorem source_collection_observation_closure_fixed_check :
+    closureFixedPointCheck source_collection_observation_contract = true := by
+  native_decide
+
+theorem source_collection_observation_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_observation_contract :=
+  closureFixedPointCheck_sound source_collection_observation_contract
+    source_collection_observation_closure_fixed_check
+
+theorem source_collection_observation_bcnf_check :
+    bcnfCheck source_collection_observation_contract = true := by
+  native_decide
+
+theorem source_collection_observation_bcnf : BCNF source_collection_observation_contract :=
+  bcnfCheck_sound source_collection_observation_contract source_collection_observation_bcnf_check
+
+def source_collection_consumption_contract : RelationContract where
+  name := "source_collection_consumption"
+  attributes := ["collection_id", "build_id"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["build_id"] }
+  ]
+
+theorem source_collection_consumption_schema_well_formed :
+    schemaWellFormedCheck source_collection_consumption_contract = true := by
+  native_decide
+
+theorem source_collection_consumption_candidate_keys_check :
+    keysDetermineAllCheck source_collection_consumption_contract = true := by
+  native_decide
+
+theorem source_collection_consumption_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_consumption_contract :=
+  keysDetermineAllCheck_sound source_collection_consumption_contract
+    source_collection_consumption_candidate_keys_check
+
+theorem source_collection_consumption_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_consumption_contract = true := by
+  native_decide
+
+theorem source_collection_consumption_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_consumption_contract :=
+  declaredKeysMinimalCheck_sound source_collection_consumption_contract
+    source_collection_consumption_candidate_keys_minimal_check
+
+theorem source_collection_consumption_closure_fixed_check :
+    closureFixedPointCheck source_collection_consumption_contract = true := by
+  native_decide
+
+theorem source_collection_consumption_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_consumption_contract :=
+  closureFixedPointCheck_sound source_collection_consumption_contract
+    source_collection_consumption_closure_fixed_check
+
+theorem source_collection_consumption_bcnf_check :
+    bcnfCheck source_collection_consumption_contract = true := by
+  native_decide
+
+theorem source_collection_consumption_bcnf : BCNF source_collection_consumption_contract :=
+  bcnfCheck_sound source_collection_consumption_contract source_collection_consumption_bcnf_check
+
 theorem publication_commit_has_six_equivalent_candidate_keys :
     publication_commit_contract.declaredKeys.length = 6 := by
   native_decide
@@ -11468,16 +11743,28 @@ def manifestContracts : List RelationContract := [
   publication_receipt_contract,
   publication_head_revision_contract,
   publication_head_advanced_at_contract,
-  publication_head_contract
+  publication_head_contract,
+  source_collection_contract,
+  source_collection_manifest_policy_contract,
+  source_collection_qualification_policy_contract,
+  source_collection_created_at_contract,
+  source_collection_observation_contract,
+  source_collection_consumption_contract
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 224 := by
+    manifestContracts.length = 230 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
 
 def catalogPhysicalDomainContracts : List RelationContract := [
+  source_collection_contract,
+  source_collection_manifest_policy_contract,
+  source_collection_qualification_policy_contract,
+  source_collection_created_at_contract,
+  source_collection_observation_contract,
+  source_collection_consumption_contract,
   canonical_value_allocation_anchor_contract,
   canonical_value_allocation_digest_domain_contract,
   canonical_value_allocation_byte_count_contract,
@@ -11631,6 +11918,12 @@ def catalogPhysicalDomainContracts : List RelationContract := [
 ]
 
 def catalogPhysicalDomainMutationContracts : List RelationContract := [
+  source_collection_contract,
+  source_collection_manifest_policy_contract,
+  source_collection_qualification_policy_contract,
+  source_collection_created_at_contract,
+  source_collection_observation_contract,
+  source_collection_consumption_contract,
   canonical_value_allocation_anchor_contract,
   canonical_value_allocation_digest_domain_contract,
   canonical_value_allocation_byte_count_contract,
@@ -11787,11 +12080,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 150 := by
+    catalogPhysicalDomainContracts.length = 156 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 128 := by
+    catalogPhysicalDomainMutationContracts.length = 134 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -14077,7 +14370,13 @@ theorem all_manifest_base_relations_bcnf :
     BCNF publication_commit_anchor_contract ∧
     BCNF publication_commit_contract ∧
     BCNF publication_commit_finalization_contract ∧
-    BCNF publication_commit_head_receipt_contract := by
+    BCNF publication_commit_head_receipt_contract ∧
+    BCNF source_collection_contract ∧
+    BCNF source_collection_manifest_policy_contract ∧
+    BCNF source_collection_qualification_policy_contract ∧
+    BCNF source_collection_created_at_contract ∧
+    BCNF source_collection_observation_contract ∧
+    BCNF source_collection_consumption_contract := by
   exact ⟨canonical_digest_policy_bcnf,
     canonical_value_allocation_anchor_bcnf,
     canonical_value_allocation_digest_domain_bcnf,
@@ -14255,7 +14554,13 @@ theorem all_manifest_base_relations_bcnf :
     publication_commit_anchor_bcnf,
     publication_commit_bcnf,
     publication_commit_finalization_bcnf,
-    publication_commit_head_receipt_bcnf⟩
+    publication_commit_head_receipt_bcnf,
+    source_collection_bcnf,
+    source_collection_manifest_policy_bcnf,
+    source_collection_qualification_policy_bcnf,
+    source_collection_created_at_bcnf,
+    source_collection_observation_bcnf,
+    source_collection_consumption_bcnf⟩
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
@@ -14482,7 +14787,13 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes publication_receipt_contract ∧
     KeysDetermineAllAttributes publication_head_revision_contract ∧
     KeysDetermineAllAttributes publication_head_advanced_at_contract ∧
-    KeysDetermineAllAttributes publication_head_contract := by
+    KeysDetermineAllAttributes publication_head_contract ∧
+    KeysDetermineAllAttributes source_collection_contract ∧
+    KeysDetermineAllAttributes source_collection_manifest_policy_contract ∧
+    KeysDetermineAllAttributes source_collection_qualification_policy_contract ∧
+    KeysDetermineAllAttributes source_collection_created_at_contract ∧
+    KeysDetermineAllAttributes source_collection_observation_contract ∧
+    KeysDetermineAllAttributes source_collection_consumption_contract := by
   exact ⟨canonical_digest_policy_candidate_keys_determine_all_attributes,
     canonical_value_allocation_anchor_candidate_keys_determine_all_attributes,
     canonical_value_allocation_digest_domain_candidate_keys_determine_all_attributes,
@@ -14706,7 +15017,13 @@ theorem all_manifest_candidate_keys_determine_attributes :
     publication_receipt_candidate_keys_determine_all_attributes,
     publication_head_revision_candidate_keys_determine_all_attributes,
     publication_head_advanced_at_candidate_keys_determine_all_attributes,
-    publication_head_candidate_keys_determine_all_attributes⟩
+    publication_head_candidate_keys_determine_all_attributes,
+    source_collection_candidate_keys_determine_all_attributes,
+    source_collection_manifest_policy_candidate_keys_determine_all_attributes,
+    source_collection_qualification_policy_candidate_keys_determine_all_attributes,
+    source_collection_created_at_candidate_keys_determine_all_attributes,
+    source_collection_observation_candidate_keys_determine_all_attributes,
+    source_collection_consumption_candidate_keys_determine_all_attributes⟩
 
 /- END GENERATED CATALOG CONTRACTS -/
 

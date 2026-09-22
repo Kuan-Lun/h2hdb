@@ -14,6 +14,7 @@ __all__ = [
     "AssemblyBatchReceipt",
     "DiscoveryBatch",
     "DiscoveryBatchReceipt",
+    "IssuedDiscoveryBatch",
     "PreparedDiscoveryLocator",
     "PendingSourceGallery",
     "ResolvedDiscoveryLocator",
@@ -41,10 +42,14 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .database_clock import database_unix_microseconds
-from .domain import SourceBatchBaseline, VNextSourcePreparationOperation
+from .domain import (
+    SourceBatchBaseline,
+    VNextResolvedIngestPolicy,
+    VNextSourcePreparationOperation,
+)
 from .ports import VNextSourcePreparationObserver
 from .source_errors import VNextSourceChangedError
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
@@ -112,6 +117,10 @@ from .vnext_source_progress import report_source_progress
 from .vnext_state_machine_contract import require_catalog_state_mutation
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
+if TYPE_CHECKING:
+    from .vnext_source_collection_repository import SourceCollectionHandle
+
+
 _FILESYSTEM = "filesystem"
 _FILESYSTEM_BYTES = b"filesystem"
 _DEFAULT_CHANNEL = b"default"
@@ -134,6 +143,7 @@ _EMPTY_MANIFEST_CHAIN = bytes.fromhex(
 )
 _PLAN_CONSTRUCTOR_TOKEN = object()
 _DISCOVERY_BATCH_TOKEN = object()
+_ISSUED_DISCOVERY_BATCH_TOKEN = object()
 _ASSEMBLY_ATTEMPT_TOKEN = object()
 
 _PUBLICATION_COMMIT_HEAD_TABLE = "catalog_publication_commit_head_receipts"
@@ -223,6 +233,27 @@ class PreparedDiscoveryLocator:
             minimum=1,
             maximum=255,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedDiscoveryBatch:
+    """Database-only checkpoint issue; local locator bytes are not read yet."""
+
+    build_id: bytes
+    start_generation: int
+    start_cursor: bytes
+    start_processed_count: int
+    replay: DiscoveryBatch | None
+    _plan_capability: object = field(repr=False, compare=False)
+    _constructor_token: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.build_id, field="build_id")
+        require_positive_int63(self.start_generation, field="start_generation")
+        require_bounded_bytes(self.start_cursor, field="start_cursor", maximum=8)
+        require_int63(self.start_processed_count, field="start_processed_count")
+        if self._constructor_token is not _ISSUED_DISCOVERY_BATCH_TOKEN:
+            raise TypeError("use SourceBuildRepository.issue_discovery_batch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -864,6 +895,24 @@ class _SourceBuildPolicyAuthority:
     title_sort_policy_id: int
     operational_policy_id: int
     artifacts_required: bool
+
+    @classmethod
+    def from_resolved(
+        cls, policy: VNextResolvedIngestPolicy
+    ) -> _SourceBuildPolicyAuthority:
+        """Project the shared source-build policy from registry-bound facts."""
+
+        policy.__post_init__()
+        policy.policy.__post_init__()
+        return cls(
+            manifest_policy_id=policy.manifest_policy_id,
+            analysis_policy_id=policy.analysis_policy_id,
+            artifact_policy_sha256=policy.artifact_policy_sha256,
+            display_title_policy_id=policy.display_title_policy_id,
+            title_sort_policy_id=policy.title_sort_policy_id,
+            operational_policy_id=policy.operational_policy_id,
+            artifacts_required=policy.policy.artifacts_required,
+        )
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -1586,17 +1635,17 @@ class SourceBuildRepository:
         return SourceBuildAbandonment(build, generation, False)
 
     @staticmethod
-    def prepare_discovery_batch(
+    def issue_discovery_batch(
         connector: Any,
         *,
         build_id: bytes,
         plan: SourceDiscoveryPlan,
-    ) -> DiscoveryBatch:
-        """Issue the next locator page using a read-only database snapshot.
+    ) -> IssuedDiscoveryBatch:
+        """Issue exact durable checkpoint scalars without reading the local spool.
 
-        This performs private-spool reads outside the later mutation
-        transaction.  The mutation path rechecks the complete checkpoint
-        pre-state and every fixed-width descriptor.
+        The later mutation rechecks this complete checkpoint pre-state. Local
+        page reads belong to ``prepare_discovery_batch`` outside every database
+        transaction and the consumer's session-renewal lock.
         """
 
         build = require_uuid16(build_id, field="build_id")
@@ -1691,7 +1740,15 @@ class SourceBuildRepository:
                 receipt=terminal_receipt,
                 batch=batch,
             )
-            return batch
+            return IssuedDiscoveryBatch(
+                build,
+                batch.start_generation,
+                batch.start_cursor,
+                batch.start_processed_count,
+                batch,
+                plan._capability,
+                _ISSUED_DISCOVERY_BATCH_TOKEN,
+            )
         if build_row.state != "OPEN":
             raise SourceBuildNotReadyError("discovery requires an OPEN source build")
         _require_discovery_plan_binding(
@@ -1702,6 +1759,36 @@ class SourceBuildRepository:
             start_cursor=cursor,
             start_processed_count=processed_count,
         )
+        return IssuedDiscoveryBatch(
+            build,
+            start_generation,
+            cursor,
+            processed_count,
+            None,
+            plan._capability,
+            _ISSUED_DISCOVERY_BATCH_TOKEN,
+        )
+
+    @staticmethod
+    def prepare_discovery_batch(
+        issued: IssuedDiscoveryBatch, *, plan: SourceDiscoveryPlan
+    ) -> DiscoveryBatch:
+        """Read one local locator page without any database connection."""
+
+        if type(issued) is not IssuedDiscoveryBatch:
+            raise TypeError("issued must be IssuedDiscoveryBatch")
+        issued.__post_init__()
+        if not isinstance(plan, SourceDiscoveryPlan):
+            raise TypeError("plan must be SourceDiscoveryPlan")
+        plan._require_open()
+        if issued._plan_capability is not plan._capability:
+            raise SourceDiscoveryPlanError("discovery issue belongs to another plan")
+        if issued.replay is not None:
+            return issued.replay
+        build = issued.build_id
+        start_generation = issued.start_generation
+        cursor = issued.start_cursor
+        processed_count = issued.start_processed_count
         locators = plan._page(processed_count)
         if locators and locators[0].position != processed_count:
             raise SourceDiscoveryPlanError("locator plan has a position gap")
@@ -2196,6 +2283,7 @@ class SourceBuildRepository:
         build_id: bytes,
         attempt: AssemblyBatchAttempt,
         now: int,
+        collection: SourceCollectionHandle | None = None,
     ) -> AssemblyBatchReceipt:
         build = require_uuid16(build_id, field="build_id")
         if type(attempt) is not AssemblyBatchAttempt:
@@ -2209,6 +2297,15 @@ class SourceBuildRepository:
             build_id=build,
             allow_sealed=True,
         )
+        if collection is not None:
+            from .vnext_source_collection_repository import SourceCollectionRepository
+
+            SourceCollectionRepository.lock_for_assembly(
+                work,
+                handle=collection,
+                build_id=build,
+                generation=generation,
+            )
         checkpoint = work.lock_row(
             LockRank.CHECKPOINT,
             encode_lock_key("source-assembly-checkpoint", build),
@@ -2224,6 +2321,18 @@ class SourceBuildRepository:
             _ASSEMBLY_RECEIPT_SELECT + " WHERE build_id = %s AND batch_key = %s",
             (build, attempt.batch_key),
         )
+        if not stored and build_state == "SEALED" and collection is not None:
+            # A fresh scan may rediscover an already sealed cut. The exact
+            # latest checkpoint key identifies its immutable terminal receipt.
+            stored = connector.fetch_one(
+                _ASSEMBLY_RECEIPT_SELECT
+                + " WHERE build_id = %s AND start_generation = %s",
+                (
+                    build,
+                    require_positive_int63(checkpoint[0], field="assembly generation")
+                    - 1,
+                ),
+            )
         if stored:
             receipt = _assembly_receipt_from_row(stored, replayed=True)
             _validate_assembly_replay(
@@ -2235,6 +2344,13 @@ class SourceBuildRepository:
                 manifest_policy_id=manifest_policy_id,
                 created_at=created_at,
             )
+            if receipt.terminal and collection is not None:
+                SourceCollectionRepository.consume_authorized(
+                    work,
+                    handle=collection,
+                    build_id=build,
+                    generation=generation,
+                )
             return receipt
         if build_state != "OPEN":
             raise SourceBuildNotReadyError("new assembly work requires an OPEN build")
@@ -2459,6 +2575,13 @@ class SourceBuildRepository:
                     seal_transition.previous_state,
                 ),
                 authority="source build seal",
+            )
+        if terminal and collection is not None:
+            SourceCollectionRepository.consume_authorized(
+                work,
+                handle=collection,
+                build_id=build,
+                generation=generation,
             )
         return AssemblyBatchReceipt(
             build,
@@ -4114,13 +4237,46 @@ def _retire_policy_mismatched_working_build(
     if analysis is None:
         return None
     analysis_id, analysis_policy_id, state = analysis
+    policy_mismatch = not working_build_policy_matches(
+        work.connector,
+        analysis_policy_id=analysis_policy_id,
+        catalog_working=catalog_working,
+        policy=policy,
+    )
+    if not policy_mismatch:
+        return None
+    if state == "COMPLETE":
+        if _analysis_has_durable_commit(work.connector, analysis_id=analysis_id):
+            return None
+    elif state != "OPEN":
+        return None
+    return _abandon_stale_sealed_working_build(
+        work,
+        current_generation=current_generation,
+        build_id=build,
+        assigned_at=assigned_at,
+        catalog_working=catalog_working,
+        drained_page=drained_page,
+        now=now,
+    )
+
+
+def working_build_policy_matches(
+    connector: Any,
+    *,
+    analysis_policy_id: int,
+    catalog_working: tuple[Any, ...],
+    policy: _SourceBuildPolicyAuthority,
+) -> bool:
+    """Compare the policy facts already frozen by analysis and publication."""
+
     policy_mismatch = analysis_policy_id != policy.analysis_policy_id
     if catalog_working:
         candidate_id = require_uuid16(
             catalog_working[1],
             field="policy check catalog working candidate_id",
         )
-        frozen = work.connector.fetch_one(
+        frozen = connector.fetch_one(
             f"SELECT artifact.policy_component_sha256, "
             "candidate.display_title_policy_id, display.title_sort_policy_id, "
             "candidate.artifacts_required "
@@ -4158,7 +4314,7 @@ def _retire_policy_mismatched_working_build(
         policy_mismatch = (
             policy_mismatch or candidate_policy != requested_candidate_policy
         )
-        bindings = work.connector.fetch_all(
+        bindings = connector.fetch_all(
             "SELECT preparation.operational_policy_id "
             "FROM operational_publication_candidate_preparations AS binding "
             f"JOIN {_OPERATIONAL_PREPARATION_TABLE} AS preparation "
@@ -4180,22 +4336,7 @@ def _retire_policy_mismatched_working_build(
                 policy_mismatch
                 or bound_operational_policy_id != policy.operational_policy_id
             )
-    if not policy_mismatch:
-        return None
-    if state == "COMPLETE":
-        if _analysis_has_durable_commit(work.connector, analysis_id=analysis_id):
-            return None
-    elif state != "OPEN":
-        return None
-    return _abandon_stale_sealed_working_build(
-        work,
-        current_generation=current_generation,
-        build_id=build,
-        assigned_at=assigned_at,
-        catalog_working=catalog_working,
-        drained_page=drained_page,
-        now=now,
-    )
+    return not policy_mismatch
 
 
 def _analysis_has_durable_commit(connector: Any, *, analysis_id: bytes) -> bool:

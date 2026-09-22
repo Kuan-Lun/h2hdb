@@ -2,8 +2,8 @@ physical_contract_version = 1
 name = "h2hdb-vnext-operational-physical"
 logical_contract = "h2hdb-vnext-operational"
 description = "Complete verification-only SQLite/MariaDB realization of the operational control plane; production migrations are intentionally unchanged."
-complete_relations = ["schema_epoch_control", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "database_audit_state"]
-source_slice = ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "database_audit_state"]
+complete_relations = ["schema_epoch_control", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "database_audit_state", "source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection"]
+source_slice = ["storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "ingest_generation", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_budget", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint", "database_audit_state", "source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection"]
 inline_projections = ["operational_activation"]
 external_inline_projections = ["gallery_observation_page_descriptor", "canonical_value_page", "canonical_value_page_descriptor", "gallery_observation_file"]
 epoch_owned_relations = ["schema_epoch_control"]
@@ -264,7 +264,7 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_gallery_staging_request_budget_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["gallery_observation_staging_request_budget", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "source_working_build", "source_build_gallery"]
+relations = ["gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging_request_budget", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "source_working_build", "source_build_gallery"]
 description = "Validate the seeded exact request-budget singleton, replay-neutral reserve and actual-delete release accounting under one lock order, the 1,500,000-row emergency cap, one active staging slot per build, and shared-fenced seven-phase implicit-ACK retirement with durable-link replay and terminal generic-cleanup backstop."
 
 [[semantic_obligation]]
@@ -281,13 +281,41 @@ hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_valida
 relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget"]
 description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of the storage-instance binding plus all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
+[[semantic_obligation]]
+id = "h2hdb.operational.source-collection-staging-owner.v1"
+version = 1
+ready_check = "operational_refinement.check_source_collection_staging_owner_v1"
+writer_hook = "gallery_staging_writer.begin_collection"
+writer_hook_version = 1
+scope = "operational.source-collection-staging-owner"
+class = "transaction_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_source_collection_staging_owner_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging", "gallery_observation_staging_claim"]
+description = "Every staging header has exactly one source-build or collection owner binding. Current collection work is OPEN and exact scope, qualification policy, generation and claim fenced; generic staging preserves its immutable owner and permits at most one unretired gallery per owner."
+
+[[semantic_obligation]]
+id = "h2hdb.operational.source-collection-cleanup-reachability.v1"
+version = 1
+ready_check = "operational_refinement.check_source_collection_cleanup_reachability_v1"
+writer_hook = "source_collection_writer.retire_collection"
+writer_hook_version = 1
+scope = "operational.source-collection-cleanup-reachability"
+class = "retention_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_source_collection_cleanup_reachability_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_collection"]
+description = "Collection membership retains sealed observations across process and ingest-lease loss. Cleanup retires only nonworking terminal collections, bounded and child-first; live staging and collection membership prevent deletion of referenced observation and canonical authority."
+
 [bootstrap_contract]
 version = 1
 seed_validation_lifecycle = "building_only"
 absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
-absent_relations = ["database_audit_state", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+absent_relations = ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection", "database_audit_state", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no storage-instance binding, deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, event, download or ingest generation/head/owner/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; the storage-instance binding and other protocols create their required identity, generation, or head only through their runtime transition."
 epoch_rule = "schema_epoch_control is created and managed exclusively by SchemaEpochCatalog and is not a provider bootstrap seed."
 
@@ -380,6 +408,16 @@ lifecycle = "building_only"
 relation = "cleanup_target_kind"
 value = [{ attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }]
 invariant = "CATALOG_PUBLICATION uses 256 digest-prefix shards to remove finalized non-head catalog payload without retaining one control row per publication occurrence."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-target.source-collection.v1"
+columns = ["target_kind"]
+values = ["SOURCE_COLLECTION"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_target_kind"
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }]
+invariant = "SOURCE_COLLECTION reclaims only terminal unreferenced collection families in bounded UUID shards."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.source-build.v1"
@@ -600,6 +638,56 @@ lifecycle = "building_only"
 relation = "cleanup_target_kind"
 value = [{ attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_GENERATION" }]
 invariant = "PUBLICATION_GENERATION compacts only an unreferenced prefix while retaining one oldest floor node and every commit-reachable generation."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-members.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_MEMBERS", "SOURCE_COLLECTION", "1"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_MEMBERS" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Seed SC_MEMBERS as exact child-first phase 1 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-claim.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_CLAIM", "SOURCE_COLLECTION", "2"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_CLAIM" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Seed SC_CLAIM as exact child-first phase 2 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-metadata.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_METADATA", "SOURCE_COLLECTION", "3"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_METADATA" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "Seed SC_METADATA as exact child-first phase 3 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-state.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_STATE", "SOURCE_COLLECTION", "4"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_STATE" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "Seed SC_STATE as exact child-first phase 4 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_ROOT", "SOURCE_COLLECTION", "5"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "Seed SC_ROOT as exact child-first phase 5 for SOURCE_COLLECTION cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pcom-release-build-base.v1"
@@ -1838,6 +1926,18 @@ target_kind_tag_hex = "c12831ed560200c722ead234511f58cd"
 invariant = "Seed exactly 256 page-digest shards; each bounded sweep rechecks references and deletes one page atomically under the exclusive fence."
 
 [[bootstrap_seed_range]]
+id = "h2hdb.operational.cleanup-sweep.source-collection.v1"
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_sweep_target"
+target_kind = "SOURCE_COLLECTION"
+shard_start = 0
+shard_end = 255
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+target_kind_tag_hex = "06737881d583f7a2ade88e2526d3dbc7"
+invariant = "Seed exactly 256 collection UUID shards; retain OPEN collections and all sealed members until explicit consumption or abandonment."
+
+[[bootstrap_seed_range]]
 id = "h2hdb.operational.cleanup-sweep.source-build.v1"
 version = 1
 lifecycle = "building_only"
@@ -2981,6 +3081,107 @@ nullable = false
 name = "byte_count"
 sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection"
+table = "catalog_source_collections"
+primary_key = ["collection_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "scope_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection_manifest_policy"
+table = "catalog_source_collection_manifest_policies"
+primary_key = ["collection_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "manifest_policy_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection_qualification_policy"
+table = "catalog_source_collection_qualification_policies"
+primary_key = ["collection_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "qualification_policy_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection_created_at"
+table = "catalog_source_collection_created_ats"
+primary_key = ["collection_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "created_at"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection_observation"
+table = "catalog_source_collection_observations"
+primary_key = ["collection_id", "gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "source_collection_consumption"
+table = "catalog_source_collection_consumptions"
+primary_key = ["collection_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "collection_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "build_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
 nullable = false
 
 [[relation]]
@@ -4502,15 +4703,10 @@ status = "implemented"
 rationale = "BCNF operational authority or exact durable protocol state for gallery_observation_staging."
 table = "operational_gallery_observation_stagings"
 primary_key = ["staging_id"]
-unique_keys = [["build_id"], ["gallery_id", "observation_id"]]
+unique_keys = [["gallery_id", "observation_id"]]
 [[relation.column]]
 attribute = "staging_id"
 name = "staging_id"
-sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
-mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
-[[relation.column]]
-attribute = "build_id"
-name = "build_id"
 sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
 mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
 [[relation.column]]
@@ -4545,22 +4741,13 @@ sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_observation_staging_1"
-attributes = ["build_id"]
-referenced_relation = "source_build_descriptor"
-referenced_attributes = ["build_id"]
-[[relation.foreign_key]]
-name = "fk_gallery_observation_staging_2"
 attributes = ["gallery_id", "observation_id"]
 referenced_relation = "gallery_observation_allocation"
 referenced_attributes = ["gallery_id", "observation_id"]
 [[relation.check]]
 name = "ck_gallery_observation_staging_storage_domain"
-sqlite_expression = "typeof(build_id) = 'blob' AND typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(gallery_id) = 'integer' AND gallery_id >= 0 AND typeof(observation_id) = 'integer' AND observation_id >= 0 AND (sealed_at IS NULL OR typeof(sealed_at) = 'integer') AND sealed_at >= 0 AND typeof(staging_id) = 'blob' AND typeof(state) = 'text' AND (terminal_byte_count IS NULL OR typeof(terminal_byte_count) = 'integer') AND terminal_byte_count >= 0"
-mariadb_expression = "build_id IS NOT NULL AND created_at IS NOT NULL AND created_at >= 0 AND gallery_id IS NOT NULL AND gallery_id >= 0 AND observation_id IS NOT NULL AND observation_id >= 0 AND (sealed_at IS NULL OR sealed_at IS NOT NULL) AND sealed_at >= 0 AND staging_id IS NOT NULL AND state IS NOT NULL AND (terminal_byte_count IS NULL OR terminal_byte_count IS NOT NULL) AND terminal_byte_count >= 0"
-[[relation.check]]
-name = "ck_gallery_observation_staging_build_id_len"
-sqlite_expression = "length(build_id) = 16"
-mariadb_expression = "octet_length(build_id) = 16"
+sqlite_expression = "typeof(created_at) = 'integer' AND created_at >= 0 AND typeof(gallery_id) = 'integer' AND gallery_id >= 0 AND typeof(observation_id) = 'integer' AND observation_id >= 0 AND (sealed_at IS NULL OR typeof(sealed_at) = 'integer') AND sealed_at >= 0 AND typeof(staging_id) = 'blob' AND typeof(state) = 'text' AND (terminal_byte_count IS NULL OR typeof(terminal_byte_count) = 'integer') AND terminal_byte_count >= 0"
+mariadb_expression = "created_at IS NOT NULL AND created_at >= 0 AND gallery_id IS NOT NULL AND gallery_id >= 0 AND observation_id IS NOT NULL AND observation_id >= 0 AND (sealed_at IS NULL OR sealed_at IS NOT NULL) AND sealed_at >= 0 AND staging_id IS NOT NULL AND state IS NOT NULL AND (terminal_byte_count IS NULL OR terminal_byte_count IS NOT NULL) AND terminal_byte_count >= 0"
 [[relation.check]]
 name = "ck_gallery_observation_staging_staging_id_len"
 sqlite_expression = "length(staging_id) = 16"
@@ -4629,7 +4816,7 @@ referenced_attributes = ["staging_id"]
 [[relation.foreign_key]]
 name = "fk_gallery_observation_staging_claim_2"
 attributes = ["ingest_generation"]
-referenced_relation = "source_build_generation"
+referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.required_index]]
 name = "ix_gallery_observation_staging_claim_fk_2"
@@ -6668,8 +6855,8 @@ sqlite_expression = "typeof(target_kind) = 'text'"
 mariadb_expression = "target_kind IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_target_kind_target_kind_registry"
-sqlite_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
-mariadb_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+sqlite_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+mariadb_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
 
 [[relation]]
 name = "cleanup_sweep_target"
@@ -6752,8 +6939,8 @@ sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 mariadb_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_registry"
-sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
-mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+sqlite_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+mariadb_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
 [[relation.check]]
 name = "ck_cleanup_phase_order_positive"
 sqlite_expression = "phase_order > 0"
@@ -7241,3 +7428,248 @@ mariadb_expression = "minimum_interval_microseconds >= 0 AND minimum_interval_mi
 name = "ck_database_audit_state_singleton_id_portable"
 sqlite_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
 mariadb_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
+
+[[relation]]
+name = "source_collection_state"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_collection_state."
+table = "operational_source_collection_states"
+primary_key = ["collection_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "collection_id"
+name = "collection_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "state"
+name = "state"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.foreign_key]]
+name = "fk_source_collection_state_1"
+attributes = ["collection_id"]
+referenced_relation = "source_collection"
+referenced_attributes = ["collection_id"]
+[[relation.check]]
+name = "ck_source_collection_state_storage_domain"
+sqlite_expression = "typeof(collection_id) = 'blob' AND typeof(state) = 'text'"
+mariadb_expression = "collection_id IS NOT NULL AND state IS NOT NULL"
+[[relation.check]]
+name = "ck_source_collection_state"
+sqlite_expression = "state IN ('OPEN', 'CONSUMED', 'ABANDONED')"
+mariadb_expression = "state IN ('OPEN', 'CONSUMED', 'ABANDONED')"
+[[relation.check]]
+name = "ck_source_collection_state_collection_id_len"
+sqlite_expression = "length(collection_id) = 16"
+mariadb_expression = "octet_length(collection_id) = 16"
+[[relation.check]]
+name = "ck_source_collection_state_collection_id_non_nil"
+sqlite_expression = "collection_id <> X'00000000000000000000000000000000'"
+mariadb_expression = "collection_id <> X'00000000000000000000000000000000'"
+
+[[relation]]
+name = "source_collection_claim"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_collection_claim."
+table = "operational_source_collection_claims"
+primary_key = ["collection_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "collection_id"
+name = "collection_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "ingest_generation"
+name = "ingest_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "claim_generation"
+name = "claim_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "updated_at"
+name = "updated_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_collection_claim_1"
+attributes = ["collection_id"]
+referenced_relation = "source_collection"
+referenced_attributes = ["collection_id"]
+[[relation.foreign_key]]
+name = "fk_source_collection_claim_2"
+attributes = ["ingest_generation"]
+referenced_relation = "ingest_generation"
+referenced_attributes = ["generation"]
+[[relation.required_index]]
+name = "ix_source_collection_claim_fk_2"
+attributes = ["ingest_generation"]
+unique = false
+[[relation.check]]
+name = "ck_source_collection_claim_storage_domain"
+sqlite_expression = "typeof(claim_generation) = 'integer' AND claim_generation >= 0 AND typeof(collection_id) = 'blob' AND typeof(ingest_generation) = 'integer' AND ingest_generation >= 0 AND typeof(updated_at) = 'integer' AND updated_at >= 0"
+mariadb_expression = "claim_generation IS NOT NULL AND claim_generation >= 0 AND collection_id IS NOT NULL AND ingest_generation IS NOT NULL AND ingest_generation >= 0 AND updated_at IS NOT NULL AND updated_at >= 0"
+[[relation.check]]
+name = "ck_source_collection_claim_positive"
+sqlite_expression = "claim_generation >= 1"
+mariadb_expression = "claim_generation >= 1"
+[[relation.check]]
+name = "ck_source_collection_claim_collection_id_len"
+sqlite_expression = "length(collection_id) = 16"
+mariadb_expression = "octet_length(collection_id) = 16"
+[[relation.check]]
+name = "ck_source_collection_claim_collection_id_non_nil"
+sqlite_expression = "collection_id <> X'00000000000000000000000000000000'"
+mariadb_expression = "collection_id <> X'00000000000000000000000000000000'"
+[[relation.check]]
+name = "ck_source_collection_claim_updated_at_nonneg"
+sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_collection_claim_claim_generation_nonneg"
+sqlite_expression = "claim_generation >= 0 AND claim_generation <= 9223372036854775807"
+mariadb_expression = "claim_generation >= 0 AND claim_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_collection_claim_ingest_generation_nonneg"
+sqlite_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
+mariadb_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
+
+[[relation]]
+name = "source_working_collection"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_working_collection."
+table = "operational_source_working_collections"
+primary_key = ["slot"]
+unique_keys = [["collection_id"]]
+[[relation.column]]
+attribute = "slot"
+name = "slot"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "collection_id"
+name = "collection_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "assigned_at"
+name = "assigned_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_working_collection_1"
+attributes = ["collection_id"]
+referenced_relation = "source_collection"
+referenced_attributes = ["collection_id"]
+[[relation.check]]
+name = "ck_source_working_collection_storage_domain"
+sqlite_expression = "typeof(assigned_at) = 'integer' AND assigned_at >= 0 AND typeof(collection_id) = 'blob' AND typeof(slot) = 'integer' AND slot >= 0"
+mariadb_expression = "assigned_at IS NOT NULL AND assigned_at >= 0 AND collection_id IS NOT NULL AND slot IS NOT NULL AND slot >= 0"
+[[relation.check]]
+name = "ck_source_working_collection_collection_id_len"
+sqlite_expression = "length(collection_id) = 16"
+mariadb_expression = "octet_length(collection_id) = 16"
+[[relation.check]]
+name = "ck_source_working_collection_collection_id_non_nil"
+sqlite_expression = "collection_id <> X'00000000000000000000000000000000'"
+mariadb_expression = "collection_id <> X'00000000000000000000000000000000'"
+[[relation.check]]
+name = "ck_source_working_collection_assigned_at_nonneg"
+sqlite_expression = "assigned_at >= 0 AND assigned_at <= 9223372036854775807"
+mariadb_expression = "assigned_at >= 0 AND assigned_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_working_collection_slot_portable"
+sqlite_expression = "slot >= 0 AND slot <= 9223372036854775807"
+mariadb_expression = "slot >= 0 AND slot <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_working_collection_slot"
+sqlite_expression = "slot = 1"
+mariadb_expression = "slot = 1"
+
+[[relation]]
+name = "gallery_staging_source_build"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for gallery_staging_source_build."
+table = "operational_gallery_staging_source_builds"
+primary_key = ["staging_id"]
+unique_keys = [["build_id"]]
+[[relation.column]]
+attribute = "staging_id"
+name = "staging_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "build_id"
+name = "build_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_gallery_staging_source_build_1"
+attributes = ["staging_id"]
+referenced_relation = "gallery_observation_staging"
+referenced_attributes = ["staging_id"]
+[[relation.foreign_key]]
+name = "fk_gallery_staging_source_build_2"
+attributes = ["build_id"]
+referenced_relation = "source_build_descriptor"
+referenced_attributes = ["build_id"]
+[[relation.check]]
+name = "ck_gallery_staging_source_build_storage_domain"
+sqlite_expression = "typeof(build_id) = 'blob' AND typeof(staging_id) = 'blob'"
+mariadb_expression = "build_id IS NOT NULL AND staging_id IS NOT NULL"
+[[relation.check]]
+name = "ck_gallery_staging_source_build_build_id_len"
+sqlite_expression = "length(build_id) = 16"
+mariadb_expression = "octet_length(build_id) = 16"
+[[relation.check]]
+name = "ck_gallery_staging_source_build_staging_id_len"
+sqlite_expression = "length(staging_id) = 16"
+mariadb_expression = "octet_length(staging_id) = 16"
+
+[[relation]]
+name = "gallery_staging_collection"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for gallery_staging_collection."
+table = "operational_gallery_staging_collections"
+primary_key = ["staging_id"]
+unique_keys = [["collection_id"]]
+[[relation.column]]
+attribute = "staging_id"
+name = "staging_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "collection_id"
+name = "collection_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_gallery_staging_collection_1"
+attributes = ["staging_id"]
+referenced_relation = "gallery_observation_staging"
+referenced_attributes = ["staging_id"]
+[[relation.foreign_key]]
+name = "fk_gallery_staging_collection_2"
+attributes = ["collection_id"]
+referenced_relation = "source_collection"
+referenced_attributes = ["collection_id"]
+[[relation.check]]
+name = "ck_gallery_staging_collection_storage_domain"
+sqlite_expression = "typeof(collection_id) = 'blob' AND typeof(staging_id) = 'blob'"
+mariadb_expression = "collection_id IS NOT NULL AND staging_id IS NOT NULL"
+[[relation.check]]
+name = "ck_gallery_staging_collection_collection_id_len"
+sqlite_expression = "length(collection_id) = 16"
+mariadb_expression = "octet_length(collection_id) = 16"
+[[relation.check]]
+name = "ck_gallery_staging_collection_staging_id_len"
+sqlite_expression = "length(staging_id) = 16"
+mariadb_expression = "octet_length(staging_id) = 16"
+[[relation.check]]
+name = "ck_gallery_staging_collection_collection_id_non_nil"
+sqlite_expression = "collection_id <> X'00000000000000000000000000000000'"
+mariadb_expression = "collection_id <> X'00000000000000000000000000000000'"

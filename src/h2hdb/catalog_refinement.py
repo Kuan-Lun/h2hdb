@@ -13,6 +13,8 @@ common commit chain. Quick readiness remains epoch-only and O(1).
 from __future__ import annotations
 
 __all__ = [
+    "check_source_collection_durable_observations_v1",
+    "check_source_collection_consumption_fencing_v1",
     "BuiltinSemanticRegistryError",
     "CatalogSemanticValidationError",
     "builtin_semantic_validators",
@@ -63,6 +65,10 @@ from .domain import (
     CatalogImageResource,
     StorageObjectDescriptor,
     StorageObjectKey,
+)
+from .source_collection_refinement import (
+    check_source_collection_consumption_fencing_v1,
+    check_source_collection_durable_observations_v1,
 )
 from .sql_connector import SQLConnector
 from .vnext_canonical_value_repository import (
@@ -173,6 +179,16 @@ _SPECS = (
         "catalog_refinement.check_retention_contract_v2",
     ),
     (
+        "catalog.source-collection-durable-observations.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_source_collection_durable_observations_v1",
+    ),
+    (
+        "catalog.source-collection-consumption-fencing.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_source_collection_consumption_fencing_v1",
+    ),
+    (
         "h2hdb.operational.database-audit-schedule.v1",
         "ready_and_runtime",
         "operational_refinement.check_database_audit_schedule_v1",
@@ -266,6 +282,16 @@ _SPECS = (
         "h2hdb.operational.bootstrap-genesis.v1",
         "building_only",
         "operational_refinement.check_bootstrap_contract_v1",
+    ),
+    (
+        "h2hdb.operational.source-collection-staging-owner.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_source_collection_staging_owner_v1",
+    ),
+    (
+        "h2hdb.operational.source-collection-cleanup-reachability.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_source_collection_cleanup_reachability_v1",
     ),
 )
 
@@ -7716,6 +7742,8 @@ def builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
             "catalog.role-derivation.v1": check_role_derivation_v1,
             "catalog.physical-domains.v1": check_physical_domains_v1,
             "catalog.retention.v2": check_retention_contract_v2,
+            "catalog.source-collection-durable-observations.v1": check_source_collection_durable_observations_v1,
+            "catalog.source-collection-consumption-fencing.v1": check_source_collection_consumption_fencing_v1,
         }
     )
     expected = tuple(

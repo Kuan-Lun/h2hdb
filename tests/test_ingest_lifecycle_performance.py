@@ -306,7 +306,18 @@ def test_idle_cleanup_and_claim_identify_slow_empty_candidate_at_info(
         item for item in events if item["operation"] == "current_only_cleanup"
     )
     assert cleanup_event["labels"]["committed_logical_rows"] == 0
-    assert cleanup_event["sql_calls"] == 25
+    # One query per current-only target, plus open-cycle, pending-effect and
+    # publication-finalization probes. The hash-cache target is excluded.
+    current_targets = set(cleanup.CleanupTargetKind) - {
+        cleanup.CleanupTargetKind.HASH_CACHE_OBSERVATION
+    }
+    assert cleanup_event["sql_calls"] == len(current_targets) + 3
+    measured_targets = {
+        item["labels"]["target"]: item["calls"]
+        for item in cleanup_event["phase_totals"]
+        if item["phase"] == "maintenance_eligibility"
+    }
+    assert measured_targets == {target.value: 1 for target in current_targets}
     claim_event = next(item for item in events if item["operation"] == "ingest_claim")
     assert claim_event["labels"]["outcome"] == "claimed"
     assert claim_event["labels"]["ingest_generation"] == session.ingest_generation

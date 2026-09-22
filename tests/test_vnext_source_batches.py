@@ -14,6 +14,7 @@ from vnext_pipeline import (
     Clock,
     MemoryLibrary,
     claim_session,
+    collect_source,
     drain_maintenance,
     full_check,
     gallery,
@@ -66,7 +67,6 @@ def _source_batch(
     with facade.prepare_source(
         source, policy=policy, max_new_galleries=limit
     ) as prepared:
-        deferred = prepared.deferred_gallery_count
         for _ in range(10_000):
             issued = facade.issue_source_step(session, policy, prepared)
             local = facade.prepare_source_step(prepared, issued)
@@ -75,7 +75,7 @@ def _source_batch(
             if result.terminal:
                 receipt = result.source_receipt
                 assert receipt is not None and receipt.sealed
-                return receipt, deferred
+                return receipt, prepared.deferred_gallery_count
     raise AssertionError("source batch did not seal within its step budget")
 
 
@@ -214,6 +214,7 @@ def test_unpublished_source_cache_cannot_bypass_new_gallery_quota(
         with facade.prepare_source(
             source, policy=policy, max_new_galleries=2
         ) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.deferred_gallery_count == 3
             assert source.deep_reads == []
         facade.complete_ingest(session)

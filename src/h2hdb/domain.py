@@ -82,6 +82,7 @@ __all__ = [
     "CatalogSourceRevision",
     "CatalogSubject",
     "DirectoryObservation",
+    "GalleryStagingOwner",
     "CatalogPreparedArtifact",
     "CatalogProjectionArtifactCursor",
     "CatalogProjectionArtifactPage",
@@ -160,7 +161,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 from unicodedata import category, unidata_version
 from uuid import UUID
 
@@ -253,6 +254,19 @@ def _validate_build_id(value: str) -> None:
         raise ValueError("Catalog build ID must be a UUID") from error
     if parsed.hex != value:
         raise ValueError("Catalog build ID must be a normalized 32-character UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryStagingOwner:
+    """The exclusive durable owner of one shared observation staging slot."""
+
+    kind: Literal["SOURCE_BUILD", "COLLECTION"]
+    owner_id: bytes
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"SOURCE_BUILD", "COLLECTION"}:
+            raise ValueError("staging owner kind is unknown")
+        require_uuid16(self.owner_id, field="staging owner_id")
 
 
 class CurrentOnlyCleanupTerminalState(StrEnum):
@@ -3609,6 +3623,7 @@ class VNextSourcePreparationOperation(StrEnum):
     BATCH_ORDER = "batch_order"
     DISCOVERY_CLEANUP = "discovery_cleanup"
     SOURCE_FREEZE = "source_freeze"
+    SOURCE_CHECKPOINT = "source_checkpoint"
 
 
 @dataclass(frozen=True, slots=True)
@@ -3619,6 +3634,8 @@ class VNextSourcePreparationProgress:
     Reconciliation counts published inventory entries checked for omissions.
     Selection counts admitted locators copied into the selected batch plan.
     Freeze counts checked inventory entries, including deferred galleries.
+    Checkpoint counts selected galleries whose observations are durable; its
+    final total becomes known when the inventory has been fully observed.
     This observation grants no authority to resume or commit database work.
     """
 

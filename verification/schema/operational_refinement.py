@@ -417,6 +417,18 @@ _SEMANTIC_VALIDATOR_HOOK = (
     "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 )
 _OBLIGATION_BINDINGS = {
+    "h2hdb.operational.source-collection-staging-owner.v1": (
+        "operational.source-collection-staging-owner",
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_source_collection_staging_owner_v1",
+    ),
+    "h2hdb.operational.source-collection-cleanup-reachability.v1": (
+        "operational.source-collection-cleanup-reachability",
+        "ready_and_runtime",
+        "retention_protocol",
+        "operational_refinement.check_source_collection_cleanup_reachability_v1",
+    ),
     "h2hdb.operational.database-audit-schedule.v1": (
         "operational.database-audit-schedule",
         "ready_and_runtime",
@@ -644,6 +656,8 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
     ),
     "h2hdb.operational.gallery-staging-request-budget.v1": (
         (
+            "gallery_staging_source_build",
+            "gallery_staging_collection",
             "gallery_observation_staging_request_budget",
             "gallery_observation_staging",
             "gallery_observation_staging_claim",
@@ -797,6 +811,8 @@ def validate_operational_machine_contract_documents(
         _validate_bootstrap(logical, physical, physical_logical_relations)
     )
     checks: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], None]] = {
+        "operational_refinement.check_source_collection_staging_owner_v1": check_source_collection_staging_owner_v1,
+        "operational_refinement.check_source_collection_cleanup_reachability_v1": check_source_collection_cleanup_reachability_v1,
         "operational_refinement.check_database_audit_schedule_v1": check_database_audit_schedule_v1,
         "operational_refinement.check_physical_domains_v1": check_physical_domains_v1,
         "operational_refinement.check_epoch_manifest_v1": check_epoch_manifest_v1,
@@ -832,6 +848,163 @@ def validate_operational_machine_contract_documents(
         absent_relations,
         epoch_owned,
     )
+
+
+def check_source_collection_staging_owner_v1(
+    logical: Mapping[str, Any],
+    physical: Mapping[str, Any],
+) -> None:
+    """Pin shared staging identity, exclusive owner keys and pre-build fencing."""
+    relations = _raw_relation_map(logical)
+    concrete = _raw_relation_map(physical)
+    for name, owner_column, parent in (
+        ("gallery_staging_source_build", "build_id", "source_build_descriptor"),
+        ("gallery_staging_collection", "collection_id", "source_collection"),
+    ):
+        relation = relations.get(name, {})
+        expected_fks = [
+            {
+                "attributes": ["staging_id"],
+                "relation": "gallery_observation_staging",
+                "referenced_attributes": ["staging_id"],
+            },
+            {
+                "attributes": [owner_column],
+                "relation": parent,
+                "referenced_attributes": [owner_column],
+            },
+        ]
+        if (
+            relation.get("attributes") != ["staging_id", owner_column]
+            or relation.get("declared_keys") != [["staging_id"], [owner_column]]
+            or relation.get("foreign_keys") != expected_fks
+            or concrete.get(name, {}).get("primary_key") != ["staging_id"]
+        ):
+            raise ValueError("source collection exclusive staging owner shape drifts")
+    header = relations.get("gallery_observation_staging", {})
+    if header.get("attributes") != [
+        "staging_id",
+        "gallery_id",
+        "observation_id",
+        "state",
+        "created_at",
+        "sealed_at",
+        "terminal_byte_count",
+    ] or header.get("declared_keys") != [
+        ["staging_id"],
+        ["gallery_id", "observation_id"],
+    ]:
+        raise ValueError("source collection shared staging header drifts")
+    expected_claim_fks = [
+        {
+            "attributes": ["staging_id"],
+            "relation": "gallery_observation_staging",
+            "referenced_attributes": ["staging_id"],
+        },
+        {
+            "attributes": ["ingest_generation"],
+            "relation": "ingest_generation",
+            "referenced_attributes": ["generation"],
+        },
+    ]
+    if (
+        relations.get("gallery_observation_staging_claim", {}).get("foreign_keys")
+        != expected_claim_fks
+    ):
+        raise ValueError(
+            "source collection staging claim cannot depend on a complete build"
+        )
+    collection_shapes = {
+        "source_collection_state": (["collection_id", "state"], [["collection_id"]]),
+        "source_collection_claim": (
+            ["collection_id", "ingest_generation", "claim_generation", "updated_at"],
+            [["collection_id"]],
+        ),
+        "source_working_collection": (
+            ["slot", "collection_id", "assigned_at"],
+            [["slot"], ["collection_id"]],
+        ),
+    }
+    for name, (attributes, keys) in collection_shapes.items():
+        relation = relations.get(name, {})
+        if (
+            relation.get("attributes") != attributes
+            or relation.get("declared_keys") != keys
+        ):
+            raise ValueError("source collection lifecycle or claim shape drifts")
+    required_checks = {
+        "source_collection_state": (
+            "ck_source_collection_state",
+            "state IN ('OPEN', 'CONSUMED', 'ABANDONED')",
+        ),
+        "source_collection_claim": (
+            "ck_source_collection_claim_positive",
+            "claim_generation >= 1",
+        ),
+        "source_working_collection": ("ck_source_working_collection_slot", "slot = 1"),
+    }
+    for relation_name, (check_name, expression) in required_checks.items():
+        checks = {
+            value["name"]: value for value in concrete[relation_name].get("check", [])
+        }
+        if any(
+            checks.get(check_name, {}).get(f"{backend}_expression") != expression
+            for backend in ("sqlite", "mariadb")
+        ):
+            raise ValueError(
+                "source collection state, claim or singleton domain drifts"
+            )
+
+
+def check_source_collection_cleanup_reachability_v1(
+    logical: Mapping[str, Any],
+    physical: Mapping[str, Any],
+) -> None:
+    """Require the exact child-first collection compactor and its retention roots."""
+    del physical
+    targets = {
+        value["target_kind"]: value for value in logical.get("cleanup_target", [])
+    }
+    collection = targets.get("SOURCE_COLLECTION", {})
+    if (
+        collection.get("root_relation") != "source_collection"
+        or collection.get("root_key") != ["collection_id"]
+        or collection.get("sweep_shard_count") != 256
+        or collection.get("eligible_predicate_id")
+        != "source_collection_unreferenced_v1"
+    ):
+        raise ValueError("source collection cleanup root or bounded sweep drifts")
+    phases = tuple(
+        (value["phase"], value["order"], tuple(value["relations"]))
+        for value in collection.get("phases", [])
+    )
+    if phases != (
+        (
+            "SC_MEMBERS",
+            1,
+            ("source_collection_consumption", "source_collection_observation"),
+        ),
+        ("SC_CLAIM", 2, ("source_collection_claim",)),
+        (
+            "SC_METADATA",
+            3,
+            (
+                "source_collection_created_at",
+                "source_collection_qualification_policy",
+                "source_collection_manifest_policy",
+            ),
+        ),
+        ("SC_STATE", 4, ("source_collection_state",)),
+        ("SC_ROOT", 5, ("source_collection",)),
+    ):
+        raise ValueError("source collection cleanup child-first phase order drifts")
+    if collection.get("operational_blockers") != [
+        {"relation": "source_working_collection", "attributes": ["collection_id"]},
+        {"relation": "gallery_staging_collection", "attributes": ["collection_id"]},
+    ]:
+        raise ValueError(
+            "source collection cleanup loses live working or staging roots"
+        )
 
 
 def check_database_audit_schedule_v1(
@@ -1807,6 +1980,15 @@ def check_attempt_identity_contract_v1(
 
 
 _CLEANUP_TARGET_SHAPES = {
+    "SOURCE_COLLECTION": (
+        "source_collection",
+        ("collection_id",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "source_collection_unreferenced_v1",
+        "source_collection_retention_roots_v1",
+        "h2hdb.cleanup.source_collection.v1",
+        ("SC_MEMBERS", "SC_CLAIM", "SC_METADATA", "SC_STATE", "SC_ROOT"),
+    ),
     "SOURCE_BUILD": (
         "source_build_descriptor",
         ("build_id",),
@@ -2112,6 +2294,7 @@ _CLEANUP_TARGET_SHAPES = {
 }
 
 _CLEANUP_SELECTION_ORDERS = {
+    "SOURCE_COLLECTION": "uuid_first_byte_then_uuid_v1",
     "SOURCE_BUILD": "uuid_first_byte_then_uuid_v1",
     "ANALYSIS_RUN": "uuid_first_byte_then_uuid_v1",
     "CATALOG_PUBLICATION": "sha256_prefix_then_candidate_key_v1",
@@ -2138,6 +2321,7 @@ _CLEANUP_SELECTION_ORDERS = {
 }
 
 _CLEANUP_STATE_ROOT_HANDOFF_RULES = {
+    "SOURCE_COLLECTION": "SC_ROOT requires a cleanup_id-bound COMPLETE SC_STATE checkpoint and absence of the state scalar, then rechecks the working slot and staging binding before removing the root",
     "SOURCE_BUILD": "SB_STATE deletes the terminal scalar only after every prior child phase is COMPLETE; SB_ROOT requires the cleanup_id-bound SB_STATE checkpoint to be COMPLETE, requires source_build_state to remain absent, and rechecks every remaining source-build reachability blocker under the same exclusive gate before deleting source_build_descriptor",
     "ANALYSIS_RUN": "AR_COMPLETION deletes the optional COMPLETE timestamp child-first, AR_STATE deletes the terminal scalar only after every prior child phase is COMPLETE, and AR_ROOT requires the cleanup_id-bound AR_STATE checkpoint to be COMPLETE, requires analysis_run_state to remain absent, and rechecks every remaining analysis reachability blocker under the same exclusive gate before deleting analysis_run_descriptor",
 }
@@ -2151,6 +2335,7 @@ _CLEANUP_FROZEN_ROOT_INT_ATTRIBUTES = {
     "source_revision",
 }
 _CLEANUP_FROZEN_ROOT_UUID_ATTRIBUTES = {
+    "collection_id",
     "analysis_id",
     "build_id",
     "candidate_id",
@@ -2296,6 +2481,10 @@ def check_cleanup_reachability_v1(
         if kind == "ANALYSIS_RUN":
             extra_allowed.update(
                 {"conditional_blockers", "state_rule", "state_root_handoff_rule"}
+            )
+        if kind == "SOURCE_COLLECTION":
+            extra_allowed.update(
+                {"terminal_rule", "state_root_handoff_rule", "operational_blockers"}
             )
         if kind == "SOURCE_BUILD":
             extra_allowed.update(
@@ -3215,9 +3404,10 @@ def check_gallery_staging_contract_v1(
         "gallery_observation_allocator": [["gallery_id"]],
         "gallery_observation_staging": [
             ["staging_id"],
-            ["build_id"],
             ["gallery_id", "observation_id"],
         ],
+        "gallery_staging_source_build": [["staging_id"], ["build_id"]],
+        "gallery_staging_collection": [["staging_id"], ["collection_id"]],
         "gallery_observation_staging_claim": [["staging_id"]],
         "gallery_observation_staging_checkpoint": [
             ["staging_id", "component", "level"],
@@ -3307,19 +3497,6 @@ def check_gallery_staging_contract_v1(
         {
             "determinant": ["staging_id"],
             "dependent": [
-                "build_id",
-                "gallery_id",
-                "observation_id",
-                "state",
-                "created_at",
-                "sealed_at",
-                "terminal_byte_count",
-            ],
-        },
-        {
-            "determinant": ["build_id"],
-            "dependent": [
-                "staging_id",
                 "gallery_id",
                 "observation_id",
                 "state",
@@ -3332,7 +3509,6 @@ def check_gallery_staging_contract_v1(
             "determinant": ["gallery_id", "observation_id"],
             "dependent": [
                 "staging_id",
-                "build_id",
                 "state",
                 "created_at",
                 "sealed_at",
@@ -3340,7 +3516,7 @@ def check_gallery_staging_contract_v1(
             ],
         },
     ]:
-        raise ValueError("gallery staging build slot FD drifts")
+        raise ValueError("gallery staging observation slot FD drifts")
     physical_relations = _raw_relation_map(physical)
     required_checks = {
         "gallery_observation_staging": {
@@ -3514,7 +3690,11 @@ def check_gallery_staging_request_budget_v1(
                 {
                     "phase": "ROOT",
                     "order": 7,
-                    "relations": ["gallery_observation_staging"],
+                    "relations": [
+                        "gallery_staging_source_build",
+                        "gallery_staging_collection",
+                        "gallery_observation_staging",
+                    ],
                 },
             ],
             "implicit_ack_rule": "after the facade accepts a fresh or reconstructed GalleryStagingSeal, the next source advance is the implicit ACK: under the shared gate, exact live ingest fence, source working-build lock and durable link validation, the first retirement transaction CASes SEALED to RETIRING_SEALED or REUSED to RETIRING_REUSED and deletes the first child batch atomically; rollback preserves ordinary seal replay authority, while RETIRING states make every old page or seal retry raise typed GalleryStagingRetiredError",
@@ -3522,6 +3702,7 @@ def check_gallery_staging_request_budget_v1(
             "validation_rule": "every batch reconstructs the provisional four-root descriptor, compares its digest with the final gallery_observation identity, requires final stat file_count equal the FILE root count and final stat byte_count equal the immutable staging terminal_byte_count captured from the terminal FILE checkpoint, requires policy-derived gallery_manifest congruence, and enforces SEALED or RETIRING_SEALED link equality versus REUSED or RETIRING_REUSED link inequality; any cross-owner predecessor in either direction blocks retirement",
             "deletion_rule": "each transaction inspects phases in fixed order, processes only the first nonempty phase, locks at most 256 exact rows child-first, and never deletes catalog allocation, pages, roots, normalized facts, final observation, manifest, or source_build_gallery; request identity deletion atomically releases the exact budget count",
             "replay_rule": "after ROOT deletion, the exact source_build_gallery plus final observation identity, stat, manifest policy and manifest are the bounded completion replay authority; no staging history row is retained, and caller-supplied state is nonauthoritative",
+            "owner_root_atomicity_rule": "the sole SOURCE_BUILD or COLLECTION binding and its staging header are deleted together in one atomic ROOT unit; generic cleanup counts that root as one selection and deletes exactly two physical rows, so max_rows=1 never exposes an ownerless header. In-band retirement counts the two rows within its 256-row cap. Both paths retain final owner membership and observation facts",
             "generic_cleanup_rule": "the exclusive GALLERY_OBSERVATION_STAGING backstop accepts all four terminal states and, before every bounded delete batch in the same transaction, applies the same provisional descriptor, final identity, stat file_count, immutable terminal_byte_count, manifest, and link equality or inequality validation used by in-band retirement; GALLERY_OBSERVATION applies that validator before each staging-control delete batch and retains provisional facts while any SEALED, REUSED, RETIRING_SEALED, or RETIRING_REUSED staging root remains",
         },
     )
@@ -3544,10 +3725,18 @@ def check_gallery_staging_request_budget_v1(
     staging = relations["gallery_observation_staging"]
     if staging.get("declared_keys") != [
         ["staging_id"],
-        ["build_id"],
         ["gallery_id", "observation_id"],
     ]:
         raise ValueError("gallery staging build slot key drifts")
+    for relation_name, owner_key in (
+        ("gallery_staging_source_build", "build_id"),
+        ("gallery_staging_collection", "collection_id"),
+    ):
+        if relations[relation_name].get("declared_keys") != [
+            ["staging_id"],
+            [owner_key],
+        ]:
+            raise ValueError("gallery staging owner slot key drifts")
     physical_budget = _raw_relation_map(physical)[
         "gallery_observation_staging_request_budget"
     ]
@@ -5291,6 +5480,7 @@ def _validate_bootstrap(
         logical.get("bootstrap_seed_range", []), "bootstrap_seed_range"
     )
     expected_range_kinds = {
+        "SOURCE_COLLECTION": "06737881d583f7a2ade88e2526d3dbc7",
         "SOURCE_BUILD": "7b973d41884dbcdc84faa93629b8db70",
         "ANALYSIS_RUN": "aee565cf30cb51de9e454dfcb1577234",
         "CATALOG_PUBLICATION": "322a87b56f3c8fac8d3b5985d8cc11bd",

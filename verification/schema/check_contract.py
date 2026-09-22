@@ -1808,7 +1808,7 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 178,
+        "catalog_physical_table_count_after": 184,
         "catalog_relations_added_after_recomposition": (
             "title_search_posting",
             "gallery_observation_completion_marker",
@@ -1818,11 +1818,17 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             "gallery_observation_validation_disposition",
             "gallery_observation_validation_reason",
             "gallery_observation_validation_source",
+            "source_collection",
+            "source_collection_manifest_policy",
+            "source_collection_qualification_policy",
+            "source_collection_created_at",
+            "source_collection_observation",
+            "source_collection_consumption",
         ),
         "operational_physical_table_count_before": 75,
-        "operational_physical_table_count_after": 68,
+        "operational_physical_table_count_after": 73,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 246,
+        "total_physical_table_count_after": 257,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -1861,9 +1867,9 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "publication_receipt_peak_rows": 32,
         "finalization_receipt_peak_rows": 18,
         "singleton_owner_peak_rows": 1,
-        "cleanup_job_peak_rows": 5_888,
+        "cleanup_job_peak_rows": 6_144,
         "cleanup_job_accounted_bytes_per_row": 8_192,
-        "cleanup_job_conservative_peak_bytes": 48_234_496,
+        "cleanup_job_conservative_peak_bytes": 50_331_648,
         "cleanup_cycle_root_peak_rows": 256,
         "cleanup_frozen_root_key_maximum_bytes": 260,
         "cleanup_cycle_root_accounted_bytes_per_row": 1_280,
@@ -2723,7 +2729,6 @@ def validate_cross_manifest_contracts(
             or staging_root.attributes
             != (
                 "staging_id",
-                "build_id",
                 "gallery_id",
                 "observation_id",
                 "state",
@@ -2734,14 +2739,27 @@ def validate_cross_manifest_contracts(
             or set(staging_root.declared_keys)
             != {
                 frozenset({"staging_id"}),
-                frozenset({"build_id"}),
                 frozenset({"gallery_id", "observation_id"}),
             }
         ):
             errors.append(
                 "capacity plan in-band retirement requires the exact one-staging-"
-                "per-build candidate-key shape"
+                "per-owner candidate-key shape"
             )
+        for owner_relation, owner_key in (
+            ("gallery_staging_source_build", "build_id"),
+            ("gallery_staging_collection", "collection_id"),
+        ):
+            binding = operational_relations.get(owner_relation)
+            if (
+                binding is None
+                or binding.attributes != ("staging_id", owner_key)
+                or set(binding.declared_keys)
+                != {frozenset({"staging_id"}), frozenset({owner_key})}
+            ):
+                errors.append(
+                    "staging capacity requires exclusive one-slot owner bindings"
+                )
         staging_budget = operational_relations.get(
             capacity_plan.staging_budget_relation
         )
@@ -2880,7 +2898,15 @@ def validate_cross_manifest_contracts(
                 ),
             ),
             ("CLAIM", 6, ("gallery_observation_staging_claim",)),
-            ("ROOT", 7, ("gallery_observation_staging",)),
+            (
+                "ROOT",
+                7,
+                (
+                    "gallery_staging_source_build",
+                    "gallery_staging_collection",
+                    "gallery_observation_staging",
+                ),
+            ),
         )
         actual_retirement_phases = (
             ()
@@ -3447,6 +3473,8 @@ _DATA_MACHINE_OBLIGATION_IDS = frozenset(
         "catalog.identity-codecs.v1",
         "catalog.source-qualification.v1",
         "catalog.source-completion-marker.v1",
+        "catalog.source-collection-durable-observations.v1",
+        "catalog.source-collection-consumption-fencing.v1",
         "catalog.canonical-reference-domains.v1",
         "catalog.source-baseline-channel.v1",
         "catalog.incremental-impact.v1",
@@ -3485,6 +3513,7 @@ _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
         ("storage_object_key_sha256",),
     ),
     "ANALYSIS_RUN": ("analysis_run_descriptor", ("analysis_id",)),
+    "SOURCE_COLLECTION": ("source_collection", ("collection_id",)),
     "SOURCE_BUILD": ("source_build_descriptor", ("build_id",)),
     "GALLERY_OBSERVATION": (
         "gallery_observation_allocation",
@@ -8300,7 +8329,8 @@ def _validate_canonical_digest_contract(
             if term not in terms:
                 errors.append(f"{prefix} page graph omits {term!r}")
         for term in (
-            "source_root_v1 is the sole pre-mapping exception",
+            "source_root_v1 can precede any build or collection",
+            "source_relative_locator_v1 may also precede build mapping only under an exact OPEN working collection",
             "every other digest domain requires",
             "shared canonical-value maintenance gate",
             "cleanup cycle holds its exclusive form",

@@ -2100,21 +2100,21 @@ theorem ready_validation_accepts_a_legitimately_advanced_allocator :
   decide
 
 def operationalSemanticObligationIds : List String :=
-  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1"]
+  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.bootstrap-genesis.v1", "h2hdb.operational.source-collection-staging-owner.v1", "h2hdb.operational.source-collection-cleanup-reachability.v1"]
 
 theorem operational_semantic_obligation_ids_are_unique :
     operationalSemanticObligationIds.Nodup := by
   native_decide
 
 theorem operational_semantic_obligation_count :
-    operationalSemanticObligationIds.length = 19 := by
+    operationalSemanticObligationIds.length = 21 := by
   native_decide
 
 def operationalBuildingOnlyObligationIds : List String :=
   ["h2hdb.operational.bootstrap-genesis.v1"]
 
 def operationalReadyObligationIds : List String :=
-  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1"]
+  ["h2hdb.operational.database-audit-schedule.v1", "h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.storage-instance-binding.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.cleanup-frozen-root-set.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.gallery-staging-request-budget.v1", "h2hdb.operational.source-collection-staging-owner.v1", "h2hdb.operational.source-collection-cleanup-reachability.v1"]
 
 theorem bootstrap_genesis_is_the_only_building_only_obligation :
     operationalBuildingOnlyObligationIds =
@@ -2127,7 +2127,7 @@ theorem building_only_and_ready_obligations_are_disjoint :
   native_decide
 
 def operationalBootstrapAbsentRelations : List String :=
-  ["database_audit_state", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
+  ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection", "database_audit_state", "storage_instance_binding", "download_generation", "download_coordination_head", "download_generation_owner", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_cycle_root", "cleanup_checkpoint"]
 
 theorem operational_bootstrap_has_no_invented_active_control_facts :
     ∀ relation ∈ ["storage_instance_binding", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
@@ -2149,7 +2149,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "eab90b47f36240c742b08779414c8ed71f38ea353585c8ea9931e174b454a62e"
+def operationalManifestSha256 : String := "f1b13413e170dbcf2a687d874ae3f8525679c17d14beabbddc812e06e5191218"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -3314,12 +3314,11 @@ theorem gallery_observation_allocator_bcnf : BCNF gallery_observation_allocator_
 
 def gallery_observation_staging_contract : RelationContract where
   name := "gallery_observation_staging"
-  attributes := ["staging_id", "build_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"]
-  declaredKeys := [["staging_id"], ["build_id"], ["gallery_id", "observation_id"]]
+  attributes := ["staging_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"]
+  declaredKeys := [["staging_id"], ["gallery_id", "observation_id"]]
   declaredFDs := [
-    { determinant := ["staging_id"], dependent := ["build_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
-    { determinant := ["build_id"], dependent := ["staging_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
-    { determinant := ["gallery_id", "observation_id"], dependent := ["staging_id", "build_id", "state", "created_at", "sealed_at", "terminal_byte_count"] }
+    { determinant := ["staging_id"], dependent := ["gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
+    { determinant := ["gallery_id", "observation_id"], dependent := ["staging_id", "state", "created_at", "sealed_at", "terminal_byte_count"] }
   ]
 
 theorem gallery_observation_staging_schema_well_formed :
@@ -5346,6 +5345,239 @@ theorem database_audit_state_bcnf_check :
 theorem database_audit_state_bcnf : BCNF database_audit_state_contract :=
   bcnfCheck_sound database_audit_state_contract database_audit_state_bcnf_check
 
+def source_collection_state_contract : RelationContract where
+  name := "source_collection_state"
+  attributes := ["collection_id", "state"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["state"] }
+  ]
+
+theorem source_collection_state_schema_well_formed :
+    schemaWellFormedCheck source_collection_state_contract = true := by
+  native_decide
+
+theorem source_collection_state_candidate_keys_check :
+    keysDetermineAllCheck source_collection_state_contract = true := by
+  native_decide
+
+theorem source_collection_state_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_state_contract :=
+  keysDetermineAllCheck_sound source_collection_state_contract
+    source_collection_state_candidate_keys_check
+
+theorem source_collection_state_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_state_contract = true := by
+  native_decide
+
+theorem source_collection_state_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_state_contract :=
+  declaredKeysMinimalCheck_sound source_collection_state_contract
+    source_collection_state_candidate_keys_minimal_check
+
+theorem source_collection_state_closure_fixed_check :
+    closureFixedPointCheck source_collection_state_contract = true := by
+  native_decide
+
+theorem source_collection_state_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_state_contract :=
+  closureFixedPointCheck_sound source_collection_state_contract
+    source_collection_state_closure_fixed_check
+
+theorem source_collection_state_bcnf_check :
+    bcnfCheck source_collection_state_contract = true := by
+  native_decide
+
+theorem source_collection_state_bcnf : BCNF source_collection_state_contract :=
+  bcnfCheck_sound source_collection_state_contract source_collection_state_bcnf_check
+
+def source_collection_claim_contract : RelationContract where
+  name := "source_collection_claim"
+  attributes := ["collection_id", "ingest_generation", "claim_generation", "updated_at"]
+  declaredKeys := [["collection_id"]]
+  declaredFDs := [
+    { determinant := ["collection_id"], dependent := ["ingest_generation", "claim_generation", "updated_at"] }
+  ]
+
+theorem source_collection_claim_schema_well_formed :
+    schemaWellFormedCheck source_collection_claim_contract = true := by
+  native_decide
+
+theorem source_collection_claim_candidate_keys_check :
+    keysDetermineAllCheck source_collection_claim_contract = true := by
+  native_decide
+
+theorem source_collection_claim_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_collection_claim_contract :=
+  keysDetermineAllCheck_sound source_collection_claim_contract
+    source_collection_claim_candidate_keys_check
+
+theorem source_collection_claim_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_collection_claim_contract = true := by
+  native_decide
+
+theorem source_collection_claim_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_collection_claim_contract :=
+  declaredKeysMinimalCheck_sound source_collection_claim_contract
+    source_collection_claim_candidate_keys_minimal_check
+
+theorem source_collection_claim_closure_fixed_check :
+    closureFixedPointCheck source_collection_claim_contract = true := by
+  native_decide
+
+theorem source_collection_claim_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_collection_claim_contract :=
+  closureFixedPointCheck_sound source_collection_claim_contract
+    source_collection_claim_closure_fixed_check
+
+theorem source_collection_claim_bcnf_check :
+    bcnfCheck source_collection_claim_contract = true := by
+  native_decide
+
+theorem source_collection_claim_bcnf : BCNF source_collection_claim_contract :=
+  bcnfCheck_sound source_collection_claim_contract source_collection_claim_bcnf_check
+
+def source_working_collection_contract : RelationContract where
+  name := "source_working_collection"
+  attributes := ["slot", "collection_id", "assigned_at"]
+  declaredKeys := [["slot"], ["collection_id"]]
+  declaredFDs := [
+    { determinant := ["slot"], dependent := ["collection_id", "assigned_at"] },
+    { determinant := ["collection_id"], dependent := ["slot", "assigned_at"] }
+  ]
+
+theorem source_working_collection_schema_well_formed :
+    schemaWellFormedCheck source_working_collection_contract = true := by
+  native_decide
+
+theorem source_working_collection_candidate_keys_check :
+    keysDetermineAllCheck source_working_collection_contract = true := by
+  native_decide
+
+theorem source_working_collection_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_working_collection_contract :=
+  keysDetermineAllCheck_sound source_working_collection_contract
+    source_working_collection_candidate_keys_check
+
+theorem source_working_collection_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_working_collection_contract = true := by
+  native_decide
+
+theorem source_working_collection_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_working_collection_contract :=
+  declaredKeysMinimalCheck_sound source_working_collection_contract
+    source_working_collection_candidate_keys_minimal_check
+
+theorem source_working_collection_closure_fixed_check :
+    closureFixedPointCheck source_working_collection_contract = true := by
+  native_decide
+
+theorem source_working_collection_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_working_collection_contract :=
+  closureFixedPointCheck_sound source_working_collection_contract
+    source_working_collection_closure_fixed_check
+
+theorem source_working_collection_bcnf_check :
+    bcnfCheck source_working_collection_contract = true := by
+  native_decide
+
+theorem source_working_collection_bcnf : BCNF source_working_collection_contract :=
+  bcnfCheck_sound source_working_collection_contract source_working_collection_bcnf_check
+
+def gallery_staging_source_build_contract : RelationContract where
+  name := "gallery_staging_source_build"
+  attributes := ["staging_id", "build_id"]
+  declaredKeys := [["staging_id"], ["build_id"]]
+  declaredFDs := [
+    { determinant := ["staging_id"], dependent := ["build_id"] },
+    { determinant := ["build_id"], dependent := ["staging_id"] }
+  ]
+
+theorem gallery_staging_source_build_schema_well_formed :
+    schemaWellFormedCheck gallery_staging_source_build_contract = true := by
+  native_decide
+
+theorem gallery_staging_source_build_candidate_keys_check :
+    keysDetermineAllCheck gallery_staging_source_build_contract = true := by
+  native_decide
+
+theorem gallery_staging_source_build_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_staging_source_build_contract :=
+  keysDetermineAllCheck_sound gallery_staging_source_build_contract
+    gallery_staging_source_build_candidate_keys_check
+
+theorem gallery_staging_source_build_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_staging_source_build_contract = true := by
+  native_decide
+
+theorem gallery_staging_source_build_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_staging_source_build_contract :=
+  declaredKeysMinimalCheck_sound gallery_staging_source_build_contract
+    gallery_staging_source_build_candidate_keys_minimal_check
+
+theorem gallery_staging_source_build_closure_fixed_check :
+    closureFixedPointCheck gallery_staging_source_build_contract = true := by
+  native_decide
+
+theorem gallery_staging_source_build_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_staging_source_build_contract :=
+  closureFixedPointCheck_sound gallery_staging_source_build_contract
+    gallery_staging_source_build_closure_fixed_check
+
+theorem gallery_staging_source_build_bcnf_check :
+    bcnfCheck gallery_staging_source_build_contract = true := by
+  native_decide
+
+theorem gallery_staging_source_build_bcnf : BCNF gallery_staging_source_build_contract :=
+  bcnfCheck_sound gallery_staging_source_build_contract gallery_staging_source_build_bcnf_check
+
+def gallery_staging_collection_contract : RelationContract where
+  name := "gallery_staging_collection"
+  attributes := ["staging_id", "collection_id"]
+  declaredKeys := [["staging_id"], ["collection_id"]]
+  declaredFDs := [
+    { determinant := ["staging_id"], dependent := ["collection_id"] },
+    { determinant := ["collection_id"], dependent := ["staging_id"] }
+  ]
+
+theorem gallery_staging_collection_schema_well_formed :
+    schemaWellFormedCheck gallery_staging_collection_contract = true := by
+  native_decide
+
+theorem gallery_staging_collection_candidate_keys_check :
+    keysDetermineAllCheck gallery_staging_collection_contract = true := by
+  native_decide
+
+theorem gallery_staging_collection_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_staging_collection_contract :=
+  keysDetermineAllCheck_sound gallery_staging_collection_contract
+    gallery_staging_collection_candidate_keys_check
+
+theorem gallery_staging_collection_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_staging_collection_contract = true := by
+  native_decide
+
+theorem gallery_staging_collection_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_staging_collection_contract :=
+  declaredKeysMinimalCheck_sound gallery_staging_collection_contract
+    gallery_staging_collection_candidate_keys_minimal_check
+
+theorem gallery_staging_collection_closure_fixed_check :
+    closureFixedPointCheck gallery_staging_collection_contract = true := by
+  native_decide
+
+theorem gallery_staging_collection_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_staging_collection_contract :=
+  closureFixedPointCheck_sound gallery_staging_collection_contract
+    gallery_staging_collection_closure_fixed_check
+
+theorem gallery_staging_collection_bcnf_check :
+    bcnfCheck gallery_staging_collection_contract = true := by
+  native_decide
+
+theorem gallery_staging_collection_bcnf : BCNF gallery_staging_collection_contract :=
+  bcnfCheck_sound gallery_staging_collection_contract gallery_staging_collection_bcnf_check
+
 def manifestContracts : List RelationContract := [
   schema_epoch_control_contract,
   storage_instance_binding_contract,
@@ -5415,11 +5647,16 @@ def manifestContracts : List RelationContract := [
   cleanup_job_contract,
   cleanup_cycle_root_contract,
   cleanup_checkpoint_contract,
-  database_audit_state_contract
+  database_audit_state_contract,
+  source_collection_state_contract,
+  source_collection_claim_contract,
+  source_working_collection_contract,
+  gallery_staging_source_build_contract,
+  gallery_staging_collection_contract
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 69 := by
+    manifestContracts.length = 74 := by
   native_decide
 
 set_option maxRecDepth 10000 in
@@ -5491,7 +5728,12 @@ theorem all_manifest_base_relations_bcnf :
     BCNF cleanup_job_contract ∧
     BCNF cleanup_cycle_root_contract ∧
     BCNF cleanup_checkpoint_contract ∧
-    BCNF database_audit_state_contract := by
+    BCNF database_audit_state_contract ∧
+    BCNF source_collection_state_contract ∧
+    BCNF source_collection_claim_contract ∧
+    BCNF source_working_collection_contract ∧
+    BCNF gallery_staging_source_build_contract ∧
+    BCNF gallery_staging_collection_contract := by
   exact ⟨schema_epoch_control_bcnf,
     storage_instance_binding_bcnf,
     download_generation_bcnf,
@@ -5559,7 +5801,12 @@ theorem all_manifest_base_relations_bcnf :
     cleanup_job_bcnf,
     cleanup_cycle_root_bcnf,
     cleanup_checkpoint_bcnf,
-    database_audit_state_bcnf⟩
+    database_audit_state_bcnf,
+    source_collection_state_bcnf,
+    source_collection_claim_bcnf,
+    source_working_collection_bcnf,
+    gallery_staging_source_build_bcnf,
+    gallery_staging_collection_bcnf⟩
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
@@ -5631,7 +5878,12 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes cleanup_job_contract ∧
     KeysDetermineAllAttributes cleanup_cycle_root_contract ∧
     KeysDetermineAllAttributes cleanup_checkpoint_contract ∧
-    KeysDetermineAllAttributes database_audit_state_contract := by
+    KeysDetermineAllAttributes database_audit_state_contract ∧
+    KeysDetermineAllAttributes source_collection_state_contract ∧
+    KeysDetermineAllAttributes source_collection_claim_contract ∧
+    KeysDetermineAllAttributes source_working_collection_contract ∧
+    KeysDetermineAllAttributes gallery_staging_source_build_contract ∧
+    KeysDetermineAllAttributes gallery_staging_collection_contract := by
   exact ⟨schema_epoch_control_candidate_keys_determine_all_attributes,
     storage_instance_binding_candidate_keys_determine_all_attributes,
     download_generation_candidate_keys_determine_all_attributes,
@@ -5700,7 +5952,12 @@ theorem all_manifest_candidate_keys_determine_attributes :
     cleanup_job_candidate_keys_determine_all_attributes,
     cleanup_cycle_root_candidate_keys_determine_all_attributes,
     cleanup_checkpoint_candidate_keys_determine_all_attributes,
-    database_audit_state_candidate_keys_determine_all_attributes⟩
+    database_audit_state_candidate_keys_determine_all_attributes,
+    source_collection_state_candidate_keys_determine_all_attributes,
+    source_collection_claim_candidate_keys_determine_all_attributes,
+    source_working_collection_candidate_keys_determine_all_attributes,
+    gallery_staging_source_build_candidate_keys_determine_all_attributes,
+    gallery_staging_collection_candidate_keys_determine_all_attributes⟩
 
 /- END GENERATED OPERATIONAL CONTRACTS -/
 

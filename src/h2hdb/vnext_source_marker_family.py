@@ -9,6 +9,7 @@ from typing import Any
 from .domain import (
     ArtifactSourceRole,
     FileObservation,
+    GalleryStagingOwner,
     VNextSourceCompletionMarker,
     _file_content_receipt_from_frozen_facts,
 )
@@ -292,18 +293,27 @@ def _compare_canonical(
 def bind_completion_marker(
     connector: Any,
     *,
-    build_id: bytes,
+    owner: GalleryStagingOwner,
     gallery_id: int,
     observation_id: int,
     observation_identity_sha256: bytes,
     marker: VNextSourceCompletionMarker,
 ) -> None:
-    """Write at the final child stage after the caller locked and sealed its build."""
+    """Bind the marker only after the caller sealed its exact owned member."""
+    if type(owner) is not GalleryStagingOwner:
+        raise TypeError("marker owner must be an exact GalleryStagingOwner")
+    owner.__post_init__()
+    table, column = (
+        ("catalog_source_build_galleries", "build_id")
+        if owner.kind == "SOURCE_BUILD"
+        else ("catalog_source_collection_observations", "collection_id")
+    )
     if connector.fetch_one(
-        "SELECT observation_id FROM catalog_source_build_galleries WHERE build_id = %s AND gallery_id = %s",
-        (build_id, gallery_id),
+        f"SELECT observation_id FROM {table} WHERE {column} = %s "
+        "AND gallery_id = %s AND observation_id = %s",
+        (owner.owner_id, gallery_id, observation_id),
     ) != (observation_id,):
-        raise SourceMarkerConflictError("marker seal lacks its exact build link")
+        raise SourceMarkerConflictError("marker seal lacks its exact owner membership")
     key = file_key(marker.file.name_bytes)
     cached = _load_cached(connector, gallery_id, observation_id, marker_key=key)
     if (

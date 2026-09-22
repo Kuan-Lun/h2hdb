@@ -77,6 +77,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_source_collection_repository import SourceCollectionRepository
 from .vnext_source_marker_repository import SourceMarkerRepository
 from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
@@ -92,12 +93,9 @@ class WriterHook:
     version: int
 
 
-_SPECS: tuple[tuple[str, str], ...] = (
+_SPECS = (
     ("catalog.identity-codecs.v1", "catalog_writer.validate_identity_codecs"),
-    (
-        "catalog.source-qualification.v1",
-        "catalog_writer.validate_source_qualification",
-    ),
+    ("catalog.source-qualification.v1", "catalog_writer.validate_source_qualification"),
     (
         "catalog.source-completion-marker.v1",
         "catalog_writer.validate_source_completion_marker",
@@ -122,23 +120,25 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "catalog.published-baseline-prune.v1",
         "catalog_writer.prune_published_analysis_baseline",
     ),
-    (
-        "catalog.artifact-semantics.v1",
-        "catalog_writer.validate_artifact_semantics",
-    ),
+    ("catalog.artifact-semantics.v1", "catalog_writer.validate_artifact_semantics"),
     (
         "catalog.publication-atomicity.v1",
         "catalog_writer.validate_publication_transition",
     ),
-    (
-        "catalog.discovery-exactness.v1",
-        "catalog_writer.validate_discovery_projection",
-    ),
+    ("catalog.discovery-exactness.v1", "catalog_writer.validate_discovery_projection"),
     ("catalog.state-machines.v1", "catalog_writer.validate_state_transition"),
     ("catalog.role-derivation.v1", "catalog_writer.validate_file_role"),
     ("catalog.physical-domains.v1", "catalog_writer.validate_physical_domain"),
     ("catalog.bootstrap.v1", "schema_epoch.write_catalog_bootstrap"),
     ("catalog.retention.v2", "catalog_writer.validate_retention_transition"),
+    (
+        "catalog.source-collection-durable-observations.v1",
+        "source_collection_writer.retain_observation",
+    ),
+    (
+        "catalog.source-collection-consumption-fencing.v1",
+        "source_collection_writer.consume_collection",
+    ),
     (
         "h2hdb.operational.database-audit-schedule.v1",
         "operational_writer.schedule_database_audit",
@@ -155,10 +155,7 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "h2hdb.operational.storage-instance-binding.v1",
         "operational_writer.bind_storage_instance",
     ),
-    (
-        "h2hdb.operational.fencing.v1",
-        "operational_writer.validate_ingest_fencing",
-    ),
+    ("h2hdb.operational.fencing.v1", "operational_writer.validate_ingest_fencing"),
     (
         "h2hdb.operational.download-ingest-handoff.v1",
         "operational_writer.validate_download_ingest_handoff",
@@ -167,14 +164,8 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "h2hdb.operational.maintenance-gate.v1",
         "operational_writer.validate_maintenance_gate",
     ),
-    (
-        "h2hdb.operational.bounded-work.v1",
-        "operational_writer.validate_bounded_work",
-    ),
-    (
-        "h2hdb.operational.queue-history.v1",
-        "operational_writer.validate_queue_history",
-    ),
+    ("h2hdb.operational.bounded-work.v1", "operational_writer.validate_bounded_work"),
+    ("h2hdb.operational.queue-history.v1", "operational_writer.validate_queue_history"),
     (
         "h2hdb.operational.canonical-hash-cache.v1",
         "operational_writer.validate_canonical_hash_cache",
@@ -214,6 +205,14 @@ _SPECS: tuple[tuple[str, str], ...] = (
     (
         "h2hdb.operational.bootstrap-genesis.v1",
         "schema_epoch.write_operational_bootstrap",
+    ),
+    (
+        "h2hdb.operational.source-collection-staging-owner.v1",
+        "gallery_staging_writer.begin_collection",
+    ),
+    (
+        "h2hdb.operational.source-collection-cleanup-reachability.v1",
+        "source_collection_writer.retire_collection",
     ),
 )
 
@@ -297,6 +296,9 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_publication_repository": frozenset({"PublicationRepository"}),
         "h2hdb.vnext_queue_repository": frozenset({"VNextQueueRepository"}),
         "h2hdb.vnext_source_build_repository": frozenset({"SourceBuildRepository"}),
+        "h2hdb.vnext_source_collection_repository": frozenset(
+            {"SourceCollectionRepository"}
+        ),
         "h2hdb.vnext_source_marker_repository": frozenset({"SourceMarkerRepository"}),
         "h2hdb.database_audit": frozenset({"DatabaseAuditStateRepository"}),
         "h2hdb.vnext_storage_instance_repository": frozenset(
@@ -1148,6 +1150,42 @@ _BOUND_BINDINGS = (
         "h2hdb.operational.gallery-staging-request-budget.v1",
         (*_GALLERY_STAGING_WRITERS, *_CLEANUP_WRITERS),
         _contract_relations("h2hdb.operational.gallery-staging-request-budget.v1"),
+    ),
+    _binding(
+        "catalog.source-collection-durable-observations.v1",
+        (
+            SourceCollectionRepository.handoff_root,
+            SourceCollectionRepository.retain_observation,
+            GalleryObservationStagingRepository.seal,
+        ),
+        _contract_relations("catalog.source-collection-durable-observations.v1"),
+    ),
+    _binding(
+        "catalog.source-collection-consumption-fencing.v1",
+        (
+            SourceCollectionRepository.consume_authorized,
+            SourceCollectionRepository.handoff_root,
+        ),
+        _contract_relations("catalog.source-collection-consumption-fencing.v1"),
+    ),
+    _binding(
+        "h2hdb.operational.source-collection-staging-owner.v1",
+        (
+            GalleryObservationStagingRepository.begin_collection_or_resume,
+            GalleryObservationStagingRepository.retire_sealed,
+        ),
+        _contract_relations("h2hdb.operational.source-collection-staging-owner.v1"),
+    ),
+    _binding(
+        "h2hdb.operational.source-collection-cleanup-reachability.v1",
+        (
+            *_CLEANUP_WRITERS,
+            SourceCollectionRepository.handoff_root,
+            GalleryObservationStagingRepository.retire_sealed,
+        ),
+        _contract_relations(
+            "h2hdb.operational.source-collection-cleanup-reachability.v1"
+        ),
     ),
 )
 

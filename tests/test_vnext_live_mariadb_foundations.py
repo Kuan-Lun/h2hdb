@@ -161,8 +161,11 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         with SourceDiscoveryPlan.from_locators((("nested", "畫廊 A"),)) as plan:
             with connector.read_transaction():
                 discovery_batch = SourceBuildRepository.prepare_discovery_batch(
-                    connector,
-                    build_id=build_id,
+                    SourceBuildRepository.issue_discovery_batch(
+                        connector,
+                        build_id=build_id,
+                        plan=plan,
+                    ),
                     plan=plan,
                 )
             resolved = []
@@ -192,8 +195,11 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 )
             with connector.read_transaction():
                 terminal_batch = SourceBuildRepository.prepare_discovery_batch(
-                    connector,
-                    build_id=build_id,
+                    SourceBuildRepository.issue_discovery_batch(
+                        connector,
+                        build_id=build_id,
+                        plan=plan,
+                    ),
                     plan=plan,
                 )
             with connector.transaction():

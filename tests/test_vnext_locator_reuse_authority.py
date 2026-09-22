@@ -130,7 +130,10 @@ def _open_scenario(
         )
         with SourceDiscoveryPlan.from_locators(locators) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
-                connector, build_id=_working_build_id(connector), plan=plan
+                SourceBuildRepository.issue_discovery_batch(
+                    connector, build_id=_working_build_id(connector), plan=plan
+                ),
+                plan=plan,
             )
             with plan.prepare_locator_upload(batch.locators[0]) as original:
                 _upload(connector, gate, turn, original, now=30)

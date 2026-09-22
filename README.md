@@ -157,9 +157,13 @@ even after the detailed query-statistics capacity is reached. No query parameter
 or source payloads are logged. Phase totals expose repeated small costs that a
 list of the slowest individual phases can miss.
 
-INFO now also reports cumulative time for the first 64 SQL fingerprints and an
-explicit overflow total. This can expose thousands of individually fast calls;
-it is not a complete ranking of every query shape. Transaction timings distinguish
+INFO also reports cumulative time for the first 64 SQL query families and an
+explicit overflow total. Pure placeholder `IN` lists share one family regardless
+of their parameter count; quoted text, expressions and subqueries remain distinct.
+The `query_fingerprint_algorithm` label identifies this diagnostic normalization;
+execution SQL and parameters are unchanged. This can expose thousands of
+individually fast calls; it is not a complete ranking of every query shape.
+Transaction timings distinguish
 `begin`, `begin_read`, `commit` and `rollback`, including failed calls. They measure
 client elapsed time, not database lock waits or filesystem flush time separately.
 
@@ -262,13 +266,50 @@ tuple. A resident may use that explicit fallback when its bounded retry hints
 overflow. A deferred gallery still uses only its currently published observation;
 unpublished cache entries cannot replace that fallback.
 
-When the complete source manifest remains the same, restart can resume the same
-working candidate and preserve already prepared artifacts. A changed manifest
-requires a new global analysis: dropping a failed gallery after analysis could
-change spam and duplicate selection for other galleries. Existing unpublished
-artifacts are candidate-owned and can need rendering again when that candidate
-is superseded. Observation reuse does not eliminate this work or guarantee the
-full-library time budget.
+`prepare_source_resume(policy=..., source_root_components=...)` checks an
+unpublished sealed working source cut, including its qualification and policy
+authority, in bounded read transactions. It returns an opaque preparation or
+`None` when a new source cut is required. `commit_source_resume(session, prepared)`
+rechecks the current working cut and publication baseline in a short transaction
+and maps the renewed ingest generation to that same build. Preparation belongs
+outside the caller's heartbeat lock; only commit belongs inside it. A published
+head is never returned as pending work.
+
+This lets a consumer finish interrupted analysis and prepared artifacts before
+inventorying newly arrived galleries. It does not recover the original deferred
+or waiting counts; those were process-local inventory facts. The consumer must
+request a fresh inventory after publication and must not report catch-up complete
+from the resumed receipt alone. A source-byte failure or policy change requires
+fresh observation instead. Dropping a failed gallery after global analysis could
+change spam and duplicate selection for other galleries, so a changed cut can
+still require a new analysis and rendering of candidate-owned artifacts.
+
+`prepare_source()` prepares discovery and a lazy observation handle. Subsequent
+issue/prepare/commit steps observe one gallery outside the heartbeat lock and
+persist its canonical pages, qualification and sealed observation before
+observing the next gallery. An observation collection owns these checkpoints
+before the full source manifest exists. Source assembly then attaches those
+exact observations and atomically consumes the collection when the cut seals.
+It does not create intermediate analysis or publication batches.
+Each ingest session binds one source root and collection policy. Changing the
+root, manifest policy or qualification policy requires a new ingest session;
+attempting to replace them within the same generation fails closed.
+
+After an interrupted first scan, a fresh inventory rechecks completion markers
+and reuses matching durable observations. Changed markers or qualification
+policies require new checks. An unfinished gallery's old staging is retired in
+bounded steps before re-observation; completed observations remain protected.
+At most one gallery's unsealed deep checks are lost per interruption when the
+adapter supplies stable completion markers. An adapter without such evidence
+must observe its galleries again; a checkpoint alone cannot prove unchanged
+external bytes. Neither recovery contract establishes a full-library time budget.
+
+The prepared handle's `observation_complete` becomes true after the selected
+inventory is complete. Its `gallery_count`, `deferred_gallery_count` and
+`waiting_gallery_count` properties reject premature reads. This changes the
+public preparation contract; callers must drive the source steps before reading
+these counts. Existing source observations and artifact formats remain intact,
+but schema 7 requires the offline conversion below.
 
 In the normal two-step artifact preparation, the initial live-source pass fills
 one gallery-local verified spool. Post-render source verification reads this
@@ -280,15 +321,17 @@ or add reads; logical read counts do not reveal physical HDD reads.
 
 ## Upgrade or restore a database
 
-This release uses **epoch 3, schema version 7**. `migrate` initializes this
+This release uses **epoch 3, schema version 8**. `migrate` initializes this
 schema; it does not automatically upgrade older databases. Back up the database
 and its matching library storage before changing the deployed application set.
 
-### Convert an exact schema-6 database
+### Convert an exact schema-7 database
 
 The one-time offline converter preserves the catalog, source observations,
-download queue, and external media. It only accepts the exact supported schema-6
-database and the corresponding schema-7 software.
+download queue, and external media. It accepts the exact supported schema-7
+database and runs with the corresponding schema-8 software. It adds observation
+collection state and moves existing staging ownership into explicit bindings;
+staging identities and their canonical pages are preserved.
 
 1. Stop ingest, downloader, OPDS, Komga synchronization, and any other database
    clients.
@@ -299,7 +342,7 @@ database and the corresponding schema-7 software.
    Core configuration to run:
 
    ```bash
-   python scripts/upgrade-audit-schema.py \
+   python scripts/upgrade-source-collection-schema.py \
      --config /path/to/core-writer.json --consumers-stopped
    ```
 
@@ -315,6 +358,11 @@ and reports `already_converted`.
 Do not delete source folders, CBZs, or the existing database for this conversion.
 To return to the old software, restore the pre-upgrade database backup first;
 there is no automatic downgrade.
+
+For schema 6, first use the `upgrade-audit-schema.py` script from the Core 0.40.0
+checkout and its environment to reach schema 7, then use this converter. The old
+6-to-7 entry point is not part of the schema-8 checkout, and normal runtime does
+not fall back to older schemas.
 
 ### Other old or incompatible databases
 

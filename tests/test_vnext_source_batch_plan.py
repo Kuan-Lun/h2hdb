@@ -8,11 +8,19 @@ from contextlib import closing
 import pytest
 from vnext_pipeline import MemorySource, gallery
 
+from h2hdb import (
+    VNextIngestGalleryObservation,
+    VNextSourcePreparationOperation,
+    VNextSourcePreparationProgress,
+)
 from h2hdb.vnext_source_build_repository import (
     SourceDiscoveryPlan,
     SourceDiscoveryPlanError,
 )
-from h2hdb.vnext_source_observation_spool import FrozenSourceObservationSpool
+from h2hdb.vnext_source_observation_spool import (
+    FrozenSourceObservationError,
+    FrozenSourceObservationSpool,
+)
 
 
 def _locators(plan: SourceDiscoveryPlan) -> Iterator[tuple[str, ...]]:
@@ -93,3 +101,111 @@ def test_membership_page_must_be_exact() -> None:
                 max_new_galleries=1,
                 membership_lookup=lambda _: (),
             )
+
+
+class _CountedSource(MemorySource):
+    def __init__(self, count: int) -> None:
+        super().__init__(tuple(gallery(index + 1, pages=[]) for index in range(count)))
+        self.observed: list[tuple[str, ...]] = []
+
+    def observe_gallery(
+        self, locator_components: tuple[str, ...]
+    ) -> VNextIngestGalleryObservation:
+        self.observed.append(locator_components)
+        return super().observe_gallery(locator_components)
+
+
+@pytest.mark.parametrize("count", (127, 128, 129))
+def test_incremental_freeze_yields_before_observing_the_next_gallery(
+    count: int,
+) -> None:
+    source = _CountedSource(count)
+    with SourceDiscoveryPlan.from_locators(
+        value.locator for value in source.galleries
+    ) as plan:
+        with closing(
+            FrozenSourceObservationSpool.start(
+                source,
+                plan=plan,
+                source_root_components=source.source_root_components,
+            )
+        ) as spool:
+            assert source.observed == []
+            for completed in range(count):
+                item = spool.freeze_next()
+                assert item is not None
+                assert len(source.observed) == completed + 1
+                assert spool.manifest_summary.gallery_count == completed + 1
+                assert not spool.complete
+            assert spool.freeze_next() is None
+            assert spool.complete
+            assert len(set(source.observed)) == count
+            with pytest.raises(ValueError, match="already complete"):
+                spool.freeze_next()
+
+
+def test_incremental_freeze_distinguishes_deferred_entry_from_completion() -> None:
+    source = _CountedSource(3)
+    with SourceDiscoveryPlan.from_locators(
+        value.locator for value in source.galleries
+    ) as plan:
+        with closing(
+            FrozenSourceObservationSpool.start(
+                source,
+                plan=plan,
+                source_root_components=source.source_root_components,
+                max_new_galleries=1,
+            )
+        ) as spool:
+            assert spool.freeze_next() is not None
+            for deferred in (1, 2):
+                assert spool.freeze_next() is None
+                assert not spool.complete
+                assert spool.deferred_gallery_count == deferred
+                assert len(source.observed) == 1
+            assert spool.freeze_next() is None
+            assert spool.complete
+
+
+@pytest.mark.parametrize("failure", ("adapter", "observer_cancellation"))
+def test_failed_incremental_generator_cannot_be_retried_as_end_of_inventory(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    source = _CountedSource(3)
+    observe = source.observe_gallery
+
+    def fail_adapter(locator: tuple[str, ...]) -> VNextIngestGalleryObservation:
+        if len(source.observed) == 1:
+            raise OSError("source read interrupted")
+        return observe(locator)
+
+    def cancel(progress: VNextSourcePreparationProgress) -> None:
+        if (
+            progress.operation is VNextSourcePreparationOperation.SOURCE_FREEZE
+            and progress.completed == 2
+        ):
+            raise KeyboardInterrupt("observer cancelled")
+
+    if failure == "adapter":
+        monkeypatch.setattr(source, "observe_gallery", fail_adapter)
+    with SourceDiscoveryPlan.from_locators(
+        value.locator for value in source.galleries
+    ) as plan:
+        with closing(
+            FrozenSourceObservationSpool.start(
+                source,
+                plan=plan,
+                source_root_components=source.source_root_components,
+                progress=cancel if failure == "observer_cancellation" else None,
+            )
+        ) as spool:
+            assert spool.freeze_next() is not None
+            with pytest.raises(OSError if failure == "adapter" else KeyboardInterrupt):
+                spool.freeze_next()
+            assert not spool.complete
+            for _attempt in range(2):
+                with pytest.raises(FrozenSourceObservationError, match="failed"):
+                    spool.freeze_next()
+                assert not spool.complete
+            with pytest.raises(FrozenSourceObservationError, match="failed"):
+                tuple(spool.selected_locators())

@@ -26,6 +26,7 @@ from vnext_manifest_fixtures import seed_build_manifest, seed_source_build
 import h2hdb.domain as domain_module
 import h2hdb.vnext_gallery_staging_budget as staging_budget_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
+from h2hdb.domain import GalleryStagingOwner
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_allocator_repository import (
@@ -1697,7 +1698,7 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
             if "operational_gallery_observation_stagings" in query:
-                return (b"b" * 16, 1, 2, "OPEN", 3, None, None)
+                return (b"b" * 16, None, 1, 2, "OPEN", 3, None, None)
             if "operational_gallery_observation_staging_claims" in query:
                 return (4, 5, 6)
             raise AssertionError(query)
@@ -1771,7 +1772,9 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
     staging_id = b"s" * 16
     predecessor = b"p" * 32
     request_connector = _MariaRequestFake(staging_id, predecessor)
-    handle = GalleryStagingHandle(staging_id, b"b" * 16, 1, 1, 1, 0)
+    handle = GalleryStagingHandle(
+        staging_id, GalleryStagingOwner("SOURCE_BUILD", b"b" * 16), 1, 1, 1, 0
+    )
     frame = staging_module._bounded_request_frame(b"B", handle, (b"body",))
     request_sha256 = staging_module._persist_request_identity(
         VNextUnitOfWork(cast(Any, request_connector), backend="mariadb"),
@@ -1883,7 +1886,9 @@ def test_mariadb_gallery_page_family_sql_is_static_and_seal_last() -> None:
         0,
         (_file_observation(0),),
     )
-    handle = GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0)
+    handle = GalleryStagingHandle(
+        b"s" * 16, GalleryStagingOwner("SOURCE_BUILD", b"b" * 16), 1, 1, 1, 0
+    )
     staging_module._persist_observation_page(connector, handle, prepared)
     inserted_tables = tuple(
         table
@@ -2296,7 +2301,9 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
     recorder = _MariaMetadataRecorder()
     staging_module._persist_metadata_facts(
         cast(Any, recorder),
-        GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0),
+        GalleryStagingHandle(
+            b"s" * 16, GalleryStagingOwner("SOURCE_BUILD", b"b" * 16), 1, 1, 1, 0
+        ),
         decoder.state,
         b"r" * 32,
     )
@@ -2522,7 +2529,9 @@ def test_four_vertical_family_mariadb_sql_is_static_and_seal_last() -> None:
             self.executions.append((query, data))
 
     recorder = _MariaVerticalRecorder()
-    handle = GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0)
+    handle = GalleryStagingHandle(
+        b"s" * 16, GalleryStagingOwner("SOURCE_BUILD", b"b" * 16), 1, 1, 1, 0
+    )
     for family in _VERTICAL_FAMILY_TABLES:
         _persist_vertical_family(recorder, handle, family)
 
@@ -3014,7 +3023,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                 now=62,
             )
         assert replayed_seal.replayed and replayed_seal == sealed.__class__(
-            sealed.build_id,
+            sealed.owner,
             sealed.gallery_id,
             sealed.observation_id,
             sealed.observation_identity_sha256,
@@ -3035,7 +3044,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                 side_effect=AssertionError("write"),
             ),
             connector.transaction(),
-            pytest.raises(GalleryStagingConflictError, match="exact sealed"),
+            pytest.raises(GalleryStagingConflictError, match="manifest differs"),
         ):
             GalleryObservationStagingRepository.seal(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -3230,14 +3239,14 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
                 ingest_turn=turn,
-                build_id=build_id,
+                owner=GalleryStagingOwner("SOURCE_BUILD", build_id),
                 now=30,
             )
         assert pending is not None
         assert pending.acknowledged is False
         assert pending.seal.replayed
         assert pending.seal == GalleryStagingSeal(
-            seal.build_id,
+            seal.owner,
             seal.gallery_id,
             seal.observation_id,
             seal.observation_identity_sha256,
@@ -3298,7 +3307,7 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                             VNextUnitOfWork(connector, backend="sqlite"),
                             gate_lease=gate,
                             ingest_turn=turn,
-                            build_id=build_id,
+                            owner=GalleryStagingOwner("SOURCE_BUILD", build_id),
                             now=retirement_now,
                         )
                     )
@@ -3415,7 +3424,7 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                 now=retirement_now,
             )
         assert replay == GalleryStagingRetirement(
-            build_id,
+            GalleryStagingOwner("SOURCE_BUILD", build_id),
             gallery_id,
             None,
             0,
@@ -4050,7 +4059,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
                 now=100_030,
             )
         assert replayed.replayed and replayed == GalleryStagingSeal(
-            reused.build_id,
+            reused.owner,
             reused.gallery_id,
             reused.observation_id,
             reused.observation_identity_sha256,
@@ -4221,5 +4230,116 @@ def test_stale_turn_is_zero_write_and_explicit_takeover_changes_only_claim(
             "WHERE staging_id = %s",
             (handle.staging_id,),
         ) == (new_turn.generation, 1)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("build,collection", [(None, None), (b"b" * 16, b"c" * 16)])
+def test_staging_header_rejects_missing_or_double_owner(
+    build: bytes | None,
+    collection: bytes | None,
+) -> None:
+    with pytest.raises(GalleryStagingConflictError, match="exactly one owner"):
+        staging_module._decode_header((build, collection, 1, 1, "OPEN", 0, None, None))
+
+
+def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "staging-abandon.sqlite3")
+    try:
+        gate, old_turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, old_turn)
+        handle = _begin(connector, gate, old_turn, build_id, gallery_id, now=20)
+        before = _request_snapshot(connector)
+        with (
+            connector.transaction(),
+            pytest.raises(GalleryStagingNotReadyError, match="interrupted generation"),
+        ):
+            GalleryObservationStagingRepository.abandon_interrupted_staging(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=old_turn,
+                owner=handle.owner,
+                now=21,
+            )
+        assert _request_snapshot(connector) == before
+        with connector.transaction():
+            new_turn = IngestFenceRepository.claim(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                owner_token=b"n" * 16,
+                now=100_011,
+                lease_duration=100_000,
+            )
+        connector.execute(
+            "INSERT INTO operational_source_build_generations (build_id, generation) VALUES (%s, %s)",
+            (build_id, new_turn.generation),
+        )
+        saw_abandoned = False
+        for step in range(12):
+            with connector.transaction():
+                result = (
+                    GalleryObservationStagingRepository.abandon_interrupted_staging(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=new_turn,
+                        owner=handle.owner,
+                        now=100_012 + step,
+                    )
+                )
+            assert result is not None and result.deleted_count <= 256
+            header = connector.fetch_one(
+                "SELECT state FROM operational_gallery_observation_stagings WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
+            binding = connector.fetch_one(
+                "SELECT build_id FROM operational_gallery_staging_source_builds WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
+            assert bool(header) == bool(binding)
+            if result.complete:
+                assert result.phase == "ROOT" and result.deleted_count == 2
+                break
+            assert header == ("ABANDONED",)
+            saw_abandoned = True
+        else:
+            pytest.fail("interrupted staging did not drain")
+        assert saw_abandoned
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_gallery_observation_allocations WHERE gallery_id = %s AND observation_id = %s",
+            (gallery_id, handle.observation_id),
+        ) == (1,)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_galleries WHERE build_id = %s AND gallery_id = %s",
+                (build_id, gallery_id),
+            )
+            == ()
+        )
+        with connector.transaction():
+            assert (
+                GalleryObservationStagingRepository.abandon_interrupted_staging(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=new_turn,
+                    owner=handle.owner,
+                    now=100_030,
+                )
+                is None
+            )
+        replacement = _begin(
+            connector, gate, new_turn, build_id, gallery_id, now=100_031
+        )
+        assert replacement.staging_id != handle.staging_id
+        assert replacement.observation_id > handle.observation_id
+        with pytest.raises(IngestFenceUnavailableError):
+            _put_files(
+                connector,
+                gate,
+                old_turn,
+                handle,
+                FileBatchCommand((), True, BatchAttempt(b"a" * 16, None)),
+                now=100_032,
+            )
     finally:
         connector.close()

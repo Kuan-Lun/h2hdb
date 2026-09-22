@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from vnext_generated_database import open_generated_sqlite_database
+from vnext_pipeline import collect_source
 
 from h2hdb import (
     ArtifactSourceRole,
@@ -406,6 +407,7 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
     policy = facade.ensure_policy(session, _policy())
 
     with facade.prepare_source(_BoundarySource(file_count), policy=policy) as source:
+        collect_source(facade, session, policy, source)
         expected = source._manifest_summary
         for _step in range(300):
             issued = facade.issue_source_step(session, policy, source)
@@ -437,7 +439,7 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
     )
 
 
-def test_staging_uses_only_frozen_spool_after_prepare_and_close_cleans_it(
+def test_staging_uses_only_sealed_observations_after_collection_and_close_cleans_spool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -453,12 +455,13 @@ def test_staging_uses_only_frozen_spool_after_prepare_and_close_cleans_it(
     adapter = _BoundarySource(257)
 
     source = facade.prepare_source(adapter, policy=policy)
+    collect_source(facade, session, policy, source)
     snapshot_directory = source._snapshot._directory
     expected = source._manifest_summary
     assert snapshot_directory.is_dir()
 
     def reject_live_read(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("live adapter was read after prepare_source")
+        raise AssertionError("live adapter was read after completed source observation")
 
     for method_name in (
         "list_gallery_locators",
@@ -502,7 +505,7 @@ def test_staging_uses_only_frozen_spool_after_prepare_and_close_cleans_it(
     assert not snapshot_directory.exists()
 
 
-def test_live_mutation_after_prepare_stages_the_frozen_snapshot(
+def test_live_mutation_after_observation_stages_the_frozen_snapshot(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "source-frozen-live-mutation.sqlite3"
@@ -517,6 +520,7 @@ def test_live_mutation_after_prepare_stages_the_frozen_snapshot(
     adapter = _BoundarySource(1)
 
     with facade.prepare_source(adapter, policy=policy) as source:
+        collect_source(facade, session, policy, source)
         frozen = source._manifest_summary
         adapter._observation = VNextIngestGalleryObservation(
             adapter._observation.locator_components,
@@ -572,6 +576,16 @@ def test_frozen_pages_replay_exactly_and_metadata_resumes_from_byte_cursor(
     )
 
     with facade.prepare_source(adapter, policy=policy) as source:
+        # Exercise local page replay before the per-gallery durable checkpoint
+        # is acknowledged and its staging-only local pages are removed.
+        for _ in range(100):
+            issued = facade.issue_source_step(session, policy, source)
+            prepared = facade.prepare_source_step(source, issued)
+            facade.commit_source_step(session, prepared)
+            if prepared._action.value == "COLLECTION_SELECTED":
+                break
+        else:
+            pytest.fail("first gallery was not frozen")
         locator = source._plan._page(0)[0]
         components = source._plan._decode_locator(
             locator.position,
@@ -651,6 +665,7 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
     adapter = _BoundarySource(1)
 
     with facade.prepare_source(adapter, policy=policy) as source:
+        collect_source(facade, session, policy, source)
         exact = source._manifest_summary
         source._manifest_summary = SourceBuildManifestSummary(
             sha256(b"defensive-codec-mismatch").digest(),
@@ -748,6 +763,7 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
             side_effect=RuntimeError("lost abandonment response"),
         ),
     ):
+        collect_source(facade, session, policy, source)
         exact = source._manifest_summary
         source._manifest_summary = SourceBuildManifestSummary(
             sha256(b"defensive-response-loss-mismatch").digest(),
@@ -816,6 +832,7 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
     first_policy = first.ensure_policy(first_session, _policy())
 
     with first.prepare_source(adapter, policy=first_policy) as source:
+        collect_source(first, first_session, first_policy, source)
         exact = source._manifest_summary
         source._manifest_summary = SourceBuildManifestSummary(
             sha256(b"mariadb-defensive-codec-mismatch").digest(),
