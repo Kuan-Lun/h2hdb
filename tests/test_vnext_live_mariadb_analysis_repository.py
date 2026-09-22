@@ -12,7 +12,7 @@ from test_vnext_analysis_repository import (
     _seed_initial_snapshot,
     _seed_root,
 )
-from vnext_analysis_validation_fixtures import file_validation_pages
+from vnext_analysis_validation_fixtures import analysis_source_pages
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.mariadb_connector import MariaDBConnector
@@ -119,7 +119,7 @@ def _run_stage_to_completion(
     start_now: int,
 ) -> tuple[Any, ...]:
     results = []
-    with file_validation_pages(
+    with analysis_source_pages(
         connector, backend="mariadb", gate=gate, turn=turn, analysis_id=analysis_id
     ) as prepare:
         for index in range(10):
@@ -129,7 +129,11 @@ def _run_stage_to_completion(
                         batch_prefix + index.to_bytes(2, "big"), 128, start_now + index
                     )
                 }
-                if operation is AnalysisRepository.validate_file_hash_decision_batch
+                if operation
+                in {
+                    AnalysisRepository.validate_file_hash_decision_batch,
+                    AnalysisRepository.process_changed_file_hash_batch,
+                }
                 else {}
             )
             with connector.transaction():

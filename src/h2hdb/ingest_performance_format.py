@@ -12,6 +12,7 @@ _ANALYSIS_ACTIVITIES = {
     "file_hash_decision": "evaluating duplicate-page decisions",
     "validate_file_hash_decision": "checking file hash decisions",
     "prepare_file_decision_validation": "preparing file hash validation data",
+    "prepare_changed_hashes": "preparing changed file hash data",
     "impacted_gallery": "identifying galleries affected by changed decisions",
     "impacted_content": "identifying affected content groups",
     "content_owner_candidate": "preparing candidates for duplicate-content selection",

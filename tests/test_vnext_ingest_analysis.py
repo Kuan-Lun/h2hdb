@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -235,6 +236,69 @@ def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> 
         ) == (15,)
     finally:
         connector.close()
+
+
+@pytest.mark.parametrize(
+    "stop_stage", [b"changed_file_hash", b"validate_file_hash_decision", None]
+)
+def test_disk_work_is_closed_only_outside_issue_and_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_stage: bytes | None
+) -> None:
+    database = tmp_path / "analysis-close-boundary.sqlite3"
+    build_id, gate, turn = _seed_empty(database)
+    driver = _orchestrator(database)
+    session = _session(gate, turn)
+    prepared = driver.prepare_analysis(build_id, _policy(), max_rows=1)
+    phase = "initial"
+    closed: list[str] = []
+
+    def guarded_close(
+        name: str, original: Callable[[Any], None]
+    ) -> Callable[[Any], None]:
+        def close(resource: object) -> None:
+            assert phase in {"prepare", "handle_close"}, (
+                f"disk cleanup during serialized {phase}: {name}"
+            )
+            closed.append(name)
+            original(resource)
+
+        return close
+
+    for name, resource_type in (
+        ("changed", analysis_module.AnalysisChangedHashPlan),
+        ("validation", analysis_module.AnalysisFileDecisionValidationPlan),
+        ("local", _LocalAnalysisWork),
+    ):
+        monkeypatch.setattr(
+            resource_type,
+            "close",
+            guarded_close(name, resource_type.close),
+        )
+    try:
+        for _ in range(100):
+            phase = "issue"
+            issued = driver.issue_analysis_step(session, prepared)
+            phase = "prepare"
+            step = driver.prepare_analysis_step(prepared, issued)
+            phase = "commit"
+            result = driver.commit_analysis_step(session, step)
+            if result.terminal or (
+                result.stage == stop_stage and result.stage_terminal
+            ):
+                break
+        else:
+            raise AssertionError("analysis cleanup boundary was not reached")
+        assert prepared._machine.retired_work
+    finally:
+        phase = "handle_close"
+        prepared.close()
+    assert closed.count("changed") == 1
+    assert closed.count("validation") == (stop_stage != b"changed_file_hash")
+    assert "local" in closed
+    assert not prepared._machine.retired_work
+    before = tuple(closed)
+    prepared.close()
+    assert tuple(closed) == before
 
 
 def test_nonempty_gallery_preparation_uses_exact_issued_memberships(

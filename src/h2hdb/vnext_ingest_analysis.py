@@ -19,7 +19,8 @@ __all__ = [
 
 import secrets
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, field
 from enum import StrEnum
 from time import time_ns
 from typing import TypeVar
@@ -29,6 +30,8 @@ from .ingest_performance import describe_ingest_step, prepare_ingest_operation
 from .repository import RepositoryContext
 from .vnext_analysis_repository import (
     AnalysisBatchResult,
+    AnalysisChangedHashPage,
+    AnalysisChangedHashPlan,
     AnalysisFileDecisionValidationPage,
     AnalysisFileDecisionValidationPlan,
     AnalysisGalleryPreparation,
@@ -63,6 +66,7 @@ _PREPARED_ANALYSIS_TOKEN = object()
 _ISSUED_ANALYSIS_STEP_TOKEN = object()
 _PREPARED_ANALYSIS_STEP_TOKEN = object()
 _ANALYSIS_SNAPSHOT_STAGE = b"snapshot_manifest"
+_CHANGED_HASH_STAGE = b"changed_file_hash"
 _FILE_DECISION_VALIDATION_STAGE = b"validate_file_hash_decision"
 
 
@@ -126,6 +130,7 @@ class _LocalAnalysisWork:
     preparations: tuple[AnalysisGalleryPreparation | AnalysisGidPreparation | None, ...]
     snapshot: AnalysisSnapshotPreparation | None
     plans: tuple[CanonicalValueUploadPlan, ...]
+    changed_hashes: AnalysisChangedHashPage | None = None
     file_decision_validation: AnalysisFileDecisionValidationPage | None = None
     plan_index: int = 0
     pages: Iterator[PreparedCanonicalPage] | None = None
@@ -185,12 +190,31 @@ class _AnalysisMachine:
     action: _AnalysisAction | None = None
     local: _LocalAnalysisWork | None = None
     snapshot_manifest_sha256: bytes | None = None
+    changed_hash_plan: AnalysisChangedHashPlan | None = None
     validation_plan: AnalysisFileDecisionValidationPlan | None = None
+    retired_work: list[
+        _LocalAnalysisWork
+        | AnalysisChangedHashPlan
+        | AnalysisFileDecisionValidationPlan
+    ] = field(default_factory=list)
 
-    def close_validation_plan(self) -> None:
+    def retire_changed_hash_plan(self) -> None:
+        plan, self.changed_hash_plan = self.changed_hash_plan, None
+        if plan is not None:
+            self.retired_work.append(plan)
+
+    def retire_validation_plan(self) -> None:
         plan, self.validation_plan = self.validation_plan, None
         if plan is not None:
-            plan.close()
+            self.retired_work.append(plan)
+
+    def close_retired_work(self) -> None:
+        # Issue/commit only transfer ownership. Disk cleanup runs in preparation
+        # or explicit handle close, outside the caller's heartbeat serialization.
+        retired, self.retired_work = self.retired_work, []
+        with ExitStack() as closing:
+            for work in retired:
+                closing.callback(work.close)
 
 
 class VNextPreparedAnalysis:
@@ -243,7 +267,9 @@ class VNextPreparedAnalysis:
                     local.close()
         finally:
             try:
-                self._machine.close_validation_plan()
+                self._machine.retire_validation_plan()
+                self._machine.retire_changed_hash_plan()
+                self._machine.close_retired_work()
             finally:
                 self._active_issue = None
                 self._active_step = None
@@ -396,7 +422,9 @@ class VNextIngestAnalysisOrchestrator:
                 raise RuntimeError("analysis natural-key replay changed analysis_id")
             machine.analysis_id = analysis_id
             if issued_payload.stage != _FILE_DECISION_VALIDATION_STAGE:
-                machine.close_validation_plan()
+                machine.retire_validation_plan()
+            if issued_payload.stage != _CHANGED_HASH_STAGE:
+                machine.retire_changed_hash_plan()
             if issued_payload.stage is not None:
                 action = _AnalysisAction.PREPARE_BATCH
             elif issued_payload.completion_snapshot_sha256 is not None:
@@ -436,12 +464,15 @@ class VNextIngestAnalysisOrchestrator:
         if analysis._active_step is not None:
             return analysis._active_step
 
+        analysis._machine.close_retired_work()
         action = issued._action
         payload: _LocalAnalysisWork | PreparedCanonicalPage | None = None
         if action is _AnalysisAction.PREPARE_BATCH:
             if issued._payload is None:
                 raise RuntimeError("analysis batch issue payload is absent")
-            if issued._payload.stage == _FILE_DECISION_VALIDATION_STAGE:
+            if issued._payload.stage == _CHANGED_HASH_STAGE:
+                local = self._prepare_changed_hash_work(analysis, issued._payload)
+            elif issued._payload.stage == _FILE_DECISION_VALIDATION_STAGE:
                 local = self._prepare_file_decision_validation_work(
                     analysis, issued._payload
                 )
@@ -549,6 +580,7 @@ class VNextIngestAnalysisOrchestrator:
                     issue=local.issue,
                     preparations=local.preparations,
                     file_decision_validation=local.file_decision_validation,
+                    changed_hashes=local.changed_hashes,
                     now=now,
                 )
             if action is _AnalysisAction.HANDOFF_SNAPSHOT:
@@ -637,6 +669,44 @@ class VNextIngestAnalysisOrchestrator:
         )
         return _LocalAnalysisWork(issue, exact, None, plans)
 
+    def _prepare_changed_hash_work(
+        self,
+        analysis: VNextPreparedAnalysis,
+        issue: AnalysisStageIssue,
+    ) -> _LocalAnalysisWork:
+        machine = analysis._machine
+        try:
+            if machine.changed_hash_plan is None:
+                with (
+                    prepare_ingest_operation(
+                        operation="prepare_changed_hashes",
+                        generation=issue.preparation_authority.generation,
+                    ) as progress,
+                    self.__context.SQLConnector() as connector,
+                ):
+                    machine.changed_hash_plan = (
+                        AnalysisRepository.prepare_changed_hash_plan(
+                            connector,
+                            backend=self.__backend,
+                            authority=issue.preparation_authority,
+                            progress=progress,
+                        )
+                    )
+            page = AnalysisRepository.prepare_changed_hash_page(
+                issue=issue,
+                plan=machine.changed_hash_plan,
+            )
+            return _LocalAnalysisWork(issue, (), None, (), changed_hashes=page)
+        except BaseException as error:
+            try:
+                machine.retire_changed_hash_plan()
+                machine.close_retired_work()
+            except BaseException as close_error:
+                error.add_note(
+                    f"changed-hash plan cleanup also failed: {type(close_error).__name__}"
+                )
+            raise
+
     def _prepare_file_decision_validation_work(
         self,
         analysis: VNextPreparedAnalysis,
@@ -673,7 +743,8 @@ class VNextIngestAnalysisOrchestrator:
             # Failed preparation is disposable. A failed commit deliberately
             # retains its exact active page/plan for committed-response replay.
             try:
-                machine.close_validation_plan()
+                machine.retire_validation_plan()
+                machine.close_retired_work()
             except BaseException as close_error:
                 error.add_note(
                     f"validation plan cleanup also failed: {type(close_error).__name__}"
@@ -799,9 +870,11 @@ def _apply_commit_outcome(
             False,
             outcome.replayed,
         )
-        local.close()
+        machine.retired_work.append(local)
         if outcome.stage == _FILE_DECISION_VALIDATION_STAGE and outcome.terminal:
-            machine.close_validation_plan()
+            machine.retire_validation_plan()
+        if outcome.stage == _CHANGED_HASH_STAGE and outcome.terminal:
+            machine.retire_changed_hash_plan()
         machine.local = None
         machine.action = None
         return result
@@ -816,7 +889,7 @@ def _apply_commit_outcome(
             False,
             digest,
         )
-        local.close()
+        machine.retired_work.append(local)
         machine.local = None
         machine.action = _AnalysisAction.COMPLETE
         machine.snapshot_manifest_sha256 = digest
