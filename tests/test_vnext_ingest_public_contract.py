@@ -1427,6 +1427,10 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
         ) == ("SEALED",)
 
 
+# This four-generation matrix crosses FILE, METADATA and match-page boundaries
+# with 300 PAGE/TAG facts and a 40 KiB title. Keep it in the manual deep profile;
+# the small source-collection restart cases cover the bounded merge profile.
+@pytest.mark.deep
 def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
     tmp_path: Path,
 ) -> None:

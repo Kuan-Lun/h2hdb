@@ -120,12 +120,6 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_collection.py",
             "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work",
         ),
-        # One gallery verifies that the restarted batch driver timestamps
-        # facade calls in the DB clock domain even when the host is behind.
-        (
-            "test_vnext_source_deferral.py",
-            "test_source_batch_clock_is_independent_of_host_clock_skew",
-        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
@@ -143,16 +137,6 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
         (
             "test_vnext_pipeline_workflows.py",
             "test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit",
-        ),
-        # One gallery covers shared canonical values across four namespaces
-        # through publication, exact tag queries and the full READY audit.
-        (
-            "test_vnext_pipeline_workflows.py",
-            "test_shared_tag_value_across_namespaces_survives_publication",
-        ),
-        (
-            "test_vnext_pipeline_workflows.py",
-            "test_live_mariadb_compacted_snapshot_recurrence",
         ),
         (
             "test_vnext_pipeline_workflows.py",

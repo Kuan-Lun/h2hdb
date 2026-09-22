@@ -135,7 +135,6 @@ def test_updating_gallery_keeps_published_version_while_other_galleries_advance(
     )
 
 
-@pytest.mark.mariadb_smoke
 def test_source_batch_clock_is_independent_of_host_clock_skew(
     db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

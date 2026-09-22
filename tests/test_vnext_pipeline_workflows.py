@@ -230,7 +230,6 @@ def test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit(
     pipeline.ready()
 
 
-@pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
 def test_shared_tag_value_across_namespaces_survives_publication(
     db_config: CoreConfig,
@@ -985,6 +984,7 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
 
 
 @pytest.mark.merge_smoke
+@pytest.mark.cleanup_acceptance
 def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     db_config: CoreConfig,
 ) -> None:
@@ -1103,8 +1103,8 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     pipeline.ready()
 
 
-@pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
+@pytest.mark.cleanup_acceptance
 def test_live_mariadb_compacted_snapshot_recurrence(
     mariadb_config: CoreConfig,
 ) -> None:
