@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -13,7 +14,14 @@ from typing import Any
 import pytest
 
 from h2hdb import sql_performance
-from h2hdb.sql_performance import SQLSlowQueries, instrument_connector, measure_sql
+from h2hdb.sql_performance import (
+    SQLQueryStatistics,
+    SQLSlowQueries,
+    accumulate_query,
+    instrument_connector,
+    measure_sql,
+    query_fingerprint,
+)
 from h2hdb.sqlite_connector import SQLiteConnector
 
 
@@ -215,3 +223,89 @@ def test_fingerprint_failure_cannot_prevent_connector_execution(
         with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
             assert connector.fetch_one("SELECT 1") == (1,)
     assert sum(category == "sql" for category, *_rest in recorder.observations) == 1
+
+
+@pytest.mark.parametrize(
+    "clause",
+    ["IN (%s)", "in(%s,%s)", "In ( %s,\n%s , %s )"],
+)
+def test_placeholder_only_in_arity_has_one_fingerprint(clause: str) -> None:
+    query = f"SELECT member FROM objects WHERE member {clause} AND parent = %s"
+    canonical = "SELECT member FROM objects WHERE member IN (%s) AND parent = %s"
+    assert query_fingerprint(query) == sha256(canonical.encode()).hexdigest()[:16]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT 'IN (%s,%s)'",
+        'SELECT "IN (%s,%s)"',
+        "SELECT `IN (%s,%s)`",
+        "SELECT [IN (%s,%s)]",
+        "SELECT 'escaped '' IN (%s,%s)'",
+        r"SELECT 'escaped \' IN (%s,%s)'",
+        "SELECT 'unterminated IN (%s,%s)",
+        "SELECT 'unterminated IN (%s,%s) \\",
+        "SELECT 1 -- IN (%s,%s)\n",
+        "SELECT 1 # IN (%s,%s)\n",
+        "SELECT 1 /* IN (%s,%s) */",
+        "SELECT 1 /* unterminated IN (%s,%s)",
+        "SELECT member FROM objects WHERE member IN (SELECT %s,%s)",
+        "SELECT member FROM objects WHERE member IN (%s, 1)",
+        "SELECT member FROM objects WHERE member IN (%s + %s)",
+        "SELECT member FROM objects WHERE member IN ((%s, %s))",
+        "SELECT member FROM objects WHERE member IN (%s /* private */, %s)",
+        "SELECT member FROM objects WHERE member IN (%S, %S)",
+        "SELECT member FROM objects WHERE member IN ()",
+        "SELECT customIN(%s,%s)",
+        "SELECT custom$IN(%s,%s)",
+    ],
+)
+def test_fingerprint_preserves_protected_or_non_placeholder_syntax(query: str) -> None:
+    assert query_fingerprint(query) == sha256(query.encode()).hexdigest()[:16]
+
+
+def test_fingerprint_normalizes_independent_lists_outside_protected_text() -> None:
+    prefix = "SELECT 'IN (%s,%s)', `IN (%s,%s)` /* IN (%s,%s) */ FROM objects "
+    query = prefix + "WHERE member IN (%s,%s) AND parent NOT IN (%s,%s,%s)"
+    canonical = prefix + "WHERE member IN (%s) AND parent NOT IN (%s)"
+    assert query_fingerprint(query) == sha256(canonical.encode()).hexdigest()[:16]
+    assert query_fingerprint(canonical.replace("NOT IN", "IN")) != query_fingerprint(
+        query
+    )
+
+
+@pytest.mark.parametrize("arities", [63, 64, 65, 127, 128, 129, 260])
+def test_in_arity_capacity_cycles_reject_raw_hash_counterexample(arities: int) -> None:
+    """Three laps, one family: exact calls/rows/time at every old-budget boundary.
+
+    Counts model completed connector calls, not database work or server rows.
+    Retaining the old raw-query hash deliberately violates the family contract.
+    """
+
+    def collect(
+        fingerprint: Callable[[str], str | None],
+    ) -> dict[str, SQLQueryStatistics]:
+        queries: dict[str, SQLQueryStatistics] = {}
+        for _cycle in range(3):
+            for count in range(1, arities + 1):
+                placeholders = ", ".join(["%s"] * count)
+                key = fingerprint(f"SELECT %s IN ({placeholders})")
+                assert key is not None
+                statistics = SQLQueryStatistics()
+                statistics.record(0.5, 1)
+                accumulate_query(queries, key, statistics)
+                assert len(queries) <= 65
+        return queries
+
+    def verify(queries: dict[str, SQLQueryStatistics]) -> None:
+        assert len(queries) == 1
+        assert "other" not in queries
+        counts = next(iter(queries.values()))
+        assert counts.calls == counts.read_rows == arities * 3
+        assert counts.seconds == arities * 1.5
+        assert counts.max_seconds == 0.5
+
+    verify(collect(query_fingerprint))
+    with pytest.raises(AssertionError):
+        verify(collect(lambda query: sha256(query.encode()).hexdigest()[:16]))
