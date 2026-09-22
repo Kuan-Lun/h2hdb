@@ -41,6 +41,7 @@ from .vnext_publication_finalization_repository import (
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
+from .vnext_source_collection_repository import SourceCollectionRepository
 from .vnext_source_marker_repository import SourceMarkerRepository
 from .vnext_storage_instance_repository import VNextStorageInstanceRepository
 
@@ -63,6 +64,12 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "canonical_value_page_seal",
         "canonical_value_page_parent",
         "source_locator_identity",
+        "source_collection",
+        "source_collection_manifest_policy",
+        "source_collection_qualification_policy",
+        "source_collection_created_at",
+        "source_collection_observation",
+        "source_collection_consumption",
         "source_build_descriptor",
         "source_build_state",
         "source_build_sealed_at",
@@ -274,6 +281,11 @@ CATALOG_PHYSICAL_DOMAIN_WRITERS: tuple[PhysicalDomainEntrypoint, ...] = (
     CanonicalValueRepository.put_page,
     VNextIngestPolicyRepository.ensure,
     GalleryIdentityRepository.handoff_locator,
+    SourceCollectionRepository.handoff_root,
+    SourceCollectionRepository.handoff_locator,
+    SourceCollectionRepository.retain_observation,
+    SourceCollectionRepository.attach_observation,
+    SourceCollectionRepository.consume_authorized,
     SourceBuildRepository.handoff_root,
     SourceBuildRepository.abandon,
     SourceBuildRepository.resolve_discovery_locator,

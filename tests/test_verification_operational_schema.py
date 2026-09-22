@@ -79,7 +79,8 @@ refinement = operational_refinement.refinement
 def test_cleanup_frozen_root_bound_is_derived_from_every_registered_shape() -> None:
     frame_bytes = operational_refinement._cleanup_frozen_root_frame_bytes_by_target()
     assert set(frame_bytes) == set(operational_refinement._CLEANUP_TARGET_SHAPES)
-    assert len(frame_bytes) == 23
+    assert len(frame_bytes) == 24
+    assert frame_bytes["SOURCE_COLLECTION"] == 21
     assert all(size <= 260 for size in frame_bytes.values())
     assert max(frame_bytes.values()) == 260
     assert frame_bytes["SOURCE_GALLERY_NAME_GID"] == 260
@@ -221,12 +222,20 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert contract.scope == "operational_control_plane"
     assert contract.excluded_data_plane_components
     assert not contract.excluded_operational_components
-    assert len(contract.relations) == 69
-    assert len(report.relations) == 69
+    assert len(contract.relations) == 74
+    assert len(report.relations) == 74
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 50
+    assert len(contract.external_relations) == 56
+    assert {
+        "source_collection",
+        "source_collection_manifest_policy",
+        "source_collection_qualification_policy",
+        "source_collection_created_at",
+        "source_collection_observation",
+        "source_collection_consumption",
+    } <= {relation.name for relation in contract.external_relations}
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -1162,7 +1171,7 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     assert completed.returncode == 0, completed.stderr
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
-    assert len(provider_relations) == 67
+    assert len(provider_relations) == 72
     _logical, _local_names, physical, _stubs = _schemas()
     assert provider_relations == tuple(
         name for name in physical.source_slice if name != "schema_epoch_control"
@@ -1198,8 +1207,8 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         LOGICAL_PATH, PHYSICAL_PATH
     )
 
-    assert len(machine.obligations) == 19
-    assert len({value.obligation_id for value in machine.obligations}) == 19
+    assert len(machine.obligations) == 21
+    assert len({value.obligation_id for value in machine.obligations}) == 21
     assert all(value.version == 1 for value in machine.obligations)
     assert all(value.scope.startswith("operational.") for value in machine.obligations)
     assert all(
@@ -1243,7 +1252,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "cleanup_sweep_target",
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
-    assert len(machine.absent_relations) == 59
+    assert len(machine.absent_relations) == 64
     with PHYSICAL_PATH.open("rb") as stream:
         physical_document = tomllib.load(stream)
     assert len(machine.seeds) == len(physical_document.get("bootstrap_seed", ()))
@@ -3339,6 +3348,7 @@ def test_every_operational_foreign_key_has_explicit_left_prefix_access() -> None
         "ix_maintenance_gate_owner_fk_1",
         "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
+        "ix_source_collection_claim_fk_2",
         "ix_gallery_observation_staging_request_fk_1",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
@@ -3408,7 +3418,7 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert len(report.checked_relations) == 68
+    assert len(report.checked_relations) == 73
     assert report.pending_relations == ()
     assert database.table("h2hdb_schema_epoch") is not None
     assert database.table("operational_cleanup_batch_receipts") is None
