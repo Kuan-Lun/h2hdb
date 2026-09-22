@@ -311,6 +311,12 @@ public preparation contract; callers must drive the source steps before reading
 these counts. Existing source observations and artifact formats remain intact,
 but schema 7 requires the offline conversion below.
 
+A preparation error or cancellation permanently invalidates that prepared
+handle; a terminal manifest mismatch does the same. Leave its context or close
+it outside the session-renewal lock, then start a fresh scan. Its completed
+durable gallery checkpoints remain eligible for reuse. Retrying an invalidated
+handle cannot turn a partial inventory into a completed source cut.
+
 In the normal two-step artifact preparation, the initial live-source pass fills
 one gallery-local verified spool. Post-render source verification reads this
 spool, not the live source. The subsequent protection step reopens and verifies
