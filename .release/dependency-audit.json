@@ -1,20 +1,20 @@
 {
-  "checked_at": "2026-09-19T14:47:45+00:00",
+  "checked_at": "2026-09-22T18:00:48+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
       "declared": ">=0.18.1",
-      "latest": "0.23.2",
+      "latest": "0.23.3",
       "latest_satisfies": true,
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.39.12",
+  "project_version": "0.40.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
       "group": "build",
-      "latest": "1.32.3",
+      "latest": "1.32.4",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -50,7 +50,7 @@
     {
       "declared": "hatchling>=1.32.0",
       "group": "optional:dev",
-      "latest": "1.32.3",
+      "latest": "1.32.4",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed fresh PyPI/npm candidates for every direct build, runtime, optional/development and Node dependency, including candidates outside declared upper bounds. All 12 Python requirement entries (11 unique packages) and markdownlint-cli2 are identical to the committed 0.39.11 audit; identical-version upstream reviews carry forward. Installed direct dependencies match all registry latest candidates, all satisfy the declared bounds, and Python metadata supports 3.14. uv pip check passed for 36 packages; npm ls reports markdownlint-cli2 0.23.2. No dependency upgrade or manifest change was needed. Runtime instrumentation, local synthetic performance evidence and exact-tree release validation have separate results; this dependency receipt does not claim those tests passed.",
+    "note": "Reviewed fresh PyPI/npm candidates for all direct build, runtime, optional/development and Node dependencies, including versions outside declared upper bounds. Compared with the committed 0.39.12 audit, hatchling advanced from 1.32.3 to 1.32.4 and markdownlint-cli2 from 0.23.2 to 0.23.3; all other direct candidate versions are unchanged and their identical-version upstream reviews carry forward. Reviewed https://hatch.pypa.io/dev/history/hatchling/ (1.32.4 restores BuildHookInterface plugin compatibility and fixes CalVer whitespace) and the upstream markdownlint-cli2 0.23.3 package CHANGELOG (dependency updates). Installed both latest candidates; Core wheel build with hatchling 1.32.4 succeeded, strict typing/lint verification is separate, npm reports no vulnerabilities, and uv pip check passed for 36 packages. All direct latest candidates satisfy bounds and support Python 3.14. Version 0.40.0 changes unpublished sealed-observation reuse and adds bounded reobservation hints; schema epoch 3/version 7 is unchanged. Runtime tests, manual live-MariaDB/deep experiments and exact-tree release validation are separate evidence, not implied by this dependency audit.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
