@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
+from test_vnext_source_deferral import UpdatingSource
 from test_vnext_source_marker import MarkerSource
 from vnext_pipeline import (
     claim_session,
@@ -81,6 +82,12 @@ def _require_source_coverage(summary: str, observed: _PhysicalCalls) -> None:
     for action in ("FILE_PAGE", "DIRECTORY_PAGE", "TAG_PAGE", "METADATA_PAGE"):
         for phase in ("issue", "prepare", "commit"):
             assert f"{action}.{phase}:" in summary, (action, phase)
+    for phase in (
+        "COLLECTION_FREEZE.prepare",
+        "COLLECTION_CHECKPOINT.prepare",
+        "COLLECTION_FROZEN.commit",
+    ):
+        assert f"{phase}:" in summary
     assert f"; {observed.calls} completed SQL connector calls;" in summary
     assert f"; {observed.rows} rows returned (not rows examined);" in summary
 
@@ -120,13 +127,18 @@ def _transaction_log_violations(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.mark.parametrize("remove_tag_scope", [False, True])
+@pytest.mark.parametrize(
+    ("max_new_galleries", "waiting_galleries"), [(None, 0), (2, 0), (None, 1)]
+)
 def test_real_source_info_reconciles_work_and_rejects_missing_scope(
     db_config: CoreConfig,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     remove_tag_scope: bool,
+    max_new_galleries: int | None,
+    waiting_galleries: int,
 ) -> None:
-    """A slow TAG commit must be visible without DEBUG or per-gallery chatter.
+    """Lazy observation and slow TAG commits remain visible at INFO.
 
     The negative control removes the actual TAG commit measurement while
     retaining every database write and result; the same coverage oracle must
@@ -182,7 +194,7 @@ def test_real_source_info_reconciles_work_and_rejects_missing_scope(
 
         monkeypatch.setattr(IngestPerformance, "step", remove_scope)
     observed = _PhysicalCalls()
-    source = MarkerSource(
+    source = UpdatingSource(
         tuple(
             gallery(
                 1000 + index,
@@ -193,9 +205,22 @@ def test_real_source_info_reconciles_work_and_rejects_missing_scope(
             for index in range(3)
         )
     )
+    if waiting_galleries:
+        source.waiting.add(source.galleries[0].locator)
+    original_observe = source.observe_gallery
+
+    def slow_observe(*args: Any, **kwargs: Any) -> Any:
+        result = original_observe(*args, **kwargs)
+        timing.now += 1.5
+        return result
+
+    monkeypatch.setattr(source, "observe_gallery", slow_observe)
     config = db_config.model_copy(
         update={"logger": LoggerConfig.model_validate({"level": "info"})}
     )
+    admitted = 3 - waiting_galleries
+    if max_new_galleries is not None:
+        admitted = min(admitted, max_new_galleries)
     with caplog.at_level(logging.INFO, logger="h2hdb"):
         with VNextIngestFacade(config) as facade:
             performance = cast(
@@ -206,7 +231,11 @@ def test_real_source_info_reconciles_work_and_rejects_missing_scope(
             policy = facade.ensure_policy(
                 session, ingest_policy(artifacts_required=False)
             )
-            with facade.prepare_source(source, policy=policy) as prepared:
+            with facade.prepare_source(
+                source, policy=policy, max_new_galleries=max_new_galleries
+            ) as prepared:
+                assert not prepared.observation_complete
+                assert source.deep_reads == []
                 with measure_sql(observed, observe_nested=True):
                     for _ in range(1000):
                         issued = facade.issue_source_step(session, policy, prepared)
@@ -226,14 +255,18 @@ def test_real_source_info_reconciles_work_and_rejects_missing_scope(
                             "source did not finish its bounded fixture"
                         )
                 assert result.source_receipt is not None
-                assert result.source_receipt.staged_galleries == 3
+                assert result.source_receipt.staged_galleries == admitted
+                assert result.source_receipt.discovered_galleries == admitted
+                assert prepared.observation_complete
+                assert prepared.gallery_count == admitted
     summary = _source_summary(caplog)
     if remove_tag_scope:
         with pytest.raises(AssertionError):
             _require_source_coverage(summary, observed)
     else:
         _require_source_coverage(summary, observed)
-        assert "TAG_PAGE.commit: 21.8s," in summary
+        assert f"TAG_PAGE.commit: {7.25 * admitted:.1f}s," in summary
+        assert f"COLLECTION_FREEZE.prepare: {1.5 * admitted:.1f}s," in summary
         assert "includes reused results" in summary
     source_messages = [
         item
@@ -247,11 +280,32 @@ def test_real_source_info_reconciles_work_and_rejects_missing_scope(
         for event in _database_events(caplog)
         if event["operation"] == "source_prepare" and event["event"] == "completed"
     )
-    assert preparation["labels"]["admitted_galleries"] == 3
-    assert preparation["labels"]["admitted_files"] == 6
+    assert preparation["labels"]["inventory_galleries"] == 3
+    assert preparation["labels"]["observation_complete"] is False
+    assert "admitted_galleries" not in preparation["labels"]
+    assert "admitted_files" not in preparation["labels"]
     correlation = preparation["labels"]["correlation_id"]
     assert re.fullmatch("[0-9a-f]{32}", correlation)
     assert f"correlation {correlation}" in summary
+    completed = [
+        event
+        for event in _database_events(caplog)
+        if event["operation"] == "source_step"
+        and event["event"] == "completed"
+        and event["labels"].get("observation_complete") is True
+    ]
+    assert len(completed) == 1
+    labels = completed[0]["labels"]
+    assert labels["step_phase"] == "commit"
+    assert labels["quiet"] is False
+    assert labels["correlation_id"] == correlation
+    assert labels["admitted_galleries"] == admitted
+    assert labels["admitted_files"] == 2 * admitted
+    assert labels["discovered_galleries"] == admitted
+    assert labels["staged_galleries"] == admitted
+    assert labels["inventory_scan_complete"] is True
+    assert labels["deferred_galleries"] == 3 - admitted - waiting_galleries
+    assert labels["waiting_galleries"] == waiting_galleries
     assert "shared" not in summary and "gallery-1000" not in caplog.text
     assert transaction_logs == []
 

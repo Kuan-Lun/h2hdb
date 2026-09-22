@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from collections import Counter
-from contextlib import closing
+from collections.abc import Generator
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from typing import Any
 
@@ -19,6 +22,7 @@ from test_vnext_source_reread import _InterruptedLibrary
 from vnext_fault_harness import open_connector
 from vnext_pipeline import (
     MemoryLibrary,
+    MemorySource,
     claim_session,
     full_check,
     gallery,
@@ -28,7 +32,14 @@ from vnext_pipeline import (
     run_publication,
 )
 
-from h2hdb import CoreConfig, VNextIngestFacade, VNextSourceChangedError
+from h2hdb import (
+    CoreConfig,
+    FileContentReceipt,
+    VNextIngestFacade,
+    VNextSourceChangedError,
+    VNextSourceCompletionMarker,
+    VNextSourceDeferredError,
+)
 from h2hdb.sql_connector import SQLConnector
 
 
@@ -43,28 +54,16 @@ def test_resume_without_work_and_after_publication_requests_fresh_inventory(
     ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
-        assert (
-            facade.prepare_source_resume(
-                policy=policy, source_root_components=source.source_root_components
-            )
-            is None
-        )
+        assert facade.prepare_source_resume(source, policy=policy) is None
         receipt, _ = _source_batch(facade, session, policy, source, None)
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         assert (
             facade.commit_source_resume(session, prepared).build_id == receipt.build_id
         )
         run_analysis(facade, session, policy, receipt.build_id)
         run_publication(facade, session, policy, MemoryLibrary(source))
-        assert (
-            facade.prepare_source_resume(
-                policy=policy, source_root_components=source.source_root_components
-            )
-            is None
-        )
+        assert facade.prepare_source_resume(source, policy=policy) is None
         facade.complete_ingest(session)
     assert full_check(db_config).state == "READY"
 
@@ -126,9 +125,7 @@ def test_analysis_restart_keeps_committed_cursor_and_ignores_new_gallery(
     ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         resumed = facade.commit_source_resume(session, prepared)
         assert resumed.build_id == receipt.build_id
@@ -160,7 +157,7 @@ def test_analysis_restart_keeps_committed_cursor_and_ignores_new_gallery(
         assert completed.analysis_id == original_analysis
         run_publication(facade, session, policy, library)
         facade.complete_ingest(session)
-    assert source.deep_reads == [] and source.marker_calls == marker_calls
+    assert source.deep_reads == [] and source.marker_calls == marker_calls + len(values)
     assert {value.gid for value in _publications(db_config)} == {
         value.gid for value in values
     }
@@ -206,9 +203,7 @@ def test_artifact_restart_keeps_prepared_bytes_when_inventory_grows(
     ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         resumed = facade.commit_source_resume(session, prepared)
         assert resumed.build_id == receipt.build_id
@@ -261,13 +256,9 @@ def test_resume_declines_mismatched_policy_or_root(
                 ),
             )
         policy = facade.ensure_policy(session, requested)
-        root = (
-            ("different", "root") if change == "root" else source.source_root_components
-        )
-        assert (
-            facade.prepare_source_resume(policy=policy, source_root_components=root)
-            is None
-        )
+        if change == "root":
+            source._root = ("different", "root")
+        assert facade.prepare_source_resume(source, policy=policy) is None
         facade.complete_ingest(session)
 
 
@@ -299,6 +290,37 @@ def test_resume_qualification_pages_and_commit_cost_do_not_rescan_membership(
         connector_type = type(connection)
     original_fetch = connector_type.fetch_all
     original_one = connector_type.fetch_one
+    original_read = connector_type.read_transaction
+    original_marker = source.observe_completion_marker
+    expected_locators = {value.locator for value in source.galleries}
+    source.put(gallery(9001, pages=[]))
+    source.deep_reads.clear()
+    discovered_before = source.page_calls
+    active_reads = 0
+    marker_probes: Counter[tuple[str, ...]] = Counter()
+
+    @contextmanager
+    def read_transaction(connector: SQLConnector) -> Generator[None]:
+        nonlocal active_reads
+        with original_read(connector):
+            active_reads += 1
+            try:
+                yield
+            finally:
+                active_reads -= 1
+
+    def probe_marker(locator: tuple[str, ...]) -> VNextSourceCompletionMarker:
+        assert active_reads == 0, "source marker I/O held a database transaction"
+        marker_probes[locator] += 1
+        return original_marker(locator)
+
+    def assert_source_cost() -> None:
+        assert marker_probes == Counter(dict.fromkeys(expected_locators, 1))
+        assert source.deep_reads == []
+        assert source.page_calls == discovered_before
+
+    monkeypatch.setattr(connector_type, "read_transaction", read_transaction)
+    monkeypatch.setattr(source, "observe_completion_marker", probe_marker)
 
     def fetch_one(
         connector: SQLConnector,
@@ -329,10 +351,10 @@ def test_resume_qualification_pages_and_commit_cost_do_not_rescan_membership(
             session = claim_session(facade)
             policy = facade.ensure_policy(session, ingest_policy())
             pages.clear()
-            prepared = facade.prepare_source_resume(
-                policy=policy, source_root_components=source.source_root_components
-            )
+            marker_probes.clear()
+            prepared = facade.prepare_source_resume(source, policy=policy)
             assert prepared is not None
+            assert_source_cost()
             assert sum(pages) == gallery_count
             assert max(pages) <= 128
             assert len(pages) == (gallery_count + 127) // 128 + 1
@@ -341,6 +363,7 @@ def test_resume_qualification_pages_and_commit_cost_do_not_rescan_membership(
             resumed = facade.commit_source_resume(session, prepared)
             assert resumed.discovered_galleries == gallery_count
             assert pages == []
+            assert_source_cost()
             commit_costs.append(len(queries))
             # Scalar receipt checks have a fixed query budget independent of
             # gallery count; collection scans belong to preparation only.
@@ -370,15 +393,31 @@ def test_resume_qualification_pages_and_commit_cost_do_not_rescan_membership(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
         pages.clear()
-        assert (
-            facade.prepare_source_resume(
-                policy=policy, source_root_components=source.source_root_components
-            )
-            is not None
-        )
+        assert facade.prepare_source_resume(source, policy=policy) is not None
         with pytest.raises(AssertionError):
             assert sum(pages) == gallery_count
         assert sum(pages) == 2 * gallery_count
+        facade.complete_ingest(session)
+    monkeypatch.setattr(connector_type, "fetch_all", fetch_all)
+
+    def repeated_marker(locator: tuple[str, ...]) -> VNextSourceCompletionMarker:
+        # Same correct result, twice the actual adapter I/O: the ordinary cost
+        # oracle must reject the deliberately degraded implementation.
+        probe_marker(locator)
+        return probe_marker(locator)
+
+    monkeypatch.setattr(source, "observe_completion_marker", repeated_marker)
+    marker_probes.clear()
+    with (
+        _source_batch_clock(db_config) as clock,
+        VNextIngestFacade(db_config, clock=clock) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        assert facade.prepare_source_resume(source, policy=policy) is not None
+        with pytest.raises(AssertionError):
+            assert_source_cost()
+        assert marker_probes == Counter(dict.fromkeys(expected_locators, 2))
         facade.complete_ingest(session)
     assert full_check(db_config).state == "READY"
 
@@ -401,12 +440,7 @@ def test_resume_declines_open_build_before_source_seal(db_config: CoreConfig) ->
                     break
             else:
                 pytest.fail("source fixture did not reserve its working root")
-            assert (
-                facade.prepare_source_resume(
-                    policy=policy, source_root_components=source.source_root_components
-                )
-                is None
-            )
+            assert facade.prepare_source_resume(source, policy=policy) is None
         facade.complete_ingest(session)
     assert full_check(db_config).state == "READY"
 
@@ -421,9 +455,7 @@ def test_resume_commit_rejects_replaced_working_cut(db_config: CoreConfig) -> No
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
         original, _ = _source_batch(facade, session, policy, source, None)
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         facade.complete_ingest(session)
     source.put(gallery(2001))
@@ -437,9 +469,7 @@ def test_resume_commit_rejects_replaced_working_cut(db_config: CoreConfig) -> No
         assert replacement.build_id != original.build_id
         with pytest.raises(VNextSourceChangedError, match="changed before resume"):
             facade.commit_source_resume(session, prepared)
-        fresh = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        fresh = facade.prepare_source_resume(source, policy=policy)
         assert fresh is not None
         assert (
             facade.commit_source_resume(session, fresh).build_id == replacement.build_id
@@ -461,9 +491,7 @@ def test_resume_commit_rejects_expired_session_authority(db_config: CoreConfig) 
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
         _source_batch(facade, session, policy, source, None)
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         facade.complete_ingest(session)
         successor = claim_session(facade)
@@ -473,8 +501,8 @@ def test_resume_commit_rejects_expired_session_authority(db_config: CoreConfig) 
             facade.commit_source_resume(session, prepared)
         current_policy = facade.ensure_policy(successor, ingest_policy())
         fresh = facade.prepare_source_resume(
+            source,
             policy=current_policy,
-            source_root_components=source.source_root_components,
         )
         assert fresh is not None
         assert facade.commit_source_resume(successor, fresh).sealed
@@ -506,9 +534,7 @@ def test_resume_rejects_missing_qualification_authority(db_config: CoreConfig) -
         with pytest.raises(
             SourceBuildConflictError, match="qualification authority is missing"
         ):
-            facade.prepare_source_resume(
-                policy=policy, source_root_components=source.source_root_components
-            )
+            facade.prepare_source_resume(source, policy=policy)
         facade.complete_ingest(session)
 
 
@@ -524,9 +550,7 @@ def test_resume_proof_cannot_be_rebound_to_another_qualification_policy(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy())
         _source_batch(facade, session, policy, source, None)
-        prepared = facade.prepare_source_resume(
-            policy=policy, source_root_components=source.source_root_components
-        )
+        prepared = facade.prepare_source_resume(source, policy=policy)
         assert prepared is not None
         altered = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         # Frozen Python wrappers are not an authority boundary. Replacing the
@@ -534,5 +558,116 @@ def test_resume_proof_cannot_be_rebound_to_another_qualification_policy(
         object.__setattr__(prepared, "_policy", altered)
         with pytest.raises(VNextSourceChangedError, match="changed before resume"):
             facade.commit_source_resume(session, prepared)
+        facade.complete_ingest(session)
+    assert full_check(db_config).state == "READY"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "bytes",
+        "device",
+        "inode",
+        "modified_ns",
+        "changed_ns",
+        "version",
+        "none",
+        "deferred",
+    ],
+)
+def test_resume_declines_changed_or_unavailable_existing_completion_marker(
+    db_config: CoreConfig,
+    change: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    initialize_database(db_config)
+    source = MarkerSource((gallery(1001),))
+    with (
+        _source_batch_clock(db_config) as clock,
+        VNextIngestFacade(db_config, clock=clock) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        _source_batch(facade, session, policy, source, None)
+        facade.complete_ingest(session)
+    original = source.observe_completion_marker
+    source.deep_reads.clear()
+    locator_pages = source.page_calls
+    probed: list[tuple[str, ...]] = []
+
+    def altered_marker(locator: tuple[str, ...]) -> VNextSourceCompletionMarker | None:
+        probed.append(locator)
+        if change == "deferred":
+            raise VNextSourceDeferredError("producer marker temporarily unavailable")
+        if change == "none":
+            return None
+        marker = original(locator)
+        if change == "version":
+            return replace(marker, observation_version=marker.observation_version + 1)
+        if change == "bytes":
+            file = replace(
+                marker.file,
+                content=FileContentReceipt.from_parts((b"different marker bytes",)),
+            )
+        else:
+            file = replace(marker.file, **{change: getattr(marker.file, change) + 1})
+        return replace(marker, file=file)
+
+    monkeypatch.setattr(source, "observe_completion_marker", altered_marker)
+    caplog.set_level(logging.INFO, logger="h2hdb.database_performance")
+    with (
+        _source_batch_clock(db_config) as clock,
+        VNextIngestFacade(db_config, clock=clock) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        assert facade.prepare_source_resume(source, policy=policy) is None
+        facade.complete_ingest(session)
+    diagnostics = [
+        json.loads(record.getMessage().removeprefix("database_performance "))
+        for record in caplog.records
+        if record.name == "h2hdb.database_performance"
+        and record.getMessage().startswith("database_performance ")
+    ]
+    terminal = next(
+        event
+        for event in reversed(diagnostics)
+        if event["operation"] == "source_resume_prepare"
+        and event["event"] == "completed"
+    )
+    assert terminal["labels"]["resumable"] is False
+    assert terminal["labels"]["completion_marker_probes"] == 1
+    assert terminal["labels"]["completion_markers_matched"] == 0
+    assert terminal["labels"]["resume_reason"] == {
+        "deferred": "marker_deferred",
+        "none": "marker_absent",
+    }.get(change, "marker_mismatch")
+    assert probed == [("gallery-1001",)]
+    assert source.deep_reads == [] and source.page_calls == locator_pages
+    assert full_check(db_config).state == "READY"
+
+
+def test_resume_declines_markerless_sealed_observation(db_config: CoreConfig) -> None:
+    initialize_database(db_config)
+    source = MemorySource((gallery(1001),))
+    with (
+        _source_batch_clock(db_config) as clock,
+        VNextIngestFacade(db_config, clock=clock) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        with facade.prepare_source(source, policy=policy) as prepared:
+            for _ in range(1000):
+                issued = facade.issue_source_step(session, policy, prepared)
+                local = facade.prepare_source_step(prepared, issued)
+                result = facade.commit_source_step(session, local)
+                if result.terminal:
+                    assert result.source_receipt is not None
+                    assert result.source_receipt.sealed
+                    break
+            else:
+                pytest.fail("markerless source did not seal")
+        assert facade.prepare_source_resume(source, policy=policy) is None
         facade.complete_ingest(session)
     assert full_check(db_config).state == "READY"

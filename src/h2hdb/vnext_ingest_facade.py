@@ -541,17 +541,18 @@ class VNextIngestFacade:
 
     def prepare_source_resume(
         self,
+        adapter: VNextIngestSourceAdapter,
         *,
         policy: VNextResolvedIngestPolicy,
-        source_root_components: tuple[str, ...],
     ) -> VNextPreparedSourceResume | None:
-        """Prepare recovery of a sealed working cut without observing newer files.
+        """Recover a sealed cut only while its producer completion markers match.
 
-        This reads qualification authority in pages of at most 128 galleries,
-        outside the caller's session lock. None requests ordinary fresh source
-        preparation. Callers must bypass recovery after a source-byte failure,
-        and schedule a fresh inventory after the recovered cut is published;
-        its former deferred/waiting inventory counts are not durable authority.
+        Each page reads at most 128 existing galleries, then probes their fresh
+        markers outside database transactions and the caller's session lock.
+        New galleries and image bytes are not read. None requests ordinary fresh
+        preparation, including markerless or unavailable sources. Callers must
+        schedule a fresh inventory after recovered publication; former inventory
+        counts are not durable authority. Artifact reads still verify exact bytes.
         """
 
         self.__require_open()
@@ -560,9 +561,10 @@ class VNextIngestFacade:
         ) as measurement:
             prepared = prepare_source_resume(
                 self.__context,
+                adapter,
                 backend=self.__backend,
                 policy=policy,
-                root=source_root_components,
+                performance=measurement,
             )
             measurement.describe(resumable=prepared is not None)
             if prepared is not None:
@@ -571,6 +573,7 @@ class VNextIngestFacade:
                     build_id=authority.build_id.hex(),
                     qualification_galleries=authority.summary.gallery_count,
                     qualification_page_limit=128,
+                    completion_markers_checked=authority.summary.gallery_count,
                 )
             return prepared
 
@@ -1288,7 +1291,7 @@ class VNextIngestFacade:
                 build_id=machine.build_id.hex()
                 if machine.build_id is not None
                 else None,
-            ),
+            ) as database_measurement,
             self.__performance.step(
                 "source",
                 f"{action.value}.commit",
@@ -1689,6 +1692,19 @@ class VNextIngestFacade:
             measurement.processed_rows = result.processed_rows
             measurement.replayed = result.replayed
             measurement.terminal = result.terminal
+            if result.terminal and result.source_receipt is not None:
+                receipt = result.source_receipt
+                database_measurement.describe(
+                    quiet=False,
+                    observation_complete=source._snapshot.complete,
+                    inventory_scan_complete=source._snapshot.complete,
+                    admitted_galleries=source._manifest_summary.gallery_count,
+                    admitted_files=source._manifest_summary.file_count,
+                    discovered_galleries=receipt.discovered_galleries,
+                    staged_galleries=receipt.staged_galleries,
+                    deferred_galleries=source._snapshot.deferred_gallery_count,
+                    waiting_galleries=source._snapshot.waiting_gallery_count,
+                )
             return result
 
     def prepare_analysis(

@@ -8,7 +8,7 @@ from unicodedata import unidata_version
 
 import pytest
 from vnext_generated_database import open_generated_sqlite_database
-from vnext_pipeline import MemorySource, run_analysis, run_source
+from vnext_pipeline import MemorySource, claim_session, run_analysis, run_source
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
 import h2hdb.vnext_ingest_policy_repository as policy_module
@@ -866,36 +866,65 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
     )
 
     with facade.prepare_source(EmptySource(), policy=policy) as source:
+        assert not source.observation_complete
+        for count_name in (
+            "gallery_count",
+            "deferred_gallery_count",
+            "waiting_gallery_count",
+        ):
+            with pytest.raises(ValueError, match="inventory counts are pending"):
+                getattr(source, count_name)
         issued = facade.issue_source_step(session, policy, source)
         assert isinstance(issued, VNextIssuedSourceStep)
+        assert facade.issue_source_step(session, policy, source) is issued
         local = facade.prepare_source_step(source, issued)
         assert isinstance(local, VNextPreparedSourceStep)
+        assert facade.prepare_source_step(source, issued) is local
 
         now = 110
         renewed = facade.renew_ingest(session, 1_000)
         assert renewed.ingest_lease_expires_at == 1_110
+        with sqlite3.connect(path) as raw_database:
+            before_forgery = tuple(raw_database.iterdump())
         with pytest.raises(ValueError, match="another ingest session"):
             facade.commit_source_step(
                 replace(renewed, ingest_owner_token=b"x" * 16),
                 local,
             )
+        with sqlite3.connect(path) as raw_database:
+            assert tuple(raw_database.iterdump()) == before_forgery
 
         result = facade.commit_source_step(renewed, local)
-        assert result.source_receipt is not None
-        assert len(result.source_receipt.build_id) == 16
+        assert result.source_receipt is None
         assert not result.terminal
+        assert not source.observation_complete
+        with SQLiteConnector(str(path)) as connector:
+            assert (
+                connector.fetch_all("SELECT * FROM catalog_source_build_descriptor")
+                == []
+            )
 
-        # Drive the remaining root/discovery/empty-assembly steps.  Every
-        # adapter operation is outside issue/commit, even though this empty
-        # source needs no hashing.
+        # The collection must finish observing its inventory before build
+        # assembly can issue a receipt, including for an empty source.
+        saw_open_receipt = False
         for _ in range(30):
             issued = facade.issue_source_step(renewed, policy, source)
             local = facade.prepare_source_step(source, issued)
             result = facade.commit_source_step(renewed, local)
+            if not source.observation_complete:
+                assert result.source_receipt is None
+            if result.source_receipt is not None:
+                assert source.observation_complete
+                assert len(result.source_receipt.build_id) == 16
+                saw_open_receipt |= not result.source_receipt.sealed
             if result.terminal:
                 break
         else:
             pytest.fail("empty source did not reach its sealed build")
+        assert saw_open_receipt
+        assert source.gallery_count == 0
+        assert source.deferred_gallery_count == 0
+        assert source.waiting_gallery_count == 0
         assert result.source_receipt is not None
         assert result.source_receipt.discovered_galleries == 0
         assert result.source_receipt.staged_galleries == 0
@@ -1177,7 +1206,9 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
         with facade.prepare_source(
             EmptyGallerySource(), policy=resolved_policy
         ) as source:
-            for _ in range(40):
+            # Collection stages the observation before source-build assembly;
+            # both bounded workflows must finish even for a zero-page gallery.
+            for _ in range(80):
                 issued = facade.issue_source_step(session, resolved_policy, source)
                 local = facade.prepare_source_step(source, issued)
                 result = facade.commit_source_step(session, local)
@@ -1374,7 +1405,9 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
     )
 
     with facade.prepare_source(EmptyGallerySource(), policy=policy) as source:
-        for _ in range(40):
+        # Include the durable collection checkpoint and its bounded retirement
+        # before the source build attaches that exact sealed observation.
+        for _ in range(80):
             issued = facade.issue_source_step(session, policy, source)
             local = facade.prepare_source_step(source, issued)
             result = facade.commit_source_step(session, local)
@@ -1394,7 +1427,7 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
         ) == ("SEALED",)
 
 
-def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
+def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-source-crash-resume.sqlite3"
@@ -1569,17 +1602,10 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
                 terminal,
             )
 
-    facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
-        clock=lambda: 100,
-    )
-    session = facade.try_claim_ingest(True, 100_000)
-    assert session is not None
-    policy = facade.ensure_policy(
-        session,
-        _policy(),
-    )
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
     adapter = RestartableSource()
+    generations: list[int] = []
+    partial_stagings: list[bytes] = []
 
     def checkpoint(component: bytes) -> tuple[int, str] | None:
         with SQLiteConnector(str(path)) as connector:
@@ -1601,26 +1627,54 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
         return None if not row else (row[0], row[1])
 
     def drive_until(predicate: Any) -> None:
-        with facade.prepare_source(adapter, policy=policy) as source:
-            for _ in range(160):
-                issued = facade.issue_source_step(session, policy, source)
-                local = facade.prepare_source_step(source, issued)
-                result = facade.commit_source_step(session, local)
-                if predicate(result):
-                    return
-        pytest.fail("source state machine did not reach the requested checkpoint")
+        with VNextIngestFacade(config, clock=lambda: 100) as facade:
+            session = claim_session(facade, lease=100_000)
+            generations.append(session.ingest_generation)
+            policy = facade.ensure_policy(session, _policy())
+            with facade.prepare_source(adapter, policy=policy) as source:
+                for _ in range(160):
+                    issued = facade.issue_source_step(session, policy, source)
+                    local = facade.prepare_source_step(source, issued)
+                    result = facade.commit_source_step(session, local)
+                    if predicate(result):
+                        break
+                else:
+                    pytest.fail(
+                        "source state machine did not reach the requested checkpoint"
+                    )
+            with SQLiteConnector(str(path)) as connector:
+                staging_ids = connector.fetch_all(
+                    "SELECT staging_id FROM operational_gallery_observation_stagings"
+                )
+                assert not set(partial_stagings) & {row[0] for row in staging_ids}
+                if result.terminal:
+                    assert staging_ids == []
+                else:
+                    assert len(staging_ids) == 1
+                    partial_stagings.append(staging_ids[0][0])
+                    assert (
+                        connector.fetch_all(
+                            "SELECT build_id FROM catalog_source_build_descriptor"
+                        )
+                        == []
+                    )
+            # Release the old lease before obtaining a genuinely new generation.
+            # SIGKILL/lease-expiry behavior is covered by the process suite.
+            facade.complete_ingest(session)
 
-    # Each context exit simulates losing every process-local cursor and attempt
-    # token.  The replacement source snapshot must recover only from durable
-    # checkpoint/receipt authority.
+    # Lose all process-local handles at each partial durable checkpoint. A new
+    # generation abandons that unfinished observation, then reobserves it before
+    # rebuilding bounded pages; it cannot trust a cursor against changed bytes.
     drive_until(lambda _result: checkpoint(b"FILE") == (256, "OPEN"))
     drive_until(lambda _result: checkpoint(b"METADATA") == (32_768, "OPEN"))
     drive_until(lambda _result: match_checkpoint() == (256, "OPEN"))
     drive_until(lambda result: result.terminal)
 
-    # Four fresh prepared-source handles each freeze exactly one complete live
-    # read (None, f0255).  Durable staging and every response-loss continuation
-    # replay only those private spools and never return to the live adapter.
+    assert generations == sorted(set(generations))
+    assert len(generations) == 4
+    assert len(set(partial_stagings)) == 3
+    # Each restart rereads exactly the unfinished gallery's two FILE pages;
+    # subsequent stage/attach steps replay its private spool or durable receipt.
     assert len(adapter.file_afters) == 8
     assert adapter.file_afters.count(None) == 4
     assert adapter.file_afters.count(file_names[255]) == 4

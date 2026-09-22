@@ -1069,11 +1069,24 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
 
     before_replay = pipeline.view()
     renders = pipeline.library.render_calls
-    replay, replay_progressed = pipeline.turn()
+    with patch.object(
+        VNextCleanupRepository,
+        "advance_current_only_cycle",
+        wraps=VNextCleanupRepository.advance_current_only_cycle,
+    ) as cleanup:
+        replay, replay_progressed = pipeline.turn()
     assert replay.source.replayed
     assert replay.source.build_id == recurring.source.build_id
     assert replay.publication.terminal
-    assert replay_progressed == 0
+    # A fresh observation collection is durable even when the source build
+    # replays. Reclaim its transient evidence within two bounded attempts,
+    # without rebuilding or reclaiming any publication/analysis/artifact.
+    assert replay_progressed <= 1
+    assert {call.kwargs["cycle"].target_kind for call in cleanup.call_args_list} == {
+        CleanupTargetKind.SOURCE_COLLECTION,
+        CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
+        CleanupTargetKind.GALLERY_OBSERVATION,
+    }
     assert pipeline.library.render_calls == renders
     assert pipeline.view() == before_replay
 
