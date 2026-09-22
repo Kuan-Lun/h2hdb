@@ -210,6 +210,30 @@ gate_rule = "exclusive maintenance gate excludes concurrent hash-cache readers a
 eligibility_rule = "observed_at <= cycle_cutoff_at - hash_cache_max_age_microseconds with checked nonnegative subtraction"
 
 [[cleanup_target]]
+target_kind = "SOURCE_COLLECTION"
+mode = "SWEEP"
+sweep_shard_count = 256
+selection_order_id = "uuid_first_byte_then_uuid_v1"
+root_relation = "source_collection"
+root_key = ["collection_id"]
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+eligible_predicate_id = "source_collection_unreferenced_v1"
+blocker_query_id = "source_collection_retention_roots_v1"
+writer_hook = "h2hdb.cleanup.source_collection.v1"
+retention_roots = ["source_working_collection.collection_id", "gallery_staging_collection.collection_id"]
+retained_fk_edges = []
+operational_blockers = [{ relation = "source_working_collection", attributes = ["collection_id"] }, { relation = "gallery_staging_collection", attributes = ["collection_id"] }]
+phases = [
+  { phase = "SC_MEMBERS", order = 1, relations = ["source_collection_consumption", "source_collection_observation"] },
+  { phase = "SC_CLAIM", order = 2, relations = ["source_collection_claim"] },
+  { phase = "SC_METADATA", order = 3, relations = ["source_collection_created_at", "source_collection_qualification_policy", "source_collection_manifest_policy"] },
+  { phase = "SC_STATE", order = 4, relations = ["source_collection_state"] },
+  { phase = "SC_ROOT", order = 5, relations = ["source_collection"] },
+]
+terminal_rule = "only CONSUMED or ABANDONED collections without a working slot or any staging binding are eligible; observation membership retains each exact observation independently of lease expiry until its bounded member phase removes it"
+state_root_handoff_rule = "SC_ROOT requires a cleanup_id-bound COMPLETE SC_STATE checkpoint and absence of the state scalar, then rechecks the working slot and staging binding before removing the root"
+
+[[cleanup_target]]
 target_kind = "SOURCE_BUILD"
 mode = "SWEEP"
 sweep_shard_count = 256
@@ -220,9 +244,9 @@ key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "source_build_unreferenced_v1"
 blocker_query_id = "source_build_retention_roots_v1"
 writer_hook = "h2hdb.cleanup.source_build.v1"
-retention_roots = ["analysis_run_descriptor.build_id", "source_working_build.build_id", "operational_preparation.build_id", "gallery_observation_staging.build_id", "a source_build_generation mapping whose generation is neither completed nor strictly superseded", "a newer build's source_build_generation mapping while any differently mapped older build still retains its at-most-one ABANDONED analysis retirement family; the newer mapping is released only after that older family disappears atomically at ANALYSIS_RUN AR_ROOT, so cleanup cannot erase the successor fence around partially removed valid retirement evidence. A schema-unreachable sibling analysis in an audit-bypassing damaged database fails closed and does not retain unrelated newer mappings"]
-retained_fk_edges = [{ relation = "analysis_run_descriptor", attributes = ["build_id"] }]
-operational_blockers = [{ relation = "source_working_build", attributes = ["build_id"] }, { relation = "operational_preparation", attributes = ["build_id"] }, { relation = "gallery_observation_staging", attributes = ["build_id"] }]
+retention_roots = ["analysis_run_descriptor.build_id", "source_working_build.build_id", "operational_preparation.build_id", "gallery_staging_source_build.build_id", "source_collection_consumption.build_id", "a source_build_generation mapping whose generation is neither completed nor strictly superseded", "a newer build's source_build_generation mapping while any differently mapped older build still retains its at-most-one ABANDONED analysis retirement family; the newer mapping is released only after that older family disappears atomically at ANALYSIS_RUN AR_ROOT, so cleanup cannot erase the successor fence around partially removed valid retirement evidence. A schema-unreachable sibling analysis in an audit-bypassing damaged database fails closed and does not retain unrelated newer mappings"]
+retained_fk_edges = [{ relation = "analysis_run_descriptor", attributes = ["build_id"] }, { relation = "source_collection_consumption", attributes = ["build_id"] }]
+operational_blockers = [{ relation = "source_working_build", attributes = ["build_id"] }, { relation = "operational_preparation", attributes = ["build_id"] }, { relation = "gallery_staging_source_build", attributes = ["build_id"] }]
 phases = [
   { phase = "SB_CANONICAL_UPLOAD", order = 1, relations = ["source_build_discovery_batch_receipt", "source_build_assembly_batch_receipt", "canonical_value_upload"] },
   { phase = "SB_GALLERY", order = 2, relations = ["source_build_sealed_at", "source_build_discovery_checkpoint", "source_build_assembly_checkpoint", "build_manifest_core", "source_build_gallery"] },
@@ -461,8 +485,8 @@ key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "gallery_observation_unreferenced_v1"
 blocker_query_id = "gallery_observation_retention_roots_v1"
 writer_hook = "h2hdb.cleanup.gallery_observation.v1"
-retention_roots = ["source_build_gallery exact gallery and observation identity", "analysis or publication retained references outside the observation-local subtree", "OPEN staging with a live outer ingest claim", "SEALED or RETIRING_SEALED staging linked to this allocation", "REUSED or RETIRING_REUSED staging until its build link durably names a different sealed observation"]
-retained_fk_edges = [{ relation = "source_build_gallery", attributes = ["gallery_id", "observation_id"] }]
+retention_roots = ["source_build_gallery exact gallery and observation identity", "source_collection_observation exact gallery and observation identity regardless of lease expiry", "analysis or publication retained references outside the observation-local subtree", "OPEN staging with a live outer ingest claim", "SEALED or RETIRING_SEALED staging linked to this allocation", "REUSED or RETIRING_REUSED staging until its build link durably names a different sealed observation"]
+retained_fk_edges = [{ relation = "source_build_gallery", attributes = ["gallery_id", "observation_id"] }, { relation = "source_collection_observation", attributes = ["gallery_id", "observation_id"] }]
 conditional_blockers = [{ relation = "gallery_observation_staging", claim_relation = "gallery_observation_staging_claim", state_attribute = "state", ingest_generation_attribute = "ingest_generation", claim_generation_attribute = "claim_generation", owner_relation = "ingest_generation_owner", rule = "under row locks and exact header plus claim recheck, cleanup rejects OPEN whose outer owner row has an unexpired lease_expires_at and every SEALED or RETIRING_SEALED allocation linked by source_build_gallery; ABANDONED is eligible only after its claim generation is stale, while REUSED or RETIRING_REUSED becomes eligible only after the durable build link names a different sealed observation; every bounded batch rechecks the same header state, ingest generation, and claim generation" }]
 predecessor_selectors = [{ relation = "gallery_observation_staging_request_predecessor", attribute = "request_sha256", owner_relation = "gallery_observation_staging_request", owner_attribute = "request_sha256" }]
 predecessor_blockers = [{ relation = "gallery_observation_staging_request_predecessor", incoming_attribute = "prior_request_sha256", successor_attribute = "request_sha256", owner_relation = "gallery_observation_staging_request", owner_request_attribute = "request_sha256", owner_staging_attribute = "staging_id", rule = "lock both ownership-bearing request rows; an incoming edge whose successor owner differs from the selected staging blocks cleanup and is never deleted by that staging" }]
@@ -473,7 +497,7 @@ phases = [
   { phase = "GO_STAGING_REQUEST_IDENTITY", order = 4, relations = ["gallery_observation_staging_request"] },
   { phase = "GO_STAGING_CHECKPOINT", order = 5, relations = ["gallery_observation_staging_checkpoint", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_metadata_parser"] },
   { phase = "GO_STAGING_CLAIM", order = 6, relations = ["gallery_observation_staging_claim"] },
-  { phase = "GO_STAGING_ROOT", order = 7, relations = ["gallery_observation_staging"] },
+  { phase = "GO_STAGING_ROOT", order = 7, relations = ["gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging"] },
   { phase = "GO_FACTS", order = 8, relations = ["gallery_observation_completion_marker", "gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag"] },
   { phase = "GO_FILESYSTEM_SEAL", order = 9, relations = ["gallery_observation_file_filesystem_seal"] },
   { phase = "GO_FILESYSTEM_VALUES", order = 10, relations = ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"] },
@@ -507,7 +531,7 @@ phases = [
   { phase = "GOS_REQUEST_IDENTITY", order = 4, relations = ["gallery_observation_staging_request"] },
   { phase = "GOS_CHECKPOINT", order = 5, relations = ["gallery_observation_staging_checkpoint", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_metadata_parser"] },
   { phase = "GOS_CLAIM", order = 6, relations = ["gallery_observation_staging_claim"] },
-  { phase = "GOS_ROOT", order = 7, relations = ["gallery_observation_staging"] },
+  { phase = "GOS_ROOT", order = 7, relations = ["gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging"] },
 ]
 
 [[cleanup_target]]
@@ -567,6 +591,7 @@ blocker_query_id = "canonical_value_retention_roots_v1"
 writer_hook = "h2hdb.cleanup.canonical_value.v1"
 retention_roots = ["catalog retention_target CANONICAL_VALUE external blockers and retained outliving references, the current publication-head source snapshot digest, every analysis snapshot digest whose build is in operational source_working_build, every publication-candidate snapshot digest that is uncommitted or remains in operational catalog_working_candidate, operational hash_cache_observation exact digest FKs, and every active canonical_value_upload claim; historical source_revision_descriptor and analysis_snapshot_manifest rows are opaque audit digests without payload FKs; display_title_choice and title_sort are reproducible phase-owned caches; source scopes reach this root only through source_scope.source_root_sha256 = canonical_value_allocation_anchor.value_sha256, never through scope_key; any build or gallery consumer of any same-root scope retains all such scope families and the root, while no consumer permits each scope's seal, identity, identity-policy, provider, root fact, and anchor to be deleted atomically before canonical page families and allocation facts"]
 retained_fk_edges = [
+  { relation = "source_collection", attributes = ["scope_key"] },
   { relation = "source_build_descriptor", attributes = ["scope_key"] },
   { relation = "gallery_identity", attributes = ["scope_key"] },
   { relation = "gallery_identity", attributes = ["locator_sha256"] },
@@ -883,13 +908,14 @@ phase_order = [
   { phase = "REQUEST_IDENTITY", order = 4, relations = ["gallery_observation_staging_request"] },
   { phase = "CHECKPOINT", order = 5, relations = ["gallery_observation_staging_checkpoint", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_metadata_parser"] },
   { phase = "CLAIM", order = 6, relations = ["gallery_observation_staging_claim"] },
-  { phase = "ROOT", order = 7, relations = ["gallery_observation_staging"] },
+  { phase = "ROOT", order = 7, relations = ["gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging"] },
 ]
 implicit_ack_rule = "after the facade accepts a fresh or reconstructed GalleryStagingSeal, the next source advance is the implicit ACK: under the shared gate, exact live ingest fence, source working-build lock and durable link validation, the first retirement transaction CASes SEALED to RETIRING_SEALED or REUSED to RETIRING_REUSED and deletes the first child batch atomically; rollback preserves ordinary seal replay authority, while RETIRING states make every old page or seal retry raise typed GalleryStagingRetiredError"
 recovery_rule = "a crash after seal commit but before response is first reconstructed as a replayed GalleryStagingSeal without ACK; only its following source advance may ACK. A partial RETIRING staging whose claim still exists is taken over only by a new exact live ingest generation after locking the same working build and incrementing the claim generation; after the CLAIM phase committed and only ROOT remains, the exact live global ingest fence plus the same working-build lock is the recovery authority. STAGING_FIND requires at most one terminal unretired staging and fails closed on an audit-bypassing duplicate"
 validation_rule = "every batch reconstructs the provisional four-root descriptor, compares its digest with the final gallery_observation identity, requires final stat file_count equal the FILE root count and final stat byte_count equal the immutable staging terminal_byte_count captured from the terminal FILE checkpoint, requires policy-derived gallery_manifest congruence, and enforces SEALED or RETIRING_SEALED link equality versus REUSED or RETIRING_REUSED link inequality; any cross-owner predecessor in either direction blocks retirement"
 deletion_rule = "each transaction inspects phases in fixed order, processes only the first nonempty phase, locks at most 256 exact rows child-first, and never deletes catalog allocation, pages, roots, normalized facts, final observation, manifest, or source_build_gallery; request identity deletion atomically releases the exact budget count"
 replay_rule = "after ROOT deletion, the exact source_build_gallery plus final observation identity, stat, manifest policy and manifest are the bounded completion replay authority; no staging history row is retained, and caller-supplied state is nonauthoritative"
+owner_root_atomicity_rule = "the sole SOURCE_BUILD or COLLECTION binding and its staging header are deleted together in one atomic ROOT unit; generic cleanup counts that root as one selection and deletes exactly two physical rows, so max_rows=1 never exposes an ownerless header. In-band retirement counts the two rows within its 256-row cap. Both paths retain final owner membership and observation facts"
 generic_cleanup_rule = "the exclusive GALLERY_OBSERVATION_STAGING backstop accepts all four terminal states and, before every bounded delete batch in the same transaction, applies the same provisional descriptor, final identity, stat file_count, immutable terminal_byte_count, manifest, and link equality or inequality validation used by in-band retirement; GALLERY_OBSERVATION applies that validator before each staging-control delete batch and retains provisional facts while any SEALED, REUSED, RETIRING_SEALED, or RETIRING_REUSED staging root remains"
 
 [gallery_page_gc_boundary]
@@ -1155,7 +1181,7 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_gallery_staging_request_budget_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["gallery_observation_staging_request_budget", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "source_working_build", "source_build_gallery"]
+relations = ["gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging_request_budget", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "source_working_build", "source_build_gallery"]
 description = "Validate the seeded exact request-budget singleton, replay-neutral reserve and actual-delete release accounting under one lock order, the 1,500,000-row emergency cap, one active staging slot per build, and shared-fenced seven-phase implicit-ACK retirement with durable-link replay and terminal generic-cleanup backstop."
 
 [[semantic_obligation]]
@@ -1179,6 +1205,7 @@ absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "gallery_observation_staging_request_budget", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
 absent_relations = [
+  "source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection",
   "database_audit_state",
   "storage_instance_binding",
   "download_generation",
@@ -1361,6 +1388,16 @@ lifecycle = "building_only"
 relation = "cleanup_target_kind"
 value = [{ attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }]
 invariant = "CATALOG_PUBLICATION uses 256 digest-prefix shards to remove finalized non-head catalog payload without retaining one control row per publication occurrence."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-target.source-collection.v1"
+columns = ["target_kind"]
+values = ["SOURCE_COLLECTION"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_target_kind"
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }]
+invariant = "SOURCE_COLLECTION reclaims only terminal unreferenced collection families in bounded UUID shards."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.source-build.v1"
@@ -1581,6 +1618,56 @@ lifecycle = "building_only"
 relation = "cleanup_target_kind"
 value = [{ attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_GENERATION" }]
 invariant = "PUBLICATION_GENERATION compacts only an unreferenced prefix while retaining one oldest floor node and every commit-reachable generation."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-members.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_MEMBERS", "SOURCE_COLLECTION", "1"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_MEMBERS" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Seed SC_MEMBERS as exact child-first phase 1 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-claim.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_CLAIM", "SOURCE_COLLECTION", "2"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_CLAIM" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Seed SC_CLAIM as exact child-first phase 2 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-metadata.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_METADATA", "SOURCE_COLLECTION", "3"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_METADATA" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "Seed SC_METADATA as exact child-first phase 3 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-state.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_STATE", "SOURCE_COLLECTION", "4"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_STATE" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "Seed SC_STATE as exact child-first phase 4 for SOURCE_COLLECTION cleanup."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sc-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SC_ROOT", "SOURCE_COLLECTION", "5"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_COLLECTION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "Seed SC_ROOT as exact child-first phase 5 for SOURCE_COLLECTION cleanup."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pcom-release-build-base.v1"
@@ -2820,6 +2907,18 @@ target_kind_tag_hex = "c12831ed560200c722ead234511f58cd"
 invariant = "Seed exactly 256 page-digest shards; each bounded sweep rechecks references and deletes one page atomically under the exclusive fence."
 
 [[bootstrap_seed_range]]
+id = "h2hdb.operational.cleanup-sweep.source-collection.v1"
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_sweep_target"
+target_kind = "SOURCE_COLLECTION"
+shard_start = 0
+shard_end = 255
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+target_kind_tag_hex = "06737881d583f7a2ade88e2526d3dbc7"
+invariant = "Seed exactly 256 collection UUID shards; retain OPEN collections and all sealed members until explicit consumption or abandonment."
+
+[[bootstrap_seed_range]]
 id = "h2hdb.operational.cleanup-sweep.source-build.v1"
 version = 1
 lifecycle = "building_only"
@@ -3874,18 +3973,16 @@ rationale = "One portable positive-int63 observation namespace per gallery. It s
 [[relation]]
 name = "gallery_observation_staging"
 kind = "source_of_truth"
-attributes = ["staging_id", "build_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"]
-declared_keys = [["staging_id"], ["build_id"], ["gallery_id", "observation_id"]]
+attributes = ["staging_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"]
+declared_keys = [["staging_id"], ["gallery_id", "observation_id"]]
 fds = [
-  { determinant = ["staging_id"], dependent = ["build_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
-  { determinant = ["build_id"], dependent = ["staging_id", "gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
-  { determinant = ["gallery_id", "observation_id"], dependent = ["staging_id", "build_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
+  { determinant = ["staging_id"], dependent = ["gallery_id", "observation_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
+  { determinant = ["gallery_id", "observation_id"], dependent = ["staging_id", "state", "created_at", "sealed_at", "terminal_byte_count"] },
 ]
 foreign_keys = [
-  { attributes = ["build_id"], relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] },
 ]
-rationale = "Immutable single-slot attempt identity and lifecycle, split from mutable ingest ownership so owner_token to build_id is not repeated as a hidden non-key FD. build_id is a candidate key because the serialized source pipeline cannot open a second gallery until terminal control retirement deletes the prior root. OPEN and ABANDONED have neither sealed_at nor terminal_byte_count; SEALED, REUSED, RETIRING_SEALED, and RETIRING_REUSED atomically capture both, so every bounded retirement batch can recheck byte-count congruence after request checkpoints are deleted."
+rationale = "Shared immutable attempt identity and lifecycle. Exactly one normalized source-build or collection owner binding supplies single-slot ownership without repeating an owner kind or a non-key dependency in the header. OPEN and ABANDONED have no terminal scalars; every sealed or retiring state has sealed_at and terminal_byte_count for bounded replay validation."
 
 [[relation]]
 name = "gallery_observation_staging_claim"
@@ -3897,7 +3994,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["staging_id"], relation = "gallery_observation_staging", referenced_attributes = ["staging_id"] },
-  { attributes = ["ingest_generation"], relation = "source_build_generation", referenced_attributes = ["generation"] },
+  { attributes = ["ingest_generation"], relation = "ingest_generation", referenced_attributes = ["generation"] },
 ]
 rationale = "One mutable claim per staging attempt. It stores no owner token: each mutation joins the complete ingest_generation_owner row using ingest_generation, validates the caller token and lease_expires_at, the build mapping, and exact claim_generation; takeover changes ingest_generation and increments claim_generation under that outer fence."
 
@@ -4452,3 +4549,137 @@ fds = [
   { determinant = ["singleton_id"], dependent = ["generation", "owner_token", "lease_expires_at", "lease_duration_microseconds", "minimum_interval_microseconds", "duration_multiplier", "last_audit_at", "audit_duration_microseconds", "validator_version", "next_audit_at", "initial_catchup_at", "audit_pending"] },
 ]
 rationale = "One explicitly mutable scheduling head has only the singleton candidate key. It owns the latest ingest run, lease, policy and completed-check timing; these are scheduling state rather than immutable history or current database-health authority. All fields transition together under the epoch row lock and exact generation/token CAS, so no partial success or owner-without-policy state is observable."
+
+[[relation]]
+name = "source_collection_state"
+kind = "source_of_truth"
+attributes = ["collection_id", "state"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["state"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+]
+rationale = "Mutable OPEN, CONSUMED or ABANDONED lifecycle; only an OPEN collection may own the working singleton."
+
+[[relation]]
+name = "source_collection_claim"
+kind = "source_of_truth"
+attributes = ["collection_id", "ingest_generation", "claim_generation", "updated_at"]
+declared_keys = [["collection_id"]]
+fds = [
+  { determinant = ["collection_id"], dependent = ["ingest_generation", "claim_generation", "updated_at"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+  { attributes = ["ingest_generation"], relation = "ingest_generation", referenced_attributes = ["generation"] },
+]
+rationale = "Exact mutable ingest claim. A newer live ingest takeover advances claim_generation; stale generation/token/claim tuples perform no writes."
+
+[[relation]]
+name = "source_working_collection"
+kind = "source_of_truth"
+attributes = ["slot", "collection_id", "assigned_at"]
+declared_keys = [["slot"], ["collection_id"]]
+fds = [
+  { determinant = ["slot"], dependent = ["collection_id", "assigned_at"] },
+  { determinant = ["collection_id"], dependent = ["slot", "assigned_at"] },
+]
+foreign_keys = [
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+]
+rationale = "Single active OPEN collection independent of the current complete working source build; assignment time equals immutable collection creation time."
+
+[[relation]]
+name = "gallery_staging_source_build"
+kind = "source_of_truth"
+attributes = ["staging_id", "build_id"]
+declared_keys = [["staging_id"], ["build_id"]]
+fds = [
+  { determinant = ["staging_id"], dependent = ["build_id"] },
+  { determinant = ["build_id"], dependent = ["staging_id"] },
+]
+foreign_keys = [
+  { attributes = ["staging_id"], relation = "gallery_observation_staging", referenced_attributes = ["staging_id"] },
+  { attributes = ["build_id"], relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
+]
+rationale = "Exclusive source-build ownership subtype. Each build has at most one retained staging attempt, and a staging identity cannot also have collection ownership."
+
+[[relation]]
+name = "gallery_staging_collection"
+kind = "source_of_truth"
+attributes = ["staging_id", "collection_id"]
+declared_keys = [["staging_id"], ["collection_id"]]
+fds = [
+  { determinant = ["staging_id"], dependent = ["collection_id"] },
+  { determinant = ["collection_id"], dependent = ["staging_id"] },
+]
+foreign_keys = [
+  { attributes = ["staging_id"], relation = "gallery_observation_staging", referenced_attributes = ["staging_id"] },
+  { attributes = ["collection_id"], relation = "source_collection", referenced_attributes = ["collection_id"] },
+]
+rationale = "Exclusive collection ownership subtype. Each collection has at most one retained staging attempt; sealed observation membership survives retirement of its control pages."
+
+[[attribute_semantic]]
+name = "collection_id"
+classification = "surrogate_identifier"
+rationale = "Repository-issued opaque identity of a resumable observation collection, independent of complete source snapshot identity."
+
+[[semantic_obligation]]
+id = "h2hdb.operational.source-collection-staging-owner.v1"
+version = 1
+class = "transaction_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_source_collection_staging_owner_v1"
+ready_check = "operational_refinement.check_source_collection_staging_owner_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+writer_hook = "gallery_staging_writer.begin_collection"
+writer_hook_version = 1
+scope = "operational.source-collection-staging-owner"
+relations = ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_source_build", "gallery_staging_collection", "gallery_observation_staging", "gallery_observation_staging_claim"]
+description = "Every staging header has exactly one source-build or collection owner binding. Current collection work is OPEN and exact scope, qualification policy, generation and claim fenced; generic staging preserves its immutable owner and permits at most one unretired gallery per owner."
+
+[[semantic_obligation]]
+id = "h2hdb.operational.source-collection-cleanup-reachability.v1"
+version = 1
+class = "retention_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_source_collection_cleanup_reachability_v1"
+ready_check = "operational_refinement.check_source_collection_cleanup_reachability_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+writer_hook = "source_collection_writer.retire_collection"
+writer_hook_version = 1
+scope = "operational.source-collection-cleanup-reachability"
+relations = ["source_collection_state", "source_collection_claim", "source_working_collection", "gallery_staging_collection"]
+description = "Collection membership retains sealed observations across process and ingest-lease loss. Cleanup retires only nonworking terminal collections, bounded and child-first; live staging and collection membership prevent deletion of referenced observation and canonical authority."
+
+[[external_relation]]
+name = "source_collection"
+attributes = ["collection_id", "scope_key"]
+declared_keys = [["collection_id"]]
+
+[[external_relation]]
+name = "source_collection_manifest_policy"
+attributes = ["collection_id", "manifest_policy_id"]
+declared_keys = [["collection_id"]]
+
+[[external_relation]]
+name = "source_collection_qualification_policy"
+attributes = ["collection_id", "qualification_policy_sha256"]
+declared_keys = [["collection_id"]]
+
+[[external_relation]]
+name = "source_collection_created_at"
+attributes = ["collection_id", "created_at"]
+declared_keys = [["collection_id"]]
+
+[[external_relation]]
+name = "source_collection_observation"
+attributes = ["collection_id", "gallery_id", "observation_id"]
+declared_keys = [["collection_id", "gallery_id", "observation_id"]]
+
+[[external_relation]]
+name = "source_collection_consumption"
+attributes = ["collection_id", "build_id"]
+declared_keys = [["collection_id"]]

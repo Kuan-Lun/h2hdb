@@ -99,7 +99,7 @@ def plans(
     return created, closed
 
 
-def test_one_plan_is_reused_across_pages_and_closed_at_terminal_commit(
+def test_one_plan_is_reused_across_pages_and_closed_at_next_preparation(
     tmp_path: Path,
     plans: tuple[
         list[AnalysisFileDecisionValidationPlan],
@@ -121,9 +121,12 @@ def test_one_plan_is_reused_across_pages_and_closed_at_terminal_commit(
             issued = driver.issue_analysis_step(session, prepared)
         assert row_counts == [1, 1, 0]
         assert prepared._machine.validation_plan is None
-        assert closed == created
+        assert not closed
         following = driver.issue_analysis_step(session, prepared)
         assert following._payload is not None and following._payload.stage != _STAGE
+        assert not closed
+        driver.prepare_analysis_step(prepared, following)
+        assert closed == created
     assert closed == created
 
 
@@ -291,7 +294,7 @@ def test_committed_response_loss_reuses_exact_page_and_plan_until_replay(
         replay = driver.commit_analysis_step(session, step)
         assert replay.replayed and replay.stage_terminal == terminal
         assert len(created) == 1
-        assert bool(closed) == terminal
+        assert not closed
     assert closed == created
 
 

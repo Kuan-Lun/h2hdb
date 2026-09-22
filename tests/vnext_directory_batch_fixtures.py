@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from h2hdb.domain import GalleryStagingOwner
 from h2hdb.vnext_gallery_staging_repository import GalleryStagingHandle
 from h2hdb.vnext_identity import (
     GalleryObservationBranchEntry,
@@ -160,7 +161,9 @@ class DirectoryGraphConnector:
 
     @staticmethod
     def handle() -> GalleryStagingHandle:
-        return GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0)
+        return GalleryStagingHandle(
+            b"s" * 16, GalleryStagingOwner("SOURCE_BUILD", b"b" * 16), 1, 1, 1, 0
+        )
 
     def fetch_one(
         self, query: str, parameters: tuple[Any, ...] = ()

@@ -25,6 +25,7 @@ from .ingest_performance_format import (
 )
 from .ingest_work_performance import WorkCosts, collect_ingest_work
 from .sql_performance import (
+    QUERY_FINGERPRINT_ALGORITHM,
     SQLCounters,
     SQLQueryStatistics,
     SQLSlowQueries,
@@ -54,7 +55,8 @@ def _sql_cost_details(
             :5
         ]
         details += (
-            f"; cumulative SQL (first {_QUERY_LIMIT} fingerprints per step/stage plus other): "
+            f"; cumulative SQL (first {_QUERY_LIMIT} query families per step/stage plus other; "
+            f"fingerprints {QUERY_FINGERPRINT_ALGORITHM}): "
             + ";".join(item.text(key) for key, item in top)
         )
         overflow = queries.get("other", SQLQueryStatistics())
@@ -418,6 +420,7 @@ class IngestPerformance:
             f"nested_calls={sample.nested_calls} nested_seconds={sample.nested_seconds:.6f} "
             f"omitted_nested_records={sample.omitted_records} "
             f"processed_rows={sample.processed_rows} replayed={int(sample.replayed)} "
+            f"query_fingerprint_algorithm={QUERY_FINGERPRINT_ALGORITHM} "
             f"{sample.counters.text()}"
         )
         if sample.correlation_id is not None:
@@ -584,6 +587,7 @@ class IngestPerformance:
             f"other_seconds={max(0.0, call_seconds - stage.counters.seconds):.6f} "
             f"calls={stage.calls} processed_rows={stage.processed_rows} "
             f"replayed_calls={stage.replayed} {stage.counters.text()}"
+            f" query_fingerprint_algorithm={QUERY_FINGERPRINT_ALGORITHM}"
         )
         message += " " + " ".join(
             f"{phase}_seconds={seconds:.6f}"

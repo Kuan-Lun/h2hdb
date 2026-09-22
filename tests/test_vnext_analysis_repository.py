@@ -15,7 +15,7 @@ from vnext_analysis_fixtures import (
     seed_content_owner_shadow,
     set_analysis_component_sealed_at,
 )
-from vnext_analysis_validation_fixtures import file_validation_pages
+from vnext_analysis_validation_fixtures import analysis_source_pages
 from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import (
     seed_file_name_identity,
@@ -55,7 +55,9 @@ from h2hdb.vnext_analysis_family import (
 )
 from h2hdb.vnext_analysis_repository import (
     ANALYSIS_COMPONENTS,
+    AnalysisChangedHashPage,
     AnalysisCorruptionError,
+    AnalysisFileDecisionValidationPage,
     AnalysisNotReadyError,
     AnalysisRepository,
 )
@@ -1460,7 +1462,7 @@ def _run_stage(
     replay_each: bool = False,
 ) -> list[Any]:
     results = []
-    with file_validation_pages(
+    with analysis_source_pages(
         connector, backend="sqlite", gate=gate, turn=turn, analysis_id=analysis_id
     ) as prepare:
         for index in range(1000):
@@ -1470,7 +1472,11 @@ def _run_stage(
                         prefix + index.to_bytes(4, "big"), max_rows, start_now + index
                     )
                 }
-                if method is AnalysisRepository.validate_file_hash_decision_batch
+                if method
+                in {
+                    AnalysisRepository.validate_file_hash_decision_batch,
+                    AnalysisRepository.process_changed_file_hash_batch,
+                }
                 else {}
             )
             with connector.transaction():
@@ -2329,7 +2335,7 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
             (AnalysisRepository.process_file_hash_decision_batch, b"crash-decision"),
             (AnalysisRepository.validate_file_hash_decision_batch, b"crash-validate"),
         )
-        with file_validation_pages(
+        with analysis_source_pages(
             connector,
             backend="sqlite",
             gate=gate,
@@ -2339,7 +2345,11 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
             for index, (method, batch_key) in enumerate(stages):
                 preparation = (
                     {"preparation": prepare(batch_key, 128, 100 + index)}
-                    if method is AnalysisRepository.validate_file_hash_decision_batch
+                    if method
+                    in {
+                        AnalysisRepository.validate_file_hash_decision_batch,
+                        AnalysisRepository.process_changed_file_hash_batch,
+                    }
                     else {}
                 )
                 receipt_count = connector.fetch_one(
@@ -2867,7 +2877,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
                     )
         with (
             pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"),
-            file_validation_pages(
+            analysis_source_pages(
                 connector,
                 backend="sqlite",
                 gate=gate,
@@ -2876,6 +2886,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
             ) as prepare,
         ):
             preparation = prepare(b"validate-corrupt", 128, 500)
+            assert isinstance(preparation, AnalysisFileDecisionValidationPage)
             with connector.transaction():
                 AnalysisRepository.validate_file_hash_decision_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -3837,97 +3848,111 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
         assert terminal.row_count == 0
         assert terminal.next_processed_count == 130
         assert terminal.next_state == "COMPLETE" and terminal.terminal
-        with connector.transaction():
-            clamped = AnalysisRepository.process_changed_file_hash_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=run.analysis_id,
-                batch_key=b"too-large",
-                max_rows=129,
-                now=43,
-            )
-        assert clamped.page_limit == 128
-        assert clamped.row_count <= clamped.page_limit
-        with connector.transaction():
-            with (
-                patch.object(
-                    connector,
-                    "execute",
-                    side_effect=AssertionError("batch replay attempted DML"),
-                ),
-                patch.object(
-                    connector,
-                    "execute_affected",
-                    side_effect=AssertionError("batch replay attempted DML"),
-                ),
-            ):
-                clamped_replay = AnalysisRepository.process_changed_file_hash_batch(
+        with analysis_source_pages(
+            connector,
+            backend="sqlite",
+            gate=gate,
+            turn=turn,
+            analysis_id=run.analysis_id,
+        ) as prepare:
+            page = prepare(b"too-large", 129, 43)
+            assert isinstance(page, AnalysisChangedHashPage)
+            with connector.transaction():
+                clamped = AnalysisRepository.process_changed_file_hash_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
                     batch_key=b"too-large",
-                    max_rows=0,
-                    now=44,
+                    preparation=page,
+                    max_rows=129,
+                    now=43,
                 )
-        assert clamped_replay.replayed
-        assert clamped_replay.page_limit == clamped.page_limit == 128
-        assert clamped_replay.row_count == clamped.row_count
-        with pytest.raises(AnalysisCorruptionError, match="stored-limit evaluator"):
+            assert clamped.page_limit == 128
+            assert clamped.row_count <= clamped.page_limit
             with connector.transaction():
-                connector.execute(
-                    "UPDATE catalog_analysis_batch_receipt_stored "
-                    "SET page_limit = %s WHERE analysis_id = %s AND stage = %s "
-                    "AND start_generation = %s",
-                    (
-                        1,
-                        run.analysis_id,
-                        b"changed_file_hash",
-                        clamped.start_generation,
+                with (
+                    patch.object(
+                        connector,
+                        "execute",
+                        side_effect=AssertionError("batch replay attempted DML"),
                     ),
-                )
-                AnalysisRepository.process_changed_file_hash_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=b"too-large",
-                    max_rows=7,
-                    now=45,
-                )
-        first_hash = connector.fetch_one(
-            "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
-            "WHERE analysis_id = %s ORDER BY file_sha256 LIMIT 1",
-            (run.analysis_id,),
-        )[0]
-        with pytest.raises(AnalysisCorruptionError, match="materialization"):
-            with connector.transaction():
-                connector.execute(
-                    "DELETE FROM catalog_analysis_changed_file_hashes "
-                    "WHERE analysis_id = %s AND file_sha256 = %s",
-                    (run.analysis_id, first_hash),
-                )
-                AnalysisRepository.process_changed_file_hash_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=b"too-large",
-                    max_rows=7,
-                    now=45,
-                )
-        with pytest.raises(ValueError, match="max_rows"):
-            with connector.transaction():
-                AnalysisRepository.process_changed_file_hash_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=b"fresh-zero",
-                    max_rows=0,
-                    now=45,
-                )
+                    patch.object(
+                        connector,
+                        "execute_affected",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                ):
+                    clamped_replay = AnalysisRepository.process_changed_file_hash_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"too-large",
+                        preparation=page,
+                        max_rows=0,
+                        now=44,
+                    )
+            assert clamped_replay.replayed
+            assert clamped_replay.page_limit == clamped.page_limit == 128
+            assert clamped_replay.row_count == clamped.row_count
+            with pytest.raises(AnalysisCorruptionError, match="stored-limit evaluator"):
+                with connector.transaction():
+                    connector.execute(
+                        "UPDATE catalog_analysis_batch_receipt_stored "
+                        "SET page_limit = %s WHERE analysis_id = %s AND stage = %s "
+                        "AND start_generation = %s",
+                        (
+                            1,
+                            run.analysis_id,
+                            b"changed_file_hash",
+                            clamped.start_generation,
+                        ),
+                    )
+                    AnalysisRepository.process_changed_file_hash_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"too-large",
+                        preparation=page,
+                        max_rows=7,
+                        now=45,
+                    )
+            first_hash = connector.fetch_one(
+                "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
+                "WHERE analysis_id = %s ORDER BY file_sha256 LIMIT 1",
+                (run.analysis_id,),
+            )[0]
+            with pytest.raises(AnalysisCorruptionError, match="materialization"):
+                with connector.transaction():
+                    connector.execute(
+                        "DELETE FROM catalog_analysis_changed_file_hashes "
+                        "WHERE analysis_id = %s AND file_sha256 = %s",
+                        (run.analysis_id, first_hash),
+                    )
+                    AnalysisRepository.process_changed_file_hash_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"too-large",
+                        preparation=page,
+                        max_rows=7,
+                        now=45,
+                    )
+            with pytest.raises(ValueError, match="max_rows"):
+                with connector.transaction():
+                    AnalysisRepository.process_changed_file_hash_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"fresh-zero",
+                        preparation=page,
+                        max_rows=0,
+                        now=45,
+                    )
     finally:
         connector.close()
 

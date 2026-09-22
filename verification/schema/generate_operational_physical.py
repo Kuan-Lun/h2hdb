@@ -20,6 +20,7 @@ TABLE_OVERRIDES = {
 }
 
 UUID16 = {
+    "collection_id",
     "build_id",
     "candidate_id",
     "cleanup_id",
@@ -31,7 +32,7 @@ UUID16 = {
     "storage_instance_uuid",
     "deletion_request_token",
 }
-NON_NIL_UUID16 = {"storage_instance_uuid"}
+NON_NIL_UUID16 = {"collection_id", "storage_instance_uuid"}
 DIGEST32 = {
     "batch_key",
     "chain_sha256",
@@ -202,6 +203,16 @@ ENUMS = {
 NAMES: set[str] = {"validator_version"}
 
 SEMANTIC_OBLIGATION_CHECKS = {
+    "h2hdb.operational.source-collection-staging-owner.v1": (
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_source_collection_staging_owner_v1",
+    ),
+    "h2hdb.operational.source-collection-cleanup-reachability.v1": (
+        "ready_and_runtime",
+        "retention_protocol",
+        "operational_refinement.check_source_collection_cleanup_reachability_v1",
+    ),
     "h2hdb.operational.database-audit-schedule.v1": (
         "ready_and_runtime",
         "transaction_protocol",
@@ -416,6 +427,8 @@ GENERATION_OBLIGATION_BINDINGS = {
     ),
     "h2hdb.operational.gallery-staging-request-budget.v1": (
         (
+            "gallery_staging_source_build",
+            "gallery_staging_collection",
             "gallery_observation_staging_request_budget",
             "gallery_observation_staging",
             "gallery_observation_staging_claim",
@@ -1377,6 +1390,22 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
             " AND ".join(mariadb_storage),
         )
     )
+    if name == "source_collection_claim":
+        checks.append(
+            (
+                "ck_source_collection_claim_positive",
+                "claim_generation >= 1",
+                "claim_generation >= 1",
+            )
+        )
+    if name == "source_collection_state":
+        checks.append(
+            (
+                "ck_source_collection_state",
+                "state IN ('OPEN', 'CONSUMED', 'ABANDONED')",
+                "state IN ('OPEN', 'CONSUMED', 'ABANDONED')",
+            )
+        )
     if name == "database_audit_state":
         checks.extend(
             [
@@ -1869,7 +1898,11 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "slot >= 0 AND slot < 64",
             )
         )
-    if name in {"source_working_build", "catalog_working_candidate"}:
+    if name in {
+        "source_working_build",
+        "catalog_working_candidate",
+        "source_working_collection",
+    }:
         checks.append((_identifier(f"ck_{name}_slot"), "slot = 1", "slot = 1"))
     if name == "revision_allocator":
         checks.append(

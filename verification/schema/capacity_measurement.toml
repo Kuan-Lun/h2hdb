@@ -14,9 +14,9 @@ benchmark_insert_batch_size = 5000
 benchmark_insertion_order = "full_churn_fill_delete_different_domain_refill_five_then_sixth_append_v2"
 measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
 soft_limit_bytes = 400000000
-capacity_plan_sha256 = "ea32f5f7bb9122cea5b253261bafc18c0d826545cd8201580e6117b8b6c40cf8"
-catalog_physical_manifest_sha256 = "4457abd81cd071fff7533bc97123c6f0d2734cec19cd550dfe1350da6c7d8f97"
-operational_physical_manifest_sha256 = "bebf92b49391eca202affa20d51b20f11f63cd2eb958295216ceddd2ec1a2c54"
+capacity_plan_sha256 = "198ffa62af511d6bfa04bdb0895f7f6d9fa9ee9d692e13f12bd91c0bf1f2e21e"
+catalog_physical_manifest_sha256 = "04ab85130a42fc579419206dafa4b6b5a6938c213a8bfc7e3e0b75598559731c"
+operational_physical_manifest_sha256 = "40c66d571e10f80804500a78717cbfab56f10f7d1b1940e210b884311f8f77d8"
 
 [registry_measurement]
 relation = "analysis_policy"
@@ -142,7 +142,7 @@ reason = "row count exceeds the 1500000 runtime budget; this append is diagnosti
 
 [staging_retention]
 staging_relation = "gallery_observation_staging"
-staging_physical_shape_sha256 = "77a1ed6401b9f02ed6275091cc210c0d21901920e7ee839bbdf39f0e169b2fdf"
+staging_physical_shape_sha256 = "bd7c620b033271df5fe6090ebd6f44079b3bb8f6459fe689fe1177e663f1db51"
 request_relation = "gallery_observation_staging_request"
 request_physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
 budget_relation = "gallery_observation_staging_request_budget"
@@ -164,8 +164,8 @@ job_physical_shape_sha256 = "33c701c218ea87bf9deedb0ce00fcc3ac4bab6b4feffcf82f6d
 job_conservative_record_and_index_bytes = 666
 job_accounted_bytes_per_row = 8192
 job_width_headroom_bytes = 7526
-job_row_count = 5888
-job_conservative_peak_bytes = 48234496
+job_row_count = 6144
+job_conservative_peak_bytes = 50331648
 root_relation = "cleanup_cycle_root"
 root_physical_shape_sha256 = "796758608595627956211d2fc01a8df6e5a7bf91ea6732c46484f9fbba2c3c56"
 root_conservative_record_and_index_bytes = 534

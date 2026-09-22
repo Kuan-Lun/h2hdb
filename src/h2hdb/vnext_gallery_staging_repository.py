@@ -45,12 +45,13 @@ import secrets
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .domain import (
     DirectoryObservation,
     FileContentReceipt,
     FileObservation,
+    GalleryStagingOwner,
     TagObservation,
     VNextSourceCompletionMarker,
 )
@@ -200,6 +201,21 @@ _REQUEST_CHUNK_BYTES = 32_768
 _REQUEST_CHUNK_COUNT = 3
 _REQUEST_BYTES_MAXIMUM = _REQUEST_CHUNK_BYTES * _REQUEST_CHUNK_COUNT
 _REQUEST_PREFIX = b"h2hdb-vnext-gallery-staging-request\0"
+_BUILD_OWNER = "operational_gallery_staging_source_builds"
+_COLLECTION_OWNER = "operational_gallery_staging_collections"
+_HEADER_SELECT = (
+    "SELECT b.build_id, c.collection_id, s.gallery_id, s.observation_id, "
+    "s.state, s.created_at, s.sealed_at, s.terminal_byte_count "
+    f"FROM {_STAGING} AS s "
+    f"LEFT JOIN {_BUILD_OWNER} AS b ON b.staging_id = s.staging_id "
+    f"LEFT JOIN {_COLLECTION_OWNER} AS c ON c.staging_id = s.staging_id "
+)
+
+if TYPE_CHECKING:
+    from .vnext_source_collection_repository import (
+        SourceCollectionHandle,
+    )
+
 _REQUEST_VERSION = 2
 _RETIREMENT_BATCH_ROWS = 256
 _RETIREMENT_PHASES = (
@@ -337,7 +353,7 @@ class MatchBatchCommand:
 @dataclass(frozen=True, slots=True)
 class GalleryStagingHandle:
     staging_id: bytes
-    build_id: bytes
+    owner: GalleryStagingOwner
     gallery_id: int
     observation_id: int
     ingest_generation: int
@@ -345,7 +361,7 @@ class GalleryStagingHandle:
 
     def __post_init__(self) -> None:
         require_uuid16(self.staging_id, field="staging_id")
-        require_uuid16(self.build_id, field="build_id")
+        _require_owner(self.owner)
         require_positive_int63(self.gallery_id, field="gallery_id")
         require_positive_int63(self.observation_id, field="observation_id")
         require_int63(self.ingest_generation, field="ingest_generation")
@@ -397,7 +413,7 @@ class MatchBatchReceipt:
 
 @dataclass(frozen=True, slots=True)
 class GalleryStagingSeal:
-    build_id: bytes
+    owner: GalleryStagingOwner
     gallery_id: int
     observation_id: int
     observation_identity_sha256: bytes
@@ -405,7 +421,7 @@ class GalleryStagingSeal:
     replayed: bool
 
     def __post_init__(self) -> None:
-        require_uuid16(self.build_id, field="build_id")
+        _require_owner(self.owner)
         require_positive_int63(self.gallery_id, field="gallery_id")
         require_positive_int63(self.observation_id, field="observation_id")
         require_digest32(
@@ -421,7 +437,7 @@ class GalleryStagingSeal:
 class GalleryStagingRetirement:
     """One bounded terminal-control retirement result."""
 
-    build_id: bytes
+    owner: GalleryStagingOwner
     gallery_id: int
     phase: str | None
     deleted_count: int
@@ -429,7 +445,7 @@ class GalleryStagingRetirement:
     replayed: bool
 
     def __post_init__(self) -> None:
-        require_uuid16(self.build_id, field="retirement build_id")
+        _require_owner(self.owner)
         require_positive_int63(self.gallery_id, field="retirement gallery_id")
         if self.phase is not None and self.phase not in _RETIREMENT_PHASES:
             raise ValueError("retirement phase is unknown")
@@ -489,7 +505,7 @@ class GalleryStagingProgress:
 
 @dataclass(frozen=True, slots=True)
 class _Header:
-    build_id: bytes
+    owner: GalleryStagingOwner
     gallery_id: int
     observation_id: int
     state: str
@@ -586,7 +602,11 @@ _RETIREMENT_DELETE_PHASES = {
         _retirement_direct_spec(_PARSER, ("staging_id",)),
     ),
     "CLAIM": (_retirement_direct_spec(_CLAIM, ("staging_id",)),),
-    "ROOT": (_retirement_direct_spec(_STAGING, ("staging_id",)),),
+    "ROOT": (
+        _retirement_direct_spec(_BUILD_OWNER, ("staging_id",)),
+        _retirement_direct_spec(_COLLECTION_OWNER, ("staging_id",)),
+        _retirement_direct_spec(_STAGING, ("staging_id",)),
+    ),
 }
 
 
@@ -850,22 +870,44 @@ class GalleryObservationStagingRepository:
         This lower-level form remains useful inside the repository test seam.
         """
 
-        build = require_uuid16(build_id, field="build_id")
+        return GalleryObservationStagingRepository._begin_owned(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            owner=GalleryStagingOwner("SOURCE_BUILD", build_id),
+            gallery_id=gallery_id,
+            now=now,
+            takeover_existing=takeover_existing,
+        )
+
+    @staticmethod
+    def _begin_owned(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        owner: GalleryStagingOwner,
+        gallery_id: int,
+        now: int,
+        takeover_existing: bool = False,
+        collection: SourceCollectionHandle | None = None,
+    ) -> GalleryStagingHandle:
+        _require_owner(owner)
         gallery = require_positive_int63(gallery_id, field="gallery_id")
         if type(takeover_existing) is not bool:
             raise TypeError("takeover_existing must be bool")
         timestamp = require_int63(now, field="now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
-        scope, _build_state = _lock_and_require_working_build(
+        scope, _owner_state = _lock_and_require_owner(
             work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
             generation=generation,
-            build_id=build,
+            owner=owner,
+            now=timestamp,
+            collection=collection,
         )
-        candidates = work.connector.fetch_all(
-            f"SELECT staging_id, gallery_id FROM {_STAGING} "
-            "WHERE build_id = %s ORDER BY gallery_id LIMIT 2",
-            (build,),
-        )
+        candidates = _owner_staging_slots(work.connector, owner)
         if len(candidates) > 1:
             raise GalleryStagingConflictError(
                 "source build has multiple live staging slots"
@@ -885,11 +927,11 @@ class GalleryObservationStagingRepository:
                 )
             row = work.lock_row(
                 LockRank.CHECKPOINT,
-                encode_lock_key("gallery-staging", 0, build, staging),
+                encode_lock_key("gallery-staging", 0, staging),
                 f"SELECT staging_id, observation_id, state, created_at, sealed_at, "
                 "terminal_byte_count "
-                f"FROM {_STAGING} WHERE build_id = %s",
-                (build,),
+                f"FROM {_STAGING} WHERE staging_id = %s",
+                (staging,),
             )
             if len(row) != 6:
                 raise GalleryStagingConflictError("staging replay row has bad shape")
@@ -900,6 +942,9 @@ class GalleryObservationStagingRepository:
             observation = require_positive_int63(
                 row[1], field="persisted observation_id"
             )
+            exact_header = _read_header(work.connector, staging)
+            if exact_header.owner != owner:
+                raise GalleryStagingConflictError("staging owner binding differs")
             claim = _lock_claim(work, staging)
             if claim.ingest_generation != generation:
                 if not takeover_existing:
@@ -935,7 +980,7 @@ class GalleryObservationStagingRepository:
                 )
             return GalleryStagingHandle(
                 staging,
-                build,
+                owner,
                 gallery,
                 observation,
                 generation,
@@ -987,10 +1032,15 @@ class GalleryObservationStagingRepository:
         )
         work.connector.execute(
             f"INSERT INTO {_STAGING} "
-            "(staging_id, build_id, gallery_id, observation_id, state, "
+            "(staging_id, gallery_id, observation_id, state, "
             "created_at, sealed_at, terminal_byte_count) "
-            "VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL)",
-            (staging, build, gallery, observation, "OPEN", timestamp),
+            "VALUES (%s, %s, %s, %s, %s, NULL, NULL)",
+            (staging, gallery, observation, "OPEN", timestamp),
+        )
+        binding_table, owner_column = _owner_binding(owner)
+        work.connector.execute(
+            f"INSERT INTO {binding_table} (staging_id, {owner_column}) VALUES (%s, %s)",
+            (staging, owner.owner_id),
         )
         work.connector.execute(
             f"INSERT INTO {_CLAIM} "
@@ -1015,12 +1065,35 @@ class GalleryObservationStagingRepository:
         _insert_parser(work.connector, staging, timestamp)
         return GalleryStagingHandle(
             staging,
-            build,
+            owner,
             gallery,
             observation,
             generation,
             0,
         )
+
+    @staticmethod
+    def begin_collection_or_resume(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        collection: SourceCollectionHandle,
+        gallery_id: int,
+        now: int,
+    ) -> GalleryStagingProgress:
+        _require_collection_handle(collection)
+        handle = GalleryObservationStagingRepository._begin_owned(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            owner=GalleryStagingOwner("COLLECTION", collection.collection_id),
+            gallery_id=gallery_id,
+            now=now,
+            takeover_existing=False,
+            collection=collection,
+        )
+        return _load_staging_progress(work.connector, handle)
 
     @staticmethod
     def begin_from_identity(
@@ -1112,10 +1185,13 @@ class GalleryObservationStagingRepository:
         current = _require_handle(handle)
         timestamp = require_int63(now, field="now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
-        _lock_and_require_working_build(
+        _lock_and_require_owner(
             work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
             generation=generation,
-            build_id=current.build_id,
+            owner=current.owner,
+            now=timestamp,
         )
         header, claim = _lock_header_and_claim(work, current.staging_id)
         _require_handle_rows(current, header, claim, allow_stale_generation=True)
@@ -1145,7 +1221,7 @@ class GalleryObservationStagingRepository:
         )
         return GalleryStagingHandle(
             current.staging_id,
-            current.build_id,
+            current.owner,
             current.gallery_id,
             current.observation_id,
             generation,
@@ -1438,7 +1514,7 @@ class GalleryObservationStagingRepository:
                 if completion_marker is not None:
                     bind_completion_marker(
                         work.connector,
-                        build_id=replay.build_id,
+                        owner=replay.owner,
                         gallery_id=replay.gallery_id,
                         observation_id=replay.observation_id,
                         observation_identity_sha256=replay.observation_identity_sha256,
@@ -1606,38 +1682,22 @@ class GalleryObservationStagingRepository:
             state = "SEALED"
 
         try:
-            build = load_source_build_family(
-                work.connector,
-                build_id=current.build_id,
-            )
-            if build is None or build.state != "OPEN":
-                raise GalleryStagingNotReadyError(
-                    "gallery manifest requires the OPEN source build"
-                )
             ensure_gallery_manifest_family(
                 work,
                 gallery_id=current.gallery_id,
                 observation_id=final_observation,
-                manifest_policy_id=build.manifest_policy_id,
+                manifest_policy_id=_owner_manifest_policy(
+                    work.connector, current.owner
+                ),
             )
         except ManifestFamilyCollisionError as error:
             raise GalleryStagingConflictError(str(error)) from error
-
-        link = work.connector.fetch_one(
-            "SELECT observation_id FROM catalog_source_build_galleries "
-            "WHERE build_id = %s AND gallery_id = %s",
-            (current.build_id, current.gallery_id),
+        _bind_owner_observation(
+            work.connector,
+            current.owner,
+            current.gallery_id,
+            final_observation,
         )
-        if link:
-            if link != (final_observation,):
-                raise GalleryStagingConflictError("source-build gallery link differs")
-        else:
-            # This is the final reader-visible insert in the staging protocol.
-            work.connector.execute(
-                "INSERT INTO catalog_source_build_galleries "
-                "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
-                (current.build_id, current.gallery_id, final_observation),
-            )
         deleted = work.connector.execute_affected(
             "DELETE FROM operational_canonical_value_uploads "
             "WHERE generation = %s AND value_sha256 = %s",
@@ -1657,14 +1717,14 @@ class GalleryObservationStagingRepository:
         if completion_marker is not None:
             bind_completion_marker(
                 work.connector,
-                build_id=current.build_id,
+                owner=current.owner,
                 gallery_id=current.gallery_id,
                 observation_id=final_observation,
                 observation_identity_sha256=observation_digest,
                 marker=completion_marker,
             )
         return GalleryStagingSeal(
-            current.build_id,
+            current.owner,
             current.gallery_id,
             final_observation,
             observation_digest,
@@ -1678,40 +1738,35 @@ class GalleryObservationStagingRepository:
         *,
         gate_lease: GateLease,
         ingest_turn: IngestTurn,
-        build_id: bytes,
+        owner: GalleryStagingOwner,
         now: int,
     ) -> GalleryStagingPendingRetirement | None:
-        """Rebuild at most one unretired terminal staging from durable facts."""
-
-        build = require_uuid16(build_id, field="retirement build_id")
+        """Rebuild the one terminal slot from its exact durable owner."""
         timestamp = require_int63(now, field="retirement discovery now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
-        _lock_and_require_working_build(
+        _lock_and_require_owner(
             work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
             generation=generation,
-            build_id=build,
+            owner=owner,
+            now=timestamp,
         )
-        rows = work.connector.fetch_all(
-            f"SELECT staging_id, build_id, gallery_id, observation_id, state, "
-            f"created_at, sealed_at, terminal_byte_count FROM {_STAGING} "
-            "WHERE build_id = %s "
-            "AND state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
-            "'RETIRING_REUSED') ORDER BY gallery_id LIMIT 2",
-            (build,),
-        )
+        rows = _owner_staging_slots(work.connector, owner)
         if len(rows) > 1:
-            raise GalleryStagingConflictError(
-                "source build has multiple terminal unretired stagings"
-            )
+            raise GalleryStagingConflictError("owner has multiple staging slots")
         if not rows:
             return None
-        row = rows[0]
-        if len(row) != 8:
-            raise GalleryStagingConflictError(
-                "terminal staging discovery row has a bad shape"
-            )
-        require_uuid16(row[0], field="retirement staging_id")
-        header = _decode_header(tuple(row[1:]))
+        header = _read_header(
+            work.connector, require_uuid16(rows[0][0], field="staging_id")
+        )
+        if header.state not in {
+            "SEALED",
+            "REUSED",
+            "RETIRING_SEALED",
+            "RETIRING_REUSED",
+        }:
+            return None
         return GalleryStagingPendingRetirement(
             _validate_retirement_link(work.connector, header),
             header.state in {"RETIRING_SEALED", "RETIRING_REUSED"},
@@ -1733,16 +1788,15 @@ class GalleryObservationStagingRepository:
         seal.__post_init__()
         timestamp = require_int63(now, field="retirement now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
-        _lock_and_require_working_build(
+        _lock_and_require_owner(
             work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
             generation=generation,
-            build_id=seal.build_id,
+            owner=seal.owner,
+            now=timestamp,
         )
-        candidates = work.connector.fetch_all(
-            f"SELECT staging_id, gallery_id FROM {_STAGING} "
-            "WHERE build_id = %s ORDER BY gallery_id LIMIT 2",
-            (seal.build_id,),
-        )
+        candidates = _owner_staging_slots(work.connector, seal.owner)
         if len(candidates) > 1:
             raise GalleryStagingConflictError(
                 "source build has multiple live staging slots"
@@ -1750,7 +1804,7 @@ class GalleryObservationStagingRepository:
         if not candidates or candidates[0][1] != seal.gallery_id:
             _require_retirement_replay(work.connector, seal)
             return GalleryStagingRetirement(
-                seal.build_id,
+                seal.owner,
                 seal.gallery_id,
                 None,
                 0,
@@ -1760,10 +1814,9 @@ class GalleryObservationStagingRepository:
         staging_id = require_uuid16(candidates[0][0], field="retirement staging_id")
         header_row = work.lock_row(
             LockRank.CHECKPOINT,
-            encode_lock_key("gallery-staging", 0, seal.build_id, staging_id),
-            f"SELECT build_id, gallery_id, observation_id, state, created_at, "
-            f"sealed_at, terminal_byte_count FROM {_STAGING} WHERE build_id = %s",
-            (seal.build_id,),
+            encode_lock_key("gallery-staging", 0, staging_id),
+            _HEADER_SELECT + "WHERE s.staging_id = %s",
+            (staging_id,),
         )
         header = _decode_header(header_row)
         durable = _validate_retirement_link(work.connector, header)
@@ -1818,7 +1871,7 @@ class GalleryObservationStagingRepository:
                 authority="gallery staging implicit retirement ACK",
             )
             header = _Header(
-                header.build_id,
+                header.owner,
                 header.gallery_id,
                 header.observation_id,
                 expected_retiring,
@@ -1831,42 +1884,311 @@ class GalleryObservationStagingRepository:
                 "terminal staging state disagrees with its retirement seal"
             )
 
-        _require_no_cross_owner_predecessor(work.connector, staging_id)
-        phase = _first_retirement_phase(work.connector, staging_id)
-        if phase != "ROOT" and claim is None:
-            raise GalleryStagingConflictError(
-                "retiring staging lost its claim before child phases completed"
-            )
-        retained_request_count: int | None = None
-        if phase == "REQUEST_IDENTITY":
-            retained_request_count = lock_gallery_staging_request_budget(work)
-        deleted = _delete_retirement_phase(
+        return _retire_control_page(
             work,
             staging_id=staging_id,
-            phase=phase,
+            owner=seal.owner,
+            gallery_id=seal.gallery_id,
+            has_claim=claim is not None,
         )
-        if phase == "REQUEST_IDENTITY":
-            if retained_request_count is None or deleted == 0:
-                raise GalleryStagingConflictError(
-                    "request retirement did not delete its selected identities"
-                )
-            try:
-                release_gallery_staging_request_budget(
-                    work,
-                    retained_request_count=retained_request_count,
-                    deleted_count=deleted,
-                )
-            except GalleryStagingBudgetCorruptionError as error:
-                raise GalleryStagingConflictError(str(error)) from error
-        complete = phase == "ROOT"
-        return GalleryStagingRetirement(
-            seal.build_id,
-            seal.gallery_id,
-            phase,
-            deleted,
-            complete,
-            False,
+
+    @staticmethod
+    def abandon_interrupted_staging(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        owner: GalleryStagingOwner,
+        now: int,
+    ) -> GalleryStagingRetirement | None:
+        """Discard only an interrupted incomplete slot, one bounded control page.
+
+        Completed observations retain their owner membership. An OPEN slot of
+        this generation is never discarded; a fresh outer generation is the
+        authority that fences the abandoned writer.
+        """
+        timestamp = require_int63(now, field="abandonment now")
+        generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
+        _lock_and_require_owner(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            generation=generation,
+            owner=owner,
+            now=timestamp,
         )
+        rows = _owner_staging_slots(work.connector, owner)
+        if len(rows) > 1:
+            raise GalleryStagingConflictError("owner has multiple staging slots")
+        if not rows:
+            return None
+        staging_id = require_uuid16(rows[0][0], field="abandoned staging_id")
+        header_row = work.lock_row(
+            LockRank.CHECKPOINT,
+            encode_lock_key("gallery-staging", 0, staging_id),
+            _HEADER_SELECT + "WHERE s.staging_id = %s",
+            (staging_id,),
+        )
+        header = _decode_header(header_row)
+        if header.owner != owner:
+            raise GalleryStagingConflictError("abandonment owner differs")
+        if header.state not in {"OPEN", "ABANDONED"}:
+            return None
+        claim_row = work.lock_row(
+            LockRank.CHECKPOINT,
+            encode_lock_key("gallery-staging", 1, staging_id),
+            f"SELECT ingest_generation, claim_generation, updated_at FROM {_CLAIM} "
+            "WHERE staging_id = %s",
+            (staging_id,),
+        )
+        claim = _decode_claim(claim_row) if claim_row else None
+        if header.state == "OPEN":
+            if claim is None or claim.ingest_generation == generation:
+                raise GalleryStagingNotReadyError(
+                    "OPEN staging is not an interrupted generation"
+                )
+            work.compare_and_swap(
+                f"UPDATE {_STAGING} SET state = %s WHERE staging_id = %s AND state = %s",
+                ("ABANDONED", staging_id, "OPEN"),
+                authority="staging abandonment",
+            )
+        return _retire_control_page(
+            work,
+            staging_id=staging_id,
+            owner=owner,
+            gallery_id=header.gallery_id,
+            has_claim=claim is not None,
+        )
+
+    @staticmethod
+    def abandon_collection_staging(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        collection: SourceCollectionHandle,
+        now: int,
+    ) -> GalleryStagingRetirement | None:
+        return GalleryObservationStagingRepository.abandon_interrupted_staging(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            owner=GalleryStagingOwner("COLLECTION", collection.collection_id),
+            now=now,
+        )
+
+
+def _retire_control_page(
+    work: VNextUnitOfWork,
+    *,
+    staging_id: bytes,
+    owner: GalleryStagingOwner,
+    gallery_id: int,
+    has_claim: bool,
+) -> GalleryStagingRetirement:
+    _require_no_cross_owner_predecessor(work.connector, staging_id)
+    phase = _first_retirement_phase(work.connector, staging_id)
+    if phase != "ROOT" and not has_claim:
+        raise GalleryStagingConflictError(
+            "retiring staging lost its claim before child phases completed"
+        )
+    retained_request_count: int | None = None
+    if phase == "REQUEST_IDENTITY":
+        retained_request_count = lock_gallery_staging_request_budget(work)
+    deleted = _delete_retirement_phase(
+        work,
+        staging_id=staging_id,
+        phase=phase,
+    )
+    if phase == "REQUEST_IDENTITY":
+        if retained_request_count is None or deleted == 0:
+            raise GalleryStagingConflictError(
+                "request retirement did not delete its selected identities"
+            )
+        try:
+            release_gallery_staging_request_budget(
+                work,
+                retained_request_count=retained_request_count,
+                deleted_count=deleted,
+            )
+        except GalleryStagingBudgetCorruptionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+    return GalleryStagingRetirement(
+        owner,
+        gallery_id,
+        phase,
+        deleted,
+        phase == "ROOT",
+        False,
+    )
+
+
+def _require_collection_handle(collection: SourceCollectionHandle) -> None:
+    from .vnext_source_collection_repository import SourceCollectionHandle
+
+    if type(collection) is not SourceCollectionHandle:
+        raise TypeError("collection must be an exact SourceCollectionHandle")
+    collection.__post_init__()
+
+
+def _require_owner(owner: GalleryStagingOwner) -> GalleryStagingOwner:
+    if type(owner) is not GalleryStagingOwner:
+        raise TypeError("staging owner must be an exact GalleryStagingOwner")
+    owner.__post_init__()
+    return owner
+
+
+def _owner_binding(owner: GalleryStagingOwner) -> tuple[str, str]:
+    _require_owner(owner)
+    if owner.kind == "SOURCE_BUILD":
+        return _BUILD_OWNER, "build_id"
+    return _COLLECTION_OWNER, "collection_id"
+
+
+def _owner_members(owner: GalleryStagingOwner) -> tuple[str, str]:
+    _require_owner(owner)
+    if owner.kind == "SOURCE_BUILD":
+        return "catalog_source_build_galleries", "build_id"
+    return "catalog_source_collection_observations", "collection_id"
+
+
+def _owner_staging_slots(
+    connector: Any,
+    owner: GalleryStagingOwner,
+) -> tuple[tuple[Any, ...], ...]:
+    table, column = _owner_binding(owner)
+    return tuple(
+        connector.fetch_all(
+            f"SELECT s.staging_id, s.gallery_id FROM {_STAGING} AS s "
+            f"JOIN {table} AS b ON b.staging_id = s.staging_id "
+            f"WHERE b.{column} = %s ORDER BY s.gallery_id LIMIT 2",
+            (owner.owner_id,),
+        )
+    )
+
+
+def _read_header(connector: Any, staging_id: bytes) -> _Header:
+    return _decode_header(
+        connector.fetch_one(
+            _HEADER_SELECT + "WHERE s.staging_id = %s",
+            (staging_id,),
+        )
+    )
+
+
+def _owner_manifest_policy(connector: Any, owner: GalleryStagingOwner) -> int:
+    if owner.kind == "SOURCE_BUILD":
+        build = load_source_build_family(connector, build_id=owner.owner_id)
+        if build is None or build.state not in {"OPEN", "SEALED"}:
+            raise GalleryStagingConflictError("staging source build is not durable")
+        return build.manifest_policy_id
+    row = connector.fetch_one(
+        "SELECT manifest_policy_id FROM catalog_source_collection_manifest_policies "
+        "WHERE collection_id = %s",
+        (owner.owner_id,),
+    )
+    if len(row) != 1:
+        raise GalleryStagingConflictError(
+            "staging collection manifest policy is absent"
+        )
+    return require_positive_int63(row[0], field="collection manifest_policy_id")
+
+
+def _owner_observation_link(
+    connector: Any,
+    owner: GalleryStagingOwner,
+    gallery_id: int,
+    *,
+    identity: bytes,
+) -> tuple[Any, ...]:
+    table, column = _owner_members(owner)
+    return tuple(
+        connector.fetch_one(
+            "SELECT g.observation_id, o.observation_identity_sha256, "
+            "stat.file_count, stat.byte_count "
+            f"FROM {table} AS g JOIN catalog_gallery_observations AS o "
+            "ON o.gallery_id = g.gallery_id AND o.observation_id = g.observation_id "
+            "JOIN catalog_gallery_observation_stat AS stat "
+            "ON stat.gallery_id = g.gallery_id AND stat.observation_id = g.observation_id "
+            f"WHERE g.{column} = %s AND g.gallery_id = %s "
+            "AND o.observation_identity_sha256 = %s",
+            (owner.owner_id, gallery_id, identity),
+        )
+    )
+
+
+def _bind_owner_observation(
+    connector: Any,
+    owner: GalleryStagingOwner,
+    gallery_id: int,
+    observation_id: int,
+) -> None:
+    if owner.kind == "COLLECTION":
+        policy = connector.fetch_one(
+            "SELECT collection.qualification_policy_sha256, observation.qualification_policy_sha256 "
+            "FROM catalog_source_collection_qualification_policies AS collection "
+            "JOIN catalog_gallery_observation_validation_policies AS observation "
+            "ON observation.gallery_id = %s AND observation.observation_id = %s "
+            "WHERE collection.collection_id = %s",
+            (gallery_id, observation_id, owner.owner_id),
+        )
+        if len(policy) != 2 or policy[0] != policy[1]:
+            raise GalleryStagingConflictError(
+                "collection observation qualification policy differs"
+            )
+    table, column = _owner_members(owner)
+    if owner.kind == "SOURCE_BUILD":
+        link = connector.fetch_one(
+            f"SELECT observation_id FROM {table} WHERE {column} = %s AND gallery_id = %s",
+            (owner.owner_id, gallery_id),
+        )
+        if link and link != (observation_id,):
+            raise GalleryStagingConflictError("source-build gallery link differs")
+    else:
+        link = connector.fetch_one(
+            f"SELECT observation_id FROM {table} WHERE {column} = %s "
+            "AND gallery_id = %s AND observation_id = %s",
+            (owner.owner_id, gallery_id, observation_id),
+        )
+    if not link:
+        connector.execute(
+            f"INSERT INTO {table} ({column}, gallery_id, observation_id) "
+            "VALUES (%s, %s, %s)",
+            (owner.owner_id, gallery_id, observation_id),
+        )
+
+
+def _lock_and_require_owner(
+    work: VNextUnitOfWork,
+    *,
+    gate_lease: GateLease,
+    ingest_turn: IngestTurn,
+    generation: int,
+    owner: GalleryStagingOwner,
+    now: int,
+    allow_sealed: bool = False,
+    collection: SourceCollectionHandle | None = None,
+) -> tuple[bytes, str]:
+    _require_owner(owner)
+    if owner.kind == "SOURCE_BUILD":
+        return _lock_and_require_working_build(
+            work,
+            generation=generation,
+            build_id=owner.owner_id,
+            allow_sealed=allow_sealed,
+        )
+    from .vnext_source_collection_repository import authorize_current_collection
+
+    durable = authorize_current_collection(
+        work,
+        collection_id=owner.owner_id,
+        generation=generation,
+    )
+    if collection is not None and collection != durable:
+        raise GalleryStagingNotReadyError(
+            "collection handle differs from its live claim"
+        )
+    return durable.scope_key, "OPEN"
 
 
 def _decode_claim(row: tuple[Any, ...]) -> _Claim:
@@ -1909,18 +2231,11 @@ def _validate_retirement_link(
         roots[GalleryObservationComponent.DIRECTORY][1],
     )
     expected_identity = gallery_observation_descriptor_digest(descriptor)
-    link = connector.fetch_one(
-        "SELECT g.observation_id, o.observation_identity_sha256, "
-        "stat.file_count, stat.byte_count "
-        "FROM catalog_source_build_galleries AS g "
-        "JOIN catalog_gallery_observations AS o "
-        "ON o.gallery_id = g.gallery_id "
-        "AND o.observation_id = g.observation_id "
-        "JOIN catalog_gallery_observation_stat AS stat "
-        "ON stat.gallery_id = g.gallery_id "
-        "AND stat.observation_id = g.observation_id "
-        "WHERE g.build_id = %s AND g.gallery_id = %s",
-        (header.build_id, header.gallery_id),
+    link = _owner_observation_link(
+        connector,
+        header.owner,
+        header.gallery_id,
+        identity=expected_identity,
     )
     if len(link) != 4:
         raise GalleryStagingConflictError(
@@ -1950,13 +2265,13 @@ def _validate_retirement_link(
         )
     _require_retirement_manifest(
         connector,
-        build_id=header.build_id,
+        owner=header.owner,
         gallery_id=header.gallery_id,
         observation_id=final_observation,
         observation_identity_sha256=identity,
     )
     return GalleryStagingSeal(
-        header.build_id,
+        header.owner,
         header.gallery_id,
         final_observation,
         identity,
@@ -1981,8 +2296,7 @@ def validate_terminal_staging_retirement_authority(
 
     staging = require_uuid16(staging_id, field="retirement staging_id")
     row = connector.fetch_one(
-        f"SELECT build_id, gallery_id, observation_id, state, created_at, "
-        f"sealed_at, terminal_byte_count FROM {_STAGING} WHERE staging_id = %s",
+        _HEADER_SELECT + "WHERE s.staging_id = %s",
         (staging,),
     )
     if not row:
@@ -1994,18 +2308,11 @@ def _require_retirement_replay(
     connector: Any,
     seal: GalleryStagingSeal,
 ) -> None:
-    link = connector.fetch_one(
-        "SELECT g.observation_id, o.observation_identity_sha256, "
-        "stat.file_count, stat.byte_count "
-        "FROM catalog_source_build_galleries AS g "
-        "JOIN catalog_gallery_observations AS o "
-        "ON o.gallery_id = g.gallery_id "
-        "AND o.observation_id = g.observation_id "
-        "JOIN catalog_gallery_observation_stat AS stat "
-        "ON stat.gallery_id = g.gallery_id "
-        "AND stat.observation_id = g.observation_id "
-        "WHERE g.build_id = %s AND g.gallery_id = %s",
-        (seal.build_id, seal.gallery_id),
+    link = _owner_observation_link(
+        connector,
+        seal.owner,
+        seal.gallery_id,
+        identity=seal.observation_identity_sha256,
     )
     if len(link) != 4:
         raise GalleryStagingRetiredError(
@@ -2026,7 +2333,7 @@ def _require_retirement_replay(
         )
     _require_retirement_manifest(
         connector,
-        build_id=seal.build_id,
+        owner=seal.owner,
         gallery_id=seal.gallery_id,
         observation_id=final_observation,
         observation_identity_sha256=identity,
@@ -2036,19 +2343,17 @@ def _require_retirement_replay(
 def _require_retirement_manifest(
     connector: Any,
     *,
-    build_id: bytes,
+    owner: GalleryStagingOwner,
     gallery_id: int,
     observation_id: int,
     observation_identity_sha256: bytes,
 ) -> None:
     try:
-        build = load_source_build_family(connector, build_id=build_id)
-        if build is None or build.state not in {"OPEN", "SEALED"}:
-            raise GalleryStagingConflictError("retirement source build is not durable")
+        manifest_policy_id = _owner_manifest_policy(connector, owner)
         policy = connector.fetch_one(
             "SELECT manifest_algorithm_version, file_order_version "
             "FROM catalog_manifest_policies WHERE manifest_policy_id = %s",
-            (build.manifest_policy_id,),
+            (manifest_policy_id,),
         )
         if len(policy) != 2:
             raise GalleryStagingConflictError("retirement manifest policy is unsealed")
@@ -2061,7 +2366,7 @@ def _require_retirement_manifest(
             connector,
             gallery_id=gallery_id,
             observation_id=observation_id,
-            manifest_policy_id=build.manifest_policy_id,
+            manifest_policy_id=manifest_policy_id,
         )
         if manifest is None or manifest.manifest_sha256 != expected:
             raise GalleryStagingConflictError(
@@ -2076,13 +2381,13 @@ def _require_same_retirement_seal(
     durable: GalleryStagingSeal,
 ) -> None:
     if (
-        supplied.build_id,
+        supplied.owner,
         supplied.gallery_id,
         supplied.observation_id,
         supplied.observation_identity_sha256,
         supplied.state,
     ) != (
-        durable.build_id,
+        durable.owner,
         durable.gallery_id,
         durable.observation_id,
         durable.observation_identity_sha256,
@@ -2093,24 +2398,20 @@ def _require_same_retirement_seal(
         )
 
 
-def _source_build_gallery_link_exists(
+def _owner_gallery_link_exists(
     connector: Any,
     *,
-    build_id: bytes,
+    owner: GalleryStagingOwner,
     gallery_id: int,
 ) -> bool:
+    table, column = _owner_members(owner)
     row = connector.fetch_one(
-        "SELECT 1 FROM catalog_source_build_galleries "
-        "WHERE build_id = %s AND gallery_id = %s",
-        (build_id, gallery_id),
+        f"SELECT 1 FROM {table} WHERE {column} = %s AND gallery_id = %s LIMIT 1",
+        (owner.owner_id, gallery_id),
     )
-    if not row:
-        return False
-    if row != (1,):
-        raise GalleryStagingConflictError(
-            "source-build gallery completion probe is malformed"
-        )
-    return True
+    if row and row != (1,):
+        raise GalleryStagingConflictError("gallery completion probe is malformed")
+    return bool(row)
 
 
 def _require_no_cross_owner_predecessor(
@@ -2534,18 +2835,21 @@ def _authorize_staging(
     generation = _authorize_outer(work, gate_lease, ingest_turn, now=now)
     if generation != handle.ingest_generation:
         raise GalleryStagingNotReadyError("handle belongs to another ingest generation")
-    _scope, build_state = _lock_and_require_working_build(
+    _scope, build_state = _lock_and_require_owner(
         work,
+        gate_lease=gate_lease,
+        ingest_turn=ingest_turn,
         generation=generation,
-        build_id=handle.build_id,
+        owner=handle.owner,
+        now=now,
         allow_sealed=allow_terminal_sealed_build,
     )
     try:
         header, claim = _lock_header_and_claim(work, handle.staging_id)
     except GalleryStagingNotReadyError as error:
-        if _source_build_gallery_link_exists(
+        if _owner_gallery_link_exists(
             work.connector,
-            build_id=handle.build_id,
+            owner=handle.owner,
             gallery_id=handle.gallery_id,
         ):
             raise GalleryStagingRetiredError(
@@ -2607,8 +2911,7 @@ def _lock_header_and_claim(
     header_row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("gallery-staging", 0, staging_id),
-        f"SELECT build_id, gallery_id, observation_id, state, created_at, sealed_at, "
-        f"terminal_byte_count FROM {_STAGING} WHERE staging_id = %s",
+        _HEADER_SELECT + "WHERE s.staging_id = %s",
         (staging_id,),
     )
     claim = _lock_claim(work, staging_id)
@@ -2869,13 +3172,15 @@ def _bounded_request_frame(
     handle: GalleryStagingHandle,
     body: Iterable[bytes],
 ) -> bytes:
+    # The immutable staging_id binding supplies the owner kind. The 16-byte
+    # owner identity occupies the same v2 frame slot for either owner family.
     frame = b"".join(
         (
             _REQUEST_PREFIX,
             _REQUEST_VERSION.to_bytes(4, "big"),
             subtype,
             handle.staging_id,
-            handle.build_id,
+            handle.owner.owner_id,
             handle.gallery_id.to_bytes(8, "big"),
             handle.observation_id.to_bytes(8, "big"),
             handle.ingest_generation.to_bytes(8, "big"),
@@ -5681,68 +5986,15 @@ def _validate_seal_replay(
         handle,
         checkpoints,
     )
-    link = connector.fetch_one(
-        "SELECT g.observation_id, o.observation_identity_sha256, "
-        "s.file_count, s.byte_count "
-        "FROM catalog_source_build_galleries g "
-        "JOIN catalog_gallery_observations o ON o.gallery_id = g.gallery_id "
-        "AND o.observation_id = g.observation_id "
-        "JOIN catalog_gallery_observation_stat s ON s.gallery_id = g.gallery_id "
-        "AND s.observation_id = g.observation_id "
-        "WHERE g.build_id = %s AND g.gallery_id = %s",
-        (handle.build_id, handle.gallery_id),
+    seal = _validate_retirement_link(connector, header)
+    stat = connector.fetch_one(
+        "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
+        "WHERE gallery_id = %s AND observation_id = %s",
+        (seal.gallery_id, seal.observation_id),
     )
-    if len(link) != 4:
-        raise GalleryStagingConflictError("terminal staging has no exact build link")
-    observation = require_positive_int63(link[0], field="sealed observation_id")
-    if link[2:] != (file_count, byte_count):
+    if stat != (file_count, byte_count):
         raise GalleryStagingConflictError("terminal observation stat differs")
-    if byte_count != header.terminal_byte_count:
-        raise GalleryStagingConflictError(
-            "terminal observation byte count differs from its staging authority"
-        )
-    if (header.state == "SEALED") != (observation == handle.observation_id):
-        raise GalleryStagingConflictError("terminal staging state/link disagree")
-    try:
-        build = load_source_build_family(connector, build_id=handle.build_id)
-        if build is None or build.state not in {"OPEN", "SEALED"}:
-            raise GalleryStagingConflictError(
-                "terminal staging source build is not replayable"
-            )
-        policy = connector.fetch_one(
-            "SELECT manifest_algorithm_version, file_order_version "
-            "FROM catalog_manifest_policies WHERE manifest_policy_id = %s",
-            (build.manifest_policy_id,),
-        )
-        if len(policy) != 2:
-            raise GalleryStagingConflictError(
-                "terminal staging manifest policy is unsealed"
-            )
-        expected_manifest = artifact_source_manifest_digest(
-            require_digest32(link[1], field="sealed observation identity"),
-            require_positive_int63(policy[0], field="manifest_algorithm_version"),
-            require_positive_int63(policy[1], field="file_order_version"),
-        )
-        manifest = load_gallery_manifest_family(
-            connector,
-            gallery_id=handle.gallery_id,
-            observation_id=observation,
-            manifest_policy_id=build.manifest_policy_id,
-        )
-        if manifest is None or manifest.manifest_sha256 != expected_manifest:
-            raise GalleryStagingConflictError(
-                "terminal staging has no exact sealed gallery manifest"
-            )
-    except ManifestFamilyCollisionError as error:
-        raise GalleryStagingConflictError(str(error)) from error
-    return GalleryStagingSeal(
-        handle.build_id,
-        handle.gallery_id,
-        observation,
-        require_digest32(link[1], field="sealed observation identity"),
-        header.state,
-        True,
-    )
+    return seal
 
 
 def _read_level_zero_checkpoint(
@@ -5926,21 +6178,27 @@ def _load_component_progress(
 
 
 def _decode_header(row: tuple[Any, ...]) -> _Header:
-    if len(row) != 7:
+    if len(row) != 8:
         raise GalleryStagingNotReadyError("staging header is missing")
-    _require_header_state(row[3], row[5], row[6])
-    return _Header(
-        require_uuid16(row[0], field="staging build_id"),
-        require_positive_int63(row[1], field="staging gallery_id"),
-        require_positive_int63(row[2], field="staging observation_id"),
-        row[3],
-        require_int63(row[4], field="staging created_at"),
-        None if row[5] is None else require_int63(row[5], field="staging sealed_at"),
-        (
-            None
-            if row[6] is None
-            else require_int63(row[6], field="staging terminal_byte_count")
+    if (row[0] is None) == (row[1] is None):
+        raise GalleryStagingConflictError("staging must have exactly one owner binding")
+    owner = GalleryStagingOwner(
+        "SOURCE_BUILD" if row[0] is not None else "COLLECTION",
+        require_uuid16(
+            row[0] if row[0] is not None else row[1], field="staging owner_id"
         ),
+    )
+    _require_header_state(row[4], row[6], row[7])
+    return _Header(
+        owner,
+        require_positive_int63(row[2], field="staging gallery_id"),
+        require_positive_int63(row[3], field="staging observation_id"),
+        row[4],
+        require_int63(row[5], field="staging created_at"),
+        None if row[6] is None else require_int63(row[6], field="staging sealed_at"),
+        None
+        if row[7] is None
+        else require_int63(row[7], field="staging terminal_byte_count"),
     )
 
 
@@ -5983,10 +6241,10 @@ def _require_handle_rows(
     allow_stale_generation: bool = False,
 ) -> None:
     if (
-        header.build_id,
+        header.owner,
         header.gallery_id,
         header.observation_id,
-    ) != (handle.build_id, handle.gallery_id, handle.observation_id):
+    ) != (handle.owner, handle.gallery_id, handle.observation_id):
         raise GalleryStagingConflictError("staging handle/header tuple differs")
     if claim.claim_generation != handle.claim_generation:
         raise GalleryStagingNotReadyError("staging claim generation is stale")
@@ -6104,7 +6362,7 @@ def _decode_terminal_page_request(
     offset = prefix_end + 5
     staging_id = frame[offset : offset + 16]
     offset += 16
-    build_id = frame[offset : offset + 16]
+    owner_id = frame[offset : offset + 16]
     offset += 16
     gallery_id = require_int63(
         int.from_bytes(frame[offset : offset + 8], "big"),
@@ -6126,9 +6384,9 @@ def _decode_terminal_page_request(
         field="terminal request claim_generation",
     )
     offset += 8
-    if (staging_id, build_id, gallery_id, observation_id) != (
+    if (staging_id, owner_id, gallery_id, observation_id) != (
         current.staging_id,
-        current.build_id,
+        current.owner.owner_id,
         current.gallery_id,
         current.observation_id,
     ):

@@ -22,6 +22,7 @@ from vnext_pipeline import (
     MemoryLibrary,
     MemorySource,
     claim_session,
+    collect_source,
     drain_maintenance,
     full_check,
     gallery,
@@ -44,6 +45,7 @@ from h2hdb import (
 )
 from h2hdb.vnext_ingest_fence_repository import IngestFenceUnavailableError
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateUnavailableError
+from h2hdb.vnext_source_collection_repository import SourceCollectionConflictError
 from h2hdb.vnext_source_marker_repository import SourceMarkerConflictError
 
 
@@ -167,7 +169,6 @@ def _turn(config: CoreConfig, source: MarkerSource, library: MemoryLibrary) -> b
     return receipts.source.replayed
 
 
-@pytest.mark.mariadb_smoke
 def test_marker_cache_survives_restart_and_reuses_prior_membership(
     db_config: CoreConfig,
 ) -> None:
@@ -279,6 +280,7 @@ def test_marker_change_during_preparation_does_not_seed_a_cache_entry(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         with facade.prepare_source(source, policy=policy) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.waiting_gallery_count == 1
             assert prepared.deferred_gallery_count == 0
             assert prepared.gallery_count == 0
@@ -332,7 +334,12 @@ def test_completion_marker_rejects_corrupt_authority(
                     cached = observation.cached
                     object.__setattr__(cached, field, getattr(cached, field) + 1)
                     before = snapshot_database(db_config)
-                    with pytest.raises(SourceMarkerConflictError, match="durable"):
+                    conflict = (
+                        SourceCollectionConflictError
+                        if field == "byte_count"
+                        else SourceMarkerConflictError
+                    )
+                    with pytest.raises(conflict, match="durable"):
                         facade.commit_source_step(session, local)
                     assert snapshot_database(db_config) == before
                     break

@@ -88,6 +88,7 @@ _FROZEN_ROOT_TABLE = "operational_cleanup_cycle_roots"
 
 
 class CleanupTargetKind(StrEnum):
+    SOURCE_COLLECTION = "SOURCE_COLLECTION"
     SOURCE_BUILD = "SOURCE_BUILD"
     ANALYSIS_RUN = "ANALYSIS_RUN"
     CATALOG_PUBLICATION = "CATALOG_PUBLICATION"
@@ -123,6 +124,7 @@ _MAINTENANCE_TARGET_PRIORITY = (
     CleanupTargetKind.OPERATIONAL_PREPARATION,
     CleanupTargetKind.GALLERY_OBSERVATION_STAGING,
     CleanupTargetKind.ANALYSIS_RUN,
+    CleanupTargetKind.SOURCE_COLLECTION,
     CleanupTargetKind.SOURCE_BUILD,
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
     CleanupTargetKind.GALLERY_OBSERVATION,
@@ -1997,6 +1999,7 @@ _FROZEN_ROOT_UUID_ATTRIBUTES = frozenset(
     {
         "analysis_id",
         "build_id",
+        "collection_id",
         "candidate_id",
         "preparation_id",
         "receipt_id",
@@ -3175,6 +3178,25 @@ def _static_mutator(kind: CleanupTargetKind, phase: str) -> _Mutator:
     return mutate
 
 
+def _source_collection_mutator(phase: str) -> _Mutator:
+    def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
+        plan = _STATIC_PLANS[CleanupTargetKind.SOURCE_COLLECTION]
+        if operation.cycle.target_kind is not plan.kind:
+            raise CleanupCorruptionError("source-collection cleanup kind drifted")
+        if phase != "SC_ROOT":
+            return _run_static_phase(operation, cursor, plan, phase)
+        return _run_static_phase(
+            operation,
+            cursor,
+            plan,
+            phase,
+            eligibility=_SOURCE_COLLECTION_AFTER_STATE,
+            policy_parameters=(operation.cycle.cleanup_id,),
+        )
+
+    return mutate
+
+
 def _source_build_mutator(phase: str) -> _Mutator:
     def mutate(operation: _CleanupOperation, cursor: bytes) -> _Mutation:
         cycle = operation.cycle
@@ -4072,6 +4094,30 @@ def _require_publication_commit_post_compound_transition(
             raise CleanupCorruptionError("PCOM uncovered anchor authority differs")
 
 
+_SOURCE_COLLECTION_REACHABILITY = """
+NOT EXISTS (SELECT 1 FROM operational_source_working_collections working
+    WHERE working.collection_id = r.collection_id)
+AND NOT EXISTS (SELECT 1 FROM operational_gallery_staging_collections staging
+    WHERE staging.collection_id = r.collection_id)
+"""
+_SOURCE_COLLECTION_ELIGIBILITY = (
+    """
+EXISTS (SELECT 1 FROM operational_source_collection_states state
+    WHERE state.collection_id = r.collection_id AND state.state IN ('CONSUMED', 'ABANDONED'))
+AND """
+    + _SOURCE_COLLECTION_REACHABILITY
+)
+_SOURCE_COLLECTION_AFTER_STATE = (
+    """
+NOT EXISTS (SELECT 1 FROM operational_source_collection_states state
+    WHERE state.collection_id = r.collection_id)
+AND EXISTS (SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s AND completed.phase = 'SC_STATE' AND completed.state = 'COMPLETE')
+AND """
+    + _SOURCE_COLLECTION_REACHABILITY
+)
+
+
 _SOURCE_BUILD_TERMINAL_ELIGIBILITY = """
 EXISTS (
     SELECT 1 FROM catalog_source_build_states terminal
@@ -4092,7 +4138,10 @@ AND NOT EXISTS (
     SELECT 1 FROM operational_operational_preparations x
     WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
-    SELECT 1 FROM operational_gallery_observation_stagings x
+    SELECT 1 FROM operational_gallery_staging_source_builds x
+    WHERE x.build_id = r.build_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_collection_consumptions x
     WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_build_generations older
@@ -5385,6 +5434,32 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     }
 
 
+def _source_collection_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_source_collections"
+    key = ("collection_id",)
+
+    def direct(table: str, pk: tuple[str, ...] = key) -> _StaticDeleteSpec:
+        return _owned_spec(table, pk, root, key)
+
+    return {
+        "SC_MEMBERS": (
+            direct("catalog_source_collection_consumptions"),
+            direct(
+                "catalog_source_collection_observations",
+                ("collection_id", "gallery_id", "observation_id"),
+            ),
+        ),
+        "SC_CLAIM": (direct("operational_source_collection_claims"),),
+        "SC_METADATA": (
+            direct("catalog_source_collection_created_ats"),
+            direct("catalog_source_collection_qualification_policies"),
+            direct("catalog_source_collection_manifest_policies"),
+        ),
+        "SC_STATE": (direct("operational_source_collection_states"),),
+        "SC_ROOT": (direct(root),),
+    }
+
+
 def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_source_build_descriptor"
     key = ("build_id",)
@@ -5437,12 +5512,26 @@ _GALLERY_OBSERVATION_STAGING_ELIGIBILITY = """
 (
     (r.state IN ('SEALED', 'RETIRING_SEALED') AND EXISTS (
         SELECT 1 FROM catalog_source_build_galleries m
-        WHERE m.build_id = r.build_id AND m.gallery_id = r.gallery_id
+        JOIN operational_gallery_staging_source_builds owner ON owner.build_id = m.build_id
+        WHERE owner.staging_id = r.staging_id AND m.gallery_id = r.gallery_id
           AND m.observation_id = r.observation_id))
     OR
     (r.state IN ('REUSED', 'RETIRING_REUSED') AND EXISTS (
         SELECT 1 FROM catalog_source_build_galleries m
-        WHERE m.build_id = r.build_id AND m.gallery_id = r.gallery_id
+        JOIN operational_gallery_staging_source_builds owner ON owner.build_id = m.build_id
+        WHERE owner.staging_id = r.staging_id AND m.gallery_id = r.gallery_id
+          AND m.observation_id <> r.observation_id))
+    OR
+    (r.state IN ('SEALED', 'RETIRING_SEALED') AND EXISTS (
+        SELECT 1 FROM catalog_source_collection_observations m
+        JOIN operational_gallery_staging_collections owner ON owner.collection_id = m.collection_id
+        WHERE owner.staging_id = r.staging_id AND m.gallery_id = r.gallery_id
+          AND m.observation_id = r.observation_id))
+    OR
+    (r.state IN ('REUSED', 'RETIRING_REUSED') AND EXISTS (
+        SELECT 1 FROM catalog_source_collection_observations m
+        JOIN operational_gallery_staging_collections owner ON owner.collection_id = m.collection_id
+        WHERE owner.staging_id = r.staging_id AND m.gallery_id = r.gallery_id
           AND m.observation_id <> r.observation_id))
 )
 AND NOT EXISTS (
@@ -5462,6 +5551,9 @@ NOT EXISTS (
     SELECT 1 FROM catalog_source_build_galleries m
     WHERE m.gallery_id = r.gallery_id AND m.observation_id = r.observation_id)
 AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_collection_observations m
+    WHERE m.gallery_id = r.gallery_id AND m.observation_id = r.observation_id)
+AND NOT EXISTS (
     SELECT 1 FROM operational_gallery_observation_stagings s
     WHERE s.gallery_id = r.gallery_id AND s.observation_id = r.observation_id
       AND NOT (
@@ -5477,8 +5569,14 @@ AND NOT EXISTS (
         OR
         (s.state = 'REUSED' AND EXISTS (
             SELECT 1 FROM catalog_source_build_galleries linked
-            WHERE linked.build_id = s.build_id
-              AND linked.gallery_id = s.gallery_id
+            JOIN operational_gallery_staging_source_builds binding ON binding.build_id = linked.build_id
+            WHERE binding.staging_id = s.staging_id AND linked.gallery_id = s.gallery_id
+              AND linked.observation_id <> s.observation_id))
+        OR
+        (s.state = 'REUSED' AND EXISTS (
+            SELECT 1 FROM catalog_source_collection_observations linked
+            JOIN operational_gallery_staging_collections binding ON binding.collection_id = linked.collection_id
+            WHERE binding.staging_id = s.staging_id AND linked.gallery_id = s.gallery_id
               AND linked.observation_id <> s.observation_id))))
 AND NOT EXISTS (
     SELECT 1
@@ -5525,6 +5623,14 @@ def _staging_request_spec(
             "WHERE exact_claim.staging_id = r.staging_id)"
         ),
     )
+
+
+_STAGING_ROOT_DELETE = (
+    "DELETE FROM operational_gallery_staging_source_builds WHERE staging_id = %s",
+    "DELETE FROM operational_gallery_staging_collections WHERE staging_id = %s",
+    "DELETE FROM operational_gallery_observation_stagings WHERE staging_id = %s",
+)
+_STAGING_ROOT_ALLOWED = (frozenset((0, 1)), frozenset((0, 1)), frozenset((1,)))
 
 
 def _gallery_observation_staging_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
@@ -5609,6 +5715,8 @@ def _gallery_observation_staging_phases() -> dict[str, tuple[_StaticDeleteSpec, 
                 ("staging_id",),
                 "operational_gallery_observation_stagings",
                 ("staging_id",),
+                delete_sql=_STAGING_ROOT_DELETE,
+                delete_allowed_affected=_STAGING_ROOT_ALLOWED,
             ),
         ),
     }
@@ -5749,6 +5857,8 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 "JOIN catalog_gallery_observation_allocations AS r "
                 "ON r.gallery_id = c.gallery_id "
                 "AND r.observation_id = c.observation_id",
+                delete_sql=_STAGING_ROOT_DELETE,
+                delete_allowed_affected=_STAGING_ROOT_ALLOWED,
             ),
         ),
         "GO_FACTS": tuple(
@@ -6230,6 +6340,10 @@ AND NOT EXISTS (
     WHERE scope_root.source_root_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_scopes scope_root
+    JOIN catalog_source_collections collection ON collection.scope_key = scope_root.scope_key
+    WHERE scope_root.source_root_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_scopes scope_root
     JOIN catalog_gallery_identities gallery
       ON gallery.scope_key = scope_root.scope_key
     WHERE scope_root.source_root_sha256 = r.value_sha256)
@@ -6541,6 +6655,15 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 
 
 _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
+    CleanupTargetKind.SOURCE_COLLECTION: _StaticTargetPlan(
+        CleanupTargetKind.SOURCE_COLLECTION,
+        "catalog_source_collections",
+        ("collection_id",),
+        "collection_id",
+        16,
+        _SOURCE_COLLECTION_ELIGIBILITY,
+        _source_collection_phases(),
+    ),
     CleanupTargetKind.SOURCE_BUILD: _StaticTargetPlan(
         CleanupTargetKind.SOURCE_BUILD,
         "catalog_source_build_descriptor",
@@ -6986,6 +7109,13 @@ def _static_strategy(kind: CleanupTargetKind) -> _Strategy:
 
 
 _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
+    CleanupTargetKind.SOURCE_COLLECTION: _Strategy(
+        tuple(_STATIC_PLANS[CleanupTargetKind.SOURCE_COLLECTION].phases),
+        tuple(
+            _source_collection_mutator(phase)
+            for phase in _STATIC_PLANS[CleanupTargetKind.SOURCE_COLLECTION].phases
+        ),
+    ),
     CleanupTargetKind.SOURCE_BUILD: _Strategy(
         tuple(_STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases),
         tuple(

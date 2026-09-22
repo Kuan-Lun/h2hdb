@@ -3148,8 +3148,11 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 )
         with SourceDiscoveryPlan.from_locators(()) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=foreign_handoff.build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=foreign_handoff.build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             with connector.transaction():
@@ -3560,8 +3563,11 @@ def _finish_discovery(
     all_resolved: list[Any] = []
     while True:
         batch = SourceBuildRepository.prepare_discovery_batch(
-            connector,
-            build_id=_working_build_id(connector),
+            SourceBuildRepository.issue_discovery_batch(
+                connector,
+                build_id=_working_build_id(connector),
+                plan=plan,
+            ),
             plan=plan,
         )
         resolved = _resolve_batch(
@@ -3596,8 +3602,11 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
         build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(()) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             assert batch.terminal and not batch.sealed_replay
@@ -3853,8 +3862,11 @@ def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
         locators = tuple((f"gallery-{index:04d}",) for index in reversed(range(257)))
         with SourceDiscoveryPlan.from_locators(locators) as plan:
             first = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             assert len(first.locators) == 256
@@ -3983,8 +3995,11 @@ def test_discovery_new_generation_assembly_and_response_loss(
 
         with SourceDiscoveryPlan.from_locators(locators) as plan:
             first = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             resolved = _resolve_batch(
@@ -4020,8 +4035,11 @@ def test_discovery_new_generation_assembly_and_response_loss(
             # deterministic scan attempt and resumes the exact receipt chain.
             with SourceDiscoveryPlan.from_locators(locators) as switched:
                 resumed = SourceBuildRepository.prepare_discovery_batch(
-                    connector,
-                    build_id=build_id,
+                    SourceBuildRepository.issue_discovery_batch(
+                        connector,
+                        build_id=build_id,
+                        plan=switched,
+                    ),
                     plan=switched,
                 )
                 assert resumed.terminal
@@ -4062,8 +4080,11 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     )
             assert handoff2.generation == 2
             terminal = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             assert terminal.terminal
@@ -4454,8 +4475,11 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
         build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(locators) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
             resolved = _resolve_batch(
@@ -4510,8 +4534,11 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             commit_data()
 
             terminal = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=build_id,
+                SourceBuildRepository.issue_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                ),
                 plan=plan,
             )
 

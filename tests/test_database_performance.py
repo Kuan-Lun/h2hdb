@@ -726,6 +726,57 @@ def test_phase_totals_bound_dimensions_and_preserve_repeated_work(
         assert overflow["calls"] == (keys - 64) * 3
 
 
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_placeholder_arity_does_not_hide_cumulative_sql_from_info(
+    level: int,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    performance = _performance(caplog, level=level, clock=clock)
+    fetch = SQLiteConnector.fetch_one
+
+    def delayed(
+        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+    ) -> tuple[Any, ...]:
+        result = fetch(self, query, data)
+        clock.now += 0.5
+        return result
+
+    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    with performance.operation("analysis"):
+        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+            with database_phase("content_decisions"):
+                for _cycle in range(3):
+                    for count in range(1, 130):
+                        placeholders = ", ".join(["%s"] * count)
+                        assert connector.fetch_one(
+                            f"SELECT %s IN ({placeholders})",
+                            ("private-value",) * (count + 1),
+                        ) == (1,)
+    terminal = _records(caplog)[-1]
+    expected = {
+        "fingerprint": sha256(b"SELECT %s IN (%s)").hexdigest()[:16],
+        "calls": 387,
+        "seconds": 193.5,
+        "returned_rows": 387,
+        "max_seconds": 0.5,
+    }
+    assert terminal["query_fingerprint_algorithm"] == "sha256-in-placeholder-list-v1"
+    assert terminal["query_top"] == [expected]
+    assert terminal["phase_top"][0]["query_top"] == [expected]
+    assert terminal["sql_calls"] == terminal["read_rows"] == 387
+    assert terminal["sql_seconds"] == 193.5
+    assert terminal["query_overflow"] == {
+        "calls": 0,
+        "seconds": 0.0,
+        "returned_rows": 0,
+    }
+    assert "private-value" not in caplog.text
+    assert "SELECT" not in caplog.text
+
+
 def test_finish_failure_releases_pending_scope_and_heartbeat(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:

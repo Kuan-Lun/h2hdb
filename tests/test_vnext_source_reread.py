@@ -18,6 +18,7 @@ from vnext_pipeline import (
     LEASE_MICROSECONDS,
     MemoryLibrary,
     claim_session,
+    collect_source,
     full_check,
     gallery,
     ingest_policy,
@@ -217,6 +218,7 @@ def test_accumulated_refresh_hints_observe_only_failed_galleries_across_retries(
                 policy=policy,
                 reobserve_gallery_locators=targets,
             ) as prepared:
+                collect_source(facade, session, policy, prepared)
                 assert prepared.gallery_count == len(values)
             facade.complete_ingest(session)
         assert Counter(source.deep_reads) == Counter(targets)
@@ -243,6 +245,7 @@ def test_targeted_reread_cost_across_source_lookup_page_boundary(
             with facade.prepare_source(
                 source, policy=policy, reobserve_gallery_locators=targets
             ) as prepared:
+                collect_source(facade, session, policy, prepared)
                 assert prepared.gallery_count == gallery_count
             facade.complete_ingest(session)
         assert Counter(source.deep_reads) == Counter(targets)
@@ -257,6 +260,7 @@ def test_targeted_reread_cost_across_source_lookup_page_boundary(
         with facade.prepare_source(
             source, policy=policy, reuse_sealed_observations=False
         ) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.gallery_count == gallery_count
         facade.complete_ingest(session)
     assert Counter(source.deep_reads) == Counter(value.locator for value in values)
@@ -291,6 +295,7 @@ def test_refresh_hint_capacity_is_bounded_without_inventing_source_membership(
             with facade.prepare_source(
                 source, policy=policy, reobserve_gallery_locators=locators
             ) as prepared:
+                collect_source(facade, session, policy, prepared)
                 assert prepared.gallery_count == 1
             assert source.deep_reads == [original.locator]
         facade.complete_ingest(session)
@@ -322,6 +327,7 @@ def test_unpublished_reuse_requires_exact_marker_and_qualification_policy(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, requested)
         with facade.prepare_source(source, policy=policy) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.gallery_count == len(values)
         facade.complete_ingest(session)
     assert Counter(source.deep_reads) == Counter(expected)
@@ -343,6 +349,7 @@ def test_full_refresh_is_an_explicit_fallback_and_detects_cost_regression(
         with facade.prepare_source(
             source, policy=policy, reuse_sealed_observations=False
         ) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.gallery_count == len(values)
         facade.complete_ingest(session)
     assert Counter(source.deep_reads) == Counter(value.locator for value in values)

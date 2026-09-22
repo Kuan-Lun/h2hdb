@@ -64,6 +64,7 @@ from h2hdb import (
     VNextIngestSourceReceipt,
     VNextLibraryActivationCursor,
     VNextLibraryActivationItem,
+    VNextPreparedSource,
     VNextResolvedIngestPolicy,
     VNextSourceCompletionMarker,
 )
@@ -784,6 +785,27 @@ def run_source(
                     raise RuntimeError("terminal source step lacks a sealed receipt")
                 return receipt
     raise RuntimeError("source synchronization exceeded its step budget")
+
+
+def collect_source(
+    facade: VNextIngestFacade,
+    session: VNextIngestSession,
+    policy: VNextResolvedIngestPolicy,
+    prepared: VNextPreparedSource,
+    *,
+    step_budget: int = 100_000,
+) -> None:
+    """Persist each selected observation, stopping before full-cut assembly."""
+
+    for _ in range(step_budget):
+        if prepared.observation_complete:
+            return
+        issued = facade.issue_source_step(session, policy, prepared)
+        local = facade.prepare_source_step(prepared, issued)
+        result = facade.commit_source_step(session, local)
+        assert result.phase is VNextIngestPhase.SOURCE
+        assert not result.terminal
+    raise RuntimeError("source collection exceeded its step budget")
 
 
 def run_analysis(

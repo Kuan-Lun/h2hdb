@@ -787,7 +787,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     ):
         raise ValueError("operational machine contracts are missing")
     obligation_ids = [str(value.get("id")) for value in raw_obligations]
-    if len(obligation_ids) != 19 or len(obligation_ids) != len(set(obligation_ids)):
+    if len(obligation_ids) != 21 or len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("operational semantic-obligation IDs are incomplete")
     obligation_lifecycles = {
         str(value.get("id")): str(value.get("lifecycle")) for value in raw_obligations

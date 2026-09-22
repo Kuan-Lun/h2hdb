@@ -24,6 +24,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from .sql_performance import (
+    QUERY_FINGERPRINT_ALGORITHM,
     SQLCounters,
     SQLMeasurement,
     SQLQueryStatistics,
@@ -254,6 +255,7 @@ class _Operation:
             "sql_calls_unit": "completed_connector_method_calls",
             "read_rows_unit": "returned_rows_not_examined_rows",
             "query_top_scope": "first_64_fingerprints_plus_other",
+            "query_fingerprint_algorithm": QUERY_FINGERPRINT_ALGORITHM,
             "query_slowest_scope": "five_slowest_completed_calls",
         }
 

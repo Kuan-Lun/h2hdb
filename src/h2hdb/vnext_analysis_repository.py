@@ -23,6 +23,8 @@ __all__ = [
     "AnalysisCorruptionError",
     "AnalysisGalleryPreparation",
     "AnalysisGidPreparation",
+    "AnalysisChangedHashPage",
+    "AnalysisChangedHashPlan",
     "AnalysisFileDecisionValidationPlan",
     "AnalysisFileDecisionValidationPage",
     "AnalysisNotReadyError",
@@ -91,6 +93,11 @@ from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
     load_and_validate_single_page_canonical_values,
+)
+from .vnext_changed_hash_plan import (
+    AnalysisChangedHashPage,
+    AnalysisChangedHashPlan,
+    build_changed_hash_plan,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -1553,8 +1560,13 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
+        preparation: AnalysisChangedHashPage,
         now: int,
     ) -> AnalysisBatchResult:
+        """Materialize one authenticated changed-source page, without a source scan."""
+        if not isinstance(preparation, AnalysisChangedHashPage):
+            raise TypeError("changed hashes require a repository-issued page")
+        preparation.verify()
         authority, checkpoint, replay = _prepare_batch(
             work,
             gate_lease=gate_lease,
@@ -1565,44 +1577,47 @@ class AnalysisRepository:
             max_rows=max_rows,
             now=now,
         )
+        _validate_authority_receipt(work, authority, preparation.authority)
+        binding, _baseline_build = _changed_hash_input_binding(
+            work, authority, preparation.authority
+        )
+        if binding != preparation.input_binding:
+            raise AnalysisNotReadyError("changed-hash immutable source binding changed")
         if replay is not None:
-            _validate_batch_replay(work, authority, replay)
+            _require_changed_hash_replay(work, authority, replay, preparation)
             return replay
         assert checkpoint is not None
-        _require_stage_complete(
-            work, authority.analysis_id, _AnalysisStage.CHANGED_GALLERY
+        _require_changed_hash_checkpoint(
+            preparation,
+            batch_key=batch_key,
+            generation=checkpoint.generation,
+            cursor=checkpoint.cursor,
+            processed_count=checkpoint.processed_count,
+            page_limit=checkpoint.page_limit,
         )
         last, _live_count = _decode_cursor(
-            _CURSOR_DIGEST,
-            checkpoint.cursor,
-            live=False,
+            _CURSOR_DIGEST, checkpoint.cursor, live=False
         )
-        rows = _changed_file_hash_rows(
-            work,
-            authority,
-            after=last,
-            limit=checkpoint.page_limit + 1,
-        )
-        selected = rows[: checkpoint.page_limit]
-        for row in selected:
-            digest = require_digest32(row[0], field="changed file_sha256")
+        selected = preparation.keys
+        for digest in selected:
             work.connector.execute(
                 "INSERT INTO catalog_analysis_changed_file_hashes "
                 "(analysis_id, file_sha256) VALUES (%s, %s)",
                 (authority.analysis_id, digest),
             )
-        next_key = (
-            last
-            if not selected
-            else require_digest32(selected[-1][0], field="changed file cursor")
-        )
+        if not selected and checkpoint.processed_count != preparation.source_count:
+            raise AnalysisCorruptionError(
+                "changed-hash count differs from its source plan"
+            )
         return _commit_batch(
             work,
             authority=authority,
             stage=_AnalysisStage.CHANGED_FILE_HASH,
             batch_key=batch_key,
             checkpoint=checkpoint,
-            cursor=_encode_cursor(_CURSOR_DIGEST, next_key),
+            cursor=_encode_cursor(
+                _CURSOR_DIGEST, last if not selected else selected[-1]
+            ),
             row_count=len(selected),
             terminal=not selected,
             now=now,
@@ -1867,6 +1882,7 @@ class AnalysisRepository:
         preparations: Sequence[_GalleryPreparation | None],
         now: int,
         file_decision_validation: AnalysisFileDecisionValidationPage | None = None,
+        changed_hashes: AnalysisChangedHashPage | None = None,
     ) -> AnalysisBatchResult:
         """Commit exactly one previously issued stage page or replay it."""
 
@@ -1890,9 +1906,15 @@ class AnalysisRepository:
             )
 
         if (
-            issue.replayed_result is not None
-            and issue.stage != _AnalysisStage.VALIDATE_FILE_HASH
+            changed_hashes is not None
+            and issue.stage != _AnalysisStage.CHANGED_FILE_HASH
         ):
+            raise AnalysisNotReadyError("changed-hash page supplied to another stage")
+
+        if issue.replayed_result is not None and issue.stage not in {
+            _AnalysisStage.VALIDATE_FILE_HASH,
+            _AnalysisStage.CHANGED_FILE_HASH,
+        }:
             authority = _authorize_analysis(
                 work,
                 gate_lease=gate_lease,
@@ -1920,8 +1942,12 @@ class AnalysisRepository:
                     work, **common
                 )
             case _AnalysisStage.CHANGED_FILE_HASH:
+                if changed_hashes is None:
+                    raise AnalysisNotReadyError(
+                        "changed hashes require their prepared page"
+                    )
                 result = AnalysisRepository.process_changed_file_hash_batch(
-                    work, **common
+                    work, preparation=changed_hashes, **common
                 )
             case _AnalysisStage.FILE_HASH_DECISION:
                 result = AnalysisRepository.process_file_hash_decision_batch(
@@ -2004,6 +2030,92 @@ class AnalysisRepository:
                 "analysis stage issue is stale against its durable checkpoint"
             )
         return result
+
+    @staticmethod
+    def prepare_changed_hash_plan(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        authority: AnalysisPreparationAuthority,
+        progress: Callable[[int], None] | None = None,
+    ) -> AnalysisChangedHashPlan:
+        """Read changed current/baseline occurrences once in short transactions.
+
+        Sealed source facts and the completed changed-gallery checkpoint are
+        immutable under legal writers. Fresh scalar authority is checked before
+        and after preparation and again at commit; unmanaged source corruption
+        remains independently covered by full READY audit.
+        """
+        if not isinstance(authority, AnalysisPreparationAuthority):
+            raise TypeError("authority must be AnalysisPreparationAuthority")
+        authority.__post_init__()
+        with connector.read_transaction():
+            work = VNextUnitOfWork(connector, backend=backend)
+            run = _load_preparation_authority(work, authority)
+            binding, baseline_build = _changed_hash_input_binding(work, run, authority)
+        galleries_read = 0
+
+        def source_progress(count: int) -> None:
+            nonlocal galleries_read
+            galleries_read = count
+            if progress is not None:
+                progress(galleries_read)
+
+        def sort_progress() -> None:
+            if progress is not None:
+                progress(galleries_read)
+
+        plan = build_changed_hash_plan(
+            authority,
+            binding,
+            _iter_changed_source_hashes(
+                connector,
+                run.analysis_id,
+                run.build_id,
+                baseline_build,
+                source_progress,
+            ),
+            progress=sort_progress,
+        )
+        try:
+            with connector.read_transaction():
+                work = VNextUnitOfWork(connector, backend=backend)
+                current = _load_preparation_authority(work, authority)
+                if _changed_hash_input_binding(work, current, authority) != (
+                    binding,
+                    baseline_build,
+                ):
+                    raise AnalysisNotReadyError(
+                        "changed-hash input changed during preparation"
+                    )
+            return plan
+        except BaseException:
+            plan.close()
+            raise
+
+    @staticmethod
+    def prepare_changed_hash_page(
+        *,
+        issue: AnalysisStageIssue,
+        plan: AnalysisChangedHashPlan,
+    ) -> AnalysisChangedHashPage:
+        if not isinstance(issue, AnalysisStageIssue):
+            raise TypeError("issue must be AnalysisStageIssue")
+        issue.__post_init__()
+        if issue.stage != _AnalysisStage.CHANGED_FILE_HASH:
+            raise AnalysisNotReadyError("changed-hash preparation has another stage")
+        if not isinstance(plan, AnalysisChangedHashPlan):
+            raise TypeError("plan must be AnalysisChangedHashPlan")
+        plan._require_open()
+        if issue.preparation_authority != plan.authority:
+            raise AnalysisNotReadyError("changed-hash issue has another authority")
+        assert issue.checkpoint_cursor is not None
+        after, _count = _decode_cursor(
+            _CURSOR_DIGEST, issue.checkpoint_cursor, live=False
+        )
+        return plan._prepare_page(
+            issue, plan.source_page(after=after, limit=issue.page_limit)
+        )
 
     @staticmethod
     def prepare_file_decision_validation_plan(
@@ -6235,7 +6347,9 @@ def _replay_page_rows(
                 limit=limit,
             )
         case _AnalysisStage.CHANGED_FILE_HASH:
-            return _changed_file_hash_rows(work, authority, after=after, limit=limit)
+            raise AnalysisCorruptionError(
+                "changed-hash replay requires its prepared page"
+            )
         case _AnalysisStage.FILE_HASH_DECISION:
             return _decision_work_rows(work, authority, after=after, limit=limit)
         case _AnalysisStage.VALIDATE_FILE_HASH:
@@ -8795,53 +8909,213 @@ def _changed_gallery_rows(
     )
 
 
-def _changed_file_hash_rows(
+def _changed_hash_input_binding(
+    work: VNextUnitOfWork,
+    run: _RunAuthority,
+    receipt: AnalysisPreparationAuthority,
+) -> tuple[bytes, bytes | None]:
+    _require_preparation_source_manifest(work, run, receipt)
+    checkpoint = work.connector.fetch_one(
+        f"SELECT generation, `cursor`, processed_count, state, updated_at FROM {_CHECKPOINT_TABLE} "
+        "WHERE analysis_id = %s AND stage = %s",
+        (run.analysis_id, _AnalysisStage.CHANGED_GALLERY),
+    )
+    if len(checkpoint) != 5 or checkpoint[3] != _CHECKPOINT_COMPLETE:
+        raise AnalysisNotReadyError("changed-gallery input is not complete")
+    cursor = require_bounded_bytes(
+        checkpoint[1], field="changed-gallery input cursor", maximum=2048
+    )
+    _decode_cursor(_CURSOR_GALLERY, cursor, live=False)
+    digest = sha256(b"h2hdb-changed-hash-input-v1\0" + receipt.input_manifest_sha256)
+    digest.update(len(cursor).to_bytes(8, "big") + cursor)
+    for value in (checkpoint[0], checkpoint[2], checkpoint[4]):
+        digest.update(
+            require_int63(value, field="changed-gallery input coordinate").to_bytes(
+                8, "big"
+            )
+        )
+    baseline = run.baseline_analysis_id
+    digest.update(b"\0" if baseline is None else b"\1" + baseline)
+    baseline_build: bytes | None = None
+    if baseline is not None:
+        baseline_build = _baseline_build_id(work, baseline)
+        _require_source_build_sealed(work.connector, baseline_build)
+        try:
+            manifest = load_build_manifest_family(
+                work.connector, build_id=baseline_build
+            )
+        except ManifestFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if manifest is None:
+            raise AnalysisCorruptionError("changed-hash baseline manifest is absent")
+        digest.update(baseline_build + manifest.manifest_sha256)
+        for count in (manifest.gallery_count, manifest.file_count, manifest.byte_count):
+            digest.update(count.to_bytes(8, "big"))
+    return digest.digest(), baseline_build
+
+
+def _iter_changed_source_hashes(
+    connector: SQLConnector,
+    analysis_id: bytes,
+    build_id: bytes,
+    baseline_build_id: bytes | None,
+    progress: Callable[[int], None] | None = None,
+) -> Iterator[bytes]:
+    """Enumerate only the changed galleries' selected observations, never history."""
+    after_gallery = 0
+    galleries_read = 0
+    while True:
+        with connector.read_transaction():
+            rows = connector.fetch_all(
+                "SELECT catalog_analysis_changed_galleries.gallery_id, current_source.observation_id, current_q.accepted, "
+                "baseline_source.observation_id, baseline_q.accepted "
+                "FROM "
+                + connector.primary_key_table_reference(
+                    "catalog_analysis_changed_galleries"
+                )
+                + " "
+                "LEFT JOIN catalog_source_build_galleries AS current_source "
+                "ON current_source.build_id = %s AND current_source.gallery_id = catalog_analysis_changed_galleries.gallery_id "
+                "LEFT JOIN catalog_gallery_observation_validation_dispositions AS current_q "
+                "ON current_q.gallery_id = catalog_analysis_changed_galleries.gallery_id AND current_q.observation_id = current_source.observation_id "
+                "LEFT JOIN catalog_source_build_galleries AS baseline_source "
+                "ON baseline_source.build_id = %s AND baseline_source.gallery_id = catalog_analysis_changed_galleries.gallery_id "
+                "LEFT JOIN catalog_gallery_observation_validation_dispositions AS baseline_q "
+                "ON baseline_q.gallery_id = catalog_analysis_changed_galleries.gallery_id AND baseline_q.observation_id = baseline_source.observation_id "
+                "WHERE catalog_analysis_changed_galleries.analysis_id = %s AND catalog_analysis_changed_galleries.gallery_id > %s "
+                "ORDER BY catalog_analysis_changed_galleries.gallery_id LIMIT %s",
+                (
+                    build_id,
+                    baseline_build_id,
+                    analysis_id,
+                    after_gallery,
+                    _MAX_BATCH_ROWS,
+                ),
+            )
+        if progress is not None:
+            progress(galleries_read)
+        if len(rows) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError("changed-source membership exceeds its cap")
+        for row in rows:
+            if len(row) != 5:
+                raise AnalysisCorruptionError(
+                    "changed-source membership has invalid shape"
+                )
+            gallery_id = require_positive_int63(row[0], field="changed-source gallery")
+            if gallery_id <= after_gallery:
+                raise AnalysisCorruptionError(
+                    "changed-source membership is not ordered"
+                )
+            after_gallery = gallery_id
+            observations = sorted(
+                {
+                    require_positive_int63(
+                        row[index], field="changed-source observation"
+                    )
+                    for index in (1, 3)
+                    if row[index] is not None and row[index + 1] == 1
+                }
+            )
+            for observation_id in observations:
+                after_hash: bytes | None = None
+                while True:
+                    predicate = "" if after_hash is None else "AND file_sha256 > %s "
+                    with connector.read_transaction():
+                        hashes = connector.fetch_all(
+                            "SELECT file_sha256 FROM catalog_gallery_observation_file_hash_occurrences "
+                            "WHERE gallery_id = %s AND observation_id = %s "
+                            + predicate
+                            + "ORDER BY file_sha256 LIMIT %s",
+                            (
+                                gallery_id,
+                                observation_id,
+                                *(() if after_hash is None else (after_hash,)),
+                                _MAX_BATCH_ROWS,
+                            ),
+                        )
+                    if progress is not None:
+                        progress(galleries_read)
+                    if len(hashes) > _MAX_BATCH_ROWS:
+                        raise AnalysisCorruptionError(
+                            "changed-source hashes exceed their cap"
+                        )
+                    for (raw_hash,) in hashes:
+                        key = require_digest32(raw_hash, field="changed-source hash")
+                        if after_hash is not None and key <= after_hash:
+                            raise AnalysisCorruptionError(
+                                "changed-source hashes are not ordered"
+                            )
+                        after_hash = key
+                        yield key
+                    if len(hashes) < _MAX_BATCH_ROWS:
+                        break
+            galleries_read += 1
+            if progress is not None:
+                progress(galleries_read)
+        if len(rows) < _MAX_BATCH_ROWS:
+            return
+
+
+def _require_changed_hash_checkpoint(
+    page: AnalysisChangedHashPage,
+    *,
+    batch_key: bytes,
+    generation: int,
+    cursor: bytes,
+    processed_count: int,
+    page_limit: int,
+) -> None:
+    if (
+        page.batch_key,
+        page.checkpoint_generation,
+        page.checkpoint_cursor,
+        page.checkpoint_processed_count,
+        page.page_limit,
+    ) != (batch_key, generation, cursor, processed_count, page_limit):
+        raise AnalysisNotReadyError("changed-hash page is stale against its checkpoint")
+
+
+def _require_changed_hash_replay(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    *,
-    after: bytes | None,
-    limit: int,
-) -> list[tuple[Any, ...]]:
-    base_build = (
-        None
-        if authority.baseline_analysis_id is None
-        else _baseline_build_id(work, authority.baseline_analysis_id)
-    )
-    subqueries = [
-        "SELECT occurrence.file_sha256 AS file_sha256 "
-        "FROM catalog_analysis_changed_galleries AS changed "
-        "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-        "ON member.build_id = %s AND member.gallery_id = changed.gallery_id "
-        "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-        "ON occurrence.gallery_id = member.gallery_id "
-        "AND occurrence.observation_id = member.observation_id "
-        "WHERE changed.analysis_id = %s"
-    ]
-    parameters: list[Any] = [authority.build_id, authority.analysis_id]
-    if base_build is not None:
-        subqueries.append(
-            "SELECT occurrence.file_sha256 AS file_sha256 "
-            "FROM catalog_analysis_changed_galleries AS changed "
-            "JOIN " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-            "ON member.build_id = %s AND member.gallery_id = changed.gallery_id "
-            "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-            "ON occurrence.gallery_id = member.gallery_id "
-            "AND occurrence.observation_id = member.observation_id "
-            "WHERE changed.analysis_id = %s"
+    replay: AnalysisBatchResult,
+    page: AnalysisChangedHashPage,
+) -> None:
+    try:
+        _require_changed_hash_checkpoint(
+            page,
+            batch_key=replay.batch_key,
+            generation=replay.start_generation,
+            cursor=replay.start_cursor,
+            processed_count=replay.start_processed_count,
+            page_limit=replay.page_limit,
         )
-        parameters.extend((base_build, authority.analysis_id))
-    where = "" if after is None else " WHERE affected.file_sha256 > %s"
-    if after is not None:
-        parameters.append(require_digest32(after, field="changed hash cursor"))
-    parameters.append(limit)
-    return work.connector.fetch_all(
-        "SELECT DISTINCT affected.file_sha256 FROM ("
-        + " UNION ".join(subqueries)
-        + ") AS affected"
-        + where
-        + " ORDER BY affected.file_sha256 LIMIT %s",
-        tuple(parameters),
+    except AnalysisNotReadyError as error:
+        raise AnalysisCorruptionError(
+            "changed-hash replay differs from its stored-limit evaluator"
+        ) from error
+    _require_replay_key_rows(
+        work,
+        authority.analysis_id,
+        [(key,) for key in page.keys],
+        table="catalog_analysis_changed_file_hashes",
+        key_column="file_sha256",
+        digest=True,
     )
+    last, _count = _decode_cursor(_CURSOR_DIGEST, replay.start_cursor, live=False)
+    terminal = not page.keys
+    if (
+        replay.row_count != len(page.keys)
+        or replay.next_cursor
+        != _encode_cursor(_CURSOR_DIGEST, last if terminal else page.keys[-1])
+        or replay.terminal != terminal
+        or replay.next_processed_count != replay.start_processed_count + len(page.keys)
+        or replay.next_state != (_CHECKPOINT_COMPLETE if terminal else _CHECKPOINT_OPEN)
+        or (terminal and replay.next_processed_count != page.source_count)
+    ):
+        raise AnalysisCorruptionError(
+            "changed-hash replay differs from its prepared page"
+        )
 
 
 def _impacted_gallery_rows(

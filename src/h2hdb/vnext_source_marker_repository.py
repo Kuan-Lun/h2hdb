@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from .domain import VNextSourceCompletionMarker
+from .domain import GalleryStagingOwner, VNextSourceCompletionMarker
 from .vnext_canonical_value_repository import (
     load_and_validate_single_page_canonical_values,
 )
@@ -211,7 +211,7 @@ class SourceMarkerRepository:
                 "cached observation differs from durable authority"
             )
         if work.connector.fetch_one(
-            "SELECT 1 FROM operational_gallery_observation_stagings WHERE build_id = %s LIMIT 1",
+            "SELECT 1 FROM operational_gallery_staging_source_builds WHERE build_id = %s LIMIT 1",
             (build_id,),
         ):
             raise SourceMarkerConflictError(
@@ -253,7 +253,7 @@ class SourceMarkerRepository:
                 (build_id, cached.gallery_id, cached.observation_id),
             )
         return GalleryStagingSeal(
-            build_id,
+            GalleryStagingOwner("SOURCE_BUILD", build_id),
             cached.gallery_id,
             cached.observation_id,
             cached.observation_identity_sha256,

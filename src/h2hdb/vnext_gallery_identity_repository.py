@@ -146,137 +146,154 @@ class GalleryIdentityRepository:
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
         scope = _lock_working_build(work, generation=generation, build_id=build)
 
-        _validate_plan(command, locator_plan)
-        connector = work.connector
-        claim = work.lock_row(
-            LockRank.CHECKPOINT,
-            encode_lock_key(
-                "source-locator-upload",
-                generation,
-                command.locator_sha256,
-            ),
-            "SELECT generation, value_sha256 "
-            "FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, command.locator_sha256),
-        )
-        if claim and claim != (generation, command.locator_sha256):
-            raise GalleryIdentityConflictError("locator upload claim differs")
-
-        _require_sealed_locator(connector, command, locator_plan)
-        stable_key = gallery_key(scope, command.locator_sha256)
-        existing = _load_gallery_identity(
-            connector,
-            scope=scope,
-            locator_sha256=command.locator_sha256,
-            stable_key=stable_key,
-        )
-        if existing is not None:
-            gallery_id = existing
-            _require_observation_allocator(connector, gallery_id)
-            _release_optional_claim(
-                connector,
-                generation=generation,
-                locator_sha256=command.locator_sha256,
-                claim=claim,
-            )
-            return GalleryIdentityHandoff(
-                build,
-                gallery_id,
-                stable_key,
-                scope,
-                command.locator_sha256,
-                True,
-            )
-
-        # Serialize all new gallery identities with the portable global
-        # allocator.  Re-read after the lock because another source scope may
-        # have installed the shared locator type row while we waited.
-        gallery_id = VNextAllocatorRepository.allocate_identity(
+        identity, replayed = handoff_locator_in_scope(
             work,
-            IdentityStream.GALLERY,
-            updated_at=timestamp,
-        )
-        existing = _load_gallery_identity(
-            connector,
+            generation=generation,
             scope=scope,
-            locator_sha256=command.locator_sha256,
-            stable_key=stable_key,
+            command=command,
+            locator_plan=locator_plan,
+            now=timestamp,
         )
-        if existing is not None:
-            _require_observation_allocator(connector, existing)
-            _release_optional_claim(
-                connector,
-                generation=generation,
-                locator_sha256=command.locator_sha256,
-                claim=claim,
-            )
-            return GalleryIdentityHandoff(
-                build,
-                existing,
-                stable_key,
-                scope,
-                command.locator_sha256,
-                True,
-            )
+        return GalleryIdentityHandoff(
+            build,
+            identity.gallery_id,
+            identity.gallery_key,
+            identity.scope_key,
+            identity.locator_sha256,
+            replayed,
+        )
 
-        locator_row = connector.fetch_one(
-            "SELECT source_gallery_name FROM catalog_source_locator_identity "
-            "WHERE locator_sha256 = %s",
-            (command.locator_sha256,),
-        )
-        if locator_row:
-            _require_exact(
-                "source locator leaf",
-                locator_row,
-                (command.source_gallery_name,),
-            )
-        else:
-            if not claim:
-                raise GalleryIdentityNotReadyError(
-                    "new source locator requires its current upload claim"
-                )
-            connector.execute(
-                "INSERT INTO catalog_source_locator_identity "
-                "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
-                (command.locator_sha256, command.source_gallery_name),
-            )
 
-        try:
-            created = ensure_gallery_identity(
-                connector,
-                identity=GalleryIdentity(
-                    gallery_id,
-                    stable_key,
-                    scope,
-                    command.locator_sha256,
-                ),
-            )
-        except CatalogIdentityCollisionError as error:
-            raise GalleryIdentityConflictError(str(error)) from error
-        if not created:
-            raise GalleryIdentityConflictError(
-                "gallery identity appeared after its allocator re-read"
-            )
-        connector.execute(
-            "INSERT INTO operational_gallery_observation_allocators "
-            "(gallery_id, next_observation_id, updated_at) VALUES (%s, 1, %s)",
-            (gallery_id, timestamp),
-        )
+def handoff_locator_in_scope(
+    work: VNextUnitOfWork,
+    *,
+    generation: int,
+    scope: bytes,
+    command: SourceLocatorCommand,
+    locator_plan: CanonicalValueUploadPlan,
+    now: int,
+) -> tuple[GalleryIdentity, bool]:
+    """Install one identity after the owner has authorized the exact scope."""
+    if type(command) is not SourceLocatorCommand:
+        raise TypeError("command must be an exact SourceLocatorCommand")
+    command.__post_init__()
+    if type(locator_plan) is not CanonicalValueUploadPlan:
+        raise TypeError("locator_plan must be an exact CanonicalValueUploadPlan")
+    timestamp = require_int63(now, field="now")
+    _validate_plan(command, locator_plan)
+    connector = work.connector
+    claim = work.lock_row(
+        LockRank.CHECKPOINT,
+        encode_lock_key(
+            "source-locator-upload",
+            generation,
+            command.locator_sha256,
+        ),
+        "SELECT generation, value_sha256 "
+        "FROM operational_canonical_value_uploads "
+        "WHERE generation = %s AND value_sha256 = %s",
+        (generation, command.locator_sha256),
+    )
+    if claim and claim != (generation, command.locator_sha256):
+        raise GalleryIdentityConflictError("locator upload claim differs")
+
+    _require_sealed_locator(connector, command, locator_plan)
+    stable_key = gallery_key(scope, command.locator_sha256)
+    existing = _load_gallery_identity(
+        connector,
+        scope=scope,
+        locator_sha256=command.locator_sha256,
+        stable_key=stable_key,
+    )
+    if existing is not None:
+        gallery_id = existing
+        _require_observation_allocator(connector, gallery_id)
         _release_optional_claim(
             connector,
             generation=generation,
             locator_sha256=command.locator_sha256,
             claim=claim,
         )
-        return GalleryIdentityHandoff(
-            build,
-            gallery_id,
-            stable_key,
-            scope,
-            command.locator_sha256,
-            False,
+        return GalleryIdentity(
+            gallery_id, stable_key, scope, command.locator_sha256
+        ), True
+
+    # Serialize all new gallery identities with the portable global
+    # allocator.  Re-read after the lock because another source scope may
+    # have installed the shared locator type row while we waited.
+    gallery_id = VNextAllocatorRepository.allocate_identity(
+        work,
+        IdentityStream.GALLERY,
+        updated_at=timestamp,
+    )
+    existing = _load_gallery_identity(
+        connector,
+        scope=scope,
+        locator_sha256=command.locator_sha256,
+        stable_key=stable_key,
+    )
+    if existing is not None:
+        _require_observation_allocator(connector, existing)
+        _release_optional_claim(
+            connector,
+            generation=generation,
+            locator_sha256=command.locator_sha256,
+            claim=claim,
         )
+        return GalleryIdentity(
+            existing, stable_key, scope, command.locator_sha256
+        ), True
+
+    locator_row = connector.fetch_one(
+        "SELECT source_gallery_name FROM catalog_source_locator_identity "
+        "WHERE locator_sha256 = %s",
+        (command.locator_sha256,),
+    )
+    if locator_row:
+        _require_exact(
+            "source locator leaf",
+            locator_row,
+            (command.source_gallery_name,),
+        )
+    else:
+        if not claim:
+            raise GalleryIdentityNotReadyError(
+                "new source locator requires its current upload claim"
+            )
+        connector.execute(
+            "INSERT INTO catalog_source_locator_identity "
+            "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
+            (command.locator_sha256, command.source_gallery_name),
+        )
+
+    try:
+        created = ensure_gallery_identity(
+            connector,
+            identity=GalleryIdentity(
+                gallery_id,
+                stable_key,
+                scope,
+                command.locator_sha256,
+            ),
+        )
+    except CatalogIdentityCollisionError as error:
+        raise GalleryIdentityConflictError(str(error)) from error
+    if not created:
+        raise GalleryIdentityConflictError(
+            "gallery identity appeared after its allocator re-read"
+        )
+    connector.execute(
+        "INSERT INTO operational_gallery_observation_allocators "
+        "(gallery_id, next_observation_id, updated_at) VALUES (%s, 1, %s)",
+        (gallery_id, timestamp),
+    )
+    _release_optional_claim(
+        connector,
+        generation=generation,
+        locator_sha256=command.locator_sha256,
+        claim=claim,
+    )
+    return GalleryIdentity(gallery_id, stable_key, scope, command.locator_sha256), False
 
 
 def _authorize(

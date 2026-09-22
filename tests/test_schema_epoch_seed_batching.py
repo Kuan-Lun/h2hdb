@@ -57,15 +57,16 @@ def test_empty_bootstrap_seed_sequence_executes_no_statement() -> None:
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_bootstrap_contract_uses_39_bounded_batches(
+def test_generated_bootstrap_contract_uses_40_bounded_batches(
     backend: Literal["sqlite", "mariadb"],
 ) -> None:
     seeds = GeneratedVNextSchemaProvider(backend).definition.bootstrap_seeds
 
     batches = _recorded_batches(seeds)
 
-    assert len(seeds) == 6_094
-    assert len(batches) == 39
+    # Schema 8 adds one target, five phases and 256 sweep roots for collections.
+    assert len(seeds) == 6_356
+    assert len(batches) == 40
     assert max(len(parameters) for _sql, parameters in batches) == (
         _SCHEMA_SEED_BATCH_ROWS
     )

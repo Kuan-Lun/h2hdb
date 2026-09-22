@@ -13,6 +13,7 @@ from vnext_pipeline import (
     MemoryLibrary,
     MemorySource,
     claim_session,
+    collect_source,
     gallery,
     ingest_policy,
     initialize_database,
@@ -120,10 +121,13 @@ def test_source_batch_uses_published_members_including_duplicate_losers(
         replacement_source = MemorySource(
             (first, duplicate), root=("replacement", "root")
         )
+        replacement_session = claim_session(facade)
         with facade.prepare_source(
             replacement_source, policy=published.policy, max_new_galleries=1
         ) as cut:
+            collect_source(facade, replacement_session, published.policy, cut)
             assert cut.deferred_gallery_count == 1
+        facade.complete_ingest(replacement_session)
 
         source.put(added)
         session = claim_session(facade)

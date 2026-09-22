@@ -123,6 +123,7 @@ __all__ = [
     "VNextPreparedAnalysisStep",
     "VNextPreparedPublicationStep",
     "VNextPreparedSource",
+    "VNextPreparedSourceResume",
     "VNextPreparedSourceStep",
     "VNextSourceManifestMismatchError",
     "VNextSourceCompletionMarker",
@@ -286,6 +287,7 @@ from .vnext_ingest_facade import (
     VNextPreparedAnalysisStep,
     VNextPreparedPublicationStep,
     VNextPreparedSource,
+    VNextPreparedSourceResume,
     VNextPreparedSourceStep,
     VNextSourceManifestMismatchError,
 )

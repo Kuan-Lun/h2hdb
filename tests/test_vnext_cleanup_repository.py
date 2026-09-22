@@ -2412,10 +2412,17 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
         connector.close()
 
 
-def test_all_twenty_three_strategies_match_the_closed_phase_registry(
+def test_all_strategies_match_the_closed_phase_registry(
     tmp_path: Path,
 ) -> None:
     expected = {
+        CleanupTargetKind.SOURCE_COLLECTION: (
+            "SC_MEMBERS",
+            "SC_CLAIM",
+            "SC_METADATA",
+            "SC_STATE",
+            "SC_ROOT",
+        ),
         CleanupTargetKind.SOURCE_BUILD: (
             "SB_CANONICAL_UPLOAD",
             "SB_GALLERY",
@@ -6176,9 +6183,14 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
-                    "(staging_id, build_id, gallery_id, observation_id, state, "
+                    "(staging_id, gallery_id, observation_id, state, "
                     "created_at, sealed_at, terminal_byte_count) "
-                    "VALUES (%s, %s, 21, 1, 'SEALED', 0, 1, 0)",
+                    "VALUES (%s, 21, 1, 'SEALED', 0, 1, 0)",
+                    (staging_id,),
+                ),
+                (
+                    "INSERT INTO operational_gallery_staging_source_builds "
+                    "(staging_id, build_id) VALUES (%s, %s)",
                     (staging_id, build_id),
                 ),
                 (
@@ -6252,9 +6264,14 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
-                    "(staging_id, build_id, gallery_id, observation_id, state, "
+                    "(staging_id, gallery_id, observation_id, state, "
                     "created_at, sealed_at, terminal_byte_count) "
-                    "VALUES (%s, %s, 24, 2, 'REUSED', 0, 1, 7)",
+                    "VALUES (%s, 24, 2, 'REUSED', 0, 1, 7)",
+                    (reused_staging,),
+                ),
+                (
+                    "INSERT INTO operational_gallery_staging_source_builds "
+                    "(staging_id, build_id) VALUES (%s, %s)",
                     (reused_staging, reused_build),
                 ),
                 (
@@ -6883,16 +6900,26 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
             [
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
-                    "(staging_id, build_id, gallery_id, observation_id, state, "
+                    "(staging_id, gallery_id, observation_id, state, "
                     "created_at, sealed_at, terminal_byte_count) "
-                    "VALUES (%s, %s, 22, 1, 'SEALED', 0, 1, 0)",
+                    "VALUES (%s, 22, 1, 'SEALED', 0, 1, 0)",
+                    (selected,),
+                ),
+                (
+                    "INSERT INTO operational_gallery_staging_source_builds "
+                    "(staging_id, build_id) VALUES (%s, %s)",
                     (selected, build),
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
-                    "(staging_id, build_id, gallery_id, observation_id, state, "
+                    "(staging_id, gallery_id, observation_id, state, "
                     "created_at, sealed_at, terminal_byte_count) "
-                    "VALUES (%s, %s, 23, 1, 'OPEN', 0, NULL, NULL)",
+                    "VALUES (%s, 23, 1, 'OPEN', 0, NULL, NULL)",
+                    (foreign,),
+                ),
+                (
+                    "INSERT INTO operational_gallery_staging_source_builds "
+                    "(staging_id, build_id) VALUES (%s, %s)",
                     (foreign, b"e" * 16),
                 ),
                 (
@@ -8989,9 +9016,14 @@ def test_staging_identity_delete_rolls_back_on_write_fault(
             [
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
-                    "(staging_id, build_id, gallery_id, observation_id, state, "
+                    "(staging_id, gallery_id, observation_id, state, "
                     "created_at, sealed_at, terminal_byte_count) "
-                    "VALUES (%s, %s, 46, 1, 'SEALED', 0, 1, 0)",
+                    "VALUES (%s, 46, 1, 'SEALED', 0, 1, 0)",
+                    (staging,),
+                ),
+                (
+                    "INSERT INTO operational_gallery_staging_source_builds "
+                    "(staging_id, build_id) VALUES (%s, %s)",
                     (staging, build),
                 ),
                 (

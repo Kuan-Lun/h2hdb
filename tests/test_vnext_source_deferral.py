@@ -16,6 +16,7 @@ from vnext_pipeline import (
     MemoryGallery,
     MemoryLibrary,
     claim_session,
+    collect_source,
     gallery,
     ingest_policy,
     initialize_database,
@@ -91,9 +92,7 @@ class UpdatingSource(MarkerSource):
         )
 
 
-@pytest.mark.parametrize(
-    "defer_at", [pytest.param("marker", marks=pytest.mark.mariadb_smoke), "directory"]
-)
+@pytest.mark.parametrize("defer_at", ["marker", "directory"])
 def test_updating_gallery_keeps_published_version_while_other_galleries_advance(
     db_config: CoreConfig, defer_at: Literal["marker", "directory"]
 ) -> None:
@@ -136,7 +135,6 @@ def test_updating_gallery_keeps_published_version_while_other_galleries_advance(
     )
 
 
-@pytest.mark.mariadb_smoke
 def test_source_batch_clock_is_independent_of_host_clock_skew(
     db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -171,6 +169,7 @@ def test_incomplete_new_gallery_does_not_consume_admission_budget(
         with facade.prepare_source(
             source, policy=policy, max_new_galleries=limit
         ) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.waiting_gallery_count == 1
             assert prepared.deferred_gallery_count == (0 if limit is None else 1)
         facade.complete_ingest(session)
@@ -205,6 +204,7 @@ def test_marker_deferred_gallery_is_waiting_even_after_admission_quota_is_full(
         with facade.prepare_source(
             source, policy=policy, max_new_galleries=1
         ) as prepared:
+            collect_source(facade, session, policy, prepared)
             assert prepared.gallery_count == 1
             assert prepared.waiting_gallery_count == 1
             assert prepared.deferred_gallery_count == 1
@@ -268,6 +268,7 @@ def test_unpublished_source_seal_reuses_exact_marker_and_policy_after_restart(
             session, ingest_policy(artifacts_required=artifacts_required)
         )
         with restarted.prepare_source(source, policy=policy) as prepared:
+            collect_source(restarted, session, policy, prepared)
             assert prepared.gallery_count == 1
         restarted.complete_ingest(session)
     assert source.deep_reads == []
@@ -286,7 +287,8 @@ def test_deferred_gallery_cannot_claim_replacement_qualification_policy(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=True))
         with pytest.raises(VNextSourceChangedError, match="current completion policy"):
-            facade.prepare_source(source, policy=policy)
+            with facade.prepare_source(source, policy=policy) as prepared:
+                collect_source(facade, session, policy, prepared)
         facade.complete_ingest(session)
     assert [item.title for item in _publications(db_config)] == [original.title]
 
@@ -301,7 +303,8 @@ def test_source_wide_failure_is_not_swallowed_as_gallery_deferral(
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         with pytest.raises(VNextSourceChangedError, match="root was replaced"):
-            facade.prepare_source(source, policy=policy)
+            with facade.prepare_source(source, policy=policy) as prepared:
+                collect_source(facade, session, policy, prepared)
         facade.complete_ingest(session)
     with closing(open_connector(db_config)) as connector:
         assert connector.fetch_one(

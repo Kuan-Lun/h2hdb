@@ -926,6 +926,34 @@ def _authorize(
     return require_int63(live_turn.generation, field="generation")
 
 
+def _has_canonical_owner(
+    connector: Any,
+    *,
+    generation: int,
+    domains: tuple[bytes, ...],
+) -> bool:
+    if connector.fetch_one(
+        "SELECT build_id FROM operational_source_build_generations WHERE generation = %s",
+        (generation,),
+    ):
+        return True
+    if domains != (b"source_relative_locator_v1",):
+        return False
+    # The live outer ingest fence already serializes collection takeover.
+    # Only locator identities are needed before a complete cut exists.
+    return bool(
+        connector.fetch_one(
+            "SELECT 1 FROM operational_source_working_collections AS working "
+            "JOIN operational_source_collection_states AS state ON state.collection_id = working.collection_id "
+            "JOIN operational_source_collection_claims AS claim ON claim.collection_id = working.collection_id "
+            "JOIN catalog_source_collection_created_ats AS created ON created.collection_id = working.collection_id "
+            "WHERE working.slot = 1 AND state.state = 'OPEN' AND claim.ingest_generation = %s "
+            "AND working.assigned_at = created.created_at",
+            (generation,),
+        )
+    )
+
+
 def _allocate_authorized(
     work: VNextUnitOfWork,
     *,
@@ -973,10 +1001,10 @@ def _allocate_authorized(
     ):
         raise CanonicalValueNotReadyError("canonical digest domain is not registered")
 
-    if exact_plan.digest_domain != b"source_root_v1" and not connector.fetch_one(
-        "SELECT build_id FROM operational_source_build_generations "
-        "WHERE generation = %s",
-        (exact_generation,),
+    if exact_plan.digest_domain != b"source_root_v1" and not _has_canonical_owner(
+        connector,
+        generation=exact_generation,
+        domains=(exact_plan.digest_domain,),
     ):
         raise CanonicalValueNotReadyError(
             "non-root canonical upload requires a durable build generation"
@@ -1054,9 +1082,8 @@ def _claim_sealed_values_authorized(
     )
     if tuple(registered) != tuple((domain,) for domain in domains):
         raise CanonicalValueNotReadyError("canonical digest domain is not registered")
-    if not connector.fetch_one(
-        "SELECT build_id FROM operational_source_build_generations WHERE generation = %s",
-        (exact_generation,),
+    if not _has_canonical_owner(
+        connector, generation=exact_generation, domains=domains
     ):
         raise CanonicalValueNotReadyError(
             "sealed canonical claim requires a durable build generation"

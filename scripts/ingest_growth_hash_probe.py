@@ -33,6 +33,9 @@ from test_vnext_analysis_repository import (  # noqa: E402 - select checkout fix
     _seed_root,
     _source_build_id,
 )
+from vnext_analysis_validation_fixtures import (  # noqa: E402 - checkout fixtures.
+    analysis_source_pages,
+)
 from vnext_generated_database import (  # noqa: E402 - select checkout fixtures.
     open_generated_sqlite_database,
 )
@@ -270,21 +273,34 @@ def run_stage(
     analysis_id, gate, turn = run
     operation = getattr(analysis.AnalysisRepository, stage)
     pages = []
-    for page in range(164):
-        with connector.transaction():
-            result = operation(
-                VNextUnitOfWork(connector, backend=backend),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=analysis_id,
-                batch_key=f"{index}-{page}".encode(),
-                max_rows=128,
-                now=100 + index * 200 + page,
+    with analysis_source_pages(
+        connector, backend=backend, gate=gate, turn=turn, analysis_id=analysis_id
+    ) as prepare:
+        for page in range(164):
+            preparation = (
+                {
+                    "preparation": prepare(
+                        f"{index}-{page}".encode(), 128, 100 + index * 200 + page
+                    )
+                }
+                if stage == "process_changed_file_hash_batch"
+                else {}
             )
-        pages.append({"row_count": result.row_count, "terminal": result.terminal})
-        if result.terminal:
-            return pages
-    raise RuntimeError("bounded hash stage did not finish")
+            with connector.transaction():
+                result = operation(
+                    VNextUnitOfWork(connector, backend=backend),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=analysis_id,
+                    batch_key=f"{index}-{page}".encode(),
+                    max_rows=128,
+                    now=100 + index * 200 + page,
+                    **preparation,
+                )
+            pages.append({"row_count": result.row_count, "terminal": result.terminal})
+            if result.terminal:
+                return pages
+        raise RuntimeError("bounded hash stage did not finish")
 
 
 def run_validation(

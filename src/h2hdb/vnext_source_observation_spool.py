@@ -61,6 +61,7 @@ from .vnext_source_build_repository import (
     source_manifest_chain_step,
 )
 from .vnext_source_marker_repository import CachedSourceObservation
+from .vnext_source_observation_family import SealedSourceObservation
 from .vnext_source_progress import report_source_progress
 
 _CONSTRUCTOR_TOKEN = object()
@@ -102,6 +103,7 @@ class FrozenGalleryObservation:
     _capability: object = field(repr=False, compare=False)
     completion_marker: VNextSourceCompletionMarker | None = None
     cached: CachedSourceObservation | None = None
+    sealed: SealedSourceObservation | None = None
 
     def __post_init__(self) -> None:
         require_int63(self.position, field="frozen gallery position")
@@ -130,9 +132,12 @@ class FrozenSourceObservationSpool:
     __slots__ = (
         "_capability",
         "_closed",
+        "_failed",
         "_directory",
         "_index",
         "_temporary",
+        "_freeze_iterator",
+        "complete",
         "manifest_summary",
         "deferred_gallery_count",
         "waiting_gallery_count",
@@ -155,10 +160,13 @@ class FrozenSourceObservationSpool:
         self._index = index
         self._capability = object()
         self._closed = False
+        self._failed = False
         self.source_root_components = source_root_components
         self.manifest_summary = manifest_summary
         self.deferred_gallery_count = 0
         self.waiting_gallery_count = 0
+        self._freeze_iterator: Iterator[FrozenGalleryObservation | None] | None = None
+        self.complete = False
 
     @classmethod
     def freeze(
@@ -174,7 +182,47 @@ class FrozenSourceObservationSpool:
         max_new_galleries: int | None = None,
         progress: VNextSourcePreparationObserver | None = None,
     ) -> FrozenSourceObservationSpool:
-        """Consume the live adapter once and seal every observation page."""
+        """Consume the incremental spool completely for an eager local snapshot."""
+
+        spool = cls.start(
+            adapter,
+            plan=plan,
+            source_root_components=source_root_components,
+            qualification_policy_sha256=qualification_policy_sha256,
+            cache_lookup=cache_lookup,
+            membership_lookup=membership_lookup,
+            fallback_lookup=fallback_lookup,
+            max_new_galleries=max_new_galleries,
+            progress=progress,
+        )
+        try:
+            while not spool.complete:
+                spool.freeze_next()
+            return spool
+        except BaseException:
+            spool.close()
+            raise
+
+    @classmethod
+    def start(
+        cls,
+        adapter: VNextIngestSourceAdapter,
+        *,
+        plan: SourceDiscoveryPlan,
+        source_root_components: tuple[str, ...],
+        qualification_policy_sha256: bytes = bytes(32),
+        cache_lookup: SourceCacheLookup | None = None,
+        membership_lookup: SourceMembershipLookup | None = None,
+        fallback_lookup: SourceFallbackLookup | None = None,
+        max_new_galleries: int | None = None,
+        progress: VNextSourcePreparationObserver | None = None,
+    ) -> FrozenSourceObservationSpool:
+        """Allocate an incremental spool without observing any gallery bytes.
+
+        Each ``freeze_next`` consumes at most one gallery. A caller can persist
+        that observation before advancing to the next gallery, so an interrupted
+        scan need not lose the already completed qualification work.
+        """
 
         if not isinstance(adapter, VNextIngestSourceAdapter):
             raise TypeError("adapter must implement VNextIngestSourceAdapter")
@@ -196,7 +244,7 @@ class FrozenSourceObservationSpool:
         )
         try:
             spool._create_schema()
-            spool.manifest_summary = spool._freeze_adapter(
+            spool._freeze_iterator = spool._freeze_adapter(
                 adapter,
                 plan,
                 cache_lookup,
@@ -211,6 +259,34 @@ class FrozenSourceObservationSpool:
         except BaseException:
             spool.close()
             raise
+
+    def freeze_next(self) -> FrozenGalleryObservation | None:
+        """Observe one inventory entry, or finish the exact selected manifest.
+
+        A deferred entry returns None with ``complete`` still false. The caller
+        must not interpret that as the end of the source inventory.
+        """
+
+        self._require_open()
+        if self.complete:
+            raise ValueError("source observation spool is already complete")
+        if self._freeze_iterator is None:
+            raise FrozenSourceObservationError("source observation iterator is absent")
+        try:
+            try:
+                observation = next(self._freeze_iterator)
+            except StopIteration:
+                self._freeze_iterator = None
+                observation = None
+            self._index.commit()
+        except BaseException:
+            # An escaped generator error closes that generator. A retry must
+            # never interpret its subsequent StopIteration as a complete source.
+            # Commit failures also invalidate the partially written local index.
+            self._failed = True
+            raise
+        self.complete = self._freeze_iterator is None
+        return observation
 
     def selected_locators(
         self, *, progress: VNextSourcePreparationObserver | None = None
@@ -254,6 +330,11 @@ class FrozenSourceObservationSpool:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
+            iterator, self._freeze_iterator = self._freeze_iterator, None
+            if iterator is not None:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
             self._index.close()
             self._temporary.cleanup()
 
@@ -324,6 +405,24 @@ class FrozenSourceObservationSpool:
             descriptor=descriptor,
             observation_identity=observation_identity,
         )
+        binding = self._index.execute(
+            "SELECT gallery_id, observation_id, observation_identity_sha256, "
+            "file_count, byte_count FROM sealed_observations WHERE position = ?",
+            (expected_position,),
+        ).fetchone()
+        sealed = None
+        if binding is not None:
+            if binding[2] != observation_identity:
+                raise FrozenSourceObservationError("sealed observation binding changed")
+            sealed = SealedSourceObservation(
+                gallery_id=binding[0],
+                observation_id=binding[1],
+                observation_identity_sha256=observation_identity,
+                descriptor=descriptor,
+                file_count=binding[3],
+                byte_count=binding[4],
+                marker=marker,
+            )
         return FrozenGalleryObservation(
             expected_position,
             locator_components,
@@ -332,7 +431,58 @@ class FrozenSourceObservationSpool:
             self._capability,
             marker,
             cached,
+            sealed,
         )
+
+    def record_sealed_observation(
+        self,
+        observation: FrozenGalleryObservation,
+        sealed: SealedSourceObservation,
+    ) -> None:
+        """Remember an exact DB-issued binding; attachment rechecks its authority.
+
+        Once the canonical pages are durable, retain only the small descriptor
+        and binding locally. A later build attachment never needs those pages.
+        """
+
+        self._require_open()
+        if observation._capability is not self._capability:
+            raise FrozenSourceObservationError("foreign frozen observation")
+        sealed.__post_init__()
+        if (
+            sealed.observation_identity_sha256
+            != observation.observation_identity_sha256
+            or sealed.marker != observation.completion_marker
+        ):
+            raise FrozenSourceObservationError(
+                "sealed observation differs from the frozen gallery"
+            )
+        values = (
+            sealed.gallery_id,
+            sealed.observation_id,
+            sealed.observation_identity_sha256,
+            sealed.file_count,
+            sealed.byte_count,
+        )
+        prior = self._index.execute(
+            "SELECT gallery_id, observation_id, observation_identity_sha256, "
+            "file_count, byte_count FROM sealed_observations WHERE position = ?",
+            (observation.position,),
+        ).fetchone()
+        if prior is not None and prior != values:
+            raise FrozenSourceObservationError(
+                "frozen gallery already has another sealed binding"
+            )
+        if prior is None:
+            self._index.execute(
+                "INSERT INTO sealed_observations VALUES (?, ?, ?, ?, ?, ?)",
+                (observation.position, *values),
+            )
+        self._index.execute(
+            "DELETE FROM component_pages WHERE gallery_position = ?",
+            (observation.position,),
+        )
+        self._index.commit()
 
     def list_file_observations(
         self,
@@ -433,6 +583,12 @@ class FrozenSourceObservationSpool:
 
     def _create_schema(self) -> None:
         self._index.execute(
+            "CREATE TABLE sealed_observations ("
+            "position INTEGER PRIMARY KEY, gallery_id INTEGER NOT NULL, "
+            "observation_id INTEGER NOT NULL, observation_identity_sha256 BLOB NOT NULL, "
+            "file_count INTEGER NOT NULL, byte_count INTEGER NOT NULL)"
+        )
+        self._index.execute(
             "CREATE TABLE galleries ("
             "position INTEGER PRIMARY KEY, locator_sha256 BLOB UNIQUE NOT NULL, "
             "locator_payload BLOB NOT NULL, locator_payload_sha256 BLOB NOT NULL, "
@@ -472,7 +628,7 @@ class FrozenSourceObservationSpool:
         membership_lookup: SourceMembershipLookup | None,
         fallback_lookup: SourceFallbackLookup | None,
         max_new_galleries: int | None,
-    ) -> SourceBuildManifestSummary:
+    ) -> Iterator[FrozenGalleryObservation | None]:
         scope = source_scope_key(
             "filesystem",
             source_root_digest(self.source_root_components),
@@ -553,6 +709,7 @@ class FrozenSourceObservationSpool:
                     report_source_progress(
                         progress, operation, position, plan.gallery_count
                     )
+                    yield None
                     continue
                 selected_position = summary.gallery_count
                 try:
@@ -586,6 +743,7 @@ class FrozenSourceObservationSpool:
                         report_source_progress(
                             progress, operation, position, plan.gallery_count
                         )
+                        yield None
                         continue
                     self._store_completion_marker(
                         position=selected_position,
@@ -667,11 +825,17 @@ class FrozenSourceObservationSpool:
                 report_source_progress(
                     progress, operation, position, plan.gallery_count
                 )
+                self.manifest_summary = summary
+                yield self.open_gallery(
+                    position=selected_position,
+                    locator_sha256=locator.locator_sha256,
+                    locator_components=components,
+                )
         if position != plan.gallery_count:
             raise FrozenSourceObservationError(
                 "frozen observation count differs from discovery plan"
             )
-        return summary
+        self.manifest_summary = summary
 
     def _discard_gallery(self, position: int) -> None:
         self._index.execute(
@@ -1137,6 +1301,10 @@ class FrozenSourceObservationSpool:
     def _require_open(self) -> None:
         if self._closed:
             raise ValueError("frozen source observation spool is closed")
+        if self._failed:
+            raise FrozenSourceObservationError(
+                "source observation failed; close the spool and restart the scan"
+            )
 
 
 def _require_named_page(

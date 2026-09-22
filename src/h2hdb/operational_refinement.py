@@ -21,6 +21,8 @@ writer hook has been implemented.
 from __future__ import annotations
 
 __all__ = [
+    "check_source_collection_staging_owner_v1",
+    "check_source_collection_cleanup_reachability_v1",
     "OPERATIONAL_RUNTIME_WRITER_BLOCKERS",
     "OperationalSemanticRegistryError",
     "OperationalSemanticValidationError",
@@ -56,6 +58,10 @@ from typing import Any, Literal, cast
 
 from ._generated_vnext_schema import ARTIFACT
 from .schema_epoch import SchemaEpochValidationError
+from .source_collection_refinement import (
+    check_source_collection_cleanup_reachability_v1,
+    check_source_collection_staging_owner_v1,
+)
 from .sql_connector import SQLConnector
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
@@ -76,6 +82,7 @@ _CLEANUP_FROZEN_ROOT_SET_DOMAIN = b"h2hdb-cleanup-frozen-root-set-v1\0"
 _CLEANUP_FROZEN_ROOT_SHAPES: Mapping[str, tuple[tuple[bytes, int], ...]] = (
     MappingProxyType(
         {
+            "SOURCE_COLLECTION": ((b"b", 16),),
             "SOURCE_BUILD": ((b"b", 16),),
             "ANALYSIS_RUN": ((b"b", 16),),
             "CATALOG_PUBLICATION": ((b"i", 8), (b"b", 32)),
@@ -230,6 +237,18 @@ _SPECS = (
         "building_only",
         "operational_refinement.check_bootstrap_contract_v1",
         "schema_epoch.write_operational_bootstrap",
+    ),
+    (
+        "h2hdb.operational.source-collection-staging-owner.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_source_collection_staging_owner_v1",
+        "gallery_staging_writer.begin_collection",
+    ),
+    (
+        "h2hdb.operational.source-collection-cleanup-reachability.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_source_collection_cleanup_reachability_v1",
+        "source_collection_writer.retire_collection",
     ),
 )
 
@@ -3209,8 +3228,18 @@ def check_gallery_staging_request_budget_v1(connector: SQLConnector) -> None:
         backend,
         "gallery_observation_staging",
         primary_key=("staging_id",),
-        unique_keys=(("build_id",), ("gallery_id", "observation_id")),
+        unique_keys=(("gallery_id", "observation_id"),),
     )
+    for owner_relation, owner_key in (
+        ("gallery_staging_source_build", "build_id"),
+        ("gallery_staging_collection", "collection_id"),
+    ):
+        _require_key_shape(
+            backend,
+            owner_relation,
+            primary_key=("staging_id",),
+            unique_keys=((owner_key,),),
+        )
     budget_table = _table(backend, "gallery_observation_staging_request_budget")
     request_table = _table(backend, "gallery_observation_staging_request")
     budget_rows = _fetch_all(

@@ -1874,7 +1874,7 @@ claim = "Generated SQLite E2E executes all twenty-three production strategies, i
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_all_twenty_three_strategies_match_the_closed_phase_registry"
+symbol = "test_all_strategies_match_the_closed_phase_registry"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_source_analysis_and_candidate_strategies_delete_child_first"
@@ -3062,8 +3062,8 @@ id = "integration.live-mariadb.pipeline"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; bounded smoke regressions also drive one exact OPEN PCOM base-release gap and one exact OPEN PG edge gap through that production audit, and revisit one historical source snapshot after current-only cleanup; the extended recurrence scenario additionally checks exact artifact contents, current replay and stale-session rejection in the manual deep profile; nothing is a SQL-shape recorder."
-assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes separate fresh-pipeline, artifact-free compacted-snapshot recurrence and representative OPEN-cleanup mariadb_smoke cases; the extended recurrence, liveness, race, interrupted-seed, physical-domain and sampled-statement locations cited here remain manual deep evidence and are not attested by its receipt.", "The bounded cleanup smoke selects one representative durable state from each PCOM and PG family instead of duplicating the exhaustive SQLite phase matrices.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
+claim = "With H2HDB_TEST_MARIADB=1 the same public-facade pipeline workflows, liveness regressions, authority races, the interrupted seed batch resume, the physical-domain matrix on the populated corpus, and six sampled statement faults run against live MariaDB 10.11.11 on a fresh database per case, each ending in the full READY audit; bounded smoke regressions also drive one exact OPEN PCOM base-release gap and one exact OPEN PG edge gap through that production audit. Manual deep recurrence scenarios revisit a historical source snapshot after current-only cleanup; the extended scenario additionally checks exact artifact contents, current replay and stale-session rejection. Nothing is a SQL-shape recorder."
+assumptions = ["MariaDB evidence requires H2HDB_TEST_MARIADB=1. The bounded release runner executes fresh-pipeline, representative OPEN-cleanup, and abandoned-artifact-release mariadb_smoke cases. Both compacted-snapshot recurrence scenarios are explicitly selected by the separate manual cleanup-acceptance profile; that selection is not evidence that a particular invocation ran them. Recurrence, shared tag values across namespaces, liveness, race, interrupted-seed, physical-domain and sampled-statement MariaDB locations remain manual deep evidence and are not attested by a bounded release receipt.", "The bounded cleanup smoke selects one representative durable state from each PCOM and PG family instead of duplicating the exhaustive SQLite phase matrices; it does not establish historical snapshot recurrence.", "Live MariaDB matrices are sampled (six statement faults; one corpus for the physical matrix); SQLite runs the closed matrices."]
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_workflows.py"
 symbol = "test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states"
@@ -3141,7 +3141,7 @@ layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
 claim = "Public preparation survives facade restart and reuses retained verified observations, preserves complete current source membership, and reclaims removed-gallery marker bindings through normal child-first cleanup. Exact unpublished retry preserves the working candidate's prepared artifacts; explicit bounded hints refresh only selected galleries while unchanged markers and qualification policy permit reuse of the rest. Finite 127/128/129-gallery cost cases exercise three retry cycles and reject a full-refresh counterexample to the targeted deep-read budget."
-assumptions = ["The public workflow is exercised on SQLite; the restart case is also an explicit live MariaDB smoke case when H2HDB_TEST_MARIADB=1. The other MariaDB cases require the manual deep profile and are not implied by a bounded release receipt."]
+assumptions = ["The public workflows are exercised on SQLite. The exact unpublished artifact retry is a live MariaDB smoke case when H2HDB_TEST_MARIADB=1; cumulative publication batches, prior published membership reuse, and the remaining MariaDB matrices require the manual deep profile and are not implied by a bounded release receipt."]
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
 symbol = "test_marker_cache_survives_restart_and_reuses_prior_membership"
@@ -4407,7 +4407,7 @@ symbol = "test_periodic_full_check_uses_measured_duration_budget"
 path = "tests/test_database_audit_schedule.py"
 symbol = "test_renew_during_sqlite_full_read_snapshot_is_read_only"
 [[evidence.location]]
-path = "tests/test_upgrade_audit_schema.py"
+path = "tests/test_upgrade_source_collection_schema.py"
 symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
 
 [[evidence]]
@@ -4429,3 +4429,168 @@ tla = { status = "not_applicable", rationale = "CatalogCore has no audit timing,
 runtime_refinement = { status = "covered", evidence = ["runtime.production.database-audit-schedule", "runtime.production.writer-bindings"] }
 fault = { status = "covered", evidence = ["fault.production.database-audit-schedule"] }
 integration = { status = "covered", evidence = ["integration.production.database-audit-schedule", "integration.live-mariadb.database-audit-schedule"] }
+
+
+[[evidence]]
+id = "runtime.production.source-collections"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Source collections retain immutable sealed observations under exact root, manifest and qualification policies. Normalized exclusive staging owners share existing page machinery; collection completion and the exact sealed source cut commit together. Independent READY callbacks validate total descriptors, sealed membership, terminal consumption and owner exclusivity, accepting cleanup gaps only under a corresponding durable frontier."
+assumptions = ["Adapter marker correctness is an external source contract. READY validates the retained snapshot; writer fencing and cleanup tests supply temporal evidence, not an unbounded proof of Python or SQL effects."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_source_collection_repository.py"
+symbol = "SourceCollectionRepository"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "GalleryObservationStagingRepository.begin_collection_or_resume"
+
+[[evidence.location]]
+path = "src/h2hdb/source_collection_refinement.py"
+symbol = "check_source_collection_durable_observations_v1"
+
+[[evidence.location]]
+path = "src/h2hdb/source_collection_refinement.py"
+symbol = "check_source_collection_consumption_fencing_v1"
+
+[[evidence.location]]
+path = "src/h2hdb/source_collection_refinement.py"
+symbol = "check_source_collection_staging_owner_v1"
+
+[[evidence.location]]
+path = "src/h2hdb/source_collection_refinement.py"
+symbol = "check_source_collection_cleanup_reachability_v1"
+
+[[evidence]]
+id = "fault.production.source-collections"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Finite regressions interrupt initial collection work, lose root/terminal responses, roll back the source-seal/consumption transaction, reject incompatible collection adoption, reject missing descriptors or staging owners and dual ownership, and reject cleanup gaps ahead of their exact committed frontier."
+assumptions = ["These are explicit bounded fault and corruption injections; they do not establish arbitrary power-loss behavior."]
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_source_seal_and_collection_consumption_are_one_atomic_transition"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_collection_root_response_loss_reuses_exact_singleton_without_new_writes"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_replacement_collection_does_not_adopt_incompatible_checkpoint"
+
+[[evidence.location]]
+path = "tests/test_source_collection_refinement.py"
+symbol = "test_collection_ready_checks_reject_descriptor_policy_and_consumption_gaps"
+
+[[evidence.location]]
+path = "tests/test_source_collection_refinement.py"
+symbol = "test_collection_staging_rejects_missing_and_dual_owners"
+
+[[evidence.location]]
+path = "tests/test_source_collection_cleanup.py"
+symbol = "test_consumed_collection_cleanup_checks_each_durable_phase_and_preserves_build"
+
+[[evidence.location]]
+path = "tests/test_source_collection_refinement.py"
+symbol = "test_cleanup_proof_is_once_per_validation_and_rejects_repeated_audit_mutant"
+
+[[evidence]]
+id = "integration.sqlite.source-collections"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
+assumptions = ["The cited SQLite scenarios exercise sealed and partially staged restart with unchanged, changed, and deleted sources; markerless exact attachment; collection retention and retirement; and preserving offline conversion. Bounded release evidence covers only their selected non-deep cases, not separate manual depth matrices or live MariaDB execution."]
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_collection_without_markers_stages_once_and_attaches_exact_sealed_receipt"
+
+[[evidence.location]]
+path = "tests/test_source_collection_cleanup.py"
+symbol = "test_open_collection_retains_sealed_observation_after_lease_and_staging_retirement"
+
+[[evidence.location]]
+path = "tests/test_source_collection_cleanup.py"
+symbol = "test_consumed_collection_cleanup_checks_each_durable_phase_and_preserves_build"
+
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_conversion_preserves_publication_source_and_opaque_artifact_facts"
+
+[[evidence]]
+id = "integration.live-mariadb.source-collections"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
+assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run. The sealed_gallery/unchanged first-scan restart parameter is the bounded smoke representative: it preserves one sealed observation before a source build exists, reopens in a new generation, observes only the remaining gallery, consumes the collection, and passes READY. Partial staging, changed/deleted sources, cleanup retirement, and offline conversion remain manual deep evidence; a bounded release receipt does not attest to those matrices."]
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work"
+
+[[evidence.location]]
+path = "tests/test_vnext_source_collection.py"
+symbol = "test_collection_without_markers_stages_once_and_attaches_exact_sealed_receipt"
+
+[[evidence.location]]
+path = "tests/test_source_collection_cleanup.py"
+symbol = "test_open_collection_retains_sealed_observation_after_lease_and_staging_retirement"
+
+[[evidence.location]]
+path = "tests/test_source_collection_cleanup.py"
+symbol = "test_consumed_collection_cleanup_checks_each_durable_phase_and_preserves_build"
+
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_conversion_preserves_publication_source_and_opaque_artifact_facts"
+
+[[invariant]]
+id = "catalog.source-collection-durable-observations.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model durable first-scan collections, shared staging owners or their cleanup frontier; the concrete SQL protocol has direct runtime, fault and backend integration evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-collections", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-collections"] }
+integration = { status = "covered", evidence = ["integration.sqlite.source-collections", "integration.live-mariadb.source-collections"] }
+
+[[invariant]]
+id = "catalog.source-collection-consumption-fencing.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model durable first-scan collections, shared staging owners or their cleanup frontier; the concrete SQL protocol has direct runtime, fault and backend integration evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-collections", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-collections"] }
+integration = { status = "covered", evidence = ["integration.sqlite.source-collections", "integration.live-mariadb.source-collections"] }
+
+[[invariant]]
+id = "h2hdb.operational.source-collection-staging-owner.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model durable first-scan collections, shared staging owners or their cleanup frontier; the concrete SQL protocol has direct runtime, fault and backend integration evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-collections", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-collections"] }
+integration = { status = "covered", evidence = ["integration.sqlite.source-collections", "integration.live-mariadb.source-collections"] }
+
+[[invariant]]
+id = "h2hdb.operational.source-collection-cleanup-reachability.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model durable first-scan collections, shared staging owners or their cleanup frontier; the concrete SQL protocol has direct runtime, fault and backend integration evidence." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.source-collections", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.source-collections"] }
+integration = { status = "covered", evidence = ["integration.sqlite.source-collections", "integration.live-mariadb.source-collections"] }

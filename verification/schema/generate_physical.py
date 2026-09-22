@@ -551,6 +551,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
 }
 
 UUID_ATTRIBUTES = {
+    "collection_id",
     "analysis_id",
     "base_analysis_id",
     "anchor_analysis_id",
@@ -580,6 +581,12 @@ def physical_table_name(relation_name: str) -> str:
 
 
 TABLE_NAMES = {
+    "source_collection": "catalog_source_collections",
+    "source_collection_manifest_policy": "catalog_source_collection_manifest_policies",
+    "source_collection_qualification_policy": "catalog_source_collection_qualification_policies",
+    "source_collection_created_at": "catalog_source_collection_created_ats",
+    "source_collection_observation": "catalog_source_collection_observations",
+    "source_collection_consumption": "catalog_source_collection_consumptions",
     "manifest_policy": "catalog_manifest_policies",
     "source_build": "catalog_source_builds",
     "source_build_state": "catalog_source_build_states",

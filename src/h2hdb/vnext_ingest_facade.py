@@ -20,6 +20,7 @@ __all__ = [
     "VNextPreparedAnalysisStep",
     "VNextPreparedPublicationStep",
     "VNextPreparedSource",
+    "VNextPreparedSourceResume",
     "VNextPreparedSourceStep",
     "VNextSourceManifestMismatchError",
 ]
@@ -28,7 +29,7 @@ import logging
 import secrets
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from threading import Lock
 from time import time_ns
@@ -42,6 +43,7 @@ from .database_performance import (
 )
 from .domain import (
     CurrentOnlyCleanupTerminalState,
+    GalleryStagingOwner,
     VNextIngestAdvanceResult,
     VNextIngestCompletionReceipt,
     VNextIngestPage,
@@ -84,6 +86,7 @@ from .vnext_download_ingest_repository import (
     DownloadIngestUnavailableError,
     HandoffKind,
 )
+from .vnext_gallery_identity_repository import SourceLocatorCommand
 from .vnext_gallery_staging_repository import (
     BatchAttempt,
     DirectoryBatchCommand,
@@ -137,6 +140,7 @@ from .vnext_source_build_repository import (
     AssemblyBatchReceipt,
     DiscoveryBatch,
     DiscoveryBatchReceipt,
+    IssuedDiscoveryBatch,
     PendingSourceGallery,
     ResolvedDiscoveryLocator,
     SourceBuildHandoff,
@@ -148,16 +152,29 @@ from .vnext_source_build_repository import (
     _SourceBuildPolicyAuthority,
     _SourceDrainRetry,
 )
+from .vnext_source_collection_repository import (
+    CollectionGalleryIdentityHandoff,
+    SourceCollectionHandle,
+    SourceCollectionRepository,
+    SourceCollectionRetention,
+    SourceCollectionRootCommand,
+)
 from .vnext_source_marker_repository import (
     CachedSourceObservation,
     SourceMarkerConflictError,
     SourceMarkerRepository,
 )
+from .vnext_source_observation_family import SealedSourceObservation
 from .vnext_source_observation_spool import (
     FrozenGalleryObservation,
     FrozenSourceObservationSpool,
 )
 from .vnext_source_progress import report_source_progress
+from .vnext_source_resume import (
+    VNextPreparedSourceResume,
+    commit_source_resume,
+    prepare_source_resume,
+)
 from .vnext_transaction import VNextUnitOfWork
 
 _ResultT = TypeVar("_ResultT")
@@ -220,6 +237,13 @@ class _SourceAction(StrEnum):
     STAGING_RETIRE = "STAGING_RETIRE"
     ASSEMBLY = "ASSEMBLY"
     COMPLETE = "COMPLETE"
+    COLLECTION_RECOVER = "COLLECTION_RECOVER"
+    STAGING_DRAIN = "STAGING_DRAIN"
+    COLLECTION_CHECKPOINT = "COLLECTION_CHECKPOINT"
+    COLLECTION_FREEZE = "COLLECTION_FREEZE"
+    COLLECTION_SELECTED = "COLLECTION_SELECTED"
+    COLLECTION_SKIPPED = "COLLECTION_SKIPPED"
+    COLLECTION_FROZEN = "COLLECTION_FROZEN"
 
 
 @dataclass(slots=True)
@@ -227,7 +251,13 @@ class _SourceMachine:
     action: _SourceAction = _SourceAction.INITIALIZE
     policy: VNextResolvedIngestPolicy | None = None
     build_id: bytes | None = None
-    root_command: SourceRootBuildCommand | None = None
+    root_command: SourceRootBuildCommand | SourceCollectionRootCommand | None = None
+    collecting: bool = True
+    collection: SourceCollectionHandle | None = None
+    collection_locator: SourceLocatorCommand | None = None
+    collection_gallery: CollectionGalleryIdentityHandoff | None = None
+    checkpoint_observation: SealedSourceObservation | None = None
+    completed_uploads: list[CanonicalValueUploadPlan] = field(default_factory=list)
     root_upload: CanonicalValueUploadPlan | None = None
     root_pages: Iterator[PreparedCanonicalPage] | None = None
     handoff: SourceBuildHandoff | None = None
@@ -309,7 +339,7 @@ class VNextPreparedSourceStep:
 
 
 class VNextPreparedSource:
-    """Opaque disk snapshot consumed by the issue/prepare/commit source API.
+    """Opaque incremental snapshot driven by the issue/prepare/commit source API.
 
     Repository plans and checkpoint worksets intentionally have no public
     accessors.  The handle is a process-local resource, not database authority.
@@ -320,14 +350,15 @@ class VNextPreparedSource:
         "_active_step",
         "_batch_baseline",
         "_closed",
-        "_deferred_gallery_count",
-        "_waiting_gallery_count",
+        "_failed",
         "_machine",
         "_manifest_summary",
         "_plan",
         "_performance_id",
         "_snapshot",
         "_source_root_components",
+        "_preparation_resources",
+        "_progress",
     )
 
     def __init__(
@@ -338,8 +369,8 @@ class VNextPreparedSource:
         manifest_summary: SourceBuildManifestSummary,
         source_root_components: tuple[str, ...],
         batch_baseline: SourceBatchBaseline | None = None,
-        deferred_gallery_count: int = 0,
-        waiting_gallery_count: int = 0,
+        preparation_resources: ExitStack,
+        progress: VNextSourcePreparationObserver,
         _constructor_token: object,
     ) -> None:
         if _constructor_token is not _PREPARED_SOURCE_TOKEN:
@@ -351,9 +382,10 @@ class VNextPreparedSource:
         self._manifest_summary = manifest_summary
         self._source_root_components = source_root_components
         self._batch_baseline = batch_baseline
-        self._deferred_gallery_count = deferred_gallery_count
-        self._waiting_gallery_count = waiting_gallery_count
+        self._preparation_resources = preparation_resources
+        self._progress = progress
         self._closed = False
+        self._failed = False
         self._machine = _SourceMachine()
         self._active_issue: VNextIssuedSourceStep | None = None
         self._active_step: VNextPreparedSourceStep | None = None
@@ -362,22 +394,36 @@ class VNextPreparedSource:
     def deferred_gallery_count(self) -> int:
         """New galleries deferred by the admission quota; not database authority."""
 
-        self._require_open()
-        return self._deferred_gallery_count
+        self._require_complete_inventory()
+        return self._snapshot.deferred_gallery_count
 
     @property
     def gallery_count(self) -> int:
         """Number of exact admitted observations in this prepared source."""
 
-        self._require_open()
+        self._require_complete_inventory()
         return self._manifest_summary.gallery_count
 
     @property
     def waiting_gallery_count(self) -> int:
         """Incomplete galleries requiring a later fresh observation."""
 
+        self._require_complete_inventory()
+        return self._snapshot.waiting_gallery_count
+
+    @property
+    def observation_complete(self) -> bool:
+        """Whether the exact selected inventory counts are available."""
+
         self._require_open()
-        return self._waiting_gallery_count
+        return self._snapshot.complete
+
+    def _require_complete_inventory(self) -> None:
+        self._require_open()
+        if not self._snapshot.complete:
+            raise ValueError(
+                "source observation is incomplete; inventory counts are pending"
+            )
 
     def close(self) -> None:
         if not self._closed:
@@ -386,9 +432,13 @@ class VNextPreparedSource:
                 self._machine.root_upload.close()
             if self._machine.locator_upload is not None:
                 self._machine.locator_upload.close()
+            _close_completed_source_uploads(self._machine)
             _close_source_step_payload(self._active_step)
             try:
-                self._snapshot.close()
+                try:
+                    self._snapshot.close()
+                finally:
+                    self._preparation_resources.close()
             finally:
                 self._plan.close()
 
@@ -402,6 +452,10 @@ class VNextPreparedSource:
     def _require_open(self) -> None:
         if self._closed:
             raise ValueError("prepared source is closed")
+        if self._failed:
+            raise ValueError(
+                "prepared source has failed; close it and prepare a fresh scan"
+            )
         self._snapshot._require_open()
         self._plan._require_open()
 
@@ -485,6 +539,73 @@ class VNextIngestFacade:
         except BaseException:
             pass
 
+    def prepare_source_resume(
+        self,
+        adapter: VNextIngestSourceAdapter,
+        *,
+        policy: VNextResolvedIngestPolicy,
+    ) -> VNextPreparedSourceResume | None:
+        """Recover a sealed cut only while its producer completion markers match.
+
+        Each page reads at most 128 existing galleries, then probes their fresh
+        markers outside database transactions and the caller's session lock.
+        New galleries and image bytes are not read. None requests ordinary fresh
+        preparation, including markerless or unavailable sources. Callers must
+        schedule a fresh inventory after recovered publication; former inventory
+        counts are not durable authority. Artifact reads still verify exact bytes.
+        """
+
+        self.__require_open()
+        with self.__database_performance.operation(
+            "source_resume_prepare"
+        ) as measurement:
+            prepared = prepare_source_resume(
+                self.__context,
+                adapter,
+                backend=self.__backend,
+                policy=policy,
+                performance=measurement,
+            )
+            measurement.describe(resumable=prepared is not None)
+            if prepared is not None:
+                authority = prepared._authority
+                measurement.describe(
+                    build_id=authority.build_id.hex(),
+                    qualification_galleries=authority.summary.gallery_count,
+                    qualification_page_limit=128,
+                    completion_markers_checked=authority.summary.gallery_count,
+                )
+            return prepared
+
+    def commit_source_resume(
+        self,
+        session: VNextIngestSession,
+        prepared: VNextPreparedSourceResume,
+    ) -> VNextIngestSourceReceipt:
+        """Bind a prepared sealed cut to this exact live ingest generation."""
+
+        self.__require_open()
+        gate, turn = _repository_authority(session)
+        with self.__database_performance.operation(
+            "source_resume_commit",
+            ingest_generation=session.ingest_generation,
+        ) as measurement:
+            receipt = self.__write(
+                lambda work: commit_source_resume(
+                    work,
+                    gate=gate,
+                    turn=turn.ingest_turn,
+                    prepared=prepared,
+                    now=self.__clock(),
+                )
+            )
+            measurement.describe(
+                build_id=receipt.build_id.hex(),
+                resumed_galleries=receipt.discovered_galleries,
+                publication_pending=True,
+            )
+            return receipt
+
     def prepare_source(
         self,
         adapter: VNextIngestSourceAdapter,
@@ -495,7 +616,12 @@ class VNextIngestFacade:
         reobserve_gallery_locators: tuple[tuple[str, ...], ...] = (),
         reuse_sealed_observations: bool = True,
     ) -> VNextPreparedSource:
-        """Freeze a complete source cut outside database transactions.
+        """Prepare discovery for an incrementally checkpointed source cut.
+
+        This does not deeply observe every gallery. Subsequent source prepare
+        steps observe one gallery outside transactions, and bounded commits
+        persist it before advancing. Selected counts become available when the
+        handle's observation_complete is true; source assembly follows that.
 
         A batch keeps the last published observation of an incomplete gallery
         and independently prepares other galleries. Only successfully frozen new
@@ -543,13 +669,9 @@ class VNextIngestFacade:
                 reuse_sealed_observations=reuse_sealed_observations,
             )
             result._performance_id = correlation_id
-            summary = result._manifest_summary
             measurement.describe(
-                admitted_galleries=summary.gallery_count,
-                admitted_files=summary.file_count,
-                admitted_bytes=summary.byte_count,
-                deferred_galleries=result.deferred_gallery_count,
-                waiting_galleries=result.waiting_gallery_count,
+                inventory_galleries=result._plan.gallery_count,
+                observation_complete=False,
             )
             return result
 
@@ -606,7 +728,7 @@ class VNextIngestFacade:
             )
         snapshot: FrozenSourceObservationSpool | None = None
         baseline: SourceBatchBaseline | None = None
-        deferred_gallery_count = 0
+        preparation_resources: ExitStack | None = None
         try:
             # Reuse the connection, but keep each cache read transaction
             # bounded. Source byte I/O occurs between these transactions and
@@ -756,7 +878,7 @@ class VNextIngestFacade:
                 with database_phase(
                     "source_freeze", inventory_galleries=plan.gallery_count
                 ):
-                    snapshot = FrozenSourceObservationSpool.freeze(
+                    snapshot = FrozenSourceObservationSpool.start(
                         adapter,
                         plan=plan,
                         source_root_components=root,
@@ -767,41 +889,20 @@ class VNextIngestFacade:
                         progress=progress,
                         qualification_policy_sha256=qualification_policy,
                     )
-                deferred_gallery_count = snapshot.deferred_gallery_count
-                if snapshot.manifest_summary.gallery_count != plan.gallery_count:
-                    selected = SourceDiscoveryPlan.from_locators(
-                        snapshot.selected_locators(progress=progress),
-                        progress=progress,
-                        transfer_operation=None,
-                        order_operation=VNextSourcePreparationOperation.BATCH_ORDER,
-                    )
-                    previous_plan, plan = plan, selected
-                    report_source_progress(
-                        progress,
-                        VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
-                        0,
-                        previous_plan.gallery_count,
-                    )
-                    previous_plan.close()
-                    report_source_progress(
-                        progress,
-                        VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
-                        previous_plan.gallery_count,
-                        previous_plan.gallery_count,
-                    )
                 with (
                     database_phase("source_baseline_recheck"),
                     connection().read_transaction(),
                 ):
                     SourceBatchRepository.require_current(connection(), baseline)
+                preparation_resources = resources.pop_all()
             prepared = VNextPreparedSource(
                 snapshot=snapshot,
                 plan=plan,
                 manifest_summary=snapshot.manifest_summary,
                 source_root_components=root,
                 batch_baseline=baseline,
-                deferred_gallery_count=deferred_gallery_count,
-                waiting_gallery_count=snapshot.waiting_gallery_count,
+                preparation_resources=preparation_resources,
+                progress=progress,
                 _constructor_token=_PREPARED_SOURCE_TOKEN,
             )
             prepared._machine.policy = trusted_policy
@@ -809,6 +910,8 @@ class VNextIngestFacade:
         except BaseException:
             if snapshot is not None:
                 snapshot.close()
+            if preparation_resources is not None:
+                preparation_resources.close()
             plan.close()
             raise
 
@@ -868,6 +971,39 @@ class VNextIngestFacade:
             def issue(work: VNextUnitOfWork) -> object:
                 nonlocal trusted_policy
                 now = self.__clock()
+                if action is _SourceAction.STAGING_DRAIN:
+                    gate, turn = _repository_authority(session)
+                    if machine.collecting:
+                        return GalleryObservationStagingRepository.abandon_collection_staging(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            collection=_require_source_collection(machine),
+                            now=now,
+                        )
+                    if machine.build_id is None:
+                        raise RuntimeError("source build is not initialized")
+                    return (
+                        GalleryObservationStagingRepository.abandon_interrupted_staging(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            owner=GalleryStagingOwner("SOURCE_BUILD", machine.build_id),
+                            now=now,
+                        )
+                    )
+                if action is _SourceAction.COLLECTION_RECOVER:
+                    gate, turn = _repository_authority(session)
+                    collection = _require_source_collection(machine)
+                    return GalleryObservationStagingRepository.find_pending_retirement(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        owner=GalleryStagingOwner(
+                            "COLLECTION", collection.collection_id
+                        ),
+                        now=now,
+                    )
                 if action is _SourceAction.STAGING_FIND:
                     # The staging repository owns this operation's outer gate/fence
                     # authorization, so delegate before acquiring any facade locks.
@@ -879,7 +1015,7 @@ class VNextIngestFacade:
                             work,
                             gate_lease=gate,
                             ingest_turn=turn.ingest_turn,
-                            build_id=machine.build_id,
+                            owner=GalleryStagingOwner("SOURCE_BUILD", machine.build_id),
                             now=now,
                         )
                     )
@@ -905,7 +1041,7 @@ class VNextIngestFacade:
                 if action is _SourceAction.DISCOVERY_BATCH:
                     if machine.build_id is None:
                         raise RuntimeError("source build is not initialized")
-                    return SourceBuildRepository.prepare_discovery_batch(
+                    return SourceBuildRepository.issue_discovery_batch(
                         work.connector,
                         build_id=machine.build_id,
                         plan=source._plan,
@@ -942,126 +1078,186 @@ class VNextIngestFacade:
             raise TypeError("issued must be VNextIssuedSourceStep")
         if issued._source is not source or source._active_issue is not issued:
             raise ValueError("issued source step is stale or belongs to another source")
-        with (
-            self.__database_performance.operation(
-                "source_step",
-                quiet=True,
-                action=issued._action.value,
-                step_phase="prepare",
-                ingest_generation=issued._session.ingest_generation,
-                correlation_id=source._performance_id,
-                build_id=(
-                    source._machine.build_id.hex()
-                    if source._machine.build_id is not None
-                    else None
+        try:
+            _close_completed_source_uploads(source._machine)
+            with (
+                self.__database_performance.operation(
+                    "source_step",
+                    quiet=True,
+                    action=issued._action.value,
+                    step_phase="prepare",
+                    ingest_generation=issued._session.ingest_generation,
+                    correlation_id=source._performance_id,
+                    build_id=(
+                        source._machine.build_id.hex()
+                        if source._machine.build_id is not None
+                        else None
+                    ),
                 ),
-            ),
-            self.__performance.step(
-                "source",
-                f"{issued._action.value}.prepare",
-                "SOURCE",
-                issued._session.ingest_generation,
-                correlation_id=source._performance_id,
-            ) as measurement,
-        ):
-            if source._active_step is not None:
-                measurement.replayed = True
-                return source._active_step
+                self.__performance.step(
+                    "source",
+                    f"{issued._action.value}.prepare",
+                    "SOURCE",
+                    issued._session.ingest_generation,
+                    correlation_id=source._performance_id,
+                ) as measurement,
+            ):
+                if source._active_step is not None:
+                    measurement.replayed = True
+                    return source._active_step
 
-            machine = source._machine
-            action = issued._action
-            local_action = action
-            payload = issued._payload
-            if action is _SourceAction.INITIALIZE:
-                policy = machine.policy
-                if policy is None:
-                    raise RuntimeError("source policy binding is absent")
-                command = SourceRootBuildCommand(
-                    source._source_root_components,
-                    source._manifest_summary,
-                )
-                build_id = command.build_attempt_id
-                upload = command.prepare_root_upload()
-                payload = (build_id, command, upload, upload.iter_pages())
-            elif action is _SourceAction.ROOT_PAGE:
-                if machine.root_pages is None:
-                    raise RuntimeError("source-root page iterator is absent")
-                try:
-                    payload = next(machine.root_pages)
-                    local_action = _SourceAction.ROOT_PUT_PAGE
-                except StopIteration:
-                    payload = None
-                    local_action = _SourceAction.ROOT_SEAL
-            elif action is _SourceAction.LOCATOR_INITIALIZE:
-                batch = _require_discovery_batch(machine)
-                locator = batch.locators[machine.locator_index]
-                upload = source._plan.prepare_locator_upload(locator)
-                payload = (upload, upload.iter_pages())
-            elif action is _SourceAction.LOCATOR_PAGE:
-                if machine.locator_pages is None:
-                    raise RuntimeError("source-locator page iterator is absent")
-                try:
-                    payload = next(machine.locator_pages)
-                    local_action = _SourceAction.LOCATOR_PUT_PAGE
-                except StopIteration:
-                    payload = None
-                    local_action = _SourceAction.LOCATOR_SEAL
-            elif action is _SourceAction.STAGING_FIND:
-                pending = issued._payload
-                match pending:
-                    case GalleryStagingPendingRetirement():
-                        payload = pending.seal
-                        local_action = (
-                            _SourceAction.STAGING_RETIRE
-                            if pending.acknowledged
-                            else _SourceAction.STAGING_RECOVER
+                machine = source._machine
+                action = issued._action
+                local_action = action
+                payload = issued._payload
+                if action is _SourceAction.INITIALIZE:
+                    policy = machine.policy
+                    if policy is None:
+                        raise RuntimeError("source policy binding is absent")
+                    command: SourceRootBuildCommand | SourceCollectionRootCommand
+                    if machine.collecting:
+                        command = SourceCollectionRootCommand(
+                            source._source_root_components
                         )
-                    case None:
+                        build_id = None
+                    else:
+                        command = SourceRootBuildCommand(
+                            source._source_root_components,
+                            source._manifest_summary,
+                        )
+                        build_id = command.build_attempt_id
+                    upload = command.prepare_root_upload()
+                    payload = (build_id, command, upload, upload.iter_pages())
+                elif action is _SourceAction.DISCOVERY_BATCH:
+                    if not isinstance(payload, IssuedDiscoveryBatch):
+                        raise TypeError("discovery step lacks its issued checkpoint")
+                    payload = SourceBuildRepository.prepare_discovery_batch(
+                        payload, plan=source._plan
+                    )
+                elif action is _SourceAction.ROOT_PAGE:
+                    if machine.root_pages is None:
+                        raise RuntimeError("source-root page iterator is absent")
+                    try:
+                        payload = next(machine.root_pages)
+                        local_action = _SourceAction.ROOT_PUT_PAGE
+                    except StopIteration:
                         payload = None
-                        local_action = _SourceAction.STAGING_COMPLETE
-                    case _:
-                        if not isinstance(pending, PendingSourceGallery):
-                            raise RuntimeError(
-                                "pending source gallery receipt is invalid"
+                        local_action = _SourceAction.ROOT_SEAL
+                elif action is _SourceAction.LOCATOR_INITIALIZE:
+                    if machine.collecting:
+                        observation = _require_collection_observation(machine)
+                        machine.collection_locator = SourceLocatorCommand(
+                            observation.locator_components
+                        )
+                        upload = machine.collection_locator.prepare_upload()
+                    else:
+                        batch = _require_discovery_batch(machine)
+                        locator = batch.locators[machine.locator_index]
+                        upload = source._plan.prepare_locator_upload(locator)
+                    payload = (upload, upload.iter_pages())
+                elif action is _SourceAction.LOCATOR_PAGE:
+                    if machine.locator_pages is None:
+                        raise RuntimeError("source-locator page iterator is absent")
+                    try:
+                        payload = next(machine.locator_pages)
+                        local_action = _SourceAction.LOCATOR_PUT_PAGE
+                    except StopIteration:
+                        payload = None
+                        local_action = _SourceAction.LOCATOR_SEAL
+                elif action is _SourceAction.COLLECTION_CHECKPOINT:
+                    if machine.checkpoint_observation is None:
+                        raise RuntimeError(
+                            "collection checkpoint lacks its sealed observation"
+                        )
+                    source._snapshot.record_sealed_observation(
+                        _require_collection_observation(machine),
+                        machine.checkpoint_observation,
+                    )
+                    report_source_progress(
+                        source._progress,
+                        VNextSourcePreparationOperation.SOURCE_CHECKPOINT,
+                        source._snapshot.manifest_summary.gallery_count,
+                    )
+                    payload = None
+                elif action is _SourceAction.COLLECTION_FREEZE:
+                    with database_phase("source_freeze"):
+                        frozen = source._snapshot.freeze_next()
+                    if source._snapshot.complete:
+                        _finish_source_observation(source)
+                        local_action = _SourceAction.COLLECTION_FROZEN
+                        payload = None
+                    elif frozen is None:
+                        local_action = _SourceAction.COLLECTION_SKIPPED
+                        payload = None
+                    else:
+                        local_action = _SourceAction.COLLECTION_SELECTED
+                        payload = frozen
+                elif action in {
+                    _SourceAction.STAGING_FIND,
+                    _SourceAction.COLLECTION_RECOVER,
+                }:
+                    pending = issued._payload
+                    match pending:
+                        case GalleryStagingPendingRetirement():
+                            payload = pending.seal
+                            local_action = (
+                                _SourceAction.STAGING_RETIRE
+                                if pending.acknowledged
+                                else _SourceAction.STAGING_RECOVER
                             )
-                        decoded_locator = source._plan._decode_locator(
-                            pending.position,
-                            pending.locator_sha256,
-                        )
-                        observation = source._snapshot.open_gallery(
-                            position=pending.position,
-                            locator_sha256=pending.locator_sha256,
-                            locator_components=decoded_locator,
-                        )
-                        payload = (pending, decoded_locator, observation)
-                        local_action = _SourceAction.STAGING_SELECT
-            elif action is _SourceAction.STAGING_RETIRE:
-                if machine.staging_seal is None:
-                    raise RuntimeError("terminal gallery staging seal is absent")
-                payload = machine.staging_seal
-            elif action in {
-                _SourceAction.FILE_PAGE,
-                _SourceAction.DIRECTORY_PAGE,
-                _SourceAction.TAG_PAGE,
-                _SourceAction.METADATA_PAGE,
-            }:
-                payload = _prepare_observation_component(source, action)
-            elif action is _SourceAction.MATCH:
-                payload = MatchBatchCommand(
-                    secrets.token_bytes(16),
-                    machine.match_previous_operation_id,
-                )
-            elif action is _SourceAction.ASSEMBLY:
-                payload = SourceBuildRepository.issue_assembly_batch()
+                        case None:
+                            payload = None
+                            local_action = (
+                                _SourceAction.COLLECTION_FREEZE
+                                if machine.collecting
+                                else _SourceAction.STAGING_COMPLETE
+                            )
+                        case _:
+                            if not isinstance(pending, PendingSourceGallery):
+                                raise RuntimeError(
+                                    "pending source gallery receipt is invalid"
+                                )
+                            decoded_locator = source._plan._decode_locator(
+                                pending.position,
+                                pending.locator_sha256,
+                            )
+                            observation = source._snapshot.open_gallery(
+                                position=pending.position,
+                                locator_sha256=pending.locator_sha256,
+                                locator_components=decoded_locator,
+                            )
+                            payload = (pending, decoded_locator, observation)
+                            local_action = _SourceAction.STAGING_SELECT
+                elif action is _SourceAction.STAGING_RETIRE:
+                    if machine.staging_seal is None:
+                        raise RuntimeError("terminal gallery staging seal is absent")
+                    payload = machine.staging_seal
+                elif action in {
+                    _SourceAction.FILE_PAGE,
+                    _SourceAction.DIRECTORY_PAGE,
+                    _SourceAction.TAG_PAGE,
+                    _SourceAction.METADATA_PAGE,
+                }:
+                    payload = _prepare_observation_component(source, action)
+                elif action is _SourceAction.MATCH:
+                    payload = MatchBatchCommand(
+                        secrets.token_bytes(16),
+                        machine.match_previous_operation_id,
+                    )
+                elif action is _SourceAction.ASSEMBLY:
+                    payload = SourceBuildRepository.issue_assembly_batch()
 
-            step = VNextPreparedSourceStep(
-                issued=issued,
-                action=local_action,
-                payload=payload,
-                _constructor_token=_PREPARED_SOURCE_STEP_TOKEN,
-            )
-            source._active_step = step
-            return step
+                step = VNextPreparedSourceStep(
+                    issued=issued,
+                    action=local_action,
+                    payload=payload,
+                    _constructor_token=_PREPARED_SOURCE_STEP_TOKEN,
+                )
+                source._active_step = step
+                return step
+        except BaseException:
+            source._failed = True
+            raise
 
     def commit_source_step(
         self,
@@ -1095,7 +1291,7 @@ class VNextIngestFacade:
                 build_id=machine.build_id.hex()
                 if machine.build_id is not None
                 else None,
-            ),
+            ) as database_measurement,
             self.__performance.step(
                 "source",
                 f"{action.value}.commit",
@@ -1150,6 +1346,22 @@ class VNextIngestFacade:
                         raise RuntimeError("source-root command is absent")
                     if machine.policy is None:
                         raise RuntimeError("source machine lacks its resolved policy")
+                    if machine.collecting:
+                        if not isinstance(
+                            machine.root_command, SourceCollectionRootCommand
+                        ):
+                            raise RuntimeError("collection root command is absent")
+                        return SourceCollectionRepository.handoff_root(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            command=machine.root_command,
+                            root_plan=_require_root_upload(machine),
+                            policy=machine.policy,
+                            now=now,
+                        )
+                    if not isinstance(machine.root_command, SourceRootBuildCommand):
+                        raise RuntimeError("source root command is absent")
                     return SourceBuildRepository.handoff_root_or_drain(
                         work,
                         gate_lease=gate,
@@ -1199,6 +1411,18 @@ class VNextIngestFacade:
                         now=now,
                     )
                 if action is _SourceAction.LOCATOR_RESOLVE:
+                    if machine.collecting:
+                        if machine.collection_locator is None:
+                            raise RuntimeError("collection locator command is absent")
+                        return SourceCollectionRepository.handoff_locator(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            handle=_require_source_collection(machine),
+                            command=machine.collection_locator,
+                            locator_plan=_require_locator_upload(machine),
+                            now=now,
+                        )
                     batch = _require_discovery_batch(machine)
                     locator = batch.locators[machine.locator_index]
                     return SourceBuildRepository.resolve_discovery_locator(
@@ -1227,33 +1451,78 @@ class VNextIngestFacade:
                     _SourceAction.STAGING_SELECT,
                     _SourceAction.STAGING_COMPLETE,
                     _SourceAction.STAGING_RECOVER,
+                    _SourceAction.COLLECTION_FREEZE,
+                    _SourceAction.COLLECTION_SELECTED,
+                    _SourceAction.COLLECTION_SKIPPED,
+                    _SourceAction.STAGING_DRAIN,
+                    _SourceAction.COLLECTION_CHECKPOINT,
                 }:
                     return _resume_authority(work, session, now)
+                if action is _SourceAction.COLLECTION_FROZEN:
+                    _resume_authority(work, session, now)
+                    if source._batch_baseline is None:
+                        raise RuntimeError(
+                            "source collection lacks a publication baseline"
+                        )
+                    SourceBatchRepository.require_current(
+                        work.connector, source._batch_baseline
+                    )
+                    return None
                 if action is _SourceAction.STAGING_BEGIN:
-                    pending = _require_pending_gallery(machine)
-                    return GalleryObservationStagingRepository.begin_or_resume(
-                        work,
-                        gate_lease=gate,
-                        ingest_turn=turn.ingest_turn,
-                        build_id=pending.build_id,
-                        gallery_id=pending.gallery_id,
-                        now=now,
+                    if not machine.collecting:
+                        raise RuntimeError(
+                            "source assembly cannot begin observation staging"
+                        )
+                    return (
+                        GalleryObservationStagingRepository.begin_collection_or_resume(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            collection=_require_source_collection(machine),
+                            gallery_id=_require_collection_gallery(machine).gallery_id,
+                            now=now,
+                        )
                     )
                 if action is _SourceAction.STAGING_REUSE:
                     observation = machine.observation
-                    if observation is None or observation.cached is None:
-                        raise RuntimeError("source reuse lacks its cached observation")
-                    pending = _require_pending_gallery(machine)
-                    if observation.cached.gallery_id != pending.gallery_id:
-                        raise SourceMarkerConflictError(
-                            "cached gallery differs from pending durable membership"
+                    if observation is None:
+                        raise RuntimeError("source reuse lacks its frozen observation")
+                    if machine.collecting:
+                        if observation.cached is None:
+                            raise RuntimeError(
+                                "collection reuse lacks its cached observation"
+                            )
+                        if (
+                            observation.cached.gallery_id
+                            != _require_collection_gallery(machine).gallery_id
+                        ):
+                            raise SourceMarkerConflictError(
+                                "cached gallery differs from durable collection identity"
+                            )
+                        return SourceCollectionRepository.retain_observation(
+                            work,
+                            gate_lease=gate,
+                            ingest_turn=turn.ingest_turn,
+                            handle=_require_source_collection(machine),
+                            observation=observation.cached,
+                            now=now,
                         )
-                    return SourceMarkerRepository.reuse(
+                    if observation.sealed is None:
+                        raise RuntimeError(
+                            "source reuse lacks a sealed collection observation"
+                        )
+                    pending = _require_pending_gallery(machine)
+                    if observation.sealed.gallery_id != pending.gallery_id:
+                        raise SourceMarkerConflictError(
+                            "collection gallery differs from source membership"
+                        )
+                    return SourceCollectionRepository.attach_observation(
                         work,
                         gate_lease=gate,
                         ingest_turn=turn.ingest_turn,
+                        handle=_require_source_collection(machine),
                         build_id=pending.build_id,
-                        cached=observation.cached,
+                        observation=observation.sealed,
                         now=now,
                     )
                 if action is _SourceAction.FILE_PAGE:
@@ -1332,7 +1601,13 @@ class VNextIngestFacade:
                         now=now,
                         completion_marker=observation.completion_marker,
                     )
-                    return marker_seal
+                    durable = SourceCollectionRepository.load_observation(
+                        work.connector,
+                        handle=_require_source_collection(machine),
+                        gallery_id=marker_seal.gallery_id,
+                        observation_id=marker_seal.observation_id,
+                    )
+                    return marker_seal, durable
                 if action is _SourceAction.STAGING_RETIRE:
                     seal = prepared_step._payload
                     if not isinstance(seal, GalleryStagingSeal):
@@ -1358,6 +1633,7 @@ class VNextIngestFacade:
                         ingest_turn=turn.ingest_turn,
                         build_id=machine.build_id,
                         attempt=attempt,
+                        collection=_require_source_collection(machine),
                         now=now,
                     )
                     if receipt.terminal:
@@ -1376,10 +1652,12 @@ class VNextIngestFacade:
                 VNextSourceChangedError,
             ) as mismatch:
                 build_id = machine.build_id
+                # Invalidate without closing local spools while the caller owns
+                # its session-renewal lock. The prepared handle's context owner
+                # releases filesystem and connection resources after unwinding.
+                source._failed = True
                 if build_id is None:
-                    raise RuntimeError(
-                        "source manifest mismatch has no build authority"
-                    ) from None
+                    raise
                 # The failed terminal assembly transaction has already rolled back.
                 # Release only the exact OPEN build still mapped to this live
                 # generation; SourceBuildRepository.abandon retains the generation
@@ -1393,7 +1671,6 @@ class VNextIngestFacade:
                         now=now,
                     )
                 )
-                source.close()
                 if isinstance(mismatch, SourceBuildSnapshotMismatchError):
                     raise VNextSourceManifestMismatchError(
                         "durable source build manifest differs from its frozen "
@@ -1415,6 +1692,19 @@ class VNextIngestFacade:
             measurement.processed_rows = result.processed_rows
             measurement.replayed = result.replayed
             measurement.terminal = result.terminal
+            if result.terminal and result.source_receipt is not None:
+                receipt = result.source_receipt
+                database_measurement.describe(
+                    quiet=False,
+                    observation_complete=source._snapshot.complete,
+                    inventory_scan_complete=source._snapshot.complete,
+                    admitted_galleries=source._manifest_summary.gallery_count,
+                    admitted_files=source._manifest_summary.file_count,
+                    discovered_galleries=receipt.discovered_galleries,
+                    staged_galleries=receipt.staged_galleries,
+                    deferred_galleries=source._snapshot.deferred_gallery_count,
+                    waiting_galleries=source._snapshot.waiting_gallery_count,
+                )
             return result
 
     def prepare_analysis(
@@ -2314,15 +2604,7 @@ def _source_build_policy_authority(
     policy: VNextResolvedIngestPolicy,
 ) -> _SourceBuildPolicyAuthority:
     _require_resolved_source_policy(policy)
-    return _SourceBuildPolicyAuthority(
-        manifest_policy_id=policy.manifest_policy_id,
-        analysis_policy_id=policy.analysis_policy_id,
-        artifact_policy_sha256=policy.artifact_policy_sha256,
-        display_title_policy_id=policy.display_title_policy_id,
-        title_sort_policy_id=policy.title_sort_policy_id,
-        operational_policy_id=policy.operational_policy_id,
-        artifacts_required=policy.policy.artifacts_required,
-    )
+    return _SourceBuildPolicyAuthority.from_resolved(policy)
 
 
 def _same_resolved_policy(
@@ -2680,6 +2962,71 @@ def _require_resumed_component_cursor(component_progress: object) -> None:
         raise RuntimeError("gallery component cursor type is invalid")
 
 
+def _require_source_collection(machine: _SourceMachine) -> SourceCollectionHandle:
+    if machine.collection is None:
+        raise RuntimeError("source observation collection is absent")
+    return machine.collection
+
+
+def _require_collection_observation(
+    machine: _SourceMachine,
+) -> FrozenGalleryObservation:
+    if machine.observation is None:
+        raise RuntimeError("collection gallery observation is absent")
+    return machine.observation
+
+
+def _require_collection_gallery(
+    machine: _SourceMachine,
+) -> CollectionGalleryIdentityHandoff:
+    if machine.collection_gallery is None:
+        raise RuntimeError("collection gallery identity is absent")
+    return machine.collection_gallery
+
+
+def _finish_source_observation(source: VNextPreparedSource) -> None:
+    """Finish the local selected cut after every admitted gallery is durable."""
+
+    snapshot = source._snapshot
+    if not snapshot.complete:
+        raise RuntimeError("source collection has not reached inventory EOF")
+    source._manifest_summary = snapshot.manifest_summary
+    report_source_progress(
+        source._progress,
+        VNextSourcePreparationOperation.SOURCE_CHECKPOINT,
+        snapshot.manifest_summary.gallery_count,
+        snapshot.manifest_summary.gallery_count,
+    )
+    if snapshot.manifest_summary.gallery_count != source._plan.gallery_count:
+        selected = SourceDiscoveryPlan.from_locators(
+            snapshot.selected_locators(progress=source._progress),
+            progress=source._progress,
+            transfer_operation=None,
+            order_operation=VNextSourcePreparationOperation.BATCH_ORDER,
+        )
+        previous_plan, source._plan = source._plan, selected
+        report_source_progress(
+            source._progress,
+            VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+            0,
+            previous_plan.gallery_count,
+        )
+        previous_plan.close()
+        report_source_progress(
+            source._progress,
+            VNextSourcePreparationOperation.DISCOVERY_CLEANUP,
+            previous_plan.gallery_count,
+            previous_plan.gallery_count,
+        )
+    source._preparation_resources.close()
+
+
+def _close_completed_source_uploads(machine: _SourceMachine) -> None:
+    while machine.completed_uploads:
+        machine.completed_uploads[-1].close()
+        machine.completed_uploads.pop()
+
+
 def _clear_current_gallery(machine: _SourceMachine) -> None:
     machine.pending_gallery = None
     machine.locator_components = None
@@ -2692,7 +3039,14 @@ def _clear_current_gallery(machine: _SourceMachine) -> None:
     machine.previous_operation_id = None
     machine.match_previous_operation_id = None
     machine.staging_seal = None
-    machine.action = _SourceAction.STAGING_FIND
+    machine.collection_locator = None
+    machine.collection_gallery = None
+    machine.checkpoint_observation = None
+    machine.action = (
+        _SourceAction.COLLECTION_FREEZE
+        if machine.collecting
+        else _SourceAction.STAGING_FIND
+    )
 
 
 def _apply_source_outcome(
@@ -2710,8 +3064,9 @@ def _apply_source_outcome(
             raise RuntimeError("prepared source initialization payload is invalid")
         build_id, command, upload, pages = payload
         if (
-            not isinstance(build_id, bytes)
-            or type(command) is not SourceRootBuildCommand
+            (build_id is not None and not isinstance(build_id, bytes))
+            or type(command)
+            not in {SourceRootBuildCommand, SourceCollectionRootCommand}
             or not isinstance(upload, CanonicalValueUploadPlan)
             or not isinstance(pages, Iterator)
         ):
@@ -2729,6 +3084,17 @@ def _apply_source_outcome(
     elif action is _SourceAction.ROOT_SEAL:
         machine.action = _SourceAction.ROOT_HANDOFF
     elif action is _SourceAction.ROOT_HANDOFF:
+        if machine.collecting:
+            if not isinstance(outcome, SourceCollectionHandle):
+                raise RuntimeError(
+                    "collection root handoff returned an invalid receipt"
+                )
+            machine.collection = outcome
+            machine.completed_uploads.append(_require_root_upload(machine))
+            machine.root_upload = None
+            machine.root_pages = None
+            machine.action = _SourceAction.STAGING_DRAIN
+            return processed_rows, replayed
         if isinstance(outcome, _SourceDrainRetry):
             # One bounded page of a retiring build's preparations was
             # abandoned; the root upload and frozen snapshot are untouched.
@@ -2747,7 +3113,7 @@ def _apply_source_outcome(
         machine.handoff = outcome
         machine.build_id = outcome.build_id
         replayed = outcome.replayed
-        _require_root_upload(machine).close()
+        machine.completed_uploads.append(_require_root_upload(machine))
         machine.root_upload = None
         machine.root_pages = None
         machine.action = _SourceAction.DISCOVERY_BATCH
@@ -2764,10 +3130,9 @@ def _apply_source_outcome(
                         "sealed discovery did not replay its durable receipt"
                     )
                 machine.staged_galleries = outcome.next_processed_count
-                machine.sealed = True
-                machine.action = _SourceAction.COMPLETE
+                machine.action = _SourceAction.ASSEMBLY
             else:
-                machine.action = _SourceAction.STAGING_FIND
+                machine.action = _SourceAction.STAGING_DRAIN
         else:
             machine.discovery_batch = batch
             machine.resolved = []
@@ -2794,6 +3159,22 @@ def _apply_source_outcome(
     elif action is _SourceAction.LOCATOR_SEAL:
         machine.action = _SourceAction.LOCATOR_RESOLVE
     elif action is _SourceAction.LOCATOR_RESOLVE:
+        if machine.collecting:
+            if not isinstance(outcome, CollectionGalleryIdentityHandoff):
+                raise RuntimeError(
+                    "collection locator handoff returned an invalid receipt"
+                )
+            machine.collection_gallery = outcome
+            machine.completed_uploads.append(_require_locator_upload(machine))
+            machine.locator_upload = None
+            machine.locator_pages = None
+            collection_observation = _require_collection_observation(machine)
+            machine.action = (
+                _SourceAction.STAGING_REUSE
+                if collection_observation.cached is not None
+                else _SourceAction.STAGING_BEGIN
+            )
+            return 1, outcome.replayed
         if not isinstance(outcome, ResolvedDiscoveryLocator):
             raise RuntimeError("locator resolution returned an invalid receipt")
         if machine.resolved is None:
@@ -2801,7 +3182,7 @@ def _apply_source_outcome(
         machine.resolved.append(outcome)
         replayed = outcome.replayed
         processed_rows = 1
-        _require_locator_upload(machine).close()
+        machine.completed_uploads.append(_require_locator_upload(machine))
         machine.locator_upload = None
         machine.locator_pages = None
         machine.locator_index += 1
@@ -2836,11 +3217,11 @@ def _apply_source_outcome(
         machine.locator_components = locator
         machine.observation = observation
         machine.staged_galleries = pending.position
-        machine.action = (
-            _SourceAction.STAGING_REUSE
-            if observation.cached is not None
-            else _SourceAction.STAGING_BEGIN
-        )
+        if observation.sealed is None:
+            raise RuntimeError(
+                "source assembly lacks its completed collection observation"
+            )
+        machine.action = _SourceAction.STAGING_REUSE
     elif action is _SourceAction.STAGING_COMPLETE:
         machine.staged_galleries = source._plan.gallery_count
         machine.action = _SourceAction.ASSEMBLY
@@ -2849,6 +3230,12 @@ def _apply_source_outcome(
             raise RuntimeError("gallery staging begin returned invalid progress")
         _resume_staging_machine(source, outcome)
     elif action is _SourceAction.STAGING_REUSE:
+        if machine.collecting:
+            if not isinstance(outcome, SourceCollectionRetention):
+                raise RuntimeError("collection reuse returned an invalid observation")
+            machine.checkpoint_observation = outcome.observation
+            machine.action = _SourceAction.COLLECTION_CHECKPOINT
+            return 1, outcome.replayed
         if not isinstance(outcome, GalleryStagingSeal):
             raise RuntimeError("source reuse returned an invalid observation seal")
         pending = _require_pending_gallery(machine)
@@ -2945,14 +3332,18 @@ def _apply_source_outcome(
             else _SourceAction.MATCH
         )
     elif action is _SourceAction.STAGING_SEAL:
-        if not isinstance(outcome, GalleryStagingSeal):
-            raise RuntimeError("gallery staging seal returned an invalid receipt")
-        pending = _require_pending_gallery(machine)
-        machine.staged_galleries = pending.position + 1
-        replayed = outcome.replayed
-        processed_rows = 1
-        machine.staging_seal = outcome
-        machine.action = _SourceAction.STAGING_RETIRE
+        if (
+            not isinstance(outcome, tuple)
+            or len(outcome) != 2
+            or not isinstance(outcome[0], GalleryStagingSeal)
+            or not isinstance(outcome[1], SealedSourceObservation)
+        ):
+            raise RuntimeError("collection seal returned an invalid receipt")
+        seal, durable = outcome
+        machine.checkpoint_observation = durable
+        machine.staging_seal = seal
+        machine.action = _SourceAction.COLLECTION_CHECKPOINT
+        return 1, seal.replayed
     elif action is _SourceAction.STAGING_RETIRE:
         seal = step._payload
         if not isinstance(seal, GalleryStagingSeal) or not isinstance(
@@ -2977,6 +3368,36 @@ def _apply_source_outcome(
             machine.action = _SourceAction.COMPLETE
         else:
             machine.action = _SourceAction.ASSEMBLY
+    elif action is _SourceAction.COLLECTION_CHECKPOINT:
+        if machine.staging_seal is None:
+            _clear_current_gallery(machine)
+        else:
+            machine.action = _SourceAction.STAGING_RETIRE
+    elif action is _SourceAction.COLLECTION_FREEZE:
+        machine.action = _SourceAction.COLLECTION_FREEZE
+    elif action is _SourceAction.COLLECTION_SELECTED:
+        if not isinstance(step._payload, FrozenGalleryObservation):
+            raise RuntimeError("collection freeze returned an invalid observation")
+        machine.observation = step._payload
+        machine.locator_components = step._payload.locator_components
+        machine.action = _SourceAction.LOCATOR_INITIALIZE
+    elif action is _SourceAction.COLLECTION_SKIPPED:
+        machine.action = _SourceAction.COLLECTION_FREEZE
+    elif action is _SourceAction.COLLECTION_FROZEN:
+        machine.collecting = False
+        machine.action = _SourceAction.INITIALIZE
+    elif action is _SourceAction.STAGING_DRAIN:
+        if step._payload is None:
+            machine.action = (
+                _SourceAction.COLLECTION_RECOVER
+                if machine.collecting
+                else _SourceAction.STAGING_FIND
+            )
+        elif isinstance(step._payload, GalleryStagingRetirement):
+            processed_rows = step._payload.deleted_count
+            machine.action = _SourceAction.STAGING_DRAIN
+        else:
+            raise RuntimeError("staging recovery returned an invalid drain receipt")
     else:
         raise RuntimeError(f"cannot apply source action {action.value}")
     return processed_rows, replayed
@@ -2989,14 +3410,16 @@ def _source_advance_result(
     replayed: bool,
 ) -> VNextIngestAdvanceResult:
     machine = source._machine
-    if machine.build_id is None:
-        raise RuntimeError("source step completed without a build ID")
-    receipt = VNextIngestSourceReceipt(
-        build_id=machine.build_id,
-        discovered_galleries=machine.discovered_galleries,
-        staged_galleries=machine.staged_galleries,
-        sealed=machine.sealed,
-        replayed=replayed,
+    receipt = (
+        None
+        if machine.build_id is None
+        else VNextIngestSourceReceipt(
+            build_id=machine.build_id,
+            discovered_galleries=machine.discovered_galleries,
+            staged_galleries=machine.staged_galleries,
+            sealed=machine.sealed,
+            replayed=replayed,
+        )
     )
     return VNextIngestAdvanceResult(
         phase=VNextIngestPhase.SOURCE,

@@ -413,6 +413,24 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
 # approved-wide table is split, remove its exception and declare each narrow
 # result, including its true semantic key and its sole atomic value (if any).
 _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
+    "catalog_source_collections": NarrowLayoutDeclaration(
+        ("collection_id",), ("scope_key",)
+    ),
+    "catalog_source_collection_manifest_policies": NarrowLayoutDeclaration(
+        ("collection_id",), ("manifest_policy_id",)
+    ),
+    "catalog_source_collection_qualification_policies": NarrowLayoutDeclaration(
+        ("collection_id",), ("qualification_policy_sha256",)
+    ),
+    "catalog_source_collection_created_ats": NarrowLayoutDeclaration(
+        ("collection_id",), ("created_at",)
+    ),
+    "catalog_source_collection_observations": NarrowLayoutDeclaration(
+        ("collection_id", "gallery_id", "observation_id"), ()
+    ),
+    "catalog_source_collection_consumptions": NarrowLayoutDeclaration(
+        ("collection_id",), ("build_id",)
+    ),
     "catalog_gallery_observation_validation_policies": NarrowLayoutDeclaration(
         semantic_key=("gallery_id", "observation_id"),
         semantic_value=("qualification_policy_sha256",),

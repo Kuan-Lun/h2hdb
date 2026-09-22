@@ -516,8 +516,8 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 178, 75, 68, 381, 246)
-    assert plan.conditional_one_gigabyte_limit_required is False
+    ) == (306, 184, 75, 73, 381, 257)
+    assert plan.conditional_one_gigabyte_limit_required is True
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
         "manifest_policy",
@@ -639,7 +639,25 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         for relation in operational.relations
         if relation.name == plan.staging_retirement_relation
     )
-    assert frozenset({"build_id"}) in staging_relation.declared_keys
+    assert set(staging_relation.declared_keys) == {
+        frozenset({"staging_id"}),
+        frozenset({"gallery_id", "observation_id"}),
+    }
+    assert "build_id" not in staging_relation.attributes
+    for owner_relation, owner_attribute in (
+        ("gallery_staging_source_build", "build_id"),
+        ("gallery_staging_collection", "collection_id"),
+    ):
+        owner = next(
+            relation
+            for relation in operational.relations
+            if relation.name == owner_relation
+        )
+        assert set(owner.declared_keys) == {
+            frozenset({"staging_id"}),
+            frozenset({owner_attribute}),
+        }
+        assert set(owner.attributes) == {"staging_id", owner_attribute}
     budget_seeds = tuple(
         seed
         for seed in operational.bootstrap_seeds
@@ -651,7 +669,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
     assert (
         plan.cleanup_job_conservative_peak_bytes
         == (plan.cleanup_job_peak_rows * plan.cleanup_job_accounted_bytes_per_row)
-        == 48_234_496
+        == 50_331_648
     )
     assert (
         plan.cleanup_cycle_root_conservative_peak_bytes
@@ -681,7 +699,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.bounded_nonmeasured_conservative_peak_bytes
         < plan.newly_recomposed_relation_soft_limit_bytes
     )
-    assert plan.total_physical_table_count_after <= (
+    assert plan.total_physical_table_count_after > (
         plan.conditional_limit_trigger_table_count
     )
     assert len(catalog.decompositions) == 29
@@ -702,7 +720,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         (
             "catalog_physical_table_count_after",
             173,
-            "catalog_physical_table_count_after must be 178",
+            "catalog_physical_table_count_after must be 184",
         ),
         (
             "affected_operational_relations",
@@ -716,7 +734,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         ),
         (
             "conditional_one_gigabyte_limit_required",
-            True,
+            False,
             "1GB conditional flag",
         ),
     ),
@@ -729,6 +747,7 @@ def test_capacity_plan_rejects_limit_count_and_conditional_drift(
     contract = checker.load_contract(CATALOG)
     plan = contract.capacity_plan
     assert plan is not None
+    assert getattr(plan, field) != value, "negative control must mutate the contract"
     with pytest.raises(checker.ContractValidationError, match=message):
         checker.validate_contract(
             replace(contract, capacity_plan=replace(plan, **{field: value}))
@@ -1145,7 +1164,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     )
     assert publication_graph & inline_publication_graph == inline_publication_graph
     assert inline_publication_graph.isdisjoint(physical_domains.relations)
-    assert len(physical_domains.relations) == 150
+    assert len(physical_domains.relations) == 156
 
     invalid_domains = replace(
         physical_domains,
@@ -1173,8 +1192,8 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 150" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 128" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 156" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 134" in catalog_lean
     assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
@@ -3218,15 +3237,21 @@ def test_canonical_cleanup_requires_bootstrap_exception_and_maintenance_fence() 
     page_contract = contract.canonical_value_page_contract
     assert page_contract is not None
     for term in (
-        "source_root_v1 is the sole pre-mapping exception",
+        "source_root_v1 can precede any build or collection",
+        "source_relative_locator_v1 may also precede build mapping only under an exact OPEN working collection",
         "every other digest domain requires",
         "shared canonical-value maintenance gate",
         "cleanup cycle holds its exclusive form",
         "final identity never releases its upload claim by itself",
         "retention-blocking external consumer and deletion of only that generation claim commit atomically",
         "phase-owned dictionary or type row alone never releases the claim",
+        "completed or strictly superseded",
         "pre-mapping claim whose generation has no source_build_generation row",
     ):
+        assert page_contract.cleanup_rule.count(term) == 1, (
+            "negative control must remove exactly one required authority condition",
+            term,
+        )
         invalid = replace(
             contract,
             canonical_value_page_contract=replace(
@@ -4031,7 +4056,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "178 BCNF base relations" in valid.stdout
+    assert "184 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (

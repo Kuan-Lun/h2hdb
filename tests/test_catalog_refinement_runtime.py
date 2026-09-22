@@ -141,6 +141,11 @@ class _ReadRecorder:
         self.reads.append((query, data, len(rows)))
         return rows
 
+    def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
+        row = self.connector.fetch_one(query, data)
+        self.reads.append((query, data, int(bool(row))))
+        return row
+
 
 def test_empty_generated_catalog_passes_every_bounded_validator(
     tmp_path: Path,

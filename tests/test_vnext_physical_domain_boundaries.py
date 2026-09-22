@@ -382,13 +382,20 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         "publication_commit_candidate_id",
         "source_build_scope_key",
     }.isdisjoint(CATALOG_PHYSICAL_DOMAIN_RELATIONS)
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 150
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 128
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 156
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 134
     assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 22
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )
-    assert len(CATALOG_PHYSICAL_DOMAIN_WRITERS) == 55
+    assert len(CATALOG_PHYSICAL_DOMAIN_WRITERS) == 60
+    assert {
+        "SourceCollectionRepository.handoff_root",
+        "SourceCollectionRepository.handoff_locator",
+        "SourceCollectionRepository.retain_observation",
+        "SourceCollectionRepository.attach_observation",
+        "SourceCollectionRepository.consume_authorized",
+    } <= {writer.__qualname__ for writer in CATALOG_PHYSICAL_DOMAIN_WRITERS}
     assert len(OPERATIONAL_PHYSICAL_DOMAIN_WRITERS) == 10
     assert len(OPERATIONAL_SCHEMA_EPOCH_WRITERS) == 1
 

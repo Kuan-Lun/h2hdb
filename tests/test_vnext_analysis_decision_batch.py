@@ -5,7 +5,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
-from vnext_analysis_validation_fixtures import file_validation_pages
+from vnext_analysis_validation_fixtures import analysis_source_pages
 from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
@@ -26,6 +26,7 @@ from h2hdb.vnext_analysis_overlay_family import (
     AnalysisFileHashDecisionShadowFamily,
     ensure_analysis_file_hash_decision_shadow_family,
 )
+from h2hdb.vnext_file_decision_validation_plan import AnalysisFileDecisionValidationPage
 
 _SHADOWS = (
     "catalog_a_file_decision_shadow_anchors",
@@ -341,6 +342,16 @@ def test_live_mariadb_scalar_batch_matches_reference_and_query_plan(
         # and scalar domain remains enforced; production E2E below keeps FKs on.
         connector.execute("SET FOREIGN_KEY_CHECKS = 0")
         _assert_batch_matches_scalar_reference(connector)
+
+        def handler_counts() -> dict[str, int]:
+            return {
+                str(name): int(value)
+                for name, value in connector.fetch_all(
+                    "SHOW SESSION STATUS LIKE 'Handler_read_%'"
+                )
+            }
+
+        before = handler_counts()
         with (
             connector.read_transaction(),
             patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
@@ -350,15 +361,20 @@ def test_live_mariadb_scalar_batch_matches_reference_and_query_plan(
                 analysis_id=b"b" * 16,
                 digests=((0).to_bytes(32, "big"), (1).to_bytes(32, "big")),
             )
+        after = handler_counts()
+        assert after["Handler_read_key"] - before["Handler_read_key"] <= 5 * 2
+        assert after["Handler_read_next"] == before["Handler_read_next"]
+        assert after["Handler_read_prev"] == before["Handler_read_prev"]
         sql, parameters = fetched.call_args.args
         with connector.read_transaction():
             plan = connector.fetch_all("EXPLAIN " + sql, parameters)
-        # UNION inputs must search a primary-key range; a bounded derived union
-        # is allowed to scan its <=128 fixed-width keys.
+        # Physical families use their complete PK. MariaDB may report eq_ref
+        # for these exact grid point joins; actual handler counts above reject
+        # a range/prefix scan. Only the bounded requested-key grid may scan.
         base_rows = [row for row in plan if row[2] in _SHADOWS]
         assert len(base_rows) == 5, plan
         assert all(
-            row[3] in {"range", "ref", "const"}
+            row[3] in {"eq_ref", "ref", "const"}
             and row[5]
             in {
                 "PRIMARY",
@@ -403,24 +419,44 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             proposed_analysis_id=b"b" * 16,
             now=30,
         )
-    for stage_index, operation in enumerate(
-        (
-            AnalysisRepository.process_changed_gallery_batch,
-            AnalysisRepository.process_changed_file_hash_batch,
-        )
-    ):
-        for page in range(2):
-            with connector.transaction():
-                result = operation(
-                    work(),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=f"source-{stage_index}-{page}".encode(),
-                    max_rows=128,
-                    now=100 + stage_index * 10 + page,
+    with analysis_source_pages(
+        connector,
+        backend=backend,
+        gate=gate,
+        turn=turn,
+        analysis_id=run.analysis_id,
+    ) as prepare:
+        for stage_index, operation in enumerate(
+            (
+                AnalysisRepository.process_changed_gallery_batch,
+                AnalysisRepository.process_changed_file_hash_batch,
+            )
+        ):
+            operation = cast(Any, operation)
+            for page in range(2):
+                source_preparation = (
+                    {
+                        "preparation": prepare(
+                            f"source-{stage_index}-{page}".encode(),
+                            128,
+                            100 + stage_index * 10 + page,
+                        )
+                    }
+                    if stage_index == 1
+                    else {}
                 )
-        assert result.terminal
+                with connector.transaction():
+                    result = operation(
+                        work(),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=f"source-{stage_index}-{page}".encode(),
+                        max_rows=128,
+                        now=100 + stage_index * 10 + page,
+                        **source_preparation,
+                    )
+            assert result.terminal
 
     def process() -> Any:
         return AnalysisRepository.process_file_hash_decision_batch(
@@ -499,7 +535,7 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
             now=201,
         )
     with (
-        file_validation_pages(
+        analysis_source_pages(
             connector,
             backend=backend,
             gate=gate,
@@ -510,6 +546,7 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
     ):
         for page in range(2):
             preparation = prepare(f"validate-{page}".encode(), 128, 300 + page)
+            assert isinstance(preparation, AnalysisFileDecisionValidationPage)
             with connector.transaction():
                 validated = AnalysisRepository.validate_file_hash_decision_batch(
                     work(),

@@ -188,6 +188,38 @@ def test_info_collects_cumulative_query_statistics(
     performance.close()
 
 
+def test_info_groups_placeholder_arities_across_steps_and_preserves_totals(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+) -> None:
+    performance = IngestPerformance(performance_log, backend="sqlite")
+    for _cycle in range(3):
+        with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 1) as sample:
+            with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as db:
+                for count in range(1, 130):
+                    placeholders = ", ".join(["%s"] * count)
+                    assert db.fetch_one(
+                        f"SELECT %s IN ({placeholders})",
+                        ("private-value",) * (count + 1),
+                    ) == (1,)
+            assert len(sample.queries) == 1
+            assert sum(item.calls for item in sample.queries.values()) == 129
+    stage = performance._stage
+    assert stage is not None
+    assert len(stage.queries) == 1
+    assert next(iter(stage.queries.values())).calls == 387
+    performance.close()
+    info = "\n".join(
+        record.message for record in caplog.records if record.levelno == logging.INFO
+    )
+    assert "first 64 query families per step/stage plus other" in info
+    assert "fingerprints sha256-in-placeholder-list-v1" in info
+    assert "387 completed SQL connector calls; 387 rows returned" in info
+    assert sha256(b"SELECT %s IN (%s)").hexdigest()[:16] + "(calls=387," in info
+    assert "cumulative SQL overflow other(calls=0,seconds=0.000000," in info
+    assert "private-value" not in info
+    assert "SELECT" not in info
+
+
 def test_info_slowest_queries_do_not_disappear_after_64_fingerprints(
     caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
 ) -> None:

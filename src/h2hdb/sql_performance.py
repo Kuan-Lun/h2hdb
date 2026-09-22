@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import re
 from asyncio import current_task
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -16,6 +17,25 @@ from typing import Any, Literal
 
 from .ports import _SQLPerformanceRecorder
 from .sql_connector import SQLConnector
+
+QUERY_FINGERPRINT_ALGORITHM = "sha256-in-placeholder-list-v1"
+
+# Consume protected SQL text before looking for a placeholder-only IN list.
+# Unterminated strings/comments remain protected through EOF, including failed
+# statements. The alternatives deliberately do not parse or rewrite SQL syntax.
+_FINGERPRINT_PARTS = re.compile(
+    r"'(?:(?:''|\\(?:[\s\S]|\Z)|[^'\\]))*(?:'|\Z)"
+    r'|"(?:(?:""|\\(?:[\s\S]|\Z)|[^"\\]))*(?:"|\Z)'
+    r"|`(?:(?:``|\\(?:[\s\S]|\Z)|[^`\\]))*(?:`|\Z)"
+    r"|\[(?:[^\]]|\]\])*(?:\]|\Z)"
+    r"|--[^\r\n]*|\#[^\r\n]*|/\*[\s\S]*?(?:\*/|\Z)"
+    r"|(?P<in_list>(?<![\w$])(?i:IN)\s*\(\s*%s\s*(?:,\s*%s\s*)*\))",
+)
+_IN_LIST_START = re.compile(r"(?i:\bIN)\s*\(")
+
+
+def _fingerprint_part(match: re.Match[str]) -> str:
+    return "IN (%s)" if match.lastgroup == "in_list" else match.group()
 
 
 @dataclass
@@ -158,9 +178,20 @@ class SQLTransactionStatistics:
 
 
 def query_fingerprint(query: str) -> str | None:
-    """Keep SQL text/parameters out of diagnostics, including encoding failures."""
+    """Hash a query family without exposing SQL text or parameter values.
+
+    Only the arity of a bare ``IN (%s, ...)`` is discarded. Quoted text,
+    comments, literals, tuple lists, expressions and subqueries retain their
+    exact text. No query cache retains SQL or grows with caller input. This is
+    diagnostic grouping, never a query-equivalence or execution authority.
+    """
     try:
-        return sha256(query.encode()).hexdigest()[:16]
+        normalized = (
+            _FINGERPRINT_PARTS.sub(_fingerprint_part, query)
+            if _IN_LIST_START.search(query) is not None
+            else query
+        )
+        return sha256(normalized.encode()).hexdigest()[:16]
     except Exception:
         return None
 

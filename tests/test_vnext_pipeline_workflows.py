@@ -230,7 +230,6 @@ def test_fresh_turn_publishes_every_gallery_and_passes_full_ready_audit(
     pipeline.ready()
 
 
-@pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
 def test_shared_tag_value_across_namespaces_survives_publication(
     db_config: CoreConfig,
@@ -985,6 +984,7 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
 
 
 @pytest.mark.merge_smoke
+@pytest.mark.cleanup_acceptance
 def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     db_config: CoreConfig,
 ) -> None:
@@ -1069,11 +1069,24 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
 
     before_replay = pipeline.view()
     renders = pipeline.library.render_calls
-    replay, replay_progressed = pipeline.turn()
+    with patch.object(
+        VNextCleanupRepository,
+        "advance_current_only_cycle",
+        wraps=VNextCleanupRepository.advance_current_only_cycle,
+    ) as cleanup:
+        replay, replay_progressed = pipeline.turn()
     assert replay.source.replayed
     assert replay.source.build_id == recurring.source.build_id
     assert replay.publication.terminal
-    assert replay_progressed == 0
+    # A fresh observation collection is durable even when the source build
+    # replays. Reclaim its transient evidence within two bounded attempts,
+    # without rebuilding or reclaiming any publication/analysis/artifact.
+    assert replay_progressed <= 1
+    assert {call.kwargs["cycle"].target_kind for call in cleanup.call_args_list} == {
+        CleanupTargetKind.SOURCE_COLLECTION,
+        CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
+        CleanupTargetKind.GALLERY_OBSERVATION,
+    }
     assert pipeline.library.render_calls == renders
     assert pipeline.view() == before_replay
 
@@ -1090,8 +1103,8 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     pipeline.ready()
 
 
-@pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
+@pytest.mark.cleanup_acceptance
 def test_live_mariadb_compacted_snapshot_recurrence(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -1861,18 +1874,23 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
     """A live READY audit accepts exact OPEN PCOM and PG crash authority."""
 
     initialize_database(mariadb_config)
-    source = MemorySource(_corpus())
+    # These cleanup control checkpoints require two real revisions, but no
+    # artifact bytes or multi-gallery selection. Keep their public pipeline
+    # provenance while isolating the PCOM/PG authority from unrelated rendering.
+    original = gallery(1001, pages=[], artists=[], language=None)
+    source = MemorySource([original])
     pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
-    pipeline.turn(drain=False)
+    policy = ingest_policy(artifacts_required=False)
+    first, _ = pipeline.turn(policy=policy, drain=False)
     source.put(
-        gallery(
-            1001,
-            pages=[b"p0-a", b"p1-a-live-cleanup"],
-            artists=["alice"],
-            extra_tags=[("female", "glasses")],
+        replace(
+            original,
+            title="metadata changed before cleanup",
+            modified_time=original.modified_time + 1,
         )
     )
-    second, _ = pipeline.turn(drain=False)
+    second, _ = pipeline.turn(policy=policy, drain=False)
+    assert second.source.build_id != first.source.build_id
     clock = takeover_clock()
     connector = open_connector(mariadb_config)
 
