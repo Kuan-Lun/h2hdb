@@ -157,6 +157,12 @@ even after the detailed query-statistics capacity is reached. No query parameter
 or source payloads are logged. Phase totals expose repeated small costs that a
 list of the slowest individual phases can miss.
 
+The initial `source_prepare` record reports inventory size with
+`observation_complete=false`; it does not yet know admitted file/gallery counts.
+The terminal `source_step` INFO record reports admitted files and galleries,
+discovered/staged galleries, deferred/waiting counts, and completed inventory
+observation. Its correlation ID matches the source preparation and stage summary.
+
 INFO also reports cumulative time for the first 64 SQL query families and an
 explicit overflow total. Pure placeholder `IN` lists share one family regardless
 of their parameter count; quoted text, expressions and subqueries remain distinct.
@@ -241,6 +247,18 @@ Query-count savings and small local timings do not establish a full-library
 completion target; input size, page distribution, duplicate patterns, retained
 history and storage latency all matter.
 
+Changed-file-hash analysis traverses the sealed changed-gallery set and its
+accepted current/baseline hash occurrences once per local preparation. It sorts
+and deduplicates them in a disk plan outside write transactions, then commits
+authenticated pages of at most 128 hashes. Restart rebuilds that disposable plan
+from database facts at the durable cursor; it does not hash source images.
+The isolated `scripts/analysis_changed_hash_probe.py` exercises dense changes and
+sparse changes among unrelated galleries, and records SQLite VM work or MariaDB
+handler counters and query plans. Its source-call totals cover changed-gallery
+member and occurrence reads, excluding the earlier change-detection stage and
+later commits. These query fixtures do not perform a full READY audit or measure
+whole-ingest throughput.
+
 `VNextIngestFacade.prepare_source()` accepts `max_new_galleries=None` to admit
 all complete galleries before global analysis and publication. This changes
 publication frequency, not the bounded size of database or adapter operations.
@@ -266,10 +284,16 @@ tuple. A resident may use that explicit fallback when its bounded retry hints
 overflow. A deferred gallery still uses only its currently published observation;
 unpublished cache entries cannot replace that fallback.
 
-`prepare_source_resume(policy=..., source_root_components=...)` checks an
-unpublished sealed working source cut, including its qualification and policy
-authority, in bounded read transactions. It returns an opaque preparation or
-`None` when a new source cut is required. `commit_source_resume(session, prepared)`
+`prepare_source_resume(adapter, policy=...)` requires the source adapter. It
+checks an unpublished sealed working source cut, including its qualification and
+policy authority, in read pages of at most 128 galleries. Outside the database
+transaction, it rereads each existing gallery's completion marker and requires
+an exact match. This is O(G + marker bytes) source work for G existing galleries;
+it performs SQL and marker I/O, without enumerating newly arrived galleries or
+deep-reading image files. Missing marker evidence, a marker mismatch, or a
+deferred source returns `None` and requires ordinary fresh source preparation.
+Other source or database errors still propagate. A successful check returns an
+opaque preparation. `commit_source_resume(session, prepared)`
 rechecks the current working cut and publication baseline in a short transaction
 and maps the renewed ingest generation to that same build. Preparation belongs
 outside the caller's heartbeat lock; only commit belongs inside it. A published
@@ -342,8 +366,8 @@ staging identities and their canonical pages are preserved.
 1. Stop ingest, downloader, OPDS, Komga synchronization, and any other database
    clients.
 2. Take a verifiable database backup. Retain the matching library storage.
-3. Obtain the source checkout matching the installed Core release. The converter
-   is a checkout script, not a `python -m h2hdb` subcommand.
+3. Obtain the source checkout for the schema-8 Core release you are installing.
+   The converter is a checkout script, not a `python -m h2hdb` subcommand.
 4. From that checkout, use the matching Core Python environment and a read-write
    Core configuration to run:
 
@@ -368,7 +392,8 @@ there is no automatic downgrade.
 For schema 6, first use the `upgrade-audit-schema.py` script from the Core 0.40.0
 checkout and its environment to reach schema 7, then use this converter. The old
 6-to-7 entry point is not part of the schema-8 checkout, and normal runtime does
-not fall back to older schemas.
+not fall back to older schemas. Keep all clients stopped throughout both
+conversions and retain the original database/library backup.
 
 ### Other old or incompatible databases
 

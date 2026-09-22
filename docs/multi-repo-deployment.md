@@ -2,22 +2,30 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-3/schema-v6 catalog facade; ingest uses the
+consume the epoch-3/schema-v8 catalog facade; ingest uses the
 transaction-owning ingest facade and downloader uses the queue facade. No
 sibling may query `catalog_*` or operational tables directly.
 
+The source checkpoint release pairs Core 0.41.x with Ingest 0.27.x. OPDS, Komga,
+and downloader also need releases whose declared Core dependency range and
+integration checks support this schema. This document does not establish that
+their currently released versions form a deployable schema-8 set; verify those
+versions before upgrading a shared deployment.
+
 ## Database ownership
 
-There is one epoch-3/schema-v6 database. Catalog and operational relations are
+There is one epoch-3/schema-v8 database. Catalog and operational relations are
 generated for both SQLite and MariaDB from the same closed-world logical
 manifests. Those manifests and their executable schema reports are the
 authority for relation shapes, projections, bootstrap facts, decompositions,
 and semantic obligations; deployment documentation intentionally does not copy
 counts that would drift as the schema evolves.
 
-Schema v6 includes revision-scoped discovery order, normalized search postings,
+Schema v8 includes revision-scoped discovery order, normalized search postings,
 facet order/count authority, acquisition descriptors, and presentation
-descriptors. Operational events remain publication-owned current/retry state,
+descriptors. It also retains per-gallery source observation checkpoints before
+the first complete source cut exists. Operational events remain publication-owned
+current/retry state,
 not OPDS history or a durable delivery queue. Bounded current-only cleanup
 retires unreachable finalized non-head state while retaining identities and
 objects protected by live work or published revisions.
@@ -59,22 +67,20 @@ Synology 10.11.11-1551 package build. Release integration tests pin the
 upstream `mariadb:10.11.11` image and reject a different server version before
 schema initialization.
 
-Only a deployment init job runs schema construction. Consumer containers run a
-full check at startup and may use the lightweight readiness probe separately.
+Only a deployment init job runs schema construction. Consumers must not initialize
+the schema. Ingest's managed audit schedule chooses a quick or full startup
+check; a quick result is not a fresh full audit. Use explicit `check` for the full
+audit and the lightweight `ready` probe for frequent readiness checks.
 
 ## Fresh initialization
 
-The greenfield schema has no upgrade/adoption path, compatibility view, legacy
-read API, or dual-write period. Schema v5 and older databases cannot be opened
-or migrated in place by schema v6. Before replacing an earlier database, stop all
-writers and take the backups required by that deployment. Create a truly empty
-database, rebuild it from source through the current ingest integration, and run:
+For a new installation, create a truly empty database and run:
 
 ```bash
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=6`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=8`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -103,7 +109,44 @@ epoch; it does not execute numbered historical migrations.
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
 no numbered-migration module, old list API, or legacy hand-written schema
 repository. All producers and consumers in one deployment must use the same
-schema-v6 public contract; mixed schema versions are unsupported.
+schema-v8 public contract; mixed schema versions are unsupported.
+
+## Offline upgrade of an existing deployment
+
+An exact supported schema-7 database can be converted once to schema 8 while
+preserving its catalog, source observations, pending work, and download queue.
+The converter adds source collection state and moves existing staging ownership
+into explicit bindings. It does not rewrite CBZs, thumbnails, or the library's
+format-v4 journal; retain the entire matching library, including private state.
+
+1. Stop all database consumers and library writers. Back up the database and
+   matching complete library, and verify the backups.
+2. From the schema-8 Core checkout, using its matching Python environment and
+   read-write Core configuration, run:
+
+   ```bash
+   python scripts/upgrade-source-collection-schema.py \
+     --config core-writer.json --consumers-stopped
+   ```
+
+3. The converter performs a full audit. If interrupted, leave consumers stopped
+   and rerun the same converter; a completed repeat audits and reports
+   `already_converted`. Restart only application versions verified for schema 8.
+
+The flag acknowledges that consumers are already stopped; it does not stop them.
+Do not clear the database or remove CBZs to perform this conversion. Rollback
+requires restoring the pre-upgrade database backup before running old software.
+
+Schema 6 must first use `upgrade-audit-schema.py` from the Core 0.40.0 checkout
+and environment to reach schema 7, then the schema-8 converter above. Keep all
+consumers stopped throughout both steps. The schema-8 checkout does not retain
+the old conversion entry point or provide a runtime fallback to older schemas.
+
+Schema 5 and earlier have no supported in-place converter. Preserve their
+database/library pair and original sources, then build a separate new database
+and matching library. Rebuilding does not recover old queue requests or
+operational history automatically. A version mismatch may instead indicate the
+wrong application version or database path; confirm those before rebuilding.
 
 ## Consumer boundaries
 
@@ -190,9 +233,9 @@ source data or acquisition/presentation bytes have already been ingested.
 
 Resident integrations can pass `max_new_galleries` to `prepare_source()` and
 publish cumulative source batches, or pass `None` to admit all complete galleries
-before publication. Every batch inventories the current source
+before publication. Every fresh source cut inventories the current source
 again, independently confirms apparent removals, refreshes completed galleries,
-and admits a bounded number of successfully observed new galleries. Discovery
+and applies the optional admission limit to successfully observed new galleries. Discovery
 may omit incomplete galleries; an inventory omission alone never proves deletion.
 Core checks every omitted published locator with the adapter's fresh
 `gallery_exists()` probe. Only a confirmed `False` removes that member. `True` or
@@ -214,13 +257,23 @@ Previously published source membership includes galleries excluded by catalog
 deduplication. A changed qualification policy requires fresh observation and
 cannot use a deferred old observation as new-policy evidence.
 
-The prepared handle's `gallery_count` reports the exact admitted observation count.
+`prepare_source()` creates discovery and a lazy observation handle. Subsequent
+issue/prepare/commit steps observe one gallery outside the session lock and
+persist its canonical pages, qualification, and sealed observation before the
+next gallery. A durable collection owns these checkpoints until the full source
+cut seals; this does not publish intermediate batches. After interruption,
+matching completion markers allow reuse of completed observations. The old
+unfinished staging is retired in bounded steps before observing that gallery
+again. Without stable marker evidence, galleries must be observed again.
+
+The prepared handle's `observation_complete` must become true before callers read
+its inventory counts; premature reads fail. `gallery_count` then reports the
+exact admitted observation count.
 Its `deferred_gallery_count` reports quota backlog suitable for
 another immediate batch. `waiting_gallery_count` reports incomplete galleries
 that must be retried after the normal polling delay, even if the marker monitor
 has not signaled another change. Both are process-local scheduling hints, never
-a persisted queue or publication receipt. Restart discards unfinished private
-spools and prepares a new source turn against the durable published baseline.
+a persisted queue or publication receipt.
 Matching fresh completion markers and the current qualification policy can reuse
 retained sealed observations, including unpublished observations. The artifact
 adapter rereads live inputs; Core verifies their exact hashes and sizes before
@@ -228,6 +281,19 @@ rendering from one gallery-local immutable spool. This avoids retaining a byte
 snapshot of the entire source turn, but missing or changed live inputs can defer
 publication. Marker reuse itself does not prove that those external bytes remain
 available.
+
+Before requesting a fresh cut, an integration can call
+`prepare_source_resume(adapter, policy=...)` for an unpublished sealed working cut.
+It verifies SQL authority in pages of at most 128 galleries and rereads the
+existing galleries' completion markers outside the transaction and heartbeat
+lock. For G existing galleries this is O(G + marker bytes) source work, including
+SQL and marker I/O. It neither enumerates newly arrived galleries nor deeply
+reads images. Markerless, mismatched, or deferred sources require ordinary fresh
+preparation; other source/database errors still propagate. A successful
+`commit_source_resume(session, prepared)` rechecks authority in a short transaction
+and continues that same cut's analysis and artifacts. Resumed deferred/waiting
+counts are unknown: schedule a fresh inventory after publication instead of
+declaring catch-up complete from the resumed receipt.
 
 Resident retry hints accumulate failed gallery locators and force fresh
 observation through `reobserve_gallery_locators` on the next source turn. At most
@@ -278,4 +344,3 @@ transient candidate cleanup. Readers seek indexed positions with capped pages
 and validate cursor membership against the current revision. Cleanup releases
 each directory row before its latest member publication order and subject rows;
 a retained historical descriptor does not pin obsolete directory values.
-Schema v5 requires rebuilding older schema databases from an empty database.
