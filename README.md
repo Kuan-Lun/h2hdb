@@ -237,6 +237,47 @@ Query-count savings and small local timings do not establish a full-library
 completion target; input size, page distribution, duplicate patterns, retained
 history and storage latency all matter.
 
+`VNextIngestFacade.prepare_source()` accepts `max_new_galleries=None` to admit
+all complete galleries before global analysis and publication. This changes
+publication frequency, not the bounded size of database or adapter operations.
+The caller owns any temporary source-byte storage and must account for its
+capacity independently of this admission limit.
+
+An exact fresh completion marker and the current qualification policy now allow
+reuse of any retained, sealed source observation, including an unpublished one
+after restart. This replaces the previous artifact-enabled rule that deeply
+observed every unpublished gallery again. Reuse preserves immutable hashes and
+qualification evidence; it does not prove that live files remain available.
+Artifact preparation still verifies the bytes it actually reads against the
+sealed observation. Source adapters must honor their completion-marker contract.
+
+After an artifact-source failure, callers can pass
+`reobserve_gallery_locators=(locator_a, locator_b)` to bypass reuse for up to 128
+distinct exact locators. Accumulate unresolved failed locators across retries so
+alternating failures do not reintroduce an earlier stale observation. These hints
+only request fresh observation and qualification; they cannot insert inventory
+members, bypass the new-gallery budget, or authorize publication. To refresh
+every admitted gallery, pass `reuse_sealed_observations=False` with an empty hint
+tuple. A resident may use that explicit fallback when its bounded retry hints
+overflow. A deferred gallery still uses only its currently published observation;
+unpublished cache entries cannot replace that fallback.
+
+When the complete source manifest remains the same, restart can resume the same
+working candidate and preserve already prepared artifacts. A changed manifest
+requires a new global analysis: dropping a failed gallery after analysis could
+change spam and duplicate selection for other galleries. Existing unpublished
+artifacts are candidate-owned and can need rendering again when that candidate
+is superseded. Observation reuse does not eliminate this work or guarantee the
+full-library time budget.
+
+In the normal two-step artifact preparation, the initial live-source pass fills
+one gallery-local verified spool. Post-render source verification reads this
+spool, not the live source. The subsequent protection step reopens and verifies
+live sources when it reuses the prepared receipt. Consequently, a cache hit
+normally still involves two live reads of each executable source member overall.
+Receipts above the 256 MiB cache limit, restarts and retries can repeat rendering
+or add reads; logical read counts do not reveal physical HDD reads.
+
 ## Upgrade or restore a database
 
 This release uses **epoch 3, schema version 7**. `migrate` initializes this

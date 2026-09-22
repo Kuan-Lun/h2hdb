@@ -160,6 +160,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_pipeline_workflows.py",
             "test_live_mariadb_facade_releases_abandoned_artifacts_then_cleans_candidate",
         ),
+        # Three galleries exercise the changed unpublished-retry contract:
+        # exact observation reuse, preserved prepared bytes and live verification.
+        (
+            "test_vnext_source_reread.py",
+            "test_exact_retry_preserves_prepared_artifacts_without_deep_source_reads",
+        ),
         (
             "test_vnext_storage_instance_repository.py",
             "test_live_mariadb_fresh_facades_serialize_competing_first_bind",

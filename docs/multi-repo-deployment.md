@@ -189,7 +189,8 @@ Schema `READY` means the exact database contract is present; it does not mean
 source data or acquisition/presentation bytes have already been ingested.
 
 Resident integrations can pass `max_new_galleries` to `prepare_source()` and
-publish cumulative source batches. Every batch inventories the current source
+publish cumulative source batches, or pass `None` to admit all complete galleries
+before publication. Every batch inventories the current source
 again, independently confirms apparent removals, refreshes completed galleries,
 and admits a bounded number of successfully observed new galleries. Discovery
 may omit incomplete galleries; an inventory omission alone never proves deletion.
@@ -202,7 +203,7 @@ published gallery with a missing marker remains eligible for fallback.
 
 A gallery-level `VNextSourceDeferredError` discards only that gallery's provisional
 observation pages and invokes the adapter's idempotent
-`discard_gallery_observation()` hook to discard provisional captured source bytes,
+`discard_gallery_observation()` hook to release provisional adapter resources,
 including when the facade itself detects a changed final completion marker.
 The last published observation remains referenced under the
 same qualification policy; a new incomplete gallery is omitted without consuming
@@ -220,10 +221,27 @@ that must be retried after the normal polling delay, even if the marker monitor
 has not signaled another change. Both are process-local scheduling hints, never
 a persisted queue or publication receipt. Restart discards unfinished private
 spools and prepares a new source turn against the durable published baseline.
-When artifacts are required, a retained but unpublished source observation must
-be freshly observed so the integration can rebuild its private immutable byte
-snapshot. An unpublished source seal alone cannot prove those bytes survived a
-terminated process. Completion
+Matching fresh completion markers and the current qualification policy can reuse
+retained sealed observations, including unpublished observations. The artifact
+adapter rereads live inputs; Core verifies their exact hashes and sizes before
+rendering from one gallery-local immutable spool. This avoids retaining a byte
+snapshot of the entire source turn, but missing or changed live inputs can defer
+publication. Marker reuse itself does not prove that those external bytes remain
+available.
+
+Resident retry hints accumulate failed gallery locators and force fresh
+observation through `reobserve_gallery_locators` on the next source turn. At most
+128 distinct locators are accepted; `reuse_sealed_observations=False` with no
+locator hints requests a full refresh when the bounded hint set overflows.
+Observation and qualification still enforce actual completion evidence. Deferred
+published galleries retain only the current published observation; incomplete new
+galleries can wait while independently complete galleries proceed. An unchanged
+complete source manifest can resume its working candidate and already prepared
+artifacts. A changed manifest needs a new global analysis and may require
+rendering unpublished artifacts again; no gallery can be removed from the old
+analysis after artifact preparation fails.
+
+Completion
 of a gallery, analysis, or CBZ alone does not make it readable: each batch still
 uses the full sealed publication and library activation protocol. OPDS discovers
 the new current head without restarting. Current-only resource links can expire

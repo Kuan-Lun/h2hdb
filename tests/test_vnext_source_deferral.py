@@ -248,7 +248,7 @@ def test_unpublished_newer_marker_binding_cannot_replace_deferred_published_obse
 
 
 @pytest.mark.parametrize("artifacts_required", [False, True])
-def test_unpublished_source_seal_is_freshly_observed_after_restart_when_artifacts_are_required(
+def test_unpublished_source_seal_reuses_exact_marker_and_policy_after_restart(
     db_config: CoreConfig, artifacts_required: bool
 ) -> None:
     initialize_database(db_config)
@@ -270,7 +270,7 @@ def test_unpublished_source_seal_is_freshly_observed_after_restart_when_artifact
         with restarted.prepare_source(source, policy=policy) as prepared:
             assert prepared.gallery_count == 1
         restarted.complete_ingest(session)
-    assert source.deep_reads == ([original.locator] if artifacts_required else [])
+    assert source.deep_reads == []
 
 
 def test_deferred_gallery_cannot_claim_replacement_qualification_policy(

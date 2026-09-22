@@ -191,58 +191,6 @@ class SourceBatchRepository:
         return tuple(digest in members for digest in digests)
 
     @staticmethod
-    def retain_published_observations(
-        connector: SQLConnector,
-        baseline: SourceBatchBaseline,
-        candidates: tuple[CachedSourceObservation | None, ...],
-    ) -> tuple[CachedSourceObservation | None, ...]:
-        """Require fresh preparation of unpublished artifact source after restart.
-
-        An unpublished source seal does not prove that external artifact inputs
-        survived the process that observed it. Only candidates belonging to the
-        pinned published source can take the no-observation reuse path.
-        """
-
-        if type(candidates) is not tuple or len(candidates) > _MAX_LOCATORS:
-            raise ValueError("published reuse accepts at most 128 candidates")
-        SourceBatchRepository.require_current(connector, baseline)
-        if baseline.build_id is None:
-            return (None,) * len(candidates)
-        keys = tuple(
-            dict.fromkeys(
-                candidate.gallery_id
-                for candidate in candidates
-                if candidate is not None
-            )
-        )
-        if not keys:
-            return candidates
-        for candidate in candidates:
-            if candidate is not None:
-                candidate.__post_init__()
-        slots = ", ".join("%s" for _key in keys)
-        rows = connector.fetch_all(
-            "SELECT member.gallery_id, member.observation_id "
-            "FROM catalog_source_build_galleries AS member "
-            "JOIN catalog_gallery_identities AS identity ON identity.gallery_id = member.gallery_id "
-            "WHERE member.build_id = %s AND identity.scope_key = %s "
-            f"AND member.gallery_id IN ({slots}) LIMIT 129",
-            (baseline.build_id, baseline.scope_key, *keys),
-        )
-        identities = set(rows)
-        if len(identities) != len(rows) or any(
-            len(row) != 2 or row[0] not in keys for row in rows
-        ):
-            raise SourceBatchConflictError("published reuse membership differs")
-        return tuple(
-            candidate
-            if candidate is not None
-            and (candidate.gallery_id, candidate.observation_id) in identities
-            else None
-            for candidate in candidates
-        )
-
-    @staticmethod
     def list_locators(
         connector: SQLConnector,
         baseline: SourceBatchBaseline,

@@ -3103,6 +3103,9 @@ assumptions = ["The source producer guarantees that an unchanged completion mark
 path = "src/h2hdb/vnext_source_marker_repository.py"
 symbol = "SourceMarkerRepository"
 [[evidence.location]]
+path = "src/h2hdb/vnext_ingest_facade.py"
+symbol = "VNextIngestFacade.prepare_source"
+[[evidence.location]]
 path = "src/h2hdb/vnext_source_marker_family.py"
 symbol = "bind_completion_marker"
 [[evidence.location]]
@@ -3114,7 +3117,7 @@ id = "fault.production.source-completion-marker"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Changed markers during preparation cannot seed reusable authority; caller-corrupted cached counts or gallery identity are rejected without durable writes, connector faults roll back cached linking, response-loss replay adds no writes, and a replaced ingest owner cannot reuse delayed work."
+claim = "Changed markers during preparation cannot seed reusable authority; caller-corrupted cached counts or gallery identity are rejected without durable writes, connector faults roll back cached linking, response-loss replay adds no writes, and a replaced ingest owner cannot reuse delayed work. Retained unpublished observations do not bypass live artifact-byte verification, and malformed refresh hints fail before observing source bytes."
 assumptions = ["These are concrete sampled fault paths, not an exhaustive model of filesystem or database failures."]
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
@@ -3125,13 +3128,19 @@ symbol = "test_completion_marker_rejects_corrupt_authority"
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
 symbol = "test_cached_source_step_recovers_commit_faults_and_rejects_stale_owner"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_marker_reuse_cannot_accept_changed_or_missing_artifact_bytes"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_invalid_refresh_hints_fail_before_observing_source"
 
 [[evidence]]
 id = "integration.production.source-completion-marker"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Public preparation survives facade restart and reuses retained verified observations, preserves complete current source membership, and reclaims removed-gallery marker bindings through normal child-first cleanup."
+claim = "Public preparation survives facade restart and reuses retained verified observations, preserves complete current source membership, and reclaims removed-gallery marker bindings through normal child-first cleanup. Exact unpublished retry preserves the working candidate's prepared artifacts; explicit bounded hints refresh only selected galleries while unchanged markers and qualification policy permit reuse of the rest. Finite 127/128/129-gallery cost cases exercise three retry cycles and reject a full-refresh counterexample to the targeted deep-read budget."
 assumptions = ["The public workflow is exercised on SQLite; the restart case is also an explicit live MariaDB smoke case when H2HDB_TEST_MARIADB=1. The other MariaDB cases require the manual deep profile and are not implied by a bounded release receipt."]
 [[evidence.location]]
 path = "tests/test_vnext_source_marker.py"
@@ -3151,6 +3160,21 @@ symbol = "test_unpublished_source_cache_cannot_bypass_new_gallery_quota"
 [[evidence.location]]
 path = "tests/test_vnext_source_batches.py"
 symbol = "test_cumulative_batches_rebuild_global_duplicates_like_a_complete_ingest"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_exact_retry_preserves_prepared_artifacts_without_deep_source_reads"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_unpublished_reuse_requires_exact_marker_and_qualification_policy"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_accumulated_refresh_hints_observe_only_failed_galleries_across_retries"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_refresh_hint_capacity_is_bounded_without_inventing_source_membership"
+[[evidence.location]]
+path = "tests/test_vnext_source_reread.py"
+symbol = "test_targeted_reread_cost_across_source_lookup_page_boundary"
 
 [[evidence]]
 id = "lean.data.analysis-bounded-preparation"
