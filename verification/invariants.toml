@@ -965,7 +965,7 @@ id = "runtime.production.role-materialization"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production READY audit keyset-scans the anchor authority and LEFT JOINs the file number, content digest, adapter role, completion seal and exact file-name identity to prove every retained file family is total; separate keyset subset scans reject any child outside the anchor authority. It then independently classifies exact galleryinfo.txt name bytes, derives every CONTENT hash multiplicity, and merge-compares the result with the stored occurrence materialization in fixed-size pages."
+claim = "The production READY audit keyset-scans the anchor authority and LEFT JOINs the file number, content digest, adapter role, completion seal and exact file-name identity to prove every retained file family is total; separate keyset subset scans reject any child outside the anchor authority. It then independently classifies exact galleryinfo.txt name bytes, derives every CONTENT hash multiplicity, and merge-compares the result with the stored occurrence materialization in fixed-size pages. Independently validated OPEN cleanup authority, frozen unreachable roots and the exact child-first cursor determine which derived occurrences must already be absent; this is not a blanket exemption for a retained observation."
 assumptions = ["Adapter roles metadata/page/other are adapter-provided facts; the independent filename classifier yields the distinct METADATA/CONTENT file role used by the occurrence derivation."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
@@ -979,13 +979,20 @@ symbol = "_iter_derived_file_hash_occurrences"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_role_derivation_pages_every_file_family_and_uses_range_seeks"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validated_open_observation_retirement"
+
+[[evidence.location]]
+path = "tests/test_role_derivation_cleanup.py"
+symbol = "test_full_ready_accepts_every_committed_observation_retirement_checkpoint"
 
 [[evidence]]
 id = "fault.production.role-materialization"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Bounded SQLite corruption controls disable foreign keys, remove each mandatory file-name or vertical-family member in turn, inject each vertical child without an anchor, and remove a retained CONTENT hash occurrence; the production READY audit rejects every omission and excess."
+claim = "Bounded SQLite corruption controls disable foreign keys, remove each mandatory file-name or vertical-family member in turn, inject each vertical child without an anchor, and remove a retained CONTENT hash occurrence; the production READY audit rejects every omission and excess. SQLite and MariaDB real interrupted-cleanup controls also reject missing current or cursor-uncovered occurrences, wrong counts, reappearing deleted families, forged cleanup cursors, absent frozen roots and renewed source references."
 assumptions = ["The production writer tests separately reject forged adapter-role facts before artifact planning."]
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
@@ -996,6 +1003,9 @@ symbol = "test_ready_rejects_a_missing_retained_file_family_member"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_ready_rejects_a_file_family_member_without_an_anchor"
+[[evidence.location]]
+path = "tests/test_role_derivation_cleanup.py"
+symbol = "test_observation_cleanup_authority_does_not_hide_corruption"
 
 [[evidence]]
 id = "runtime.data.physical-domains"
@@ -3970,7 +3980,7 @@ id = "runtime.production.source-qualification"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "Source staging and READY independently compare the immutable normalized qualification family with canonical METADATA. Analysis uses accepted observation membership for changed galleries, file decisions, content ownership and GID selection, while snapshot accounting retains every source gallery; comparator preparation checks the normalized qualification against the canonical bytes again."
+claim = "Source staging and READY independently compare the immutable normalized qualification family with canonical METADATA. Analysis uses accepted observation membership for changed galleries, file decisions, content ownership and GID selection, while snapshot accounting retains every source gallery; comparator preparation checks the normalized qualification against the canonical bytes again. During observation retirement, READY independently proves the exact cleanup frontier and source unreachability, then requires absence only for cursor-covered qualification children and a deleted rejected PAGE; all other children remain exact comparisons."
 assumptions = ["The adapter is responsible for qualifying the exact observed source under its declared policy; core owns the immutable qualification authority and does not decode images."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_source_qualification_repository.py"
@@ -3990,13 +4000,16 @@ symbol = "_evaluate_file_decision_page"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_metadata_comparator_facts"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validated_open_observation_retirement"
 
 [[evidence]]
 id = "fault.production.source-qualification"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Generated SQLite metadata fixtures and the complete READY audit reject a missing qualification disposition, changed policy or disposition, and unexpected rejection reason or source facts when they disagree with the canonical METADATA stream. Source sealing rejects a rejection leaf that identifies metadata rather than an observed PAGE."
+claim = "Generated SQLite metadata fixtures and the complete READY audit reject a missing qualification disposition, changed policy or disposition, and unexpected rejection reason or source facts when they disagree with the canonical METADATA stream. Source sealing rejects a rejection leaf that identifies metadata rather than an observed PAGE. Real interrupted observation cleanup on SQLite and MariaDB rejects missing current qualification and reappearing deleted qualification or FILE families."
 assumptions = ["These corruption and source-scope controls validate normalized qualification authority; they do not model filesystem corruption or establish decoder behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_analysis_qualification.py"
@@ -4008,14 +4021,17 @@ symbol = "test_ready_rejects_qualification_disagreeing_with_canonical_metadata"
 [[evidence.location]]
 path = "tests/test_vnext_source_qualification.py"
 symbol = "test_rejection_must_identify_an_observed_page"
+[[evidence.location]]
+path = "tests/test_role_derivation_cleanup.py"
+symbol = "test_full_ready_accepts_every_committed_observation_retirement_checkpoint"
 
 [[evidence]]
 id = "integration.production.source-qualification"
 layer = "integration"
 strength = "runtime_integration"
 directness = "direct"
-claim = "Three complete SQLite and MariaDB analysis generations transition a source from accepted to rejected to repaired. SQLite distinct-content and shared-content cases, plus a shared-content MariaDB smoke case, preserve complete source counts, remove rejected file contributions and GID candidacy, select a valid alternative with the same GID, and restore the repaired winner. File decisions are compared with an independent full oracle that filters qualification in Python. Public SQLite source-to-publication cycles reuse unchanged rejection receipts, re-qualify both galleries after an artifact policy change, and preserve qualification children for every retained observation after removal; codec checkpoints resume at every byte boundary. A one-row SQLite cleanup cycle removes all four qualification children for an unreachable observation while preserving the complete children of two reachable observations."
-assumptions = ["These finite fixtures run the production analysis orchestrator through snapshot handoff with one-row batches. The MariaDB case is explicitly selected by the bounded smoke profile. They do not render images or exercise filesystem publication activation."]
+claim = "Three complete SQLite and MariaDB analysis generations transition a source from accepted to rejected to repaired. SQLite distinct-content and shared-content cases, plus a shared-content MariaDB smoke case, preserve complete source counts, remove rejected file contributions and GID candidacy, select a valid alternative with the same GID, and restore the repaired winner. File decisions are compared with an independent full oracle that filters qualification in Python. Public SQLite source-to-publication cycles reuse unchanged rejection receipts, re-qualify both galleries after an artifact policy change, and preserve qualification children for every retained observation after removal; codec checkpoints resume at every byte boundary. A one-row SQLite cleanup cycle removes all four qualification children for an unreachable observation while preserving the complete children of two reachable observations. Restarted public cleanup on both backends audits every committed observation-retirement checkpoint for accepted and rejected observations, with 127/128/129/257-page manual boundary cases; no cleanup writer or data fact is replaced."
+assumptions = ["These finite fixtures run the production analysis orchestrator through snapshot handoff with one-row batches. The analysis MariaDB smoke case is explicitly selected by the bounded merge profile; the observation-retirement MariaDB matrix and page boundaries are manual cleanup-acceptance evidence. These fixtures do not render images or exercise filesystem publication activation."]
 [[evidence.location]]
 path = "tests/test_vnext_analysis_qualification.py"
 symbol = "test_rejected_source_is_removed_from_analysis_and_repair_restores_same_gid_winner"
@@ -4034,6 +4050,9 @@ symbol = "test_rejection_cache_rechecks_policy_and_preserves_retained_source_aut
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_locations"
+[[evidence.location]]
+path = "tests/test_role_derivation_cleanup.py"
+symbol = "test_full_ready_accepts_every_committed_observation_retirement_checkpoint"
 
 [[invariant]]
 id = "catalog.source-completion-marker.v1"
@@ -4429,7 +4448,6 @@ tla = { status = "not_applicable", rationale = "CatalogCore has no audit timing,
 runtime_refinement = { status = "covered", evidence = ["runtime.production.database-audit-schedule", "runtime.production.writer-bindings"] }
 fault = { status = "covered", evidence = ["fault.production.database-audit-schedule"] }
 integration = { status = "covered", evidence = ["integration.production.database-audit-schedule", "integration.live-mariadb.database-audit-schedule"] }
-
 
 [[evidence]]
 id = "runtime.production.source-collections"
