@@ -6928,9 +6928,18 @@ def check_identity_codecs_v1(connector: SQLConnector) -> None:
     _active_source_contexts(connector)
 
 
+_OBSERVATION_QUALIFICATION_RETIREMENT = (
+    ("catalog_gallery_observation_validation_sources", "qualification_source_name"),
+    ("catalog_gallery_observation_validation_reasons", "qualification_reason"),
+    ("catalog_gallery_observation_validation_dispositions", "accepted"),
+    ("catalog_gallery_observation_validation_policies", "qualification_policy_sha256"),
+)
+
+
 def check_source_qualification_v1(connector: SQLConnector) -> None:
     """Reconstruct every retained qualification from its exact canonical byte tree."""
 
+    retirement = _validated_open_observation_retirement(connector)
     after_gallery = after_observation = 0
     while True:
         rows = connector.fetch_all(
@@ -6946,11 +6955,37 @@ def check_source_qualification_v1(connector: SQLConnector) -> None:
                 receipt = identity.validate_gallery_observation_metadata_parts(
                     iter_metadata_chunks(connector, gallery_id, observation_id)
                 )
+                retired_columns = frozenset(
+                    column
+                    for index, (_table, column) in enumerate(
+                        _OBSERVATION_QUALIFICATION_RETIREMENT
+                    )
+                    if retirement is not None
+                    and retirement.covers(13, index, (gallery_id, observation_id))
+                )
+                rejected_source = receipt.qualification.source_name
+                retired_source = (
+                    retirement is not None
+                    and rejected_source is not None
+                    and retirement.covers(
+                        12,
+                        0,
+                        (gallery_id, observation_id),
+                        identity.file_key(rejected_source),
+                    )
+                )
                 require_source_qualification(
-                    connector, gallery_id, observation_id, receipt
+                    connector,
+                    gallery_id,
+                    observation_id,
+                    receipt,
+                    retired_columns=retired_columns,
+                    retired_rejection_source=retired_source,
                 )
             except (TypeError, ValueError) as error:
-                raise CatalogSemanticValidationError(str(error)) from error
+                raise CatalogSemanticValidationError(
+                    f"{error}: gallery_id={gallery_id}, observation_id={observation_id}"
+                ) from error
         after_gallery, after_observation = rows[-1]
 
 
@@ -7513,6 +7548,341 @@ def _iter_stored_file_hash_occurrences(
             after_file_sha256 = file_sha256
 
 
+@dataclass(frozen=True, slots=True)
+class _OpenObservationRetirement:
+    """Bounded unreachable roots and their exact child-first deletion frontier."""
+
+    roots: frozenset[tuple[int, int]]
+    phase_order: int
+    cursor_relation: int
+    cursor_values: tuple[int | bytes, ...]
+
+    def covers(
+        self,
+        phase_order: int,
+        relation: int,
+        root: tuple[int, int],
+        *suffix: int | bytes,
+    ) -> bool:
+        if root not in self.roots or self.phase_order < phase_order:
+            return False
+        if self.phase_order > phase_order:
+            return True
+        if not self.cursor_values or self.cursor_relation < relation:
+            return False
+        return (
+            self.cursor_relation > relation
+            or (
+                *root,
+                *root,
+                *suffix,
+            )
+            <= self.cursor_values
+        )
+
+
+def _observation_retirement_cursor(
+    phase_order: int,
+    cursor: bytes,
+    roots: frozenset[tuple[int, int]],
+) -> tuple[int, tuple[int | bytes, ...]]:
+    """Decode only frontiers used by the independently reconstructed facts."""
+
+    if not cursor or phase_order not in {8, 12, 13}:
+        return 0, ()
+    if len(cursor) < 40 or cursor[0] != 1:
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup cursor is malformed"
+        )
+    relation = int.from_bytes(cursor[1:3], "big")
+    if relation >= {8: 5, 12: 1, 13: 8}[phase_order]:
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup cursor relation is invalid"
+        )
+    has_suffix = phase_order == 12 or (phase_order == 8 and relation != 0)
+    binary_suffix = phase_order == 12 or (phase_order == 8 and relation == 2)
+    expected_length = 40 + (35 if binary_suffix else 9) if has_suffix else 40
+    if (
+        len(cursor) != expected_length
+        or cursor[3] != (5 if has_suffix else 4)
+        or any(cursor[offset : offset + 1] != b"i" for offset in (4, 13, 22, 31))
+    ):
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup cursor key shape is invalid"
+        )
+    integers = tuple(
+        _as_int(
+            int.from_bytes(cursor[offset + 1 : offset + 9], "big"),
+            field="observation cleanup cursor identity",
+            positive=True,
+        )
+        for offset in (4, 13, 22, 31)
+    )
+    root = (integers[0], integers[1])
+    if root != integers[2:] or root not in roots:
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup cursor is outside its frozen roots"
+        )
+    values: tuple[int | bytes, ...] = integers
+    if has_suffix:
+        if binary_suffix:
+            if cursor[40:43] != b"b\x00\x20":
+                raise CatalogSemanticValidationError(
+                    "OPEN observation cleanup cursor digest is malformed"
+                )
+            values += (cursor[43:],)
+        else:
+            if cursor[40:41] != b"i":
+                raise CatalogSemanticValidationError(
+                    "OPEN observation cleanup cursor scalar is malformed"
+                )
+            values += (
+                _as_int(
+                    int.from_bytes(cursor[41:], "big"),
+                    field="observation cleanup cursor scalar",
+                ),
+            )
+    return relation, values
+
+
+def _require_unreferenced_observation_retirement(
+    connector: SQLConnector,
+    roots: frozenset[tuple[int, int]],
+    *,
+    require_allocations: bool,
+) -> None:
+    """Recheck data-plane reachability; checkpoint integrity alone is insufficient."""
+
+    ordered_roots = sorted(roots)
+    for offset in range(0, len(ordered_roots), _CATALOG_RESOURCE_PAGE_LIMIT):
+        page = ordered_roots[offset : offset + _CATALOG_RESOURCE_PAGE_LIMIT]
+        predicate = " OR ".join(
+            "(gallery_id = %s AND observation_id = %s)" for _ in page
+        )
+        parameters = tuple(value for root in page for value in root)
+        for table in (
+            "catalog_source_build_galleries",
+            "catalog_source_collection_observations",
+            "operational_gallery_observation_stagings",
+        ):
+            if connector.fetch_all(
+                f"SELECT gallery_id, observation_id FROM {table} WHERE {predicate} LIMIT 1",
+                parameters,
+            ):
+                raise CatalogSemanticValidationError(
+                    "OPEN observation cleanup root still has a retained source or staging reference"
+                )
+        if require_allocations:
+            allocated = connector.fetch_all(
+                "SELECT gallery_id, observation_id FROM catalog_gallery_observation_allocations "
+                f"WHERE {predicate} LIMIT %s",
+                (*parameters, _CATALOG_RESOURCE_PAGE_LIMIT + 1),
+            )
+            if set(allocated) != set(page):
+                raise CatalogSemanticValidationError(
+                    "OPEN observation cleanup lost an allocation before its root phase"
+                )
+
+
+def _require_deleted_observation_file_prefix(
+    connector: SQLConnector,
+    retirement: _OpenObservationRetirement,
+) -> None:
+    """Require actual absence of every FILE family covered by GO_FILES."""
+
+    if retirement.phase_order < 12 or (
+        retirement.phase_order == 12 and not retirement.cursor_values
+    ):
+        return
+    ordered_roots = sorted(retirement.roots)
+    for offset in range(0, len(ordered_roots), _CATALOG_RESOURCE_PAGE_LIMIT):
+        page = ordered_roots[offset : offset + _CATALOG_RESOURCE_PAGE_LIMIT]
+        predicate = " OR ".join(
+            "(gallery_id = %s AND observation_id = %s)" for _ in page
+        )
+        parameters: tuple[int | bytes, ...] = tuple(
+            value for root in page for value in root
+        )
+        prefix = ""
+        if retirement.phase_order == 12:
+            cursor = retirement.cursor_values
+            prefix = (
+                " AND (gallery_id < %s OR (gallery_id = %s AND observation_id < %s)"
+                " OR (gallery_id = %s AND observation_id = %s AND file_key <= %s))"
+            )
+            parameters += (
+                cursor[0],
+                cursor[0],
+                cursor[1],
+                cursor[0],
+                cursor[1],
+                cursor[4],
+            )
+        rows = connector.fetch_all(
+            "SELECT gallery_id, observation_id FROM catalog_gallery_observation_file_anchors "
+            f"WHERE ({predicate}){prefix} LIMIT 1",
+            parameters,
+        )
+        if rows:
+            raise CatalogSemanticValidationError(
+                "OPEN observation cleanup retains cursor-covered FILE facts: "
+                f"gallery_id={rows[0][0]}, observation_id={rows[0][1]}"
+            )
+
+
+def _require_deleted_observation_qualification_prefix(
+    connector: SQLConnector,
+    retirement: _OpenObservationRetirement,
+) -> None:
+    """Reject retired children even after their observation descriptor is gone."""
+
+    if retirement.phase_order < 13:
+        return
+    for index, (table, _column) in enumerate(_OBSERVATION_QUALIFICATION_RETIREMENT):
+        covered = sorted(
+            root for root in retirement.roots if retirement.covers(13, index, root)
+        )
+        for offset in range(0, len(covered), _CATALOG_RESOURCE_PAGE_LIMIT):
+            page = covered[offset : offset + _CATALOG_RESOURCE_PAGE_LIMIT]
+            predicate = " OR ".join(
+                "(gallery_id = %s AND observation_id = %s)" for _ in page
+            )
+            rows = connector.fetch_all(
+                f"SELECT gallery_id, observation_id FROM {table} "
+                f"WHERE {predicate} LIMIT 1",
+                tuple(value for root in page for value in root),
+            )
+            if rows:
+                raise CatalogSemanticValidationError(
+                    "source qualification differs from canonical metadata: "
+                    "retired qualification facts reappeared; "
+                    f"gallery_id={rows[0][0]}, observation_id={rows[0][1]}"
+                )
+
+
+def _validated_open_observation_retirement(
+    connector: SQLConnector,
+) -> _OpenObservationRetirement | None:
+    rows = connector.fetch_all(
+        """
+        SELECT root.frozen_root_key, sweep.shard_no, checkpoint.phase,
+               phase.phase_order, checkpoint.cursor_bytes
+        FROM operational_cleanup_jobs AS job
+        JOIN operational_cleanup_sweep_targets AS sweep ON sweep.target_key = job.target_key
+        JOIN operational_cleanup_checkpoints AS checkpoint ON checkpoint.cleanup_id = job.cleanup_id
+        JOIN operational_cleanup_phases AS phase ON phase.target_kind = sweep.target_kind
+          AND phase.phase = checkpoint.phase
+        LEFT JOIN operational_cleanup_cycle_roots AS root ON root.cleanup_id = job.cleanup_id
+        WHERE job.state = 'OPEN' AND sweep.target_kind = 'GALLERY_OBSERVATION'
+          AND checkpoint.state = 'OPEN'
+        ORDER BY root.frozen_root_key LIMIT 257
+        """
+    )
+    if not rows:
+        return None
+    if len(rows) > 256 or any(row[1:] != rows[0][1:] for row in rows):
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup roots exceed or disagree on their bounded checkpoint"
+        )
+    phase_order = _as_int(
+        rows[0][3], field="observation cleanup phase order", positive=True
+    )
+    if phase_order < 8:
+        return None
+
+    from . import operational_refinement
+
+    try:
+        operational_refinement.check_cleanup_reachability_v1(connector)
+    except (
+        operational_refinement.OperationalSemanticRegistryError,
+        operational_refinement.OperationalSemanticValidationError,
+    ) as error:
+        raise CatalogSemanticValidationError(
+            "observation retirement lacks valid OPEN cleanup authority"
+        ) from error
+    expected_phases = (
+        "GO_FACTS",
+        "GO_FILESYSTEM_SEAL",
+        "GO_FILESYSTEM_VALUES",
+        "GO_FILESYSTEM_ANCHOR",
+        "GO_FILES",
+        "GO_OBSERVATION_FACTS",
+        "GO_DESCRIPTOR",
+        "GO_ROOT",
+    )
+    if not 8 <= phase_order <= 15 or rows[0][2] != expected_phases[phase_order - 8]:
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup phase/order disagrees"
+        )
+    shard = _as_int(rows[0][1], field="observation cleanup shard")
+    if shard > 255:
+        raise CatalogSemanticValidationError(
+            "OPEN observation cleanup shard is outside 0..255"
+        )
+    roots: set[tuple[int, int]] = set()
+    for row in rows:
+        if row[0] is None:
+            if len(rows) != 1:
+                raise CatalogSemanticValidationError(
+                    "OPEN observation cleanup NULL root is ambiguous"
+                )
+            continue
+        frame = _as_bytes(row[0], field="observation cleanup frozen root")
+        if len(frame) != 20 or frame[:3] != b"\x01\x02i" or frame[11:12] != b"i":
+            raise CatalogSemanticValidationError(
+                "OPEN observation cleanup root frame is malformed"
+            )
+        root = (
+            _as_int(
+                int.from_bytes(frame[3:11], "big"),
+                field="observation cleanup gallery",
+                positive=True,
+            ),
+            _as_int(
+                int.from_bytes(frame[12:20], "big"),
+                field="observation cleanup observation",
+                positive=True,
+            ),
+        )
+        if root[0] % 256 != shard or root in roots:
+            raise CatalogSemanticValidationError(
+                "OPEN observation cleanup root is duplicated or outside its shard"
+            )
+        roots.add(root)
+    frozen_roots = frozenset(roots)
+    cursor = _as_bytes(rows[0][4], field="observation cleanup cursor")
+    if not frozen_roots and cursor:
+        raise CatalogSemanticValidationError(
+            "empty observation cleanup advanced a cursor"
+        )
+    relation, values = _observation_retirement_cursor(phase_order, cursor, frozen_roots)
+    _require_unreferenced_observation_retirement(
+        connector, frozen_roots, require_allocations=phase_order < 15
+    )
+    retirement = _OpenObservationRetirement(frozen_roots, phase_order, relation, values)
+    _require_deleted_observation_file_prefix(connector, retirement)
+    _require_deleted_observation_qualification_prefix(connector, retirement)
+    return retirement
+
+
+def _iter_retained_file_hash_expectations(
+    connector: SQLConnector,
+    retirement: _OpenObservationRetirement | None,
+) -> Iterator[tuple[int, int, bytes, int]]:
+    for row in _iter_derived_file_hash_occurrences(connector):
+        root = (row[0], row[1])
+        if retirement is not None and root in retirement.roots:
+            if retirement.phase_order > 12:
+                raise CatalogSemanticValidationError(
+                    "retained file-hash occurrences differ from exact CONTENT roles: "
+                    f"gallery_id={row[0]}, observation_id={row[1]} retains FILE facts after GO_FILES"
+                )
+            if retirement.covers(8, 2, root, row[2]):
+                continue
+        yield row
+
+
 def check_role_derivation_v1(connector: SQLConnector) -> None:
     """Validate the classifier and every retained file-role materialization.
 
@@ -7532,7 +7902,8 @@ def check_role_derivation_v1(connector: SQLConnector) -> None:
 
     _validate_file_family_totality(connector)
 
-    expected = _iter_derived_file_hash_occurrences(connector)
+    retirement = _validated_open_observation_retirement(connector)
+    expected = _iter_retained_file_hash_expectations(connector, retirement)
     stored = _iter_stored_file_hash_occurrences(connector)
     while True:
         expected_row = next(expected, None)
@@ -7541,7 +7912,13 @@ def check_role_derivation_v1(connector: SQLConnector) -> None:
             break
         if expected_row != stored_row:
             raise CatalogSemanticValidationError(
-                "retained file-hash occurrences differ from exact CONTENT roles"
+                "retained file-hash occurrences differ from exact CONTENT roles: "
+                f"expected_gallery_id={None if expected_row is None else expected_row[0]}, "
+                f"expected_observation_id={None if expected_row is None else expected_row[1]}, "
+                f"expected_count={None if expected_row is None else expected_row[3]}, "
+                f"stored_gallery_id={None if stored_row is None else stored_row[0]}, "
+                f"stored_observation_id={None if stored_row is None else stored_row[1]}, "
+                f"stored_count={None if stored_row is None else stored_row[3]}"
             )
 
 

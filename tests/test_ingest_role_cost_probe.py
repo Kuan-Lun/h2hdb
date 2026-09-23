@@ -71,7 +71,12 @@ def test_actual_role_validator_has_seven_streams_and_terminal_empty_page(
         probe.seed_fixture(connector, facts)
         captured, measured = probe.capture_validator(connector, facts)
     assert measured["stream_select_calls"] == calls
-    assert measured["select_calls"] == calls + 7
+    assert measured["select_calls"] == calls + 8
+    assert measured["fixed_select_calls_total"] == 8
+    assert measured["fixed_select_calls"] == {
+        **dict.fromkeys(probe.REGISTRY_QUERIES, 1),
+        "observation_cleanup_authority": 1,
+    }
     assert set(captured) == set(probe.STREAMS)
     for queries in captured.values():
         assert queries[-1].returned_rows == 0
@@ -126,12 +131,39 @@ def test_production_boundary_pages_match_fixture_facts_in_repeated_cycles(
             assert measured["stream_select_calls"] == sum(
                 (size + 127) // 128 + 1 for size in expected.values()
             )
+            assert measured["fixed_select_calls_total"] == 8
+            assert measured["fixed_select_calls"]["observation_cleanup_authority"] == 1
+            assert measured["select_calls"] == measured["stream_select_calls"] + 8
             for queries in captured.values():
                 assert queries[-1].returned_rows == 0
                 for query in queries:
                     # This also rejects accidental removal of either optimizer
                     # predicate; the baseline recognizer checks both bindings.
                     probe.tuple_seek_baseline(query.sql, query.parameters)
+
+
+@pytest.mark.parametrize("authority_calls", (0, 2))
+def test_fixed_cost_oracle_rejects_missing_or_repeated_authority_probe(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, authority_calls: int
+) -> None:
+    facts = probe.file_facts(probe.Shape(129))
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+        original = probe.role._validated_open_observation_retirement
+
+        def degraded(connection: Any) -> None:
+            for _ in range(authority_calls):
+                assert original(connection) is None
+
+        monkeypatch.setattr(
+            probe.role, "_validated_open_observation_retirement", degraded
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="fixed role query count mismatch: observation_cleanup_authority",
+        ):
+            probe.capture_validator(connector, facts)
 
 
 def test_equal_count_wrong_rows_fail_the_independent_fixture_oracle(

@@ -71,16 +71,29 @@ def require_source_qualification(
     gallery_id: int,
     observation_id: int,
     receipt: GalleryObservationMetadataScalarReceipt,
+    *,
+    retired_columns: frozenset[str] = frozenset(),
+    retired_rejection_source: bool = False,
 ) -> None:
-    """Independently compare all decoded scalars and the rejected FILE authority."""
+    """Compare exact scalars and PAGE authority, including proven cleanup absence.
 
+    Only the READY audit supplies retirement facts after independently validating
+    the bounded cleanup frontier and data-plane unreachability. Writer calls use
+    the default complete family. A retired value must be absent, never ignored.
+    """
+
+    if not retired_columns <= {column for _table, column in _TABLES}:
+        raise SourceQualificationConflictError(
+            "unknown qualification retirement column"
+        )
     key = (gallery_id, observation_id)
     for (table, column), value in zip(_TABLES, _facts(receipt), strict=True):
         row = connector.fetch_one(
             f"SELECT {column} FROM {table} WHERE gallery_id = %s AND observation_id = %s",
             key,
         )
-        if row != (() if value is None else (value,)):
+        expected = () if value is None or column in retired_columns else (value,)
+        if row != expected:
             raise SourceQualificationConflictError(
                 "source qualification differs from canonical metadata"
             )
@@ -95,7 +108,7 @@ def require_source_qualification(
             "WHERE source.gallery_id = %s AND source.observation_id = %s AND name.name_bytes = %s",
             (*key, qualification.source_name),
         )
-        if source != (b"page",):
+        if source != (() if retired_rejection_source else (b"page",)):
             raise SourceQualificationConflictError(
                 "rejection does not identify one observed PAGE"
             )

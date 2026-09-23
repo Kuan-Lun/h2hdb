@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import subprocess
@@ -12,6 +13,7 @@ from types import ModuleType
 import pytest
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade, VNextDownloadQueueFacade
+from h2hdb.catalog_refinement import CatalogSemanticValidationError
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_admin import VNextSchemaAdmin
 from h2hdb.schema_epoch import (
@@ -82,6 +84,30 @@ def _old_populated_database(
                         connector.execute(
                             f"DROP {statement.creates.kind.value} {statement.creates.name}"
                         )
+                # A schema-7 fixture cannot retain completed jobs for the new
+                # schema-8 collection target. Keep every legacy target intact,
+                # including an interrupted observation cleanup under test.
+                new_jobs = (
+                    "SELECT job.cleanup_id FROM operational_cleanup_jobs AS job "
+                    "JOIN operational_cleanup_sweep_targets AS target "
+                    "ON target.target_key = job.target_key "
+                    "WHERE target.target_kind = 'SOURCE_COLLECTION'"
+                )
+                assert not connector.fetch_one(
+                    new_jobs + " AND job.state <> 'COMPLETE' LIMIT 1"
+                )
+                for table in (
+                    "operational_cleanup_checkpoints",
+                    "operational_cleanup_cycle_roots",
+                ):
+                    connector.execute(
+                        f"DELETE FROM {table} WHERE cleanup_id IN ({new_jobs})"
+                    )
+                connector.execute(
+                    "DELETE FROM operational_cleanup_jobs WHERE target_key IN "
+                    "(SELECT target_key FROM operational_cleanup_sweep_targets "
+                    "WHERE target_kind = 'SOURCE_COLLECTION')"
+                )
                 connector.execute(
                     "DELETE FROM operational_cleanup_sweep_targets WHERE target_kind = 'SOURCE_COLLECTION'"
                 )
@@ -165,6 +191,8 @@ def _old_populated_database(
             finally:
                 if provider.backend == "sqlite":
                     connector.execute("PRAGMA foreign_keys = ON")
+            if provider.backend == "sqlite":
+                assert not connector.fetch_one("PRAGMA foreign_key_check")
     finally:
         context.close()
     return before
@@ -176,6 +204,61 @@ def _requests(config: CoreConfig) -> tuple[object, ...]:
         return tuple(queue.list_download_requests())
     finally:
         queue.close()
+
+
+def _assert_conversion_pending(config: CoreConfig, converter: ModuleType) -> None:
+    provider = GeneratedVNextSchemaProvider(
+        "sqlite" if config.database.sql_type == "sqlite" else "mariadb"
+    )
+    backend = provider.backend
+    conversion_manifest = hashlib.sha256(
+        b"h2hdb-offline-source-collection-schema-7-to-8\0"
+        + bytes.fromhex(converter._OLD_MANIFESTS[backend])
+        + bytes.fromhex(provider.definition.manifest_sha256)
+    ).digest()
+    context = RepositoryContext.from_config(config)
+    try:
+        with context.SQLConnector() as connector:
+            row = converter._control(connector)
+            assert row[1:5] == (3, 8, "BUILDING", conversion_manifest)
+            assert row[6] is None
+    finally:
+        context.close()
+    admin = VNextDatabaseAdminFacade(config)
+    try:
+        for call in (admin.check_readiness, admin.check):
+            with pytest.raises(SchemaEpochAdmissionError):
+                call()
+        with pytest.raises(SchemaEpochDriftError, match="manifest differs"):
+            admin.initialize()
+    finally:
+        admin.close()
+    context = RepositoryContext.from_config(config)
+    try:
+        with context.SQLConnector() as connector:
+            assert converter._control(connector) == row
+    finally:
+        context.close()
+
+
+def _retained_data_tables(config: CoreConfig, converter: ModuleType) -> tuple[str, ...]:
+    provider = GeneratedVNextSchemaProvider(
+        "sqlite" if config.database.sql_type == "sqlite" else "mariadb"
+    )
+    excluded = {
+        "h2hdb_schema_epoch",
+        "operational_database_audit_states",
+        "operational_cleanup_target_kinds",
+        "operational_cleanup_phases",
+        "operational_cleanup_sweep_targets",
+    }
+    return tuple(
+        relation["table"]
+        for relation in provider.generated_definition_data["relations"]
+        if relation["relation"] not in converter._ADDITIONS
+        and relation["table"] not in excluded
+        and relation["kind"] == "table"
+    )
 
 
 def test_populated_schema_conversion_preserves_facts_and_replays(
@@ -317,15 +400,145 @@ def test_failed_final_audit_never_publishes_ready(
         patch.setattr(GeneratedVNextSchemaProvider, "validate_semantics", reject)
         with pytest.raises(SchemaEpochValidationError, match="semantic corruption"):
             converter.upgrade(conversion_config, progress=lambda _: None)
-    context = RepositoryContext.from_config(conversion_config)
-    try:
-        with context.SQLConnector() as connector:
-            row = converter._control(connector)
-            assert row[2] == 7 or row[3] == "BUILDING"
-    finally:
-        context.close()
+    _assert_conversion_pending(conversion_config, converter)
     assert _requests(conversion_config) == before
     assert converter.upgrade(conversion_config, progress=lambda _: None) == "converted"
+
+
+def test_real_role_audit_failure_preserves_facts_and_conversion_resume(
+    conversion_config: CoreConfig, converter: ModuleType
+) -> None:
+    from test_vnext_source_batches import _source_batch, _source_batch_clock
+    from test_vnext_source_marker import MarkerSource
+    from vnext_fault_harness import snapshot_database
+    from vnext_pipeline import claim_session, gallery, ingest_policy
+
+    from h2hdb import VNextIngestFacade
+
+    source = MarkerSource((gallery(8101, pages=[b"first", b"second"]),))
+
+    def populate(config: CoreConfig) -> None:
+        with (
+            _source_batch_clock(config) as clock,
+            VNextIngestFacade(config, clock=clock) as facade,
+        ):
+            session = claim_session(facade)
+            policy = facade.ensure_policy(session, ingest_policy())
+            _source_batch(facade, session, policy, source, None)
+
+    requests_before = _old_populated_database(
+        conversion_config, converter, populate=populate
+    )
+    context = RepositoryContext.from_config(conversion_config)
+    try:
+        with context.SQLConnector() as connector, connector.transaction():
+            occurrence = connector.fetch_one(
+                "SELECT gallery_id, observation_id, file_sha256, occurrence_count "
+                "FROM catalog_gallery_observation_file_hash_occurrences LIMIT 1"
+            )
+            assert occurrence
+            connector.execute(
+                "DELETE FROM catalog_gallery_observation_file_hash_occurrences "
+                "WHERE gallery_id = %s AND observation_id = %s AND file_sha256 = %s",
+                occurrence[:3],
+            )
+        provider = GeneratedVNextSchemaProvider(
+            "sqlite" if conversion_config.database.sql_type == "sqlite" else "mariadb"
+        )
+        tables = tuple(
+            relation["table"]
+            for relation in provider.generated_definition_data["relations"]
+            if relation["kind"] == "table"
+            and relation["table"].startswith("catalog_gallery_observation")
+        )
+        before = snapshot_database(conversion_config, tables=tables)
+        for attempt in range(2):
+            progress: list[str] = []
+            with pytest.raises(
+                CatalogSemanticValidationError,
+                match="retained file-hash occurrences differ from exact CONTENT roles",
+            ):
+                converter.upgrade(conversion_config, progress=progress.append)
+            assert progress[-1] == "full_audit_started"
+            assert "schema_committed" in progress
+            if attempt:
+                assert "conversion_marked" not in progress
+                assert "object_created" not in progress
+                assert "header_rebuilt" not in progress
+            _assert_conversion_pending(conversion_config, converter)
+            assert snapshot_database(conversion_config, tables=tables) == before
+            assert _requests(conversion_config) == requests_before
+        # Restore only the deliberately removed fixture row. The converter must
+        # never silently repair genuine catalog inconsistency or bypass the audit.
+        with context.SQLConnector() as connector, connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+                "(gallery_id, observation_id, file_sha256, occurrence_count) "
+                "VALUES (%s, %s, %s, %s)",
+                occurrence,
+            )
+        repaired = snapshot_database(conversion_config, tables=tables)
+        assert (
+            converter.upgrade(conversion_config, progress=lambda _: None) == "converted"
+        )
+        assert (
+            converter.upgrade(conversion_config, progress=lambda _: None)
+            == "already_converted"
+        )
+        assert snapshot_database(conversion_config, tables=tables) == repaired
+        assert _requests(conversion_config) == requests_before
+    finally:
+        context.close()
+
+
+def test_failed_legacy_audit_resumes_exact_committed_cleanup_without_data_changes(
+    conversion_config: CoreConfig,
+    converter: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_role_derivation_cleanup import _prepare_retirement, _reach_fact_gap
+    from vnext_fault_harness import snapshot_database
+
+    from h2hdb import catalog_refinement
+
+    def populate(config: CoreConfig) -> None:
+        _prepare_retirement(config, pages=1)
+        _reach_fact_gap(config)
+
+    requests_before = _old_populated_database(
+        conversion_config, converter, populate=populate
+    )
+    tables = _retained_data_tables(conversion_config, converter)
+    before = snapshot_database(conversion_config, tables=tables)
+    # Version 0.41.0 compared every retained FILE with stored occurrences without
+    # recognizing the exact committed child-first retirement authority. Recreate
+    # that omission, letting the real validator reject the genuine cleanup gap.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            catalog_refinement,
+            "_validated_open_observation_retirement",
+            lambda _connector: None,
+        )
+        with pytest.raises(
+            CatalogSemanticValidationError,
+            match="retained file-hash occurrences differ from exact CONTENT roles",
+        ):
+            converter.upgrade(conversion_config, progress=lambda _: None)
+    _assert_conversion_pending(conversion_config, converter)
+    assert snapshot_database(conversion_config, tables=tables) == before
+
+    progress: list[str] = []
+    assert converter.upgrade(conversion_config, progress=progress.append) == "converted"
+    assert "conversion_marked" not in progress
+    assert "object_created" not in progress
+    assert progress[-1] == "ready_committed"
+    assert snapshot_database(conversion_config, tables=tables) == before
+    assert _requests(conversion_config) == requests_before
+    assert (
+        converter.upgrade(conversion_config, progress=lambda _: None)
+        == "already_converted"
+    )
+    assert snapshot_database(conversion_config, tables=tables) == before
 
 
 @pytest.mark.deep
@@ -443,23 +656,7 @@ def test_conversion_preserves_publication_source_and_opaque_artifact_facts(
             facade.complete_ingest(session)
 
     _old_populated_database(conversion_config, converter, populate=populate)
-    provider = GeneratedVNextSchemaProvider(
-        "sqlite" if conversion_config.database.sql_type == "sqlite" else "mariadb"
-    )
-    excluded = {
-        "h2hdb_schema_epoch",
-        "operational_database_audit_states",
-        "operational_cleanup_target_kinds",
-        "operational_cleanup_phases",
-        "operational_cleanup_sweep_targets",
-    }
-    tables = tuple(
-        relation["table"]
-        for relation in provider.generated_definition_data["relations"]
-        if relation["relation"] not in converter._ADDITIONS
-        and relation["table"] not in excluded
-        and relation["kind"] == "table"
-    )
+    tables = _retained_data_tables(conversion_config, converter)
     before = snapshot_database(conversion_config, tables=tables)
     objects = dict(library.objects)
     render_calls = library.render_calls

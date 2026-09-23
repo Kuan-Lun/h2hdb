@@ -137,6 +137,16 @@ The flag acknowledges that consumers are already stopped; it does not stop them.
 Do not clear the database or remove CBZs to perform this conversion. Rollback
 requires restoring the pre-upgrade database backup before running old software.
 
+If Core 0.41.0 stopped at the final role audit during an interrupted observation
+cleanup, use Core 0.41.1 and rerun this converter with consumers still stopped.
+Its unchanged conversion checksum accepts the existing `BUILDING` state; the
+corrected audit requires exact cleanup authority and still rejects real drift.
+Do not manually mark the database `READY`. The [Docker bundle instructions](../README.md#convert-an-exact-schema-7-database)
+package an exact checkout wheel, enforce readable image files for `MEDIA_UID`
+and `MEDIA_GID`, and keep deployment secrets outside the bundle.
+Updating the standalone upgrade image does not update ingest or other consumers;
+their images must also contain Core 0.41.1 before resuming full-audit callers.
+
 Schema 6 must first use `upgrade-audit-schema.py` from the Core 0.40.0 checkout
 and environment to reach schema 7, then the schema-8 converter above. Keep all
 consumers stopped throughout both steps. The schema-8 checkout does not retain
