@@ -179,6 +179,8 @@ def test_full_ready_accepts_every_committed_observation_retirement_checkpoint(
                 if phase == "GO_OBSERVATION_FACTS":
                     _assert_qualification_retirement_is_exact(connector)
                     _assert_retired_file_family_cannot_reappear(connector)
+                if phase == "GO_DESCRIPTOR":
+                    _assert_qualification_without_descriptor_cannot_reappear(connector)
                 with connector.read_transaction():
                     occurrences = connector.fetch_all(
                         "SELECT file_sha256 FROM "
@@ -344,3 +346,39 @@ def _assert_retired_file_family_cannot_reappear(connector: SQLConnector) -> None
             catalog_refinement.check_role_derivation_v1(connector)
     with connector.read_transaction():
         catalog_refinement.check_role_derivation_v1(connector)
+
+
+def _assert_qualification_without_descriptor_cannot_reappear(
+    connector: SQLConnector,
+) -> None:
+    # The allocation still exists here, so all four inserts satisfy real FKs.
+    # A validator that visits only surviving observation descriptors misses
+    # these resurrected children despite the durable completed fact phase.
+    with connector.read_transaction():
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_gallery_observations "
+                "WHERE gallery_id = 1 AND observation_id = 1"
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_gallery_observation_allocations "
+            "WHERE gallery_id = 1 AND observation_id = 1"
+        ) == (1,)
+    for suffix, column, value in (
+        ("policies", "qualification_policy_sha256", b"p" * 32),
+        ("dispositions", "accepted", 1),
+        ("reasons", "qualification_reason", b"image_decode_failed"),
+        ("sources", "qualification_source_name", b"000.png"),
+    ):
+        with _rolled_back(connector):
+            connector.execute(
+                f"INSERT INTO catalog_gallery_observation_validation_{suffix} "
+                f"(gallery_id, observation_id, {column}) VALUES (1, 1, %s)",
+                (value,),
+            )
+            with pytest.raises(catalog_refinement.CatalogSemanticValidationError):
+                catalog_refinement.check_source_qualification_v1(connector)
+        with connector.read_transaction():
+            catalog_refinement.check_source_qualification_v1(connector)

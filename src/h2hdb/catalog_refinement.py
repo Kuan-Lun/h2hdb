@@ -6928,6 +6928,14 @@ def check_identity_codecs_v1(connector: SQLConnector) -> None:
     _active_source_contexts(connector)
 
 
+_OBSERVATION_QUALIFICATION_RETIREMENT = (
+    ("catalog_gallery_observation_validation_sources", "qualification_source_name"),
+    ("catalog_gallery_observation_validation_reasons", "qualification_reason"),
+    ("catalog_gallery_observation_validation_dispositions", "accepted"),
+    ("catalog_gallery_observation_validation_policies", "qualification_policy_sha256"),
+)
+
+
 def check_source_qualification_v1(connector: SQLConnector) -> None:
     """Reconstruct every retained qualification from its exact canonical byte tree."""
 
@@ -6949,13 +6957,8 @@ def check_source_qualification_v1(connector: SQLConnector) -> None:
                 )
                 retired_columns = frozenset(
                     column
-                    for index, column in enumerate(
-                        (
-                            "qualification_source_name",
-                            "qualification_reason",
-                            "accepted",
-                            "qualification_policy_sha256",
-                        )
+                    for index, (_table, column) in enumerate(
+                        _OBSERVATION_QUALIFICATION_RETIREMENT
                     )
                     if retirement is not None
                     and retirement.covers(13, index, (gallery_id, observation_id))
@@ -7727,6 +7730,36 @@ def _require_deleted_observation_file_prefix(
             )
 
 
+def _require_deleted_observation_qualification_prefix(
+    connector: SQLConnector,
+    retirement: _OpenObservationRetirement,
+) -> None:
+    """Reject retired children even after their observation descriptor is gone."""
+
+    if retirement.phase_order < 13:
+        return
+    for index, (table, _column) in enumerate(_OBSERVATION_QUALIFICATION_RETIREMENT):
+        covered = sorted(
+            root for root in retirement.roots if retirement.covers(13, index, root)
+        )
+        for offset in range(0, len(covered), _CATALOG_RESOURCE_PAGE_LIMIT):
+            page = covered[offset : offset + _CATALOG_RESOURCE_PAGE_LIMIT]
+            predicate = " OR ".join(
+                "(gallery_id = %s AND observation_id = %s)" for _ in page
+            )
+            rows = connector.fetch_all(
+                f"SELECT gallery_id, observation_id FROM {table} "
+                f"WHERE {predicate} LIMIT 1",
+                tuple(value for root in page for value in root),
+            )
+            if rows:
+                raise CatalogSemanticValidationError(
+                    "source qualification differs from canonical metadata: "
+                    "retired qualification facts reappeared; "
+                    f"gallery_id={rows[0][0]}, observation_id={rows[0][1]}"
+                )
+
+
 def _validated_open_observation_retirement(
     connector: SQLConnector,
 ) -> _OpenObservationRetirement | None:
@@ -7829,6 +7862,7 @@ def _validated_open_observation_retirement(
     )
     retirement = _OpenObservationRetirement(frozen_roots, phase_order, relation, values)
     _require_deleted_observation_file_prefix(connector, retirement)
+    _require_deleted_observation_qualification_prefix(connector, retirement)
     return retirement
 
 
