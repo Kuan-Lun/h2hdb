@@ -421,6 +421,13 @@ an existing external database network. The bundle contains no credentials. The
 container runs as the configured UID/GID, mounts the configuration read-only,
 and needs no source-gallery or library mount for a MariaDB conversion.
 
+The upgrade image does not update application images. Before restarting ingest
+or other full-audit callers, install the bundled Core 0.41.1 wheel in their
+images too and verify the installed version. Core 0.41.0 can reject the same
+unfinished cleanup again: it sees the new recorded audit version and performs
+its own full startup audit. A registry-based rebuild does not obtain this patch
+until that version is published.
+
 Do not delete source folders, CBZs, or the existing database for this conversion.
 To return to the old software, restore the pre-upgrade database backup first;
 there is no automatic downgrade.
