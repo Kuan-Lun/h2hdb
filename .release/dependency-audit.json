@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-22T20:10:21+00:00",
+  "checked_at": "2026-09-23T12:10:24+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.41.0",
+  "project_version": "0.41.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -59,7 +59,7 @@
     {
       "declared": "hypothesis>=6.165.10,<7.0.0",
       "group": "optional:dev",
-      "latest": "6.168.0",
+      "latest": "6.168.1",
       "latest_satisfies": true,
       "name": "hypothesis",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed fresh PyPI/npm candidates for all direct build, runtime, optional/development and Node dependencies, including versions outside declared upper bounds. All public third-party candidate versions are unchanged from the committed Core 0.40.0 audit; the identical-version upstream reviews carry forward. Installed direct third-party versions match every latest candidate, and the recorded bounds still admit those versions and Python 3.14. Core 0.41.0 intentionally changes epoch-3 schema 7 to schema 8 and adds durable initial-scan collection checkpoints, normalized staging ownership, sealed-source restart recovery and bounded SQL work/diagnostics. The exact schema-7 offline upgrade preserves published catalog, source, artifact descriptors and partial staging children on SQLite and MariaDB; schema-6 databases first require the prior Core 0.40.0 upgrade-audit-schema tool. One-time conversion is separate from runtime admission, which has no previous-schema fallback. Manual fault/deep/MariaDB results and the exact-tree release gate remain separate evidence. Built candidate wheels h2hdb-0.41.0 and h2hdb_ingest-0.27.0 were explicitly installed together, offline from the existing registry cache, into a newly created independent CPython 3.14.1 virtual environment; uv pip check passed for all 14 runtime packages. Isolated-mode imports resolved only to that environment, direct_url metadata records local wheel files without editable flags, and every installed package file was byte-compared with its wheel (95 Core files and 47 Ingest files). Pillow 12.3.0 and libvips 8.18.6 loaded successfully. This verifies frozen dependency and wheel metadata; implementation work continued after candidate wheel creation, so these candidate hashes do not attest the final runtime tree. The exact-tree gate and final distribution build separately validate the released implementation.",
+    "note": "Reviewed current PyPI/npm candidates for all direct build, runtime, optional/development and Node dependencies, including versions outside existing bounds. The only candidate change from Core 0.41.0 is Hypothesis 6.168.1. Its official changelog (https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-1) describes additional abi3 wheels for Linux s390x manylinux and i686 musllinux; no behavioral API change is listed. Installed 6.168.1 in the repository Python 3.14 environment for the cleanup recovery matrices and exact-tree release gate. All other candidates are unchanged and their prior reviews carry forward; all candidates satisfy current bounds and advertise Python 3.14 support. Core 0.41.1 corrects full READY audit of exact interrupted observation cleanup frontiers without changing schema 8, generated provider or the existing offline conversion checksum. Tests cover legitimate retirement and actual corruption separately on SQLite and MariaDB, plus conversion BUILDING recovery. Manual cleanup-acceptance and wheel/Docker experiments are reported separately from the bounded merge receipt. No dependency declarations changed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
