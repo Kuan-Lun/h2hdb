@@ -385,6 +385,42 @@ as `check`. It does not re-render CBZs. If interrupted, leave clients stopped an
 rerun the same converter. Repeating a completed conversion performs a full audit
 and reports `already_converted`.
 
+Core 0.41.0 can incorrectly reject a legitimate, interrupted observation cleanup
+during that final audit with `retained file-hash occurrences differ from exact
+CONTENT roles`. Core 0.41.1 validates the exact cleanup checkpoint and remaining
+source references before accepting already-deleted children. It still rejects
+actual missing, extra, or mismatched facts. The schema and conversion checksum
+are unchanged: keep clients stopped and rerun the converter with Core 0.41.1.
+An audit failure leaves the conversion in `BUILDING`; do not edit the marker or
+use `migrate` to force activation.
+
+To deliver the matching wheel and converter as a Docker Compose bundle, build
+the wheel from this checkout, then run:
+
+```bash
+python scripts/build-source-collection-upgrade-bundle.py \
+  --wheel dist/h2hdb-0.41.1-py3-none-any.whl \
+  --output /tmp/h2hdb-schema7-to8-docker-0.41.1.tar.gz \
+  --deployment-root /absolute/path/to/deployment \
+  --network existing-database-network
+```
+
+The builder checks every wheel runtime file against the checkout and records
+file digests. Extract the bundle in the deployment directory, whose `.env` must
+define `MEDIA_UID` and `MEDIA_GID`, then run:
+
+```bash
+docker compose --env-file .env \
+  -f ./h2hdb-schema7-to8-docker-0.41.1/compose.yaml \
+  run --rm --build --no-deps upgrade \
+  --config /h2hdb-config/h2hdb-config.json --consumers-stopped
+```
+
+This deployment layout uses `config/`, `env/database.env`, `env/writer.env`, and
+an existing external database network. The bundle contains no credentials. The
+container runs as the configured UID/GID, mounts the configuration read-only,
+and needs no source-gallery or library mount for a MariaDB conversion.
+
 Do not delete source folders, CBZs, or the existing database for this conversion.
 To return to the old software, restore the pre-upgrade database backup first;
 there is no automatic downgrade.
