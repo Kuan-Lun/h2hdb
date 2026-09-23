@@ -57,6 +57,17 @@ STREAMS = (
     "derived_hash_occurrences",
     "stored_hash_occurrences",
 )
+REGISTRY_QUERIES = (
+    "catalog_channel_registry",
+    "catalog_source_provider_registry",
+    "catalog_resource_kinds",
+    "catalog_search_policies",
+    "catalog_analysis_stages",
+    "catalog_publication_stages",
+    "catalog_canonical_digest_policies",
+)
+CLEANUP_AUTHORITY_QUERY = "observation_cleanup_authority"
+FIXED_QUERY_CALLS = dict.fromkeys((*REGISTRY_QUERIES, CLEANUP_AUTHORITY_QUERY), 1)
 type Regime = Literal["distinct", "duplicate", "metadata"]
 type Parameters = tuple[Any, ...]
 
@@ -310,6 +321,24 @@ def query_kind(sql: str) -> str | None:
     return None
 
 
+def fixed_query_kind(sql: str) -> str | None:
+    """Recognize registry probes and the no-OPEN-cleanup admission query."""
+
+    normalized = " ".join(sql.split())
+    relation = re.search(r"\bFROM (\w+)\b", normalized)
+    if relation is not None and relation[1] in REGISTRY_QUERIES:
+        return relation[1]
+    if (
+        "FROM operational_cleanup_jobs AS job" in normalized
+        and "job.state = 'OPEN'" in normalized
+        and "sweep.target_kind = 'GALLERY_OBSERVATION'" in normalized
+        and "checkpoint.state = 'OPEN'" in normalized
+        and normalized.endswith("LIMIT 257")
+    ):
+        return CLEANUP_AUTHORITY_QUERY
+    return None
+
+
 def tuple_seek_baseline(sql: str, parameters: Parameters) -> tuple[str, Parameters]:
     """Restore only the recognized former non-NULL keyset for cost comparison."""
     matched = re.fullmatch(
@@ -516,10 +545,12 @@ def capture_validator(
     captured: dict[str, list[CapturedQuery]] = defaultdict(list)
     expected_rows = expected_stream_rows(facts)
     all_calls = 0
+    fixed_calls: Counter[str] = Counter()
+    unclassified_calls = 0
     original = connector.fetch_all
 
     def capture(sql: str, parameters: Parameters = ()) -> list[tuple[Any, ...]]:
-        nonlocal all_calls
+        nonlocal all_calls, unclassified_calls
         started = time.perf_counter()
         rows = original(sql, parameters)
         elapsed = time.perf_counter() - started
@@ -530,6 +561,12 @@ def capture_validator(
             if rows != expected_rows[kind][offset : offset + PAGE_SIZE]:
                 raise RuntimeError(f"role stream differs from fixture facts: {kind}")
             captured[kind].append(CapturedQuery(sql, parameters, len(rows), elapsed))
+        elif (fixed_kind := fixed_query_kind(sql)) is not None:
+            fixed_calls[fixed_kind] += 1
+            if fixed_kind == CLEANUP_AUTHORITY_QUERY and rows:
+                raise RuntimeError("role cost fixture must not have OPEN cleanup work")
+        else:
+            unclassified_calls += 1
         return rows
 
     started = time.perf_counter()
@@ -538,6 +575,11 @@ def capture_validator(
     elapsed = time.perf_counter() - started
     if set(captured) != set(STREAMS):
         raise RuntimeError("incomplete role stream instrumentation")
+    if unclassified_calls:
+        raise RuntimeError("unclassified role SELECT instrumentation")
+    for kind, calls in FIXED_QUERY_CALLS.items():
+        if fixed_calls[kind] != calls:
+            raise RuntimeError(f"fixed role query count mismatch: {kind}")
     expected = stream_sizes(facts)
     for kind, queries in captured.items():
         if (
@@ -551,6 +593,8 @@ def capture_validator(
         "client_seconds": elapsed,
         "select_calls": all_calls,
         "stream_select_calls": sum(map(len, captured.values())),
+        "fixed_select_calls": dict(fixed_calls),
+        "fixed_select_calls_total": fixed_calls.total(),
         "streams": {
             kind: {
                 "calls": len(queries),
@@ -723,10 +767,12 @@ def contract() -> dict[str, Any]:
         "target": "Avoid prefix-length work: seek descent plus bounded pages/point joins, not strict O(1) physical storage work.",
         "budget": "8*(128 + fixture metadata exclusions for derived stream + 1)+32. Derived stream pages raw CONTENT files; stored stream pages distinct observation/hash groups, whose counts differ under duplication.",
         "stream_call_model": "Sum ceil(stream_rows/128)+1 across five raw-file streams, one CONTENT-file stream, and one distinct observation/hash-group stream, including each terminal empty page. For distinct CONTENT-only inputs this is 7*(ceil(N/128)+1).",
+        "fixed_call_model": "Exactly seven registry SELECTs and one empty OPEN observation-cleanup authority SELECT per validator call. Total SELECTs equal stream SELECTs + 8; the fixed probe does not relax any stream or seek-work budget.",
         "counterexample": "Former tuple seek is a dev-only prefix-rescan baseline. Same-output +0 numeric ORDER BY denies ordered-index shortcut; every stream at the largest default shape must reject this control.",
         "independent_oracle": "Every production validator page and every profiled SELECT is compared to ordered rows built directly from fixture facts. Three complete validator cycles reuse unchanged input; each sampled query has three SELECT repetitions by default.",
         "limitations": [
             "FK-valid role file families only; not full observation descriptors, READY audit, publication or recovery.",
+            "The fixture has no OPEN cleanup work. Exact retirement-authority validation for an active cleanup is outside this cost experiment, not included in its eight fixed SELECTs.",
             "Warm local MariaDB 10.11.11; fixed variant order; elapsed ratios are not NAS speedup predictions.",
             "ANALYZE r_rows*r_loops is not distinct examined rows and may exclude pushed filters; Handler counts are requests.",
             "Metadata and duplicate regimes have independent stream cardinalities; LIMIT 128 alone is not a server-work bound.",
