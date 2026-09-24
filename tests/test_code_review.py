@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +33,12 @@ with (state / "calls.jsonl").open("a", encoding="utf-8") as stream:
     stream.write(json.dumps({"args": sys.argv[1:], "prompt": sys.stdin.read()}) + "\n")
 
 mode = os.environ.get("FAKE_CODEX_MODE", "pass")
+if mode in {"hold-pass", "hold-failure"}:
+    (state / "held").write_text("review started", encoding="utf-8")
+    while not (state / "release").exists():
+        time.sleep(0.01)
+    if mode == "hold-failure":
+        raise SystemExit(7)
 if mode == "nonzero":
     raise SystemExit(7)
 if mode == "timeout":
@@ -189,6 +197,32 @@ def _assert_blocked(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode != 0, result.stdout + result.stderr
 
 
+@contextmanager
+def _held_review(repo: ReviewRepository, mode: str) -> Iterator[subprocess.Popen[str]]:
+    process = subprocess.Popen(
+        (sys.executable, "scripts/review-code.py", "run", "--index"),
+        cwd=repo.path,
+        env={**repo.environment, "FAKE_CODEX_MODE": mode},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not (repo.state / "held").exists() and time.monotonic() < deadline:
+            assert process.poll() is None, "The review exited before synchronization"
+            time.sleep(0.01)
+        assert (repo.state / "held").exists(), "The fake reviewer never started"
+        yield process
+    finally:
+        (repo.state / "release").write_text("release review", encoding="utf-8")
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.communicate(timeout=5)
+
+
 def test_review_binds_the_real_merge_candidate_and_verifies_after_commit(
     review_repository: ReviewRepository,
 ) -> None:
@@ -345,6 +379,52 @@ def test_failed_review_preflight_invalidates_the_previous_pass(
     assert repo.git("diff", "--name-only") == ""
     _assert_blocked(repo.review("verify", "--index"))
     assert len(repo.calls()) == 1, "Preflight failures must occur before invoking Codex"
+
+
+@pytest.mark.parametrize("mode", ["hold-pass", "hold-failure"])
+def test_concurrent_review_rejects_a_second_owner_without_invoking_codex(
+    review_repository: ReviewRepository, mode: str
+) -> None:
+    repo = review_repository
+    _assert_passed(repo.review("run", "--index"))
+    with _held_review(repo, mode) as owner:
+        _assert_blocked(repo.review("verify", "--index"))
+        started = time.monotonic()
+        competing = repo.review("run", "--index")
+        assert time.monotonic() - started < 5, (
+            "A competing run must not wait for its owner"
+        )
+        _assert_blocked(competing)
+        assert "already running" in (competing.stdout + competing.stderr).lower()
+        assert len(repo.calls()) == 2, "A competing run must not invoke Codex"
+        _assert_blocked(repo.review("verify", "--index"))
+        (repo.state / "release").write_text("release review", encoding="utf-8")
+        stdout, stderr = owner.communicate(timeout=5)
+        if mode == "hold-pass":
+            assert owner.returncode == 0, stdout + stderr
+            _assert_passed(repo.review("verify", "--index"))
+        else:
+            assert owner.returncode != 0, stdout + stderr
+            _assert_blocked(repo.review("verify", "--index"))
+    _assert_passed(repo.review("run", "--index"))
+    _assert_passed(repo.review("verify", "--index"))
+    assert len(repo.calls()) == 3
+
+
+def test_terminated_review_releases_its_lock_without_a_passing_receipt(
+    review_repository: ReviewRepository,
+) -> None:
+    repo = review_repository
+    _assert_passed(repo.review("run", "--index"))
+    with _held_review(repo, "hold-pass") as owner:
+        _assert_blocked(repo.review("verify", "--index"))
+        owner.terminate()
+        stdout, stderr = owner.communicate(timeout=5)
+        assert owner.returncode != 0, stdout + stderr
+        _assert_blocked(repo.review("verify", "--index"))
+    _assert_passed(repo.review("run", "--index"))
+    _assert_passed(repo.review("verify", "--index"))
+    assert len(repo.calls()) == 3
 
 
 def test_candidate_changes_during_review_cannot_receive_a_passing_receipt(

@@ -204,6 +204,8 @@
   本檔及 reviewer實作；變更後須重新審查。支援 `--revision`對既有 commit
   執行或驗證審查；正式合併必須使用 `--index`。明確重新執行同一 candidate
   的 `run`會先廢止舊紀錄，失敗不得沿用舊結果。
+  同一 candidate同時只允許一個 `run`；重疊請求在啟動審查前拒絕，不取代
+  正在執行者，也不代表新的審查結果。POSIX離線 verify在審查執行中亦拒絕。
 - Code review紀錄與測試 release receipt分開。既有 release gate在重用
   release receipt前及完整 checks後都必須驗證 code review，且不得自行連線
   呼叫模型。AI未發現問題不等於程式正確性的證明；本機紀錄亦非防竄改簽章。

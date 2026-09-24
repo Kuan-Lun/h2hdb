@@ -11,6 +11,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -150,6 +152,36 @@ def _directory() -> Path:
 
 def _receipt_path(target: Target) -> Path:
     return _directory() / "receipts" / f"{target.key}.json"
+
+
+@contextmanager
+def _review_lock(target: Target, *, exclusive: bool) -> Iterator[None]:
+    if os.name != "posix":
+        if exclusive:
+            raise ReviewError(
+                "Running Codex review currently requires POSIX process groups; "
+                "offline verification remains available on other platforms"
+            )
+        yield
+        return
+    import fcntl
+
+    directory = _directory() / "locks"
+    if exclusive:
+        directory.mkdir(parents=True, exist_ok=True)
+    # Lock files stay in place: unlinking a locked inode would permit a second owner.
+    with (directory / target.key).open("a" if exclusive else "r") as stream:
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        try:
+            fcntl.flock(stream, operation | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ReviewError(
+                "Code review already running for this candidate"
+            ) from error
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 def _result(document: object) -> dict[str, Any]:
@@ -337,11 +369,6 @@ def _write_receipt(
 def _run(
     target: Target, *, index: bool, revision: str, timeout: int, model: str | None
 ) -> None:
-    if os.name != "posix":
-        raise ReviewError(
-            "Running Codex review currently requires POSIX process groups; "
-            "offline verification remains available on other platforms"
-        )
     _assert_workspace(target)
     runs = _directory() / "runs"
     runs.mkdir(parents=True, exist_ok=True)
@@ -417,21 +444,24 @@ def main() -> None:
                 raise ReviewError(
                     "Review candidate differs from the gate's expected tree"
                 )
-            if args.index:
-                _assert_workspace(target)
-            print(f"Verified exact-candidate code review: {_verify(target)}")
+            with _review_lock(target, exclusive=False):
+                if args.index:
+                    _assert_workspace(target)
+                print(f"Verified exact-candidate code review: {_verify(target)}")
         else:
-            # Even failed preflight must invalidate an explicitly requested rerun.
-            _receipt_path(target).unlink(missing_ok=True)
-            if not 1 <= args.timeout_seconds <= 3600:
-                raise ReviewError("--timeout-seconds must be between 1 and 3600")
-            _run(
-                target,
-                index=args.index,
-                revision=args.revision,
-                timeout=args.timeout_seconds,
-                model=args.model,
-            )
+            with _review_lock(target, exclusive=True):
+                # A rejected overlapping request never starts a new review.
+                # Once admitted, even failed preflight invalidates the old result.
+                _receipt_path(target).unlink(missing_ok=True)
+                if not 1 <= args.timeout_seconds <= 3600:
+                    raise ReviewError("--timeout-seconds must be between 1 and 3600")
+                _run(
+                    target,
+                    index=args.index,
+                    revision=args.revision,
+                    timeout=args.timeout_seconds,
+                    model=args.model,
+                )
     except (ReviewError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"h2hdb code review: {error}", file=sys.stderr)
         raise SystemExit(1) from error
