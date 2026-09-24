@@ -20,8 +20,9 @@ from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 1
-RELEASE_PROFILE = "h2hdb-release-v3"
+RELEASE_PROFILE = "h2hdb-release-v4"
 REQUIRED_CHECKS = (
+    "exact-candidate-code-review",
     "ruff-lint",
     "ruff-format",
     "mypy",
@@ -268,14 +269,45 @@ def _write_receipt(tree: str, version: Version) -> Path:
     return destination
 
 
+def _verify_code_review(arguments: tuple[str, ...], *, expected_tree: str) -> None:
+    _run(
+        "Offline exact-candidate code-review verification",
+        (
+            sys.executable,
+            "scripts/review-code.py",
+            "verify",
+            *arguments,
+            "--expected-tree",
+            expected_tree,
+        ),
+    )
+
+
+def _assert_candidate_unchanged(tree: str, version: Version) -> None:
+    current_tree = _git("write-tree")
+    if current_tree != tree:
+        raise ReleaseGateError(
+            f"The candidate tree changed during verification: {tree} -> {current_tree}"
+        )
+    _assert_no_unstaged_or_untracked_files()
+    current_version = _version_from_spec(":pyproject.toml")
+    if current_version != version:
+        raise ReleaseGateError(
+            f"project.version changed during verification: {version} -> {current_version}"
+        )
+
+
 def _run_release_gate(
     tree: str,
     version: Version,
     *,
     refresh: bool,
     version_arguments: tuple[str, ...],
+    review_arguments: tuple[str, ...],
 ) -> None:
+    _verify_code_review(review_arguments, expected_tree=tree)
     if not refresh and _has_valid_receipt(tree, version):
+        _assert_candidate_unchanged(tree, version)
         print(
             f"Local release gate already passed for tree {tree} "
             f"(version {version}); reusing receipt."
@@ -288,17 +320,8 @@ def _run_release_gate(
     )
     _run("Bounded repository release gate", ("scripts/check-full.sh",))
 
-    current_tree = _git("write-tree")
-    if current_tree != tree:
-        raise ReleaseGateError(
-            f"The candidate tree changed during verification: {tree} -> {current_tree}"
-        )
-    _assert_no_unstaged_or_untracked_files()
-    current_version = _version_from_spec(":pyproject.toml")
-    if current_version != version:
-        raise ReleaseGateError(
-            f"project.version changed during verification: {version} -> {current_version}"
-        )
+    _assert_candidate_unchanged(tree, version)
+    _verify_code_review(review_arguments, expected_tree=tree)
     receipt = _write_receipt(tree, version)
     print(f"\nLocal release gate passed; wrote {receipt}")
 
@@ -359,6 +382,8 @@ def _pre_push(document: str) -> None:
                     f"project.version decreased from {previous} to {current}"
                 )
         tree = _git("rev-parse", f"{update.local_oid}^{{tree}}")
+        review_arguments = ("--revision", update.local_oid)
+        _verify_code_review(review_arguments, expected_tree=tree)
         if not _has_valid_receipt(tree, current):
             head = _git("rev-parse", "HEAD")
             if update.local_oid != head:
@@ -384,33 +409,39 @@ def _pre_push(document: str) -> None:
                     "--candidate",
                     update.local_oid,
                 ),
+                review_arguments=review_arguments,
             )
         print(f"Validated local release receipt for version {current} ({tree}).")
 
 
 def _explicit_run(*, refresh: bool, index: bool, base: str | None) -> None:
     version_arguments: tuple[str, ...]
+    review_arguments: tuple[str, ...]
     if index:
         _assert_no_unstaged_or_untracked_files()
         tree = _git("write-tree")
         version = _version_from_spec(":pyproject.toml")
         version_arguments = ("--index",)
+        review_arguments = ("--index",)
     else:
         _assert_clean_head()
         tree = _git("rev-parse", "HEAD^{tree}")
         version = _version_from_spec("HEAD:pyproject.toml")
         version_arguments = () if base is None else ("--base", base)
+        review_arguments = ("--revision", "HEAD")
     assert version is not None
     _run_release_gate(
         tree,
         version,
         refresh=refresh,
         version_arguments=version_arguments,
+        review_arguments=review_arguments,
     )
 
 
 def _receipt_status(revision: str) -> None:
     tree = _git("rev-parse", f"{revision}^{{tree}}")
+    _verify_code_review(("--revision", revision), expected_tree=tree)
     version = _version_from_spec(f"{revision}:pyproject.toml")
     assert version is not None
     if not _has_valid_receipt(tree, version):

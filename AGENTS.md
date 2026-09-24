@@ -40,8 +40,9 @@
 - task branch 可包含多個邏輯 Conventional Commits。避免巨大 commit；小而
   內聚的任務仍可只有一個 commit。
 - 任務完成後執行 `scripts/git-flow-merge.sh`。該腳本負責 exact-tree release
-  gate、`--no-ff` merge、安全移除 task worktree，以及以 `git branch -d`
-  刪除已合併的本機 branch。
+  gate、`--no-ff --no-commit` candidate、自動 Codex code review、最後的 merge
+  commit、安全移除 task worktree，以及以 `git branch -d` 刪除已合併的本機
+  branch。Review 失敗亦須 abort merge並保留 task branch。
 - task branch 與 primary 只須有 common ancestor；不得要求 task branch 必須
   包含 primary 的最新 tip。分歧由正常 three-way merge處理。
 - merge conflict 或 gate failure 時必須 abort merge並保留 task branch。
@@ -160,7 +161,8 @@
   真實 CBZ／raster oracle已驗證。不得為此把 adapter依賴加入 Core。
 - `.githooks/pre-merge-commit` 透過 `scripts/release-gate.py run --index`
   驗證 staged candidate；不得另建競爭的第二套 merge gate。
-- release gate先驗證 task-level version與 dependency audit，再呼叫
+- release gate先離線驗證 exact candidate code review evidence，再驗證
+  task-level version與 dependency audit，最後呼叫
   `scripts/check-full.sh`。成功 receipt存在 Git metadata，且只對 exact tree、
   project version、gate profile與 required-check set有效。
 - release receipt只證明 bounded pytest merge profile；不得宣稱它執行或證明
@@ -175,6 +177,40 @@
   exit、真實descendant cleanup、venv redirector與multi-phase handoff由獨立
   `windows-latest` target驗證。
 - 不使用 Claude、Codex或其他 provider-specific Stop hooks重複檢查。
+
+## Code Review Rules
+
+- 每次 task合併前，`scripts/git-flow-merge.sh` 必須先準備真正的 two-parent
+  merge candidate，再於 Git hooks之外呼叫 `scripts/review-code.py run --index`。
+  此步驟可使用已登入的 Codex服務；需要 local `.venv`與 PATH中的 `codex`。
+  Review採 read-only sandbox，不得修改檔案、執行 merge/gate、啟動服務或
+  自動修正問題。不得要求 GitHub PR、Actions或 provider-specific Stop hook。
+  本機 online review目前限 POSIX，以獨立 process group在逾時或中斷時清理
+  Codex及其一般 descendants；刻意脫離 group者不在保證內。Windows仍可離線
+  verify，online review須先實作並驗證 Job Object生命週期；不影響 Core支援。
+- 審查 primary parent到 candidate tree的完整變更，並檢查相關未修改程式碼
+  的互動。完整閱讀本檔，引用既有架構與交易政策；不另建或複製政策來源。
+  特別檢查 transaction boundaries、exact fencing、bounded operations與
+  cleanup reachability、manifest/runtime一致性及能重現缺陷的測試缺口。
+- 只回報有具體觸發條件與影響的 P0、P1、P2問題，附檔案、行號及理由。
+  格式偏好交由既有 lint處理；不得為保持相容而違反本檔的品質優先原則。
+  合法且已授權的破壞性變更本身不是缺陷，但遺漏資料轉換或錯誤的版本判定
+  仍須回報。無足夠上下文或工具時回報 `incomplete`，不得聲稱通過。
+- 任何 finding、`incomplete`、逾時、非零退出或無效輸出都阻止 merge。
+  修正問題後重新執行合併流程，不得忽略 finding或手寫 passing receipt。
+  Review預設 900秒；手動 `run --timeout-seconds`接受 1..3600秒。
+- `review-code.py verify`只離線驗證紀錄，絕不啟動 Codex。紀錄存在 Git
+  common metadata的 `h2hdb-review`，綁定 candidate tree、ordered parents、
+  本檔及 reviewer實作；變更後須重新審查。支援 `--revision`對既有 commit
+  執行或驗證審查；正式合併必須使用 `--index`。明確重新執行同一 candidate
+  的 `run`會先廢止舊紀錄，失敗不得沿用舊結果。
+  同一 candidate同時只允許一個 `run`；重疊請求在啟動審查前拒絕，不取代
+  正在執行者，也不代表新的審查結果。POSIX離線 verify在審查執行中亦拒絕。
+- Code review紀錄與測試 release receipt分開。既有 release gate在重用
+  release receipt前及完整 checks後都必須驗證 code review，且不得自行連線
+  呼叫模型。AI未發現問題不等於程式正確性的證明；本機紀錄亦非防竄改簽章。
+  Codex原始結果與診斷保留於 metadata，CLI版本與 model override記錄於
+  receipt；未指定 model時沿用 Codex設定，不聲稱知道 CLI未回報的解析後模型。
 
 ## 測試與例外
 

@@ -17,7 +17,7 @@ if [[ "$current" == "$primary" ]]; then
         exit 1
     }
 
-    # A conflicted merge reaches pre-commit instead of pre-merge-commit.
+    # Explicit --no-commit candidates and resolved conflicts both enter here.
     exec "$repo_root/.githooks/run-release-gate" run --index
 fi
 
