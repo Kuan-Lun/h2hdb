@@ -558,23 +558,32 @@ def _validator_version() -> str:
 def record_offline_audit_completion(
     work: VNextUnitOfWork, *, duration_microseconds: int
 ) -> None:
-    """Seed scheduling only from the one-off converter's completed full audit.
+    """Refresh scheduling from the one-off converter's completed full audit.
 
     The offline converter owns the surrounding schema gate and transaction. It
     invokes this only after all new READY obligations have executed, and commits
-    this baseline together with final READY activation. Ordinary consumers have
-    no public facade operation accepting an externally asserted audit success.
+    this baseline together with final READY activation. Retained runtime state
+    is validated, then superseded even if its lease still appears live: all
+    consumers must be stopped for the offline conversion. A fresh generation
+    fences delayed operations from that old owner. Ordinary consumers have no
+    public facade operation accepting an externally asserted audit success.
     """
     duration = require_int63(duration_microseconds, field="offline audit duration")
-    if read_database_audit_state(work.connector) is not None:
-        raise DatabaseAuditStateError("offline audit baseline already exists")
+    previous = read_database_audit_state(work.connector)
     now = database_unix_microseconds(work)
-    policy = DatabaseAuditPolicy()
+    policy = (
+        DatabaseAuditPolicy()
+        if previous is None
+        else DatabaseAuditPolicy(
+            minimum_interval_microseconds=previous.minimum_interval_microseconds,
+            duration_multiplier=previous.duration_multiplier,
+        )
+    )
     state = _State(
-        1,
+        1 if previous is None else _add_time(previous.generation, 1),
         secrets.token_bytes(16),
         None,
-        60_000_000,
+        60_000_000 if previous is None else previous.lease_duration_microseconds,
         policy.minimum_interval_microseconds,
         policy.duration_multiplier,
         now,
@@ -587,7 +596,14 @@ def record_offline_audit_completion(
                 min(INT63_MAX, duration * policy.duration_multiplier),
             ),
         ),
-        None,
+        # Preserve whether initial catch-up completed, including its one-time
+        # grace anchor. As in a runtime full audit, rebase a future anchor after
+        # clock regression without granting a second initial-catch-up deferral.
+        (
+            min(now, previous.initial_catchup_at)
+            if previous is not None and previous.initial_catchup_at is not None
+            else None
+        ),
         0,
     )
-    DatabaseAuditStateRepository.save(work, None, state)
+    DatabaseAuditStateRepository.save(work, previous, state)

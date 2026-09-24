@@ -12,7 +12,14 @@ from types import ModuleType
 
 import pytest
 
-from h2hdb import CoreConfig, VNextDatabaseAdminFacade, VNextDownloadQueueFacade
+from h2hdb import (
+    CoreConfig,
+    DatabaseAuditPolicy,
+    DatabaseAuditSessionLostError,
+    VNextDatabaseAdminFacade,
+    VNextDownloadQueueFacade,
+    database_audit,
+)
 from h2hdb.catalog_refinement import CatalogSemanticValidationError
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_admin import VNextSchemaAdmin
@@ -52,10 +59,18 @@ def _old_populated_database(
     converter: ModuleType,
     *,
     populate: Callable[[CoreConfig], None] | None = None,
+    audit_baseline: bool = True,
 ) -> tuple[object, ...]:
     admin = VNextDatabaseAdminFacade(config)
     try:
         admin.initialize()
+        if audit_baseline:
+            # A previously running schema-7 installation already has this
+            # retained scheduling singleton; an unused database does not.
+            runtime = admin.start_ingest_runtime(
+                lease_duration_microseconds=300_000_000
+            )
+            admin.finish_ingest_runtime(runtime.session)
     finally:
         admin.close()
     if populate is not None:
@@ -206,6 +221,15 @@ def _requests(config: CoreConfig) -> tuple[object, ...]:
         queue.close()
 
 
+def _audit_state(config: CoreConfig) -> database_audit._State | None:
+    context = RepositoryContext.from_config(config)
+    try:
+        with context.SQLConnector() as connector:
+            return database_audit.read_database_audit_state(connector)
+    finally:
+        context.close()
+
+
 def _assert_conversion_pending(config: CoreConfig, converter: ModuleType) -> None:
     provider = GeneratedVNextSchemaProvider(
         "sqlite" if config.database.sql_type == "sqlite" else "mariadb"
@@ -261,16 +285,30 @@ def _retained_data_tables(config: CoreConfig, converter: ModuleType) -> tuple[st
     )
 
 
+@pytest.mark.parametrize("audit_baseline", [False, True])
 def test_populated_schema_conversion_preserves_facts_and_replays(
     conversion_config: CoreConfig,
     converter: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    audit_baseline: bool,
 ) -> None:
-    before = _old_populated_database(conversion_config, converter)
+    before = _old_populated_database(
+        conversion_config, converter, audit_baseline=audit_baseline
+    )
+    prior_audit = _audit_state(conversion_config)
     progress: list[str] = []
     assert converter.upgrade(conversion_config, progress=progress.append) == "converted"
     assert progress[-1] == "ready_committed"
     assert _requests(conversion_config) == before
+    completed_audit = _audit_state(conversion_config)
+    assert completed_audit is not None
+    assert completed_audit.lease_expires_at is None
+    assert completed_audit.audit_pending == 0
+    if prior_audit is not None:
+        assert completed_audit.generation == prior_audit.generation + 1
+        assert completed_audit.owner_token != prior_audit.owner_token
+    else:
+        assert completed_audit.generation == 1
     admin = VNextDatabaseAdminFacade(conversion_config)
     try:
         assert admin.check().schema_version == 8
@@ -281,12 +319,16 @@ def test_populated_schema_conversion_preserves_facts_and_replays(
         == "already_converted"
     )
     assert _requests(conversion_config) == before
+    assert _audit_state(conversion_config) == completed_audit
 
     def forbid_duplicate_audit(_admin: VNextSchemaAdmin) -> None:
         pytest.fail("converter already completed the full audit")
 
     admin = VNextDatabaseAdminFacade(conversion_config)
     try:
+        if prior_audit is not None:
+            with pytest.raises(DatabaseAuditSessionLostError):
+                admin.finish_ingest_runtime(prior_audit.session)
         with monkeypatch.context() as patch:
             patch.setattr(VNextSchemaAdmin, "check", forbid_duplicate_audit)
             startup = admin.start_ingest_runtime(
@@ -311,6 +353,8 @@ def test_populated_schema_conversion_preserves_facts_and_replays(
         "schema_committed",
         "addition_validated",
         "full_audit_completed",
+        "audit_baseline_recorded",
+        "ready_recorded",
         "ready_committed",
     ],
 )
@@ -318,6 +362,7 @@ def test_conversion_interruption_preserves_data_and_resumes(
     conversion_config: CoreConfig, converter: ModuleType, interruption: str
 ) -> None:
     before = _old_populated_database(conversion_config, converter)
+    prior_audit = _audit_state(conversion_config)
 
     def interrupt(checkpoint: str) -> None:
         if checkpoint == interruption:
@@ -326,6 +371,8 @@ def test_conversion_interruption_preserves_data_and_resumes(
     with pytest.raises(RuntimeError, match="simulated converter termination"):
         converter.upgrade(conversion_config, progress=interrupt)
     assert _requests(conversion_config) == before
+    if interruption != "ready_committed":
+        assert _audit_state(conversion_config) == prior_audit
     # SQLite rolls back its structural transaction or retains its committed
     # BUILDING phase. MariaDB resumes exact validated implicit DDL commits.
     context = RepositoryContext.from_config(conversion_config)
@@ -392,6 +439,7 @@ def test_failed_final_audit_never_publishes_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     before = _old_populated_database(conversion_config, converter)
+    prior_audit = _audit_state(conversion_config)
 
     def reject(*_args: object, **_kwargs: object) -> None:
         raise SchemaEpochValidationError("semantic corruption detected")
@@ -401,8 +449,110 @@ def test_failed_final_audit_never_publishes_ready(
         with pytest.raises(SchemaEpochValidationError, match="semantic corruption"):
             converter.upgrade(conversion_config, progress=lambda _: None)
     _assert_conversion_pending(conversion_config, converter)
+    assert _audit_state(conversion_config) == prior_audit
     assert _requests(conversion_config) == before
     assert converter.upgrade(conversion_config, progress=lambda _: None) == "converted"
+
+
+@pytest.mark.parametrize(
+    "runtime_state", ["closed_caught_up", "unclosed", "pending_first", "pending_repeat"]
+)
+def test_conversion_refreshes_retained_runtime_audit_and_fences_owner(
+    conversion_config: CoreConfig,
+    converter: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_state: str,
+) -> None:
+    policy = DatabaseAuditPolicy(
+        minimum_interval_microseconds=7_200_000_000, duration_multiplier=17
+    )
+
+    def fail_audit(_admin: VNextSchemaAdmin) -> None:
+        raise SchemaEpochValidationError("interrupted previous runtime audit")
+
+    def populate(config: CoreConfig) -> None:
+        admin = VNextDatabaseAdminFacade(config)
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    database_audit,
+                    "_validator_version",
+                    lambda: "h2hdb/0.40.0;database-audit/1",
+                )
+                if runtime_state != "pending_first":
+                    report = admin.start_ingest_runtime(
+                        policy=policy, lease_duration_microseconds=300_000_000
+                    )
+                    if runtime_state == "closed_caught_up":
+                        admin.mark_initial_catchup_complete(report.session)
+                    if runtime_state != "unclosed":
+                        admin.finish_ingest_runtime(report.session)
+                if runtime_state.startswith("pending_"):
+                    patch.setattr(VNextSchemaAdmin, "check", fail_audit)
+                    with pytest.raises(
+                        SchemaEpochValidationError, match="interrupted previous"
+                    ):
+                        admin.start_ingest_runtime(
+                            policy=policy,
+                            lease_duration_microseconds=300_000_000,
+                            force_full=True,
+                        )
+        finally:
+            admin.close()
+
+    requests_before = _old_populated_database(
+        conversion_config, converter, populate=populate, audit_baseline=False
+    )
+    prior = _audit_state(conversion_config)
+    assert prior is not None
+    assert (prior.last_audit_at is None) == (runtime_state == "pending_first")
+    assert prior.audit_pending == int(runtime_state.startswith("pending_"))
+    assert (prior.lease_expires_at is None) == (runtime_state == "closed_caught_up")
+
+    assert converter.upgrade(conversion_config, progress=lambda _: None) == "converted"
+    following = _audit_state(conversion_config)
+    assert following is not None
+    assert following.generation == prior.generation + 1
+    assert following.owner_token != prior.owner_token
+    assert following.lease_expires_at is None
+    assert following.audit_pending == 0
+    assert (
+        following.minimum_interval_microseconds == policy.minimum_interval_microseconds
+    )
+    assert following.duration_multiplier == policy.duration_multiplier
+    assert following.initial_catchup_at == prior.initial_catchup_at
+    assert following.validator_version == database_audit._validator_version()
+    assert following.last_audit_at is not None
+    assert following.audit_duration_microseconds is not None
+    assert following.next_audit_at == following.last_audit_at + max(
+        policy.minimum_interval_microseconds,
+        following.audit_duration_microseconds * policy.duration_multiplier,
+    )
+    assert _requests(conversion_config) == requests_before
+
+    def forbid_duplicate_audit(_admin: VNextSchemaAdmin) -> None:
+        pytest.fail("the converter already completed the current full audit")
+
+    admin = VNextDatabaseAdminFacade(conversion_config)
+    try:
+        for stale_operation in (
+            lambda: admin.renew_ingest_runtime(prior.session, 300_000_000),
+            lambda: admin.check_ingest_runtime_if_due(prior.session),
+            lambda: admin.mark_initial_catchup_complete(prior.session),
+            lambda: admin.finish_ingest_runtime(prior.session),
+        ):
+            with pytest.raises(DatabaseAuditSessionLostError):
+                stale_operation()
+        with monkeypatch.context() as patch:
+            patch.setattr(VNextSchemaAdmin, "check", forbid_duplicate_audit)
+            startup = admin.start_ingest_runtime(
+                policy=policy, lease_duration_microseconds=300_000_000
+            )
+        assert startup.full_audit is None
+        assert startup.initial_catchup_pending == (prior.initial_catchup_at is None)
+        admin.finish_ingest_runtime(startup.session)
+    finally:
+        admin.close()
 
 
 def test_real_role_audit_failure_preserves_facts_and_conversion_resume(
@@ -542,10 +692,23 @@ def test_failed_legacy_audit_resumes_exact_committed_cleanup_without_data_change
 
 
 @pytest.mark.deep
+@pytest.mark.parametrize(
+    "interruption",
+    [
+        "schema_committed",
+        "audit_baseline_recorded",
+        "ready_recorded",
+        "ready_committed",
+    ],
+)
 def test_real_process_kill_recovers_conversion_without_losing_facts(
-    conversion_config: CoreConfig, converter: ModuleType, tmp_path: Path
+    conversion_config: CoreConfig,
+    converter: ModuleType,
+    tmp_path: Path,
+    interruption: str,
 ) -> None:
     before = _old_populated_database(conversion_config, converter)
+    prior_audit = _audit_state(conversion_config)
     config_path = tmp_path / "local-test-config.json"
     config_path.write_text(conversion_config.model_dump_json())
     reached = tmp_path / "addition-validated"
@@ -560,7 +723,7 @@ spec = importlib.util.spec_from_file_location('offline_converter_child', sys.arg
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 def checkpoint(name):
-    if name == 'schema_committed':
+    if name == sys.argv[4]:
         Path(sys.argv[3]).write_text(name)
         Event().wait(120)
 module.upgrade(load_config(sys.argv[2]), progress=checkpoint)
@@ -568,7 +731,15 @@ module.upgrade(load_config(sys.argv[2]), progress=checkpoint)
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(_SCRIPT.parents[1] / "src")
     process = subprocess.Popen(
-        [sys.executable, "-c", program, str(_SCRIPT), str(config_path), str(reached)],
+        [
+            sys.executable,
+            "-c",
+            program,
+            str(_SCRIPT),
+            str(config_path),
+            str(reached),
+            interruption,
+        ],
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -592,7 +763,12 @@ module.upgrade(load_config(sys.argv[2]), progress=checkpoint)
             process.kill()
             process.communicate(timeout=10)
     assert _requests(conversion_config) == before
-    assert converter.upgrade(conversion_config, progress=lambda _: None) == "converted"
+    if interruption != "ready_committed":
+        assert _audit_state(conversion_config) == prior_audit
+        _assert_conversion_pending(conversion_config, converter)
+    assert converter.upgrade(conversion_config, progress=lambda _: None) == (
+        "already_converted" if interruption == "ready_committed" else "converted"
+    )
     assert _requests(conversion_config) == before
 
 

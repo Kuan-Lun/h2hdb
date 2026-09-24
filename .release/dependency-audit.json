@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-23T12:10:24+00:00",
+  "checked_at": "2026-09-24T04:36:19+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.41.1",
+  "project_version": "0.41.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed current PyPI/npm candidates for all direct build, runtime, optional/development and Node dependencies, including versions outside existing bounds. The only candidate change from Core 0.41.0 is Hypothesis 6.168.1. Its official changelog (https://hypothesis.readthedocs.io/en/latest/changelog.html#v6-168-1) describes additional abi3 wheels for Linux s390x manylinux and i686 musllinux; no behavioral API change is listed. Installed 6.168.1 in the repository Python 3.14 environment for the cleanup recovery matrices and exact-tree release gate. All other candidates are unchanged and their prior reviews carry forward; all candidates satisfy current bounds and advertise Python 3.14 support. Core 0.41.1 corrects full READY audit of exact interrupted observation cleanup frontiers without changing schema 8, generated provider or the existing offline conversion checksum. Tests cover legitimate retirement and actual corruption separately on SQLite and MariaDB, plus conversion BUILDING recovery. Manual cleanup-acceptance and wheel/Docker experiments are reported separately from the bounded merge receipt. No dependency declarations changed.",
+    "note": "Reviewed fresh PyPI/npm discovery for all direct build, runtime, optional/development and Node dependencies on 2026-09-24. All 12 Python entries and the Node entry exactly match the Core 0.41.1 audit, including latest versions, declared bounds and Python 3.14 support; no new release-note candidate requires review. The dependency manifest hash is unchanged, and prior upstream release-note reviews carry forward. Repository-local installed Python dependencies and markdownlint-cli2 match every recorded latest candidate. No dependency declarations changed. Validate this patch with the repository exact-tree release gate and focused SQLite/MariaDB offline conversion recovery regressions; report manual evidence separately from the bounded merge receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
