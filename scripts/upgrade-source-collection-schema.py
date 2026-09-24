@@ -704,10 +704,12 @@ def _convert(
                     0, (perf_counter_ns() - audit_started) // 1_000
                 ),
             )
+            checkpoint("audit_baseline_recorded")
             connector.execute(
                 "UPDATE h2hdb_schema_epoch SET state = 'READY', ready_at = %s WHERE singleton_id = 1",
                 (max(time_ns() // 1_000, started_at),),
             )
+            checkpoint("ready_recorded")
         checkpoint("ready_committed")
     return "converted"
 
@@ -728,6 +730,8 @@ def _show_progress(checkpoint: str) -> None:
         "schema_committed": "Structural conversion committed; starting the full audit.",
         "full_audit_started": "Running the complete database audit; this may take as long as a manual check.",
         "full_audit_completed": "The complete database audit passed; recording its result.",
+        "audit_baseline_recorded": "Recorded the completed audit and retired previous runtime ownership; committing activation.",
+        "ready_recorded": "Recorded schema 8 readiness; the final transaction has not committed yet.",
         "ready_committed": "Schema 8 and its completed audit baseline are durably committed.",
     }
     print(messages[checkpoint], flush=True)

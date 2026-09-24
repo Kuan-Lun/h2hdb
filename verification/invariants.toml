@@ -4385,7 +4385,7 @@ id = "fault.production.database-audit-schedule"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "SQLite regressions reject partial success state, retain pending state on audit failure, fence stale run renewal and closure, and prove a delayed full audit cannot replace the result of a newer owner. A backwards database clock triggers an actual full check without looping forever."
+claim = "SQLite regressions reject partial success state, retain pending state on audit failure, fence stale run renewal and closure, and prove a delayed full audit cannot replace the result of a newer owner. A backwards database clock triggers an actual full check without looping forever. Offline refresh rejects malformed retained state and generation overflow, preserves catch-up status, fences the old owner, and rolls back with failed activation."
 assumptions = ["These are finite fault injections; they do not claim unbounded proof or real power-loss coverage."]
 [[evidence.location]]
 path = "tests/test_database_audit_schedule.py"
@@ -4402,13 +4402,25 @@ symbol = "test_clock_regression_requires_full_check"
 [[evidence.location]]
 path = "tests/test_verification_operational_schema.py"
 symbol = "test_database_audit_contract_and_success_constraints_fail_closed"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_offline_audit_rejects_malformed_retained_state_without_repair"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_offline_audit_generation_boundary_never_wraps_or_reuses_old_authority"
+[[evidence.location]]
+path = "tests/test_database_audit_schedule.py"
+symbol = "test_offline_audit_record_rolls_back_with_conversion_transaction"
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_conversion_interruption_preserves_data_and_resumes"
 
 [[evidence]]
 id = "integration.production.database-audit-schedule"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated-schema SQLite workflows run a real first full audit, prove clean quick startup uses only bounded control queries, resume after dirty ownership expiry, preserve exact clean-finish replay, defer long initial catch-up once without inventing audit success, schedule from measured completion and duration, and renew read-only while a full SQLite read snapshot exists. The one-time schema converter preserves populated facts and seeds its real successful full audit as a clean baseline."
+claim = "Generated-schema SQLite workflows run a real first full audit, prove clean quick startup uses only bounded control queries, resume after dirty ownership expiry, preserve exact clean-finish replay, defer long initial catch-up once without inventing audit success, schedule from measured completion and duration, and renew read-only while a full SQLite read snapshot exists. The one-time schema converter preserves populated facts and atomically records its successful full audit, either seeding absent scheduling state or refreshing and fencing a retained runtime owner without resetting policy or catch-up status. Completed conversion replay leaves that state unchanged."
 assumptions = ["These named cases establish SQLite behavior; live MariaDB converter coverage is a separate explicitly enabled run."]
 [[evidence.location]]
 path = "tests/test_database_audit_schedule.py"
@@ -4428,6 +4440,9 @@ symbol = "test_renew_during_sqlite_full_read_snapshot_is_read_only"
 [[evidence.location]]
 path = "tests/test_upgrade_source_collection_schema.py"
 symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
+[[evidence.location]]
+path = "tests/test_upgrade_source_collection_schema.py"
+symbol = "test_conversion_refreshes_retained_runtime_audit_and_fences_owner"
 
 [[evidence]]
 id = "integration.live-mariadb.database-audit-schedule"

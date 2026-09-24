@@ -390,17 +390,26 @@ during that final audit with `retained file-hash occurrences differ from exact
 CONTENT roles`. Core 0.41.1 validates the exact cleanup checkpoint and remaining
 source references before accepting already-deleted children. It still rejects
 actual missing, extra, or mismatched facts. The schema and conversion checksum
-are unchanged: keep clients stopped and rerun the converter with Core 0.41.1.
+are unchanged: keep clients stopped and rerun the converter with Core 0.41.2.
 An audit failure leaves the conversion in `BUILDING`; do not edit the marker or
 use `migrate` to force activation.
+
+Core 0.41.0 and 0.41.1 can also stop after the full audit passes with
+`offline audit baseline already exists`. A previously running schema-7 database
+normally retains this scheduling row. Core 0.41.2 refreshes it from the new full
+audit, preserves its scheduling policy and catch-up status, and fences the old
+runtime owner. The refreshed row and `READY` marker commit together. Failure
+before that commit preserves the previous row and resumable conversion marker;
+rerun the 0.41.2 converter without deleting the row or changing database facts.
+A completed replay only audits and does not repeatedly advance the owner.
 
 To deliver the matching wheel and converter as a Docker Compose bundle, build
 the wheel from this checkout, then run:
 
 ```bash
 python scripts/build-source-collection-upgrade-bundle.py \
-  --wheel dist/h2hdb-0.41.1-py3-none-any.whl \
-  --output /tmp/h2hdb-schema7-to8-docker-0.41.1.tar.gz \
+  --wheel dist/h2hdb-0.41.2-py3-none-any.whl \
+  --output /tmp/h2hdb-schema7-to8-docker-0.41.2.tar.gz \
   --deployment-root /absolute/path/to/deployment \
   --network existing-database-network
 ```
@@ -411,7 +420,7 @@ define `MEDIA_UID` and `MEDIA_GID`, then run:
 
 ```bash
 docker compose --env-file .env \
-  -f ./h2hdb-schema7-to8-docker-0.41.1/compose.yaml \
+  -f ./h2hdb-schema7-to8-docker-0.41.2/compose.yaml \
   run --rm --build --no-deps upgrade \
   --config /h2hdb-config/h2hdb-config.json --consumers-stopped
 ```
@@ -422,7 +431,7 @@ container runs as the configured UID/GID, mounts the configuration read-only,
 and needs no source-gallery or library mount for a MariaDB conversion.
 
 The upgrade image does not update application images. Before restarting ingest
-or other full-audit callers, install the bundled Core 0.41.1 wheel in their
+or other full-audit callers, install the bundled Core 0.41.2 wheel in their
 images too and verify the installed version. Core 0.41.0 can reject the same
 unfinished cleanup again: it sees the new recorded audit version and performs
 its own full startup audit. A registry-based rebuild does not obtain this patch
