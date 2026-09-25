@@ -7,9 +7,15 @@ passed. The manual CLI independently returns nonzero for observed violations.
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
+import os
+import py_compile
+import signal
+import subprocess
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
@@ -202,6 +208,7 @@ def test_cli_never_converts_violation_or_incomplete_to_success(
     monkeypatch.setattr(acceptance.probe, "source_provenance", dict)
     monkeypatch.setattr(acceptance, "source_hashes", dict)
     monkeypatch.setattr(acceptance, "imported_sources", dict)
+    monkeypatch.setattr(acceptance, "fresh_runtime_evidence", dict)
     monkeypatch.setattr(
         acceptance.batch_probe,
         "run_case",
@@ -238,6 +245,246 @@ def test_cli_requires_mariadb_opt_in(
     with pytest.raises(SystemExit) as result:
         acceptance.main()
     assert result.value.code == 2
+
+
+@pytest.mark.parametrize("failure_at", [1, 2, 3])
+@pytest.mark.parametrize("error_number", [errno.ENOSPC, errno.EACCES, errno.EISDIR])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_report_io_failure_is_incomplete_and_preserves_last_atomic_output(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure_at: int,
+    error_number: int,
+    persistent: bool,
+) -> None:
+    output = tmp_path / "report.json"
+    output.write_text("previous evidence")
+    monkeypatch.setattr(
+        sys, "argv", ["acceptance", "--case", "1:1:1", "--output", str(output)]
+    )
+    monkeypatch.setattr(acceptance, "fresh_runtime_evidence", dict)
+    monkeypatch.setattr(acceptance.probe, "source_provenance", dict)
+    monkeypatch.setattr(acceptance, "source_hashes", dict)
+    monkeypatch.setattr(acceptance, "imported_sources", dict)
+    monkeypatch.setattr(
+        acceptance.batch_probe,
+        "run_case",
+        lambda *_args, **_kwargs: {
+            "galleries": 1,
+            "batch": 1,
+            "turns": [_turn(acceptance)],
+        },
+    )
+    monkeypatch.setattr(
+        acceptance, "assess_turn", lambda *_args, **_kwargs: {"status": "violated"}
+    )
+    original = acceptance.probe.write_report
+    writes = 0
+
+    def fail_output(path: Path, report: dict[str, Any]) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == failure_at or (persistent and writes > failure_at):
+            raise OSError(error_number, "injected output failure")
+        original(path, report)
+
+    monkeypatch.setattr(acceptance.probe, "write_report", fail_output)
+    assert acceptance.main() == 2
+    assert "acceptance incomplete" in capsys.readouterr().err
+    if failure_at == 1:
+        assert output.read_text() == "previous evidence"
+    else:
+        saved = json.loads(output.read_text())
+        assert saved["status"] == "error"
+        assert saved["acceptance"]["status"] == "incomplete"
+        assert len(saved["cases"]) == (1 if failure_at == 3 or not persistent else 0)
+
+
+def test_destination_changed_to_directory_is_execution_failure(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys, "argv", ["acceptance", "--case", "1:1:1", "--output", str(output)]
+    )
+    monkeypatch.setattr(acceptance, "fresh_runtime_evidence", dict)
+    monkeypatch.setattr(acceptance.probe, "source_provenance", dict)
+    monkeypatch.setattr(acceptance, "source_hashes", dict)
+    monkeypatch.setattr(acceptance, "imported_sources", dict)
+
+    def changed_destination(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        output.unlink()
+        output.mkdir()
+        (output / "concurrent-owner").write_text("preserve")
+        return {"galleries": 1, "batch": 1, "turns": [_turn(acceptance)]}
+
+    monkeypatch.setattr(acceptance.batch_probe, "run_case", changed_destination)
+    assert acceptance.main() == 2
+    assert (output / "concurrent-owner").read_text() == "preserve"
+    assert not list(tmp_path.glob(".pipeline-report-*"))
+
+
+def test_fresh_worker_ignores_stale_same_size_same_mtime_bytecode(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = tmp_path / "stale_fixture.py"
+    module.write_text("VALUE = 'old'\n")
+    original_stat = module.stat()
+    py_compile.compile(str(module), doraise=True)
+    module.write_text("VALUE = 'new'\n")
+    os.utime(module, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    old = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.pycache_prefix = None; import stale_fixture; print(stale_fixture.VALUE)",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert old.stdout.strip() == "old"
+    evidence = tmp_path / "loaded-value.json"
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import json, sys\nfrom pathlib import Path\nimport stale_fixture\nPath(sys.argv[2]).write_text(json.dumps({'value': stale_fixture.VALUE, 'cache': sys.pycache_prefix}))\n"
+    )
+    monkeypatch.setattr(acceptance, "__file__", str(worker))
+    assert acceptance.launch_fresh_worker([str(evidence)]) == 0
+    measured = json.loads(evidence.read_text())
+    assert measured["value"] == "new"
+    assert not Path(measured["cache"]).exists()
+
+
+@pytest.mark.parametrize("directory", ["src", "tests", "scripts"])
+def test_worker_rejects_prepopulated_checkout_caches(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    directory: str,
+) -> None:
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path))
+    acceptance._validate_empty_checkout_cache()
+    cache = Path(
+        importlib.util.cache_from_source(
+            str(acceptance.ROOT / directory / "fixture.py")
+        )
+    )
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"stale")
+    with pytest.raises(RuntimeError, match="prepopulated"):
+        acceptance._validate_empty_checkout_cache()
+
+
+def test_supervisor_spawn_failure_is_incomplete(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def failed_spawn(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("cannot start interpreter")
+
+    monkeypatch.setattr(acceptance.subprocess, "Popen", failed_spawn)
+    assert acceptance.launch_fresh_worker([]) == 2
+    assert "cannot start interpreter" in capsys.readouterr().err
+
+
+def test_real_cli_help_runs_with_fresh_imports(acceptance: ModuleType) -> None:
+    assert acceptance.__file__ is not None
+    result = subprocess.run(
+        [sys.executable, acceptance.__file__, "--help"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--replacement-case" in result.stdout
+
+
+def test_real_cli_initial_output_error_returns_incomplete(
+    acceptance: ModuleType,
+    tmp_path: Path,
+) -> None:
+    assert acceptance.__file__ is not None
+    result = subprocess.run(
+        [
+            sys.executable,
+            acceptance.__file__,
+            "--case",
+            "1:1:1",
+            "--output",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2
+    assert "initial report" in result.stderr
+    assert tmp_path.is_dir()
+
+
+def test_worker_startup_exception_does_not_look_like_cost_violation(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "raise RuntimeError('startup failed before an acceptance result')\n"
+    )
+    monkeypatch.setattr(acceptance, "__file__", str(worker))
+    assert acceptance.launch_fresh_worker([]) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX SIGTERM ownership regression")
+def test_supervisor_sigterm_waits_for_child_and_removes_private_cache(
+    acceptance: ModuleType,
+    tmp_path: Path,
+) -> None:
+    worker = tmp_path / "sleeper.py"
+    evidence = tmp_path / "worker.json"
+    worker.write_text(
+        "import json, os, sys, time\nfrom pathlib import Path\nPath(sys.argv[2]).write_text(json.dumps({'pid': os.getpid(), 'cache': sys.pycache_prefix}))\ntime.sleep(60)\n"
+    )
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('acceptance_signal_test', {acceptance.__file__!r})\n"
+        "module = importlib.util.module_from_spec(spec)\nsys.modules[spec.name] = module\nspec.loader.exec_module(module)\n"
+        f"module.__file__ = {str(worker)!r}\n"
+        f"raise SystemExit(module.launch_fresh_worker([{str(evidence)!r}]))\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, str(launcher)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not evidence.exists() and time.monotonic() < deadline:
+            assert parent.poll() is None
+            time.sleep(0.02)
+        assert evidence.exists()
+        child = json.loads(evidence.read_text())
+        os.kill(parent.pid, signal.SIGTERM)
+        _out, error = parent.communicate(timeout=10)
+        assert parent.returncode == 2, error
+        with pytest.raises(ProcessLookupError):
+            os.kill(child["pid"], 0)
+        assert not Path(child["cache"]).exists()
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait()
 
 
 def test_provenance_rejects_already_imported_foreign_package(

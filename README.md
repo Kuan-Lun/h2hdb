@@ -292,12 +292,16 @@ the bounded merge test profile and its release receipt.
 
 Budgets are declared before execution from input dimensions and intended work;
 they are not calculated from the average of the baseline and candidate. Reports
-retain actual operation counts, time, dimensions and provenance. SQL attribution
-uses the development observer's complete bounded fingerprint set, rather than
-the runtime logger's first-64 aggregate. Overflow, omitted events or truncated
-details invalidate attribution. A late, frequently repeated query must remain
-identifiable even if no individual call is slow. Returned rows and client SQL
-time still do not establish server rows examined or physical disk traffic.
+retain actual operation counts, time, dimensions and provenance. The database
+acceptance CLI starts in a worker with a fresh private bytecode cache, preventing
+timestamp-valid stale bytecode from being attributed to newly edited source.
+Worker startup and report-storage failures return `2`; a failed final write
+cannot turn missing evidence into a measured cost violation.
+SQL attribution uses the development observer's complete bounded fingerprint
+set, rather than the runtime logger's first-64 aggregate. Overflow, omitted events
+or truncated details invalidate attribution. A late, frequently repeated query
+must remain identifiable even if no individual call is slow. Returned rows and
+client SQL time still do not establish server rows examined or physical disk traffic.
 
 The full-library objectives remain **132,046 galleries, at most 24 hours of
 non-CBZ work (12 hours desired), and at most seven days including CBZ production**.

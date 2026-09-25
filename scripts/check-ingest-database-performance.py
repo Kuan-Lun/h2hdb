@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 import sys
 import tempfile
 import time
@@ -18,10 +19,108 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+_WORKER_FLAG = "--_fresh-source-worker"
+_FRESH_WORKER = False
+
+
+def _diagnostic(message: str) -> None:
+    print(f"database performance acceptance incomplete: {message}", file=sys.stderr)
+
+
+def _validate_empty_checkout_cache() -> None:
+    """Run before checkout imports; an existing timestamp cache is not evidence."""
+    if sys.pycache_prefix is None:
+        raise RuntimeError("fresh worker requires a private pycache prefix")
+    prefix = Path(sys.pycache_prefix).resolve()
+    if not prefix.is_dir():
+        raise RuntimeError("fresh worker pycache directory does not exist")
+    # CPython preserves the absolute source directory below pycache_prefix.
+    # Use its own path calculation rather than assuming POSIX path layout.
+    from importlib.util import cache_from_source
+
+    for directory in ("src", "tests", "scripts"):
+        cache = Path(cache_from_source(str(ROOT / directory / "_cache_probe.py")))
+        if cache.parent.exists():
+            raise RuntimeError("fresh worker found prepopulated checkout bytecode")
+
+
+def launch_fresh_worker(arguments: list[str]) -> int:
+    """Own a fresh cache and child lifetime; no timeout or NAS claims are made."""
+    try:
+        # Reuse the runner's tested deferral through Popen's ownership gap and
+        # teardown. Compile this helper from source, avoiding a supervisor-side
+        # timestamp cache before the worker's private prefix has been created.
+        helper_path = ROOT / "scripts" / "run-pytest.py"
+        signals = ModuleType("h2hdb_acceptance_process_signals")
+        signals.__file__ = str(helper_path)
+        sys.modules[signals.__name__] = signals
+        exec(
+            compile(helper_path.read_bytes(), str(helper_path), "exec"),
+            signals.__dict__,
+        )
+        with signals._controlled_termination_signals() as controller:
+            cache: tempfile.TemporaryDirectory[str] | None = None
+            process: subprocess.Popen[bytes] | None = None
+            try:
+                with controller.defer():
+                    cache = tempfile.TemporaryDirectory(
+                        prefix="h2hdb-acceptance-bytecode-"
+                    )
+                command = [
+                    sys.executable,
+                    "-X",
+                    f"pycache_prefix={cache.name}",
+                    str(Path(__file__).resolve()),
+                    _WORKER_FLAG,
+                    *arguments,
+                ]
+                with controller.defer():
+                    process = subprocess.Popen(command)
+                code = process.wait()
+            finally:
+                with controller.defer():
+                    try:
+                        if process is not None and process.poll() is None:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait()
+                    finally:
+                        if cache is not None:
+                            cache.cleanup()
+            # The worker reserves 3 for a completed cost violation. An ordinary
+            # Python startup/import exception exits 1, so it cannot masquerade
+            # as a measured performance violation in the public CLI.
+            if code in (0, 3):
+                return 0 if code == 0 else 1
+            if code != 2:
+                _diagnostic(f"worker exited unexpectedly ({code})")
+            return 2
+    except BaseException as error:
+        _diagnostic(
+            f"worker setup or execution failed: {type(error).__name__}: {error}"
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] != [_WORKER_FLAG]:
+        raise SystemExit(launch_fresh_worker(sys.argv[1:]))
+    del sys.argv[1]
+    try:
+        _validate_empty_checkout_cache()
+    except (OSError, RuntimeError) as error:
+        _diagnostic(str(error))
+        raise SystemExit(2) from error
+    _FRESH_WORKER = True
+
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 
 import ingest_batch_scaling_probe as batch_probe  # noqa: E402 - checkout-only tool.
@@ -437,6 +536,7 @@ def source_hashes() -> dict[str, str]:
         for name in (
             "scripts/check-ingest-database-performance.py",
             "scripts/performance_attribution.py",
+            "scripts/run-pytest.py",
         )
     }
 
@@ -515,6 +615,12 @@ def print_progress(row: dict[str, Any]) -> None:
     print(json.dumps({key: row[key] for key in keys if key in row}), flush=True)
 
 
+def fresh_runtime_evidence() -> dict[str, str]:
+    if not _FRESH_WORKER or sys.pycache_prefix is None:
+        raise RuntimeError("run the CLI through its fresh-bytecode supervisor")
+    return {"mode": "fresh_supervised_worker", "pycache_prefix": sys.pycache_prefix}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("sqlite", "mariadb"), default="sqlite")
@@ -541,8 +647,6 @@ def main() -> int:
         "contract_version": CONTRACT_VERSION,
         "scope": "core_public_pipeline_sql_work",
         "backend": args.backend,
-        "provenance": probe.source_provenance(),
-        "experiment_sources_sha256": source_hashes(),
         "cases": [],
         "limits": [
             "Finite synthetic unique-content fixtures, not a 132046-gallery run.",
@@ -553,8 +657,15 @@ def main() -> int:
             "Replacement uses neutral no-artifact fixture, including when --artifacts is set.",
         ],
     }
-    probe.write_report(args.output, report)
+    checkpoint_written = False
+    stage = "initial report"
     try:
+        report["runtime_loading"] = fresh_runtime_evidence()
+        report["provenance"] = probe.source_provenance()
+        report["experiment_sources_sha256"] = source_hashes()
+        probe.write_report(args.output, report)
+        checkpoint_written = True
+        stage = "pipeline execution or checkpoint report"
         report["imported_sources"] = imported_sources()
         for galleries, batch, pages in args.case:
             result = batch_probe.run_case(
@@ -591,12 +702,28 @@ def main() -> int:
         report["imported_sources"] = imported_sources()
         report["status"] = "completed"
         report["acceptance"]["status"] = acceptance_status(report["cases"])
-    except Exception as error:
-        report["error"] = {"type": type(error).__name__, "message": str(error)}
-    finally:
+        stage = "final report"
         probe.write_report(args.output, report)
+    except Exception as error:
+        report["status"] = "error"
+        report["acceptance"]["status"] = "incomplete"
+        report["error"] = {"type": type(error).__name__, "message": str(error)}
+        _diagnostic(f"{stage}: {type(error).__name__}: {error}")
+        if checkpoint_written:
+            # The shared writer uses a sibling temporary file and atomic
+            # replace. A failed retry preserves the last successful checkpoint;
+            # never unlink the destination or discard completed case evidence.
+            try:
+                probe.write_report(args.output, report)
+            except OSError as write_error:
+                _diagnostic(
+                    f"could not persist incomplete report to {args.output}: "
+                    f"{type(write_error).__name__}: {write_error}; "
+                    "any existing output is only the last successful checkpoint"
+                )
     return EXIT_CODES[report["acceptance"]["status"]]
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    outcome = main()
+    raise SystemExit(3 if outcome == 1 else outcome)
