@@ -5088,8 +5088,19 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_analysis_run_descriptor"
     key = ("analysis_id",)
 
-    def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
-        return _owned_spec(table, pk, root, key)
+    def direct(
+        table: str,
+        pk: tuple[str, ...],
+        *,
+        batch_exact_primary_keys: bool = False,
+    ) -> _StaticDeleteSpec:
+        return _owned_spec(
+            table,
+            pk,
+            root,
+            key,
+            batch_exact_primary_keys=batch_exact_primary_keys,
+        )
 
     return {
         "AR_BATCH": (
@@ -5105,7 +5116,13 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             ),
         ),
         "AR_OVERLAY": tuple(
-            direct(table, pk)
+            direct(
+                table,
+                pk,
+                batch_exact_primary_keys=(
+                    table == "catalog_a_file_decision_shadow_seals"
+                ),
+            )
             for table, pk in (
                 (
                     "catalog_a_file_decision_shadow_seals",
@@ -5155,7 +5172,11 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             )
         ),
         "AR_FILE_HASH_VALUES": tuple(
-            direct(table, ("analysis_id", "file_sha256"))
+            direct(
+                table,
+                ("analysis_id", "file_sha256"),
+                batch_exact_primary_keys=True,
+            )
             for table in (
                 "catalog_a_file_decision_shadow_occurrences",
                 "catalog_a_file_decision_shadow_artists",
@@ -5179,10 +5200,21 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(
                 "catalog_a_file_decision_shadow_anchors",
                 ("analysis_id", "file_sha256"),
+                batch_exact_primary_keys=True,
             ),
         ),
         "AR_EVIDENCE": tuple(
-            direct(table, pk)
+            direct(
+                table,
+                pk,
+                batch_exact_primary_keys=(
+                    table
+                    in {
+                        "catalog_analysis_exclusion_delta_seals",
+                        "catalog_analysis_changed_file_hashes",
+                    }
+                ),
+            )
             for table, pk in (
                 (
                     "catalog_analysis_exclusion_delta_changes",
@@ -5204,16 +5236,19 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(
                 "catalog_analysis_exclusion_delta_old_excluded_flags",
                 ("analysis_id", "file_sha256"),
+                batch_exact_primary_keys=True,
             ),
             direct(
                 "catalog_analysis_exclusion_delta_new_excluded_flags",
                 ("analysis_id", "file_sha256"),
+                batch_exact_primary_keys=True,
             ),
         ),
         "AR_EXCLUSION_ANCHOR": (
             direct(
                 "catalog_analysis_exclusion_delta_anchors",
                 ("analysis_id", "file_sha256"),
+                batch_exact_primary_keys=True,
             ),
         ),
         "AR_CHECKPOINT": (
@@ -5768,8 +5803,19 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_gallery_observation_allocations"
     key = ("gallery_id", "observation_id")
 
-    def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
-        return _owned_spec(table, pk, root, key)
+    def direct(
+        table: str,
+        pk: tuple[str, ...],
+        *,
+        batch_exact_primary_keys: bool = False,
+    ) -> _StaticDeleteSpec:
+        return _owned_spec(
+            table,
+            pk,
+            root,
+            key,
+            batch_exact_primary_keys=batch_exact_primary_keys,
+        )
 
     request_identity = _indirect_spec(
         "operational_gallery_observation_staging_requests",
@@ -5862,7 +5908,13 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             ),
         ),
         "GO_FACTS": tuple(
-            direct(table, pk)
+            direct(
+                table,
+                pk,
+                batch_exact_primary_keys=(
+                    table == "catalog_gallery_observation_file_hash_occurrences"
+                ),
+            )
             for table, pk in (
                 (
                     "catalog_gallery_observation_completion_marker",
@@ -5890,10 +5942,15 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(
                 "catalog_gallery_observation_file_filesystem_seals",
                 ("gallery_id", "observation_id", "file_key"),
+                batch_exact_primary_keys=True,
             ),
         ),
         "GO_FILESYSTEM_VALUES": tuple(
-            direct(table, ("gallery_id", "observation_id", "file_key"))
+            direct(
+                table,
+                ("gallery_id", "observation_id", "file_key"),
+                batch_exact_primary_keys=True,
+            )
             for table in (
                 "catalog_gallery_observation_file_filesystem_devices",
                 "catalog_gallery_observation_file_filesystem_inodes",
@@ -5905,6 +5962,7 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(
                 "catalog_gallery_observation_file_filesystem_anchors",
                 ("gallery_id", "observation_id", "file_key"),
+                batch_exact_primary_keys=True,
             ),
         ),
         "GO_FILES": (

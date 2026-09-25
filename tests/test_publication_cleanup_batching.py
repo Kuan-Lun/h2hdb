@@ -151,7 +151,11 @@ def test_every_batch_opt_in_matches_the_complete_manifest_primary_key() -> None:
                 if spec.batch_exact_primary_keys:
                     targets.add(plan.kind)
                     assert spec.primary_key == primary_keys[spec.table]
-    assert targets == {cleanup.CleanupTargetKind.CATALOG_PUBLICATION}
+    assert targets == {
+        cleanup.CleanupTargetKind.ANALYSIS_RUN,
+        cleanup.CleanupTargetKind.CATALOG_PUBLICATION,
+        cleanup.CleanupTargetKind.GALLERY_OBSERVATION,
+    }
 
 
 def test_indirect_namespace_grid_preserves_empty_nul_and_variable_width_keys(
