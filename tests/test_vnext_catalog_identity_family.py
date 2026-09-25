@@ -277,7 +277,7 @@ def test_identity_writers_use_one_candidate_read_and_complete_insert() -> None:
     )
     _assert_one_set_read(names, ("catalog_file_name_identities",))
     assert len(names.fetches) == 1
-    assert len(names.executions) == 2
+    assert len(names.executions) == 1
     assert all("catalog_file_name_identities" in query for query, _ in names.executions)
 
     files = _Recorder([])

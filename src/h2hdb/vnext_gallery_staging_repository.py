@@ -3995,26 +3995,12 @@ def _require_exact_normalized_leaf_facts(
         )
         if {row[0]: row[1] for row in content_rows} != expected_content:
             raise GalleryStagingConflictError("replayed FILE content identities differ")
-        filesystem_rows = connector.fetch_all(
-            _filesystem_family_query(len(expected_filesystem)),
-            (
-                handle.gallery_id,
-                handle.observation_id,
-                *tuple(expected_filesystem),
-            ),
+        stored_filesystem = _load_file_filesystem_facts(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=handle.observation_id,
+            file_keys=tuple(expected_filesystem),
         )
-        stored_filesystem: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
-        for row in filesystem_rows:
-            key = row[0]
-            expected_key = (handle.gallery_id, handle.observation_id, key)
-            if len(row) != 23 or any(
-                tuple(row[index : index + 3]) != expected_key
-                for index in (1, 4, 8, 12, 16, 20)
-            ):
-                raise GalleryStagingConflictError(
-                    "replayed FILE filesystem family is incomplete"
-                )
-            stored_filesystem[key] = (row[7], row[11], row[15], row[19])
         if stored_filesystem != expected_filesystem:
             raise GalleryStagingConflictError("replayed FILE filesystem facts differ")
         _require_exact_file_hash_occurrences(
@@ -4181,9 +4167,16 @@ def _persist_normalized_leaf_facts(
         pairs = tuple(zip(prepared.page.entries, source_entries, strict=True))
         file_names: list[FileNameIdentity] = []
         occurrences: list[GalleryObservationFile] = []
+        filesystem_facts: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
         for page_entry, source in pairs:
             assert isinstance(page_entry, GalleryObservationFileEntry)
             assert isinstance(source, FileObservation)
+            filesystem_facts[page_entry.file_key] = (
+                source.device.to_bytes(8, "big"),
+                source.inode.to_bytes(8, "big"),
+                source.modified_ns.to_bytes(8, "big", signed=True),
+                source.changed_ns.to_bytes(8, "big", signed=True),
+            )
             file_names.append(
                 FileNameIdentity(
                     page_entry.file_key,
@@ -4205,26 +4198,7 @@ def _persist_normalized_leaf_facts(
             ensure_file_name_identities(connector, identities=tuple(file_names))
         except CatalogIdentityCollisionError as error:
             raise GalleryStagingConflictError(str(error)) from error
-        for _page_entry, source in pairs:
-            assert isinstance(source, FileObservation)
-            _insert_or_require(
-                connector,
-                label="content blob",
-                select_sql=(
-                    "SELECT file_sha256, size_bytes FROM catalog_content_blobs "
-                    "WHERE file_sha256 = %s"
-                ),
-                select_data=(source.content.file_sha256,),
-                insert_sql=(
-                    "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
-                    "VALUES (%s, %s)"
-                ),
-                insert_data=(
-                    source.content.file_sha256,
-                    source.content.size_bytes,
-                ),
-                expected=(source.content.file_sha256, source.content.size_bytes),
-            )
+        _persist_content_blobs(connector, tuple(source for _, source in pairs))
         try:
             ensure_gallery_observation_files(
                 connector,
@@ -4232,19 +4206,12 @@ def _persist_normalized_leaf_facts(
             )
         except CatalogIdentityCollisionError as error:
             raise GalleryStagingConflictError(str(error)) from error
-        for page_entry, source in pairs:
-            assert isinstance(page_entry, GalleryObservationFileEntry)
-            assert isinstance(source, FileObservation)
-            _persist_file_filesystem_fact(
-                connector,
-                gallery_id=handle.gallery_id,
-                observation_id=handle.observation_id,
-                file_key=page_entry.file_key,
-                device=source.device.to_bytes(8, "big"),
-                inode=source.inode.to_bytes(8, "big"),
-                modified_ns=source.modified_ns.to_bytes(8, "big", signed=True),
-                changed_ns=source.changed_ns.to_bytes(8, "big", signed=True),
-            )
+        _persist_file_filesystem_facts(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=handle.observation_id,
+            facts=filesystem_facts,
+        )
         _persist_file_hash_occurrences(
             connector,
             handle,
@@ -4394,20 +4361,22 @@ def _persist_file_hash_occurrences(
     handle: GalleryStagingHandle,
     plans: tuple[_FileHashOccurrencePlan, ...],
 ) -> None:
-    for plan in plans:
-        key = (
-            handle.gallery_id,
-            handle.observation_id,
-            plan.file_sha256,
+    new_rows = tuple(
+        (handle.gallery_id, handle.observation_id, plan.file_sha256, plan.next_count)
+        for plan in plans
+        if plan.prior_count == 0
+    )
+    if new_rows:
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+            "(gallery_id, observation_id, file_sha256, occurrence_count) VALUES "
+            + ", ".join("(%s, %s, %s, %s)" for _ in new_rows),
+            tuple(value for row in new_rows for value in row),
         )
+    for plan in plans:
         if plan.prior_count == 0:
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
-                "(gallery_id, observation_id, file_sha256, occurrence_count) "
-                "VALUES (%s, %s, %s, %s)",
-                (*key, plan.next_count),
-            )
             continue
+        key = (handle.gallery_id, handle.observation_id, plan.file_sha256)
         affected = connector.execute_affected(
             "UPDATE catalog_gallery_observation_file_hash_occurrences "
             "SET occurrence_count = %s WHERE gallery_id = %s "
@@ -5674,98 +5643,121 @@ def _persist_stat_fact(
     )
 
 
-def _persist_file_filesystem_fact(
+def _persist_content_blobs(
+    connector: Any, sources: tuple[FileObservation, ...]
+) -> None:
+    if not sources:
+        return
+    _sql_placeholders(len(sources))
+    expected: dict[bytes, int] = {}
+    for source in sources:
+        digest, size = source.content.file_sha256, source.content.size_bytes
+        if digest in expected and expected[digest] != size:
+            raise GalleryStagingConflictError("content blob differs within FILE page")
+        expected[digest] = size
+    stored = dict(
+        connector.fetch_all(
+            "SELECT file_sha256, size_bytes FROM catalog_content_blobs "
+            f"WHERE file_sha256 IN ({_sql_placeholders(len(expected))})",
+            tuple(expected),
+        )
+    )
+    if any(
+        digest not in expected or size != expected[digest]
+        for digest, size in stored.items()
+    ):
+        raise GalleryStagingConflictError("content blob differs")
+    missing = tuple(
+        (digest, size) for digest, size in expected.items() if digest not in stored
+    )
+    if missing:
+        connector.execute(
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES "
+            + ", ".join("(%s, %s)" for _ in missing),
+            tuple(value for row in missing for value in row),
+        )
+
+
+def _load_file_filesystem_facts(
     connector: Any,
     *,
     gallery_id: int,
     observation_id: int,
-    file_key: bytes,
-    device: bytes,
-    inode: bytes,
-    modified_ns: bytes,
-    changed_ns: bytes,
-) -> None:
-    key = (gallery_id, observation_id, file_key)
-    _insert_or_require(
-        connector,
-        label="gallery file filesystem anchor",
-        select_sql=(
-            "SELECT gallery_id, observation_id, file_key "
-            "FROM catalog_gallery_observation_file_filesystem_anchors "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
-            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)"
-        ),
-        insert_data=key,
-        expected=key,
+    file_keys: tuple[bytes, ...],
+) -> dict[bytes, tuple[bytes, bytes, bytes, bytes]]:
+    if not file_keys:
+        return {}
+    rows = connector.fetch_all(
+        _filesystem_family_query(len(file_keys)),
+        (gallery_id, observation_id, *file_keys),
     )
-    for label, select_sql, insert_sql, value in (
-        (
-            "gallery file filesystem device",
-            "SELECT device FROM catalog_gallery_observation_file_filesystem_devices "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
-            "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
-            "(gallery_id, observation_id, file_key, device) "
-            "VALUES (%s, %s, %s, %s)",
-            device,
-        ),
-        (
-            "gallery file filesystem inode",
-            "SELECT inode FROM catalog_gallery_observation_file_filesystem_inodes "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
-            "INSERT INTO catalog_gallery_observation_file_filesystem_inodes "
-            "(gallery_id, observation_id, file_key, inode) "
-            "VALUES (%s, %s, %s, %s)",
-            inode,
-        ),
-        (
-            "gallery file filesystem modified_ns",
-            "SELECT modified_ns "
-            "FROM catalog_gallery_observation_file_filesystem_modified_nses "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
-            "INSERT INTO catalog_gallery_observation_file_filesystem_modified_nses "
-            "(gallery_id, observation_id, file_key, modified_ns) "
-            "VALUES (%s, %s, %s, %s)",
-            modified_ns,
-        ),
-        (
-            "gallery file filesystem changed_ns",
-            "SELECT changed_ns "
-            "FROM catalog_gallery_observation_file_filesystem_changed_nses "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
-            "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
-            "(gallery_id, observation_id, file_key, changed_ns) "
-            "VALUES (%s, %s, %s, %s)",
-            changed_ns,
-        ),
-    ):
-        _insert_or_require(
-            connector,
-            label=label,
-            select_sql=select_sql,
-            select_data=key,
-            insert_sql=insert_sql,
-            insert_data=(*key, value),
-            expected=(value,),
-        )
-    _insert_or_require(
+    result: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
+    for row in rows:
+        if len(row) != 23:
+            raise GalleryStagingConflictError(
+                "FILE filesystem family has an invalid shape"
+            )
+        key = row[0]
+        expected_key = (gallery_id, observation_id, key)
+        if any(
+            tuple(row[index : index + 3]) != expected_key
+            for index in (1, 4, 8, 12, 16, 20)
+        ):
+            raise GalleryStagingConflictError(
+                "FILE filesystem family is incomplete or differs"
+            )
+        result[key] = (row[7], row[11], row[15], row[19])
+    return result
+
+
+def _persist_file_filesystem_facts(
+    connector: Any,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    facts: dict[bytes, tuple[bytes, bytes, bytes, bytes]],
+) -> None:
+    if not facts:
+        return
+    stored = _load_file_filesystem_facts(
         connector,
-        label="gallery file filesystem seal",
-        select_sql=(
-            "SELECT gallery_id, observation_id, file_key "
-            "FROM catalog_gallery_observation_file_filesystem_seals "
-            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
-            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)"
-        ),
-        insert_data=key,
-        expected=key,
+        gallery_id=gallery_id,
+        observation_id=observation_id,
+        file_keys=tuple(facts),
+    )
+    if any(key not in facts or value != facts[key] for key, value in stored.items()):
+        raise GalleryStagingConflictError("gallery file filesystem fact differs")
+    missing = tuple(key for key in facts if key not in stored)
+    if not missing:
+        return
+    keys = tuple((gallery_id, observation_id, key) for key in missing)
+    key_values = ", ".join("(%s, %s, %s)" for _ in missing)
+    key_data = tuple(value for key in keys for value in key)
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
+        "(gallery_id, observation_id, file_key) VALUES " + key_values,
+        key_data,
+    )
+    for index, (table, column) in enumerate(
+        (
+            ("catalog_gallery_observation_file_filesystem_devices", "device"),
+            ("catalog_gallery_observation_file_filesystem_inodes", "inode"),
+            (
+                "catalog_gallery_observation_file_filesystem_modified_nses",
+                "modified_ns",
+            ),
+            ("catalog_gallery_observation_file_filesystem_changed_nses", "changed_ns"),
+        )
+    ):
+        connector.execute(
+            f"INSERT INTO {table} (gallery_id, observation_id, file_key, {column}) VALUES "
+            + ", ".join("(%s, %s, %s, %s)" for _ in missing),
+            tuple(value for key in keys for value in (*key, facts[key[2]][index])),
+        )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
+        "(gallery_id, observation_id, file_key) VALUES " + key_values,
+        key_data,
     )
 
 
