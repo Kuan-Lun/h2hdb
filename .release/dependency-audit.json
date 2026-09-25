@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-25T05:50:32+00:00",
+  "checked_at": "2026-09-25T12:38:45+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.42.0",
+  "project_version": "0.42.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed PyPI/npm discovery on 2026-09-25 for all 12 direct Python entries (build, runtime, development) and the Node dependency. Only Ruff changed since the 0.41.2 review: 0.16.8 to 0.16.9. Reviewed https://github.com/astral-sh/ruff/releases/tag/0.16.9: keyword-argument false-positive fixes for enabled bugbear rules, deferred-annotation lazy-import support, Python 3.15 fix updates and documentation; no changed dependency requirement or Python 3.14 incompatibility. Installed Ruff 0.16.9 in the local environment and validate with repository lint/format plus the exact-tree gate. Other candidates and declared upper bounds are unchanged; prior upstream reviews carry forward. This release retires the documented historical upgrade CLI and its private writer, without changing schema 8 or public runtime facades. Version 0.42.0 reflects removal of that tooling surface, not a database migration.",
+    "note": "Reviewed all direct build, runtime, optional/development and Node candidates against the 0.42.0 upstream review and fresh registry discovery for this release. All 12 Python entries and the Node candidate are unchanged, satisfy the declared bounds, and the latest Python candidates are installed in the local Python 3.14 environment. Existing upper-bound compatibility reviews carry forward; no new release notes or dependency changes require new exceptions. The 0.42.1 change batches bounded SQL facts and cleanup and removes a SQLite marker-view materialization, without changing schema 8, public facades, durable cursor/transaction contracts, or consumer dependency requirements. Validate installed candidates with fast checks, two-backend targeted and manual cleanup tests and the exact-tree release gate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

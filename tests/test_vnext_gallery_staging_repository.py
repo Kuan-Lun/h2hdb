@@ -731,15 +731,11 @@ def _persist_vertical_family(
                 source_file_count=3,
             )
         case "filesystem":
-            staging_module._persist_file_filesystem_fact(
+            staging_module._persist_file_filesystem_facts(
                 connector,
                 gallery_id=handle.gallery_id,
                 observation_id=handle.observation_id,
-                file_key=b"k" * 32,
-                device=b"\x01" * 8,
-                inode=b"\x02" * 8,
-                modified_ns=b"\x03" * 8,
-                changed_ns=b"\x04" * 8,
+                facts={b"k" * 32: (b"\x01" * 8, b"\x02" * 8, b"\x03" * 8, b"\x04" * 8)},
             )
         case _:  # pragma: no cover - the test matrix is closed above.
             raise AssertionError(family)
@@ -2524,6 +2520,12 @@ def test_four_vertical_family_mariadb_sql_is_static_and_seal_last() -> None:
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
             return ()
+
+        def fetch_all(
+            self, query: str, data: tuple[Any, ...] = ()
+        ) -> list[tuple[Any, ...]]:
+            self.queries.append((query, data))
+            return []
 
         def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
             self.executions.append((query, data))

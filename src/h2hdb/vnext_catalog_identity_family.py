@@ -388,6 +388,7 @@ def ensure_file_name_identities(
         name_bytes=tuple(by_name),
     )
     existing_by_name = {value.name_bytes: value for value in existing.values()}
+    missing: list[FileNameIdentity] = []
     for identity in proposed:
         by_stored_key = existing.get(identity.file_key)
         by_stored_name = existing_by_name.get(identity.name_bytes)
@@ -397,12 +398,17 @@ def ensure_file_name_identities(
                     "file-name digest or exact-name candidate key collides"
                 )
             continue
+        missing.append(identity)
+    if missing:
         connector.execute(
-            f"INSERT INTO {_FILE_NAME_IDENTITY} (file_key, name_bytes) VALUES (%s, %s)",
-            (identity.file_key, identity.name_bytes),
+            f"INSERT INTO {_FILE_NAME_IDENTITY} (file_key, name_bytes) VALUES "
+            + ", ".join("(%s, %s)" for _ in missing),
+            tuple(
+                value
+                for identity in missing
+                for value in (identity.file_key, identity.name_bytes)
+            ),
         )
-        existing[identity.file_key] = identity
-        existing_by_name[identity.name_bytes] = identity
     return {identity.file_key: identity for identity in proposed}
 
 
@@ -540,6 +546,7 @@ def ensure_gallery_observation_files(
         file_nos=tuple(by_number),
     )
     existing_by_number = {value.file_no: value for value in existing.values()}
+    missing: list[GalleryObservationFile] = []
     for identity in proposed:
         by_stored_key = existing.get(identity.file_key)
         by_stored_number = existing_by_number.get(identity.file_no)
@@ -549,37 +556,51 @@ def ensure_gallery_observation_files(
                     "observation file-name or ordinal candidate key collides"
                 )
             continue
-        key = (identity.gallery_id, identity.observation_id, identity.file_key)
+        missing.append(identity)
+    if missing:
+        keys = tuple(
+            (identity.gallery_id, identity.observation_id, identity.file_key)
+            for identity in missing
+        )
+        key_values = ", ".join("(%s, %s, %s)" for _ in missing)
+        key_data = tuple(value for key in keys for value in key)
         connector.execute(
             f"INSERT INTO {_OBSERVATION_FILE_ANCHOR} "
-            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
-            key,
+            "(gallery_id, observation_id, file_key) VALUES " + key_values,
+            key_data,
         )
-        connector.execute(
-            f"INSERT INTO {_OBSERVATION_FILE_NO} "
-            "(gallery_id, observation_id, file_key, file_no) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, identity.file_no),
-        )
-        connector.execute(
-            f"INSERT INTO {_OBSERVATION_FILE_SHA256} "
-            "(gallery_id, observation_id, file_key, file_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, identity.file_sha256),
-        )
-        connector.execute(
-            f"INSERT INTO {_OBSERVATION_FILE_ARTIFACT_ROLE} "
-            "(gallery_id, observation_id, file_key, artifact_role) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, identity.artifact_role),
-        )
+        for table, column, values in (
+            (
+                _OBSERVATION_FILE_NO,
+                "file_no",
+                tuple(identity.file_no for identity in missing),
+            ),
+            (
+                _OBSERVATION_FILE_SHA256,
+                "file_sha256",
+                tuple(identity.file_sha256 for identity in missing),
+            ),
+            (
+                _OBSERVATION_FILE_ARTIFACT_ROLE,
+                "artifact_role",
+                tuple(identity.artifact_role for identity in missing),
+            ),
+        ):
+            connector.execute(
+                f"INSERT INTO {table} (gallery_id, observation_id, file_key, {column}) VALUES "
+                + ", ".join("(%s, %s, %s, %s)" for _ in missing),
+                tuple(
+                    value
+                    for key, item in zip(keys, values, strict=True)
+                    for value in (*key, item)
+                ),
+            )
+        # A family becomes visible only after every atomic value is installed.
         connector.execute(
             f"INSERT INTO {_OBSERVATION_FILE_SEAL} "
-            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
-            key,
+            "(gallery_id, observation_id, file_key) VALUES " + key_values,
+            key_data,
         )
-        existing[identity.file_key] = identity
-        existing_by_number[identity.file_no] = identity
     return {identity.file_key: identity for identity in proposed}
 
 
