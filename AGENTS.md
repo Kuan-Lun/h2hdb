@@ -326,6 +326,15 @@ Schema變更依序進行：
   形式模型成立、有限實作案例通過、效能目標達成與部署環境實測是不同結論，
   必須分開回報。已知違反的目標不得改寫為已達成；未執行、skip或缺少必要
   尺度的證據不得當作調查完成。模型不得僅以假設包裝其聲稱證明的成本界限。
+- Ingest效能驗收使用手動 `scripts/check-ingest-database-performance.py`，
+  分別量測新增與replacement/retirement的完整工作；MariaDB須明確opt-in。
+  跨adapter的結論另使用明確提供的ingest checkout內source與library cleanup
+  cost驗收，不得從Core的neutral bytes推論圖片或filesystem成本。這些結果與
+  bounded merge receipt分開回報。量測完成、成本達標與全庫工期達標是不同
+  結果；exit 0代表所選成本契約滿足，1代表違反，2代表證據不足或執行失敗。
+  工具正確性測試可驗證目前違反會被拒絕，但其通過不得覆蓋失敗的成本結果。
+  後續效能修改須以事先固定的預算及退化反例驗證所宣稱解決的目標，不得由
+  當次baseline/candidate的平均產生驗收上限，也不得為通過而調高預算。
 
 ## Architecture and transaction rules
 

@@ -24,6 +24,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 import ingest_pipeline_probe as probe  # noqa: E402 - checkout diagnostic helpers.
 from test_vnext_source_marker import MarkerSource  # noqa: E402 - exact marker fixture.
 from vnext_pipeline import (  # noqa: E402 - public protocol fixture.
+    LEASE_MICROSECONDS,
     MemoryLibrary,
     claim_session,
     drain_maintenance,
@@ -119,6 +120,9 @@ def run_case(
     *,
     artifacts: bool = False,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    query_limit: int | None = 8,
+    observer_factory: Callable[[], probe.Observer] | None = None,
+    check_next_claim: bool = False,
 ) -> dict[str, Any]:
     parse_case(f"{galleries}:{batch}:{pages}")
     with (
@@ -145,7 +149,11 @@ def run_case(
                         language=None,
                     )
                 )
-            observer = probe.Observer(query_budget=32768)
+            observer = (
+                probe.Observer(query_budget=32768)
+                if observer_factory is None
+                else observer_factory()
+            )
             phases: dict[str, float] = {}
             active_phase = "setup"
             phase_started = time.perf_counter()
@@ -235,7 +243,13 @@ def run_case(
             if library.render_calls != (count if artifacts else 0):
                 raise AssertionError("artifact render count differs from new galleries")
             oracle = verify_catalog(config, count, pages, artifacts=artifacts)
-            measurements = observer.report(query_limit=8)
+            if check_next_claim:
+                with VNextIngestFacade(config) as facade:
+                    next_session = facade.try_claim_ingest(True, LEASE_MICROSECONDS)
+                    if next_session is None:
+                        raise AssertionError("cleanup DONE did not admit next claim")
+                    facade.complete_ingest(next_session)
+            measurements = observer.report(query_limit=query_limit)
             turns.append(
                 {
                     "selected": count,
@@ -246,19 +260,24 @@ def run_case(
                     "measurements": measurements,
                     "oracle": oracle,
                     "cleanup": "DONE",
+                    "next_claim": "passed" if check_next_claim else "not_checked",
                 }
             )
             if progress is not None:
                 progress(
                     {
+                        "event": "turn_completed",
                         "backend": backend,
                         "galleries": galleries,
                         "batch": batch,
                         "pages": pages,
                         "artifacts": artifacts,
                         "selected": count,
+                        "added": count - lower,
+                        "cleanup": "DONE",
                         "seconds": sum(phases.values()),
                         "sql_calls": measurements["sql_calls"],
+                        "sql_seconds": measurements["sql_seconds"],
                     }
                 )
         started = time.perf_counter()

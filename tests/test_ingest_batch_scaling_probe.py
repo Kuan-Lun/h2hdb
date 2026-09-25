@@ -56,11 +56,9 @@ def test_fewer_publications_reduce_real_sql_and_preserve_public_oracle(
     assert _calls(repeated) > _calls(combined)
     assert all(turn["deep_reads"] == 1 for turn in repeated["turns"])
     assert all(turn["cleanup"] == "DONE" for turn in repeated["turns"])
-    # The intentionally over-published, equivalent run is a cost negative
-    # control: functional correctness alone cannot satisfy this query budget.
-    budget = (_calls(repeated) + _calls(combined)) // 2
-    assert _calls(combined) <= budget
-    assert not _calls(repeated) <= budget
+    # This relative comparison is functional/scaling evidence only. Fixed
+    # acceptance budgets live in check-ingest-database-performance.py; deriving
+    # a budget from these two measurements could never reject a shared slowdown.
 
 
 def test_neutral_artifact_mode_checks_complete_public_pipeline(
