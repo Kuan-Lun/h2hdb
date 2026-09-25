@@ -111,55 +111,27 @@ no numbered-migration module, old list API, or legacy hand-written schema
 repository. All producers and consumers in one deployment must use the same
 schema-v8 public contract; mixed schema versions are unsupported.
 
-## Offline upgrade of an existing deployment
+## Previously upgraded deployments
 
-An exact supported schema-7 database can be converted once to schema 8 while
-preserving its catalog, source observations, pending work, and download queue.
-The converter adds source collection state and moves existing staging ownership
-into explicit bindings. It does not rewrite CBZs, thumbnails, or the library's
-format-v4 journal; retain the entire matching library, including private state.
+The schema-7-to-8 converter, its Docker bundle builder, and the private audit
+writer used only by that converter have been retired. Already upgraded
+schema-8 databases and their complete matching libraries remain valid; no
+conversion, database reset, or CBZ regeneration is required. Source collection
+recovery and the runtime's audit scheduling remain supported.
 
-1. Stop all database consumers and library writers. Back up the database and
-   matching complete library, and verify the backups.
-2. From the schema-8 Core checkout, using its matching Python environment and
-   read-write Core configuration, run:
+The removed checkout commands are a breaking tooling change even though the
+schema and public runtime APIs are unchanged. Validate every application's
+Core dependency range and integration checks before updating its image.
+A newer Core version does not override a consumer's declared upper bound.
 
-   ```bash
-   python scripts/upgrade-source-collection-schema.py \
-     --config core-writer.json --consumers-stopped
-   ```
-
-3. The converter performs a full audit. If interrupted, leave consumers stopped
-   and rerun the same converter; a completed repeat audits and reports
-   `already_converted`. Restart only application versions verified for schema 8.
-
-The flag acknowledges that consumers are already stopped; it does not stop them.
-Do not clear the database or remove CBZs to perform this conversion. Rollback
-requires restoring the pre-upgrade database backup before running old software.
-
-If Core 0.41.0 stopped at the final role audit during an interrupted observation
-cleanup, use Core 0.41.2 and rerun this converter with consumers still stopped.
-Its unchanged conversion checksum accepts the existing `BUILDING` state; the
-corrected audit requires exact cleanup authority and still rejects real drift.
-Do not manually mark the database `READY`. The [Docker bundle instructions](../README.md#convert-an-exact-schema-7-database)
-package an exact checkout wheel, enforce readable image files for `MEDIA_UID`
-and `MEDIA_GID`, and keep deployment secrets outside the bundle.
-Updating the standalone upgrade image does not update ingest or other consumers;
-their images should also contain Core 0.41.2 before resuming full-audit callers.
-
-Core 0.41.0 and 0.41.1 also reject the legitimate scheduling row retained from
-a previous schema-7 runtime with `offline audit baseline already exists`, after
-the full audit passes. Core 0.41.2 records that completed audit by refreshing the
-validated row and fencing the old owner, preserving policy and catch-up status.
-The row and final `READY` activation share one transaction. A pre-commit failure
-retains the original row and conversion marker, so rerun the new converter with
-clients stopped; no manual SQL or data removal is required. A completed replay
-remains read-only and does not refresh ownership again.
-
-Schema 6 must first use `upgrade-audit-schema.py` from the Core 0.40.0 checkout
-and environment to reach schema 7, then the schema-8 converter above. Keep all
-consumers stopped throughout both steps. The schema-8 checkout does not retain
-the old conversion entry point or provide a runtime fallback to older schemas.
+An installation still on schema 7, or with an interrupted offline conversion,
+must use the historical Core 0.41.2 checkout at commit
+`64683c502caf108e8ed518e5c040cacaa91e7551` with its matching environment or
+previously generated Docker bundle. See the [historical conversion guidance](../README.md#previously-upgraded-databases-and-historical-conversion).
+Do not mix that converter with the current Core wheel. Stop all clients, retain
+verified database/library backups, and resume only after the historical tool
+completes its full audit and activates `READY`. Schema 6 first requires the
+Core 0.40.0 conversion. No current runtime entry point admits older schemas.
 
 Schema 5 and earlier have no supported in-place converter. Preserve their
 database/library pair and original sources, then build a separate new database

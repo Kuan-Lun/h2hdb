@@ -431,12 +431,11 @@ Schema變更依序進行：
   check成功且fresh generation/token重驗後才能更新完整稽核時間。Caller
   不得傳入成功旗標作為依據。首次source catch-up提示只能延後一次排程，
   不得更改last audit事實；正常結束只在工作與所有資源清理成功後記錄。
-- Exact schema7可使用一次性離線upgrade-source-collection-schema工具轉為schema8，
-  保留既有資料並新增觀測集合、將staging所屬關係移至明確binding；只有完整
-  READY語意驗證成功後才能切換marker。轉換期間使用獨立
-  checksum，runtime不得接納或自動恢復；不新增numbered migration ledger、
-  compatibility view或runtime fallback。Schema6須先使用Core0.40.0的離線工具
-  轉至schema7；本checkout不保留舊工具入口。其他previous或foreign schema仍拒絕。
+- 已完成的schema7至8離線轉換工具、Docker bundle builder與專用audit writer
+  已自目前checkout移除，不保留shim或runtime fallback。尚未轉換的exact schema7
+  或該工具留下的中斷狀態，須使用Core0.41.2歷史checkout與匹配環境；schema6
+  須先用Core0.40.0歷史工具轉至schema7。已完成轉換的schema8不需再遷移、清庫
+  或重建CBZ。Previous、foreign與離線轉換中的marker仍不由runtime接納。
 - 每個 production SQL relation identifier都必須由 `physical.toml`、
   `operational_physical.toml`或唯一 epoch-control relation接納。Formal BCNF通過
   不代表可以發布第二套未 manifest的 SQL schema。

@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-24T04:36:19+00:00",
+  "checked_at": "2026-09-25T05:50:32+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.41.2",
+  "project_version": "0.42.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -104,7 +104,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.8",
+      "latest": "0.16.9",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed fresh PyPI/npm discovery for all direct build, runtime, optional/development and Node dependencies on 2026-09-24. All 12 Python entries and the Node entry exactly match the Core 0.41.1 audit, including latest versions, declared bounds and Python 3.14 support; no new release-note candidate requires review. The dependency manifest hash is unchanged, and prior upstream release-note reviews carry forward. Repository-local installed Python dependencies and markdownlint-cli2 match every recorded latest candidate. No dependency declarations changed. Validate this patch with the repository exact-tree release gate and focused SQLite/MariaDB offline conversion recovery regressions; report manual evidence separately from the bounded merge receipt.",
+    "note": "Reviewed PyPI/npm discovery on 2026-09-25 for all 12 direct Python entries (build, runtime, development) and the Node dependency. Only Ruff changed since the 0.41.2 review: 0.16.8 to 0.16.9. Reviewed https://github.com/astral-sh/ruff/releases/tag/0.16.9: keyword-argument false-positive fixes for enabled bugbear rules, deferred-annotation lazy-import support, Python 3.15 fix updates and documentation; no changed dependency requirement or Python 3.14 incompatibility. Installed Ruff 0.16.9 in the local environment and validate with repository lint/format plus the exact-tree gate. Other candidates and declared upper bounds are unchanged; prior upstream reviews carry forward. This release retires the documented historical upgrade CLI and its private writer, without changing schema 8 or public runtime facades. Version 0.42.0 reflects removal of that tooling surface, not a database migration.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
