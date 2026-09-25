@@ -247,6 +247,67 @@ Query-count savings and small local timings do not establish a full-library
 completion target; input size, page distribution, duplicate patterns, retained
 history and storage latency all matter.
 
+Use the **manual cost acceptance** commands when deciding whether ingest work is
+efficient, rather than treating a successful diagnostic probe or pytest run as
+performance acceptance:
+
+```bash
+.venv/bin/python scripts/check-ingest-database-performance.py \
+  --backend sqlite --case 3:1:63 --case 3:1:64 --case 3:1:65 \
+  --case 3:1:127 --case 3:1:128 --case 3:1:129 \
+  --replacement-case 127:3 --replacement-case 128:3 \
+  --replacement-case 129:3 \
+  --output /tmp/ingest-cost-sqlite.json
+
+.venv/bin/python scripts/check-ingest-database-performance.py \
+  --backend mariadb --allow-mariadb --case 3:1:65 --replacement-case 129:3 \
+  --output /tmp/ingest-cost-mariadb.json
+```
+
+The MariaDB command starts only a disposable local MariaDB 10.11.11 testcontainer;
+it does not accept production connection settings. Run the commands serially,
+without concurrent benchmarks. Cases exercise real public database workflows,
+catalog results, publication and cleanup, using neutral synthetic source bytes.
+Replacement cases are `pages:cycles`; they retire previous observations and
+measure their cleanup, which append-only fixtures cannot exercise.
+They do not measure filesystem image qualification or CBZ production. In a
+separately supplied `h2hdb-ingest` checkout, run its
+`scripts/check-source-cost.py` with that checkout's Python environment for actual
+filesystem and image qualification measurements. Its
+`scripts/check-library-cleanup-cost.py --full-inventory --output /tmp/journal-cost.json`
+also measures the production journal cleanup queries with 264,092 retained
+tokens (two resources per 132,046 galleries). It counts SQLite VM instructions,
+checks exact returned rows, and compares the production query plan with indexed
+and forced-scan controls in disposable fixtures. This is engine-cost evidence,
+not a complete library lifecycle or a physical disk benchmark. Neither checkout
+discovers a fixed sibling path or needs a NAS deployment.
+
+These acceptance commands return **0 only for satisfied cost checks, 1 for a
+measured violation, and 2 for incomplete or invalid measurement**. A completed
+experiment can fail acceptance. Current code can therefore legitimately produce
+a failing report: preserve that result and fix the measured work, not the budget.
+Tool tests verify that known violations are rejected; their green result does
+not override a red performance report. These manual commands are separate from
+the bounded merge test profile and its release receipt.
+
+Budgets are declared before execution from input dimensions and intended work;
+they are not calculated from the average of the baseline and candidate. Reports
+retain actual operation counts, time, dimensions and provenance. SQL attribution
+uses the development observer's complete bounded fingerprint set, rather than
+the runtime logger's first-64 aggregate. Overflow, omitted events or truncated
+details invalidate attribution. A late, frequently repeated query must remain
+identifiable even if no individual call is slow. Returned rows and client SQL
+time still do not establish server rows examined or physical disk traffic.
+
+The full-library objectives remain **132,046 galleries, at most 24 hours of
+non-CBZ work (12 hours desired), and at most seven days including CBZ production**.
+They are not automatically certified by these local cost checks. Initial import,
+unchanged input and interrupted recovery, realistic page/byte/pixel distributions,
+retained catalog size and the complete lifecycle must be covered before making
+a completion-time claim. Qualification remains non-CBZ work even though it
+decodes images. Keep exclusive wall time separate from overlapping SQL, I/O and
+worker measurements, and report unmeasured stages explicitly.
+
 Changed-file-hash analysis traverses the sealed changed-gallery set and its
 accepted current/baseline hash occurrences once per local preparation. It sorts
 and deduplicates them in a disk plan outside write transactions, then commits
