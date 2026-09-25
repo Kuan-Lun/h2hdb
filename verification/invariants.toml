@@ -4385,7 +4385,7 @@ id = "fault.production.database-audit-schedule"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "SQLite regressions reject partial success state, retain pending state on audit failure, fence stale run renewal and closure, and prove a delayed full audit cannot replace the result of a newer owner. A backwards database clock triggers an actual full check without looping forever. Offline refresh rejects malformed retained state and generation overflow, preserves catch-up status, fences the old owner, and rolls back with failed activation."
+claim = "SQLite regressions reject partial success state, retain pending state on audit failure, fence stale run renewal and closure, and prove a delayed full audit cannot replace the result of a newer owner. A backwards database clock triggers an actual full check without looping forever."
 assumptions = ["These are finite fault injections; they do not claim unbounded proof or real power-loss coverage."]
 [[evidence.location]]
 path = "tests/test_database_audit_schedule.py"
@@ -4402,26 +4402,14 @@ symbol = "test_clock_regression_requires_full_check"
 [[evidence.location]]
 path = "tests/test_verification_operational_schema.py"
 symbol = "test_database_audit_contract_and_success_constraints_fail_closed"
-[[evidence.location]]
-path = "tests/test_database_audit_schedule.py"
-symbol = "test_offline_audit_rejects_malformed_retained_state_without_repair"
-[[evidence.location]]
-path = "tests/test_database_audit_schedule.py"
-symbol = "test_offline_audit_generation_boundary_never_wraps_or_reuses_old_authority"
-[[evidence.location]]
-path = "tests/test_database_audit_schedule.py"
-symbol = "test_offline_audit_record_rolls_back_with_conversion_transaction"
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_conversion_interruption_preserves_data_and_resumes"
 
 [[evidence]]
 id = "integration.production.database-audit-schedule"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated-schema SQLite workflows run a real first full audit, prove clean quick startup uses only bounded control queries, resume after dirty ownership expiry, preserve exact clean-finish replay, defer long initial catch-up once without inventing audit success, schedule from measured completion and duration, and renew read-only while a full SQLite read snapshot exists. The one-time schema converter preserves populated facts and atomically records its successful full audit, either seeding absent scheduling state or refreshing and fencing a retained runtime owner without resetting policy or catch-up status. Completed conversion replay leaves that state unchanged."
-assumptions = ["These named cases establish SQLite behavior; live MariaDB converter coverage is a separate explicitly enabled run."]
+claim = "Generated-schema SQLite workflows run a real first full audit, prove clean quick startup uses only bounded control queries, resume after dirty ownership expiry, preserve exact clean-finish replay, defer long initial catch-up once without inventing audit success, schedule from measured completion and duration, and renew read-only while a full SQLite read snapshot exists."
+assumptions = ["These named cases establish SQLite behavior; live MariaDB runtime coverage is a separate explicitly enabled run."]
 [[evidence.location]]
 path = "tests/test_database_audit_schedule.py"
 symbol = "test_first_full_clean_restart_and_exact_finish_replay"
@@ -4437,12 +4425,6 @@ symbol = "test_periodic_full_check_uses_measured_duration_budget"
 [[evidence.location]]
 path = "tests/test_database_audit_schedule.py"
 symbol = "test_renew_during_sqlite_full_read_snapshot_is_read_only"
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_conversion_refreshes_retained_runtime_audit_and_fences_owner"
 
 [[evidence]]
 id = "integration.live-mariadb.database-audit-schedule"
@@ -4535,8 +4517,8 @@ id = "integration.sqlite.source-collections"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
-assumptions = ["The cited SQLite scenarios exercise sealed and partially staged restart with unchanged, changed, and deleted sources; markerless exact attachment; collection retention and retirement; and preserving offline conversion. Bounded release evidence covers only their selected non-deep cases, not separate manual depth matrices or live MariaDB execution."]
+claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary."
+assumptions = ["The cited SQLite scenarios exercise sealed and partially staged restart with unchanged, changed, and deleted sources; markerless exact attachment; and collection retention and retirement. Bounded release evidence covers only their selected non-deep cases, not separate manual depth matrices or live MariaDB execution."]
 
 [[evidence.location]]
 path = "tests/test_vnext_source_collection.py"
@@ -4553,21 +4535,14 @@ symbol = "test_open_collection_retains_sealed_observation_after_lease_and_stagin
 [[evidence.location]]
 path = "tests/test_source_collection_cleanup.py"
 symbol = "test_consumed_collection_cleanup_checks_each_durable_phase_and_preserves_build"
-
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_conversion_preserves_publication_source_and_opaque_artifact_facts"
 
 [[evidence]]
 id = "integration.live-mariadb.source-collections"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary. The offline conversion independently preserves schema-7 facts and resumes its checksum-bound interrupted conversion."
-assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run. The sealed_gallery/unchanged first-scan restart parameter is the bounded smoke representative: it preserves one sealed observation before a source build exists, reopens in a new generation, observes only the remaining gallery, consumes the collection, and passes READY. Partial staging, changed/deleted sources, cleanup retirement, and offline conversion remain manual deep evidence; a bounded release receipt does not attest to those matrices."]
+claim = "Generated-schema workflows preserve sealed initial-scan observations across restart, reobserve only incomplete work, atomically consume the exact collection, preserve active observations through staging cleanup, and execute child-first collection retirement with a READY audit at each committed boundary."
+assumptions = ["Live MariaDB is explicitly enabled separately from the SQLite run. The sealed_gallery/unchanged first-scan restart parameter is the bounded smoke representative: it preserves one sealed observation before a source build exists, reopens in a new generation, observes only the remaining gallery, consumes the collection, and passes READY. Partial staging, changed/deleted sources, and cleanup retirement remain manual deep evidence; a bounded release receipt does not attest to those matrices."]
 
 [[evidence.location]]
 path = "tests/test_vnext_source_collection.py"
@@ -4584,13 +4559,6 @@ symbol = "test_open_collection_retains_sealed_observation_after_lease_and_stagin
 [[evidence.location]]
 path = "tests/test_source_collection_cleanup.py"
 symbol = "test_consumed_collection_cleanup_checks_each_durable_phase_and_preserves_build"
-
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_populated_schema_conversion_preserves_facts_and_replays"
-[[evidence.location]]
-path = "tests/test_upgrade_source_collection_schema.py"
-symbol = "test_conversion_preserves_publication_source_and_opaque_artifact_facts"
 
 [[invariant]]
 id = "catalog.source-collection-durable-observations.v1"

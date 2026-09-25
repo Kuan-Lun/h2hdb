@@ -333,7 +333,7 @@ inventory is complete. Its `gallery_count`, `deferred_gallery_count` and
 `waiting_gallery_count` properties reject premature reads. This changes the
 public preparation contract; callers must drive the source steps before reading
 these counts. Existing source observations and artifact formats remain intact,
-but schema 7 requires the offline conversion below.
+but an older schema must be converted using its historical tooling first.
 
 A preparation error or cancellation permanently invalidates that prepared
 handle; a terminal manifest mismatch does the same. Leave its context or close
@@ -355,97 +355,30 @@ This release uses **epoch 3, schema version 8**. `migrate` initializes this
 schema; it does not automatically upgrade older databases. Back up the database
 and its matching library storage before changing the deployed application set.
 
-### Convert an exact schema-7 database
+### Previously upgraded databases and historical conversion
 
-The one-time offline converter preserves the catalog, source observations,
-download queue, and external media. It accepts the exact supported schema-7
-database and runs with the corresponding schema-8 software. It adds observation
-collection state and moves existing staging ownership into explicit bindings;
-staging identities and their canonical pages are preserved.
+The schema-7-to-8 converter, Docker bundle builder, and converter-only audit
+writer have been retired from this checkout. An already upgraded schema-8
+database requires no further conversion, data deletion, or CBZ regeneration.
+The schema, public runtime facades, and media formats are unchanged. Removing
+the documented checkout tools is a breaking tooling change; verify each
+consumer's declared Core version range before updating application images.
 
-1. Stop ingest, downloader, OPDS, Komga synchronization, and any other database
-   clients.
-2. Take a verifiable database backup. Retain the matching library storage.
-3. Obtain the source checkout for the schema-8 Core release you are installing.
-   The converter is a checkout script, not a `python -m h2hdb` subcommand.
-4. From that checkout, use the matching Core Python environment and a read-write
-   Core configuration to run:
+For an installation that has not completed conversion, use a separate checkout
+of Core **0.41.2**, commit
+`64683c502caf108e8ed518e5c040cacaa91e7551`, and its matching Python environment
+or previously generated 0.41.2 Docker bundle. Follow that checkout's README;
+do not combine its converter with a newer Core wheel. It supports the exact
+schema-7 database and its own interrupted conversion, preserving existing
+catalog, queue, source observations, and external media. Keep all consumers
+stopped, retain a verified database/library backup, and wait for successful
+full validation and `READY` activation before resuming them. A failed audit
+must not be bypassed by editing the marker or running `migrate`.
 
-   ```bash
-   python scripts/upgrade-source-collection-schema.py \
-     --config /path/to/core-writer.json --consumers-stopped
-   ```
-
-5. Resume compatible applications only after the conversion completes
-   successfully.
-
-`--consumers-stopped` acknowledges that you stopped the clients; it does not stop
-them for you. The conversion includes a full database audit and can take as long
-as `check`. It does not re-render CBZs. If interrupted, leave clients stopped and
-rerun the same converter. Repeating a completed conversion performs a full audit
-and reports `already_converted`.
-
-Core 0.41.0 can incorrectly reject a legitimate, interrupted observation cleanup
-during that final audit with `retained file-hash occurrences differ from exact
-CONTENT roles`. Core 0.41.1 validates the exact cleanup checkpoint and remaining
-source references before accepting already-deleted children. It still rejects
-actual missing, extra, or mismatched facts. The schema and conversion checksum
-are unchanged: keep clients stopped and rerun the converter with Core 0.41.2.
-An audit failure leaves the conversion in `BUILDING`; do not edit the marker or
-use `migrate` to force activation.
-
-Core 0.41.0 and 0.41.1 can also stop after the full audit passes with
-`offline audit baseline already exists`. A previously running schema-7 database
-normally retains this scheduling row. Core 0.41.2 refreshes it from the new full
-audit, preserves its scheduling policy and catch-up status, and fences the old
-runtime owner. The refreshed row and `READY` marker commit together. Failure
-before that commit preserves the previous row and resumable conversion marker;
-rerun the 0.41.2 converter without deleting the row or changing database facts.
-A completed replay only audits and does not repeatedly advance the owner.
-
-To deliver the matching wheel and converter as a Docker Compose bundle, build
-the wheel from this checkout, then run:
-
-```bash
-python scripts/build-source-collection-upgrade-bundle.py \
-  --wheel dist/h2hdb-0.41.2-py3-none-any.whl \
-  --output /tmp/h2hdb-schema7-to8-docker-0.41.2.tar.gz \
-  --deployment-root /absolute/path/to/deployment \
-  --network existing-database-network
-```
-
-The builder checks every wheel runtime file against the checkout and records
-file digests. Extract the bundle in the deployment directory, whose `.env` must
-define `MEDIA_UID` and `MEDIA_GID`, then run:
-
-```bash
-docker compose --env-file .env \
-  -f ./h2hdb-schema7-to8-docker-0.41.2/compose.yaml \
-  run --rm --build --no-deps upgrade \
-  --config /h2hdb-config/h2hdb-config.json --consumers-stopped
-```
-
-This deployment layout uses `config/`, `env/database.env`, `env/writer.env`, and
-an existing external database network. The bundle contains no credentials. The
-container runs as the configured UID/GID, mounts the configuration read-only,
-and needs no source-gallery or library mount for a MariaDB conversion.
-
-The upgrade image does not update application images. Before restarting ingest
-or other full-audit callers, install the bundled Core 0.41.2 wheel in their
-images too and verify the installed version. Core 0.41.0 can reject the same
-unfinished cleanup again: it sees the new recorded audit version and performs
-its own full startup audit. A registry-based rebuild does not obtain this patch
-until that version is published.
-
-Do not delete source folders, CBZs, or the existing database for this conversion.
-To return to the old software, restore the pre-upgrade database backup first;
-there is no automatic downgrade.
-
-For schema 6, first use the `upgrade-audit-schema.py` script from the Core 0.40.0
-checkout and its environment to reach schema 7, then use this converter. The old
-6-to-7 entry point is not part of the schema-8 checkout, and normal runtime does
-not fall back to older schemas. Keep all clients stopped throughout both
-conversions and retain the original database/library backup.
+Historical schema 6 first requires the Core 0.40.0 converter and matching
+environment to reach schema 7, then the Core 0.41.2 converter. Current runtime
+has no older-schema fallback. To return to old software, restore the matching
+pre-upgrade database backup; there is no automatic downgrade.
 
 ### Other old or incompatible databases
 
