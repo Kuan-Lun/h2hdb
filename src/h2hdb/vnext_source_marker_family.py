@@ -122,7 +122,9 @@ def _load_cached_batch(
         "SELECT observation.gallery_id, observation.observation_id, "
         "observation.observation_identity_sha256, stat.file_count, stat.byte_count, "
         "scan.scan_observation_version, name.name_bytes, content.file_sha256, content_blob.size_bytes, "
-        "fs.device, fs.inode, fs.modified_ns, fs.changed_ns, role.artifact_role "
+        "fs_device.device, fs_inode.inode, fs_modified.modified_ns, "
+        "fs_changed.changed_ns, role.artifact_role, "
+        "fs_anchor.file_key, fs_seal.file_key "
         "FROM catalog_gallery_observation_file_seals AS file "
         "LEFT JOIN catalog_gallery_observations AS observation "
         "ON observation.gallery_id = file.gallery_id "
@@ -135,15 +137,36 @@ def _load_cached_batch(
         "AND content.observation_id = file.observation_id AND content.file_key = file.file_key "
         "LEFT JOIN catalog_file_name_identities AS name ON name.file_key = file.file_key "
         "LEFT JOIN catalog_content_blobs AS content_blob ON content_blob.file_sha256 = content.file_sha256 "
-        "LEFT JOIN catalog_gallery_observation_file_filesystem AS fs ON fs.gallery_id = file.gallery_id "
-        "AND fs.observation_id = file.observation_id AND fs.file_key = file.file_key "
+        # SQLite materializes an outer-joined multi-table view before applying
+        # these exact keys. Join the physical family directly so unrelated
+        # retained files are never part of this bounded marker lookup. Keeping
+        # every join outer and checking anchor/seal presence below preserves
+        # rejection of incomplete families instead of hiding missing children.
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_anchors AS fs_anchor "
+        "ON fs_anchor.gallery_id = file.gallery_id "
+        "AND fs_anchor.observation_id = file.observation_id AND fs_anchor.file_key = file.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_seals AS fs_seal "
+        "ON fs_seal.gallery_id = file.gallery_id "
+        "AND fs_seal.observation_id = file.observation_id AND fs_seal.file_key = file.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_devices AS fs_device "
+        "ON fs_device.gallery_id = file.gallery_id "
+        "AND fs_device.observation_id = file.observation_id AND fs_device.file_key = file.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_inodes AS fs_inode "
+        "ON fs_inode.gallery_id = file.gallery_id "
+        "AND fs_inode.observation_id = file.observation_id AND fs_inode.file_key = file.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_modified_nses AS fs_modified "
+        "ON fs_modified.gallery_id = file.gallery_id "
+        "AND fs_modified.observation_id = file.observation_id AND fs_modified.file_key = file.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_changed_nses AS fs_changed "
+        "ON fs_changed.gallery_id = file.gallery_id "
+        "AND fs_changed.observation_id = file.observation_id AND fs_changed.file_key = file.file_key "
         "LEFT JOIN catalog_gallery_observation_file_artifact_role AS role ON role.gallery_id = file.gallery_id "
         "AND role.observation_id = file.observation_id AND role.file_key = file.file_key "
         f"WHERE {selectors}",
         tuple(value for binding in bindings for value in binding),
     )
     if len(rows) != len(expected) or any(
-        len(row) != 14 or any(value is None for value in row) for row in rows
+        len(row) != 16 or any(value is None for value in row) for row in rows
     ):
         raise SourceMarkerConflictError(
             "completion marker lacks its sealed observation facts"
