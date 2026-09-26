@@ -2,26 +2,26 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-consume the epoch-3/schema-v8 catalog facade; ingest uses the
+consume the epoch-3/schema-v9 catalog facade; ingest uses the
 transaction-owning ingest facade and downloader uses the queue facade. No
 sibling may query `catalog_*` or operational tables directly.
 
-The source checkpoint release pairs Core 0.41.x with Ingest 0.27.x. OPDS, Komga,
-and downloader also need releases whose declared Core dependency range and
-integration checks support this schema. This document does not establish that
-their currently released versions form a deployable schema-8 set; verify those
-versions before upgrading a shared deployment.
+The schema-9 cohort pairs Core 0.43.x with Ingest 0.29.x, OPDS 0.24.x,
+Komga 0.18.x, and downloader 0.23.x. Each consumer requires Core
+`>=0.43.0,<0.44.0`. Local validation of these candidates does not publish them;
+use the matching built wheels or verify their availability before upgrading
+a shared deployment.
 
 ## Database ownership
 
-There is one epoch-3/schema-v8 database. Catalog and operational relations are
+There is one epoch-3/schema-v9 database. Catalog and operational relations are
 generated for both SQLite and MariaDB from the same closed-world logical
 manifests. Those manifests and their executable schema reports are the
 authority for relation shapes, projections, bootstrap facts, decompositions,
 and semantic obligations; deployment documentation intentionally does not copy
 counts that would drift as the schema evolves.
 
-Schema v8 includes revision-scoped discovery order, normalized search postings,
+Schema v9 includes revision-scoped discovery order, normalized search postings,
 facet order/count authority, acquisition descriptors, and presentation
 descriptors. It also retains per-gallery source observation checkpoints before
 the first complete source cut exists. Operational events remain publication-owned
@@ -29,6 +29,12 @@ current/retry state,
 not OPDS history or a durable delivery queue. Bounded current-only cleanup
 retires unreachable finalized non-head state while retaining identities and
 objects protected by live work or published revisions.
+
+Upload time belongs to an immutable source observation, not its GID. Each
+published occurrence retains the selected observation's upload time in its own
+immutable child. A later source correction can therefore use a different time
+without changing an existing publication. Publication preparation, independent
+validation, full audit, and bounded cleanup maintain both authorities.
 
 Source observations carry an immutable qualification result and policy digest
 inside their canonical metadata. Core checks the normalized facts against that
@@ -80,7 +86,7 @@ For a new installation, create a truly empty database and run:
 python -m h2hdb migrate --config core-writer.json
 ```
 
-This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=8`, and a
+This constructs `h2hdb_schema_epoch` with `epoch=3`, `schema_version=9`, and a
 checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
 bootstrap facts; validates the exact manifests; and atomically marks the epoch
 `READY`.
@@ -109,20 +115,23 @@ epoch; it does not execute numbered historical migrations.
 The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
 no numbered-migration module, old list API, or legacy hand-written schema
 repository. All producers and consumers in one deployment must use the same
-schema-v8 public contract; mixed schema versions are unsupported.
+schema-v9 public contract; mixed schema versions are unsupported.
 
 ## Previously upgraded deployments
 
-The schema-7-to-8 converter, its Docker bundle builder, and the private audit
-writer used only by that converter have been retired. Already upgraded
-schema-8 databases and their complete matching libraries remain valid; no
-conversion, database reset, or CBZ regeneration is required. Source collection
-recovery and the runtime's audit scheduling remain supported.
+An exact schema-8 database requires the
+[one-time schema-8-to-9 conversion](../README.md#schema-8-to-9) with all consumers
+stopped. The tool preserves observations, published times, operational state,
+and matching CBZ/artwork bytes; no database reset or artifact rebuild is required.
+It binds resumable structural checkpoints and the successful full audit to the
+exact source/target contracts. A committed audit is reused on retry; an interrupted
+uncommitted audit must run again. Source collection recovery and runtime audit
+scheduling remain supported.
 
-The removed checkout commands are a breaking tooling change even though the
-schema and public runtime APIs are unchanged. Validate every application's
-Core dependency range and integration checks before updating its image.
-A newer Core version does not override a consumer's declared upper bound.
+The schema-7-to-8 converter, its Docker bundle builder, and its private audit
+writer remain retired. Validate every application's Core dependency range and
+integration checks before updating its image. A newer Core version does not
+override a consumer's declared upper bound.
 
 An installation still on schema 7, or with an interrupted offline conversion,
 must use the historical Core 0.41.2 checkout at commit
@@ -130,8 +139,9 @@ must use the historical Core 0.41.2 checkout at commit
 previously generated Docker bundle. See the [historical conversion guidance](../README.md#previously-upgraded-databases-and-historical-conversion).
 Do not mix that converter with the current Core wheel. Stop all clients, retain
 verified database/library backups, and resume only after the historical tool
-completes its full audit and activates `READY`. Schema 6 first requires the
-Core 0.40.0 conversion. No current runtime entry point admits older schemas.
+completes its full audit and activates schema-8 `READY`, then use the current
+schema-8-to-9 tool. Schema 6 first requires the Core 0.40.0 conversion. No current
+runtime entry point admits older schemas.
 
 Schema 5 and earlier have no supported in-place converter. Preserve their
 database/library pair and original sources, then build a separate new database

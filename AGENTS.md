@@ -419,7 +419,7 @@ Schema變更依序進行：
 
 ## Schema epoch and backend rules
 
-- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 8只公開 `migrate`、
+- 只有本 repository擁有 schema。CLI對 epoch 3/schema version 9只公開 `migrate`、
   `check`與 `ready`。
 - `migrate`只接納真正空白 database，寫入 checksum-bound `BUILDING` marker，
   套用 idempotent generated DDL/bootstrap slices，驗證 exact manifests後轉為
@@ -443,8 +443,21 @@ Schema變更依序進行：
 - 已完成的schema7至8離線轉換工具、Docker bundle builder與專用audit writer
   已自目前checkout移除，不保留shim或runtime fallback。尚未轉換的exact schema7
   或該工具留下的中斷狀態，須使用Core0.41.2歷史checkout與匹配環境；schema6
-  須先用Core0.40.0歷史工具轉至schema7。已完成轉換的schema8不需再遷移、清庫
-  或重建CBZ。Previous、foreign與離線轉換中的marker仍不由runtime接納。
+  須先用Core0.40.0歷史工具轉至schema7。Exact schema8使用本checkout的
+  `upgrade-observation-upload-time-schema.py`離線轉至schema9，保留既有資料
+  與CBZ/artwork，不需清庫。Previous、foreign與離線轉換中的marker仍不由
+  runtime接納；不得加入schema8 runtime shim。
+- Upload time由每個observation的composite identity與每個publication
+  occurrence分別擁有，GID只保存identity，不決定時間。既有publication時間
+  不受未發布的新observation更正影響。PUBLICATION child在同一transaction
+  exact-write storage與upload time，時間scalar單獨存在不代表publication完成。
+- Schema8至9離線轉換只使用明確提供的Core0.42.2 wheel處理既有affected
+  OPEN cleanup cycle，不建立新cycle；舊runtime在隔離process執行，不得混入
+  新runtime。正常資料copy使用bounded pages；SQLite修改FK所需的單表重建
+  是離線長transaction例外。完整audit亦在離線transaction內暫存target marker，
+  成功後原子寫入baseline及AUDITED checkpoint，再獨立切換READY；失敗不得
+  宣稱audit完成，已提交AUDITED的重試不得重跑完整audit。這些例外不改變
+  runtime的bounded transaction要求。
 - 每個 production SQL relation identifier都必須由 `physical.toml`、
   `operational_physical.toml`或唯一 epoch-control relation接納。Formal BCNF通過
   不代表可以發布第二套未 manifest的 SQL schema。
