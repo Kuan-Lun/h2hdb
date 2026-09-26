@@ -132,7 +132,6 @@ from vnext_pipeline import (  # noqa: E402 - public protocol fixtures.
     MemorySource,
     claim_session,
     drain_maintenance,
-    full_check,
     gallery,
     ingest_policy,
     initialize_database,
@@ -157,7 +156,11 @@ from h2hdb.vnext_identity import effective_content_digest  # noqa: E402
 # charge variable work only to NEW input. Repeated retained-gallery traversal
 # does not earn additional allowance. Passing these finite checks is not proof
 # of asymptotic complexity, server rows examined, or a 12/24-hour throughput SLO.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
+# Independent whole-audit local regression ceiling, declared before candidate
+# measurements. This is not a NAS deadline, a timeout, or a fit to measured code.
+AUDIT_FIXED_SECONDS = 60.0
+AUDIT_SECONDS_PER_FILE = 0.002
 # (fixed calls per turn, calls per new gallery, calls per new file)
 PHASE_CEILINGS = {
     "claim": (128, 0, 0),
@@ -246,6 +249,70 @@ def _sql_rows(measurements: Mapping[str, Any]) -> list[dict[str, Any]]:
     if attribution["status"] != "complete":
         raise ValueError(f"incomplete SQL attribution: {attribution['reasons']}")
     return [row for row in measurements["queries"] if row["category"] == "sql"]
+
+
+def assess_ready_audit(
+    audit: dict[str, Any], *, retained_galleries: int, pages: int
+) -> dict[str, Any]:
+    """Judge full-check elapsed cost without enlarging per-new-input budgets."""
+    if (
+        type(retained_galleries) is not int
+        or retained_galleries <= 0
+        or type(pages) is not int
+        or pages < 0
+    ):
+        raise ValueError("invalid retained audit fixture dimensions")
+    if audit.get("state") != "READY":
+        raise ValueError("full READY audit did not complete")
+    measurements = audit["measurements"]
+    rows = _sql_rows(measurements)
+    if any(row["pipeline"] != "ready_audit" for row in measurements["queries"]):
+        raise ValueError("full READY audit includes another workflow scope")
+    seconds = audit.get("wall_seconds")
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or seconds < 0
+    ):
+        raise ValueError("invalid full READY audit elapsed measurement")
+    observed_seconds = sum(row["seconds"] for row in measurements["queries"])
+    if observed_seconds > seconds and not math.isclose(
+        observed_seconds, seconds, rel_tol=1e-12, abs_tol=1e-9
+    ):
+        raise ValueError("full READY audit SQL time exceeds its wall interval")
+    # Both fixtures have one metadata FILE per retained gallery. Replacement
+    # is measured after cleanup DONE, so previous cycles earn no allowance.
+    files = retained_galleries * (pages + 1)
+    ceiling = AUDIT_FIXED_SECONDS + AUDIT_SECONDS_PER_FILE * files
+    status = "satisfied" if seconds <= ceiling else "violated"
+    return {
+        "status": status,
+        "dimensions": {
+            "retained_galleries": retained_galleries,
+            "retained_source_files": files,
+            "pages_per_gallery": pages,
+        },
+        "checks": [
+            {
+                "name": "ready_audit.wall_seconds",
+                "observed": seconds,
+                "upper_bound": ceiling,
+                "unit": "observed wall seconds",
+                "status": status,
+                "rationale": (
+                    "Local regression ceiling: 60 seconds fixed + 0.002 seconds "
+                    "per retained fixture FILE, including metadata. Declared "
+                    "independently of baseline/candidate timing; not a NAS SLO. "
+                    "Includes every production READY validator and observation "
+                    "overhead after the hot pipeline/catalog reads. Connector "
+                    "calls and returned rows do not measure server rows examined."
+                ),
+            }
+        ],
+        "attribution": assess_attribution(measurements),
+        "sql_calls": sum(row["calls"] for row in rows),
+    }
 
 
 def assess_turn(turn: dict[str, Any], *, pages: int) -> dict[str, Any]:
@@ -503,8 +570,9 @@ def run_replacement(
                 if next_session is None:
                     raise AssertionError("cleanup DONE did not admit the next claim")
                 facade.complete_ingest(next_session)
-            if full_check(config).state != "READY":
-                raise AssertionError("replacement full READY audit failed")
+            audit = batch_probe.measure_ready_audit(
+                config, observer_factory=AcceptanceObserver, progress=progress
+            )
             turn = {
                 "cycle": cycle,
                 "selected": 1,
@@ -513,6 +581,10 @@ def run_replacement(
                 "measurements": observer.report(),
                 "cleanup": "DONE",
                 "full_ready_audit": "passed",
+                "ready_audit": audit,
+                "audit_acceptance": assess_ready_audit(
+                    audit, retained_galleries=1, pages=pages
+                ),
                 "next_claim": "passed",
                 "oracle": oracle,
                 "retirement_samples": samples,
@@ -561,7 +633,11 @@ def imported_sources() -> dict[str, dict[str, str]]:
     return result
 
 
-def acceptance_status(cases: list[dict[str, Any]]) -> str:
+def acceptance_status(
+    cases: list[dict[str, Any]],
+    *,
+    scope: Literal["all", "pipeline", "ready_audit"] = "all",
+) -> str:
     statuses = []
     for case in cases:
         turns = case.get("turns", [])
@@ -581,10 +657,15 @@ def acceptance_status(cases: list[dict[str, Any]]) -> str:
                 return "incomplete"
         else:
             return "incomplete"
+        if scope != "pipeline" and kind == "append":
+            statuses.append(case.get("audit_acceptance", {}).get("status"))
         for turn in turns:
-            statuses.append(turn.get("acceptance", {}).get("status"))
-            if kind == "replacement" and turn["cycle"] > 0:
-                statuses.append(turn.get("retirement_acceptance", {}).get("status"))
+            if scope != "ready_audit":
+                statuses.append(turn.get("acceptance", {}).get("status"))
+                if kind == "replacement" and turn["cycle"] > 0:
+                    statuses.append(turn.get("retirement_acceptance", {}).get("status"))
+            if scope != "pipeline" and kind == "replacement":
+                statuses.append(turn.get("audit_acceptance", {}).get("status"))
     if not statuses or any(
         value not in {"satisfied", "violated"} for value in statuses
     ):
@@ -645,7 +726,7 @@ def main() -> int:
         "status": "error",
         "acceptance": {"status": "incomplete"},
         "contract_version": CONTRACT_VERSION,
-        "scope": "core_public_pipeline_sql_work",
+        "scope": "core_public_pipeline_sql_work_and_full_ready_audit",
         "backend": args.backend,
         "cases": [],
         "limits": [
@@ -653,7 +734,8 @@ def main() -> int:
             "No raster, CBZ, physical disk I/O, network-latency model or wall-clock SLO.",
             "SQL calls are completed connector methods; rows are returned, not examined.",
             "Whole-phase ceilings are regression targets, not fitted current-code models.",
-            "Setup/full READY/catalog oracles and post-cleanup claims are outside phase costs.",
+            "Setup/catalog oracles and post-cleanup claims are outside phase costs; full READY has a separate mandatory wall-cost verdict.",
+            "Full READY is observed after hot pipeline/catalog reads, including probe overhead; its fixed local ceiling is not a NAS deadline.",
             "Replacement uses neutral no-artifact fixture, including when --artifacts is set.",
         ],
     }
@@ -680,6 +762,9 @@ def main() -> int:
                 progress=print_progress,
             )
             result["kind"] = "append"
+            result["audit_acceptance"] = assess_ready_audit(
+                result["ready_audit"], retained_galleries=galleries, pages=pages
+            )
             for turn in result["turns"]:
                 turn["acceptance"] = assess_turn(turn, pages=pages)
             report["cases"].append(result)
@@ -701,7 +786,13 @@ def main() -> int:
             raise RuntimeError("experiment sources changed during execution")
         report["imported_sources"] = imported_sources()
         report["status"] = "completed"
-        report["acceptance"]["status"] = acceptance_status(report["cases"])
+        report["acceptance"] = {
+            "status": acceptance_status(report["cases"]),
+            "pipeline_status": acceptance_status(report["cases"], scope="pipeline"),
+            "ready_audit_status": acceptance_status(
+                report["cases"], scope="ready_audit"
+            ),
+        }
         stage = "final report"
         probe.write_report(args.output, report)
     except Exception as error:

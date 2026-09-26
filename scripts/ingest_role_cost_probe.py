@@ -17,10 +17,12 @@ import signal
 import statistics
 import sys
 import time
+from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from itertools import groupby, islice
 from pathlib import Path
 from typing import Any, Literal
 from unittest.mock import patch
@@ -46,6 +48,7 @@ from h2hdb.mariadb_connector import MariaDBConnector  # noqa: E402 - checkout.
 from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout.
 
 PAGE_SIZE = 128
+MAX_FILES = 2_097_152
 SEED = 20260918
 REGIMES = ("distinct", "duplicate", "metadata")
 STREAMS = (
@@ -67,7 +70,10 @@ REGISTRY_QUERIES = (
     "catalog_canonical_digest_policies",
 )
 CLEANUP_AUTHORITY_QUERY = "observation_cleanup_authority"
-FIXED_QUERY_CALLS = dict.fromkeys((*REGISTRY_QUERIES, CLEANUP_AUTHORITY_QUERY), 1)
+METADATA_IDENTITY_QUERY = "metadata_file_identity"
+FIXED_QUERY_CALLS = dict.fromkeys(
+    (*REGISTRY_QUERIES, CLEANUP_AUTHORITY_QUERY, METADATA_IDENTITY_QUERY), 1
+)
 type Regime = Literal["distinct", "duplicate", "metadata"]
 type Parameters = tuple[Any, ...]
 
@@ -76,15 +82,24 @@ type Parameters = tuple[Any, ...]
 class Shape:
     files: int
     regime: Regime = "distinct"
+    galleries: int = 16
+    observations: int = 2
+    shared_names: bool = False
 
     def __post_init__(self) -> None:
-        if type(self.files) is not int or not 1 <= self.files <= 32768:
-            raise ValueError("files must be between 1 and 32768")
+        if type(self.files) is not int or not 1 <= self.files <= MAX_FILES:
+            raise ValueError(f"files must be between 1 and {MAX_FILES}")
         if self.regime not in REGIMES:
             raise ValueError("unsupported fixture regime")
+        if type(self.galleries) is not int or not 1 <= self.galleries <= 131_072:
+            raise ValueError("galleries must be between 1 and 131072")
+        if type(self.observations) is not int or not 1 <= self.observations <= 64:
+            raise ValueError("observations must be between 1 and 64")
+        if type(self.shared_names) is not bool:
+            raise ValueError("shared_names must be boolean")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FileFact:
     gallery: int
     observation: int
@@ -99,7 +114,7 @@ class FileFact:
 
 
 def file_facts(shape: Shape) -> list[FileFact]:
-    """Stable prefixes, 16 galleries, two historical observations per gallery.
+    """Stable prefixes with independent gallery/history/name-reuse dimensions.
 
     Duplicate mode makes the first 257 files per observation share a digest,
     crossing two 128-row boundaries; later files are distinct. Metadata mode
@@ -107,14 +122,25 @@ def file_facts(shape: Shape) -> list[FileFact]:
     Neither digest multiplicity nor metadata exclusion is a returned-row bound.
     """
     result = []
+    names: dict[int, tuple[bytes, bytes]] = {}
+    owners = shape.galleries * shape.observations
     for index in range(shape.files):
-        number = index // 32
+        number = index // owners
         metadata = shape.regime == "metadata" and number == 0
-        name = (
-            b"galleryinfo.txt"
-            if metadata
-            else f"seed-{SEED}-file-{index:08}.png".encode()
-        )
+        name_index = -1 if metadata else number if shape.shared_names else index
+        pair = names.get(name_index)
+        if pair is None:
+            name = (
+                b"galleryinfo.txt"
+                if metadata
+                else f"seed-{SEED}-file-{name_index:08}.png".encode()
+            )
+            pair = identity.file_key(name), name
+            # Unique names are already retained by their facts. Only cache
+            # reused names, keeping fixture construction memory proportional.
+            if metadata or shape.shared_names:
+                names[name_index] = pair
+        key, name = pair
         digest_input = (
             b"duplicate-group"
             if shape.regime == "duplicate" and number < 257
@@ -122,9 +148,9 @@ def file_facts(shape: Shape) -> list[FileFact]:
         )
         result.append(
             FileFact(
-                index % 16 + 1,
-                (index // 16) % 2 + 1,
-                identity.file_key(name),
+                index % shape.galleries + 1,
+                (index // shape.galleries) % shape.observations + 1,
+                key,
                 number,
                 sha256(str(SEED).encode() + digest_input).digest(),
                 name,
@@ -133,13 +159,22 @@ def file_facts(shape: Shape) -> list[FileFact]:
     return result
 
 
-def _batch(connector: SQLConnector, sql: str, rows: Iterable[Parameters]) -> None:
+def _batch(
+    connector: SQLConnector,
+    sql: str,
+    rows: Iterable[Parameters],
+    progress: Callable[[str], None] | None = None,
+) -> None:
     pending = []
+    completed = 0
     for row in rows:
         pending.append(row)
         if len(pending) == 256:
             connector.execute_many(sql, pending)
             pending = []
+            completed += 256
+            if progress is not None and completed % 16384 == 0:
+                progress(f"seed:{sql.split()[2]}:{completed}")
     if pending:
         connector.execute_many(sql, pending)
 
@@ -169,7 +204,11 @@ def _canonical_payload(
     return digest
 
 
-def seed_fixture(connector: SQLConnector, facts: list[FileFact]) -> None:
+def seed_fixture(
+    connector: SQLConnector,
+    facts: list[FileFact],
+    progress: Callable[[str], None] | None = None,
+) -> None:
     """Seed a fresh database, keeping FK enforcement and family uniqueness."""
     with connector.transaction():
         root = _canonical_payload(
@@ -184,7 +223,10 @@ def seed_fixture(connector: SQLConnector, facts: list[FileFact]) -> None:
             "VALUES (%s,%s,%s,1)",
             (scope, b"filesystem", root),
         )
-        for gallery in range(1, 17):
+        owners: dict[int, set[int]] = defaultdict(set)
+        for fact in facts:
+            owners[fact.gallery].add(fact.observation)
+        for gallery, observations in sorted(owners.items()):
             name = f"gallery-{gallery}"
             locator = _canonical_payload(
                 connector,
@@ -201,21 +243,25 @@ def seed_fixture(connector: SQLConnector, facts: list[FileFact]) -> None:
                 "(gallery_id,gallery_key,scope_key,locator_sha256) VALUES (%s,%s,%s,%s)",
                 (gallery, identity.gallery_key(scope, locator), scope, locator),
             )
-            for observation in (1, 2):
+            for observation in sorted(observations):
                 connector.execute(
                     "INSERT INTO catalog_gallery_observation_allocations "
                     "(gallery_id,observation_id,allocated_at) VALUES (%s,%s,1)",
                     (gallery, observation),
                 )
+            if progress is not None and gallery % 256 == 0:
+                progress(f"seed:gallery_identities:{gallery}")
         _batch(
             connector,
             "INSERT INTO catalog_file_name_identities (file_key,name_bytes) VALUES (%s,%s)",
             sorted({(fact.key, fact.name) for fact in facts}),
+            progress,
         )
         _batch(
             connector,
             "INSERT INTO catalog_content_blobs (file_sha256,size_bytes) VALUES (%s,1)",
             ((digest,) for digest in sorted({fact.digest for fact in facts})),
+            progress,
         )
         for suffix, field in (
             ("anchors", None),
@@ -224,22 +270,6 @@ def seed_fixture(connector: SQLConnector, facts: list[FileFact]) -> None:
             ("artifact_role", "artifact_role"),
             ("seals", None),
         ):
-            rows: list[Parameters] = []
-            for fact in facts:
-                match field:
-                    case "file_no":
-                        value: Any = fact.number
-                    case "file_sha256":
-                        value = fact.digest
-                    case "artifact_role":
-                        value = (
-                            b"metadata" if fact.name == b"galleryinfo.txt" else b"page"
-                        )
-                    case _:
-                        value = None
-                rows.append(
-                    fact.coordinate if field is None else (*fact.coordinate, value)
-                )
             columns = "gallery_id,observation_id,file_key" + (
                 "" if field is None else "," + field
             )
@@ -248,15 +278,44 @@ def seed_fixture(connector: SQLConnector, facts: list[FileFact]) -> None:
                 connector,
                 f"INSERT INTO catalog_gallery_observation_file_{suffix} "
                 f"({columns}) VALUES ({placeholders})",
-                rows,
+                (_family_row(fact, field) for fact in facts),
+                progress,
             )
-        occurrences = content_occurrences(facts)
         _batch(
             connector,
             "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
             "(gallery_id,observation_id,file_sha256,occurrence_count) VALUES (%s,%s,%s,%s)",
-            ((*key, count) for key, count in sorted(occurrences.items())),
+            _occurrence_rows(_digest_order(facts)),
+            progress,
         )
+
+
+def _family_row(fact: FileFact, field: str | None) -> Parameters:
+    match field:
+        case "file_no":
+            value: Any = fact.number
+        case "file_sha256":
+            value = fact.digest
+        case "artifact_role":
+            value = b"metadata" if fact.name == b"galleryinfo.txt" else b"page"
+        case _:
+            return fact.coordinate
+    return *fact.coordinate, value
+
+
+def _digest_order(facts: list[FileFact]) -> list[FileFact]:
+    return sorted(
+        facts,
+        key=lambda fact: (fact.gallery, fact.observation, fact.digest, fact.key),
+    )
+
+
+def _occurrence_rows(ordered: list[FileFact]) -> Iterator[Parameters]:
+    content = (fact for fact in ordered if fact.name != b"galleryinfo.txt")
+    for key, members in groupby(
+        content, key=lambda fact: (fact.gallery, fact.observation, fact.digest)
+    ):
+        yield *key, sum(1 for _ in members)
 
 
 def content_occurrences(facts: list[FileFact]) -> Counter[tuple[int, int, bytes]]:
@@ -270,18 +329,22 @@ def content_occurrences(facts: list[FileFact]) -> Counter[tuple[int, int, bytes]
 def stream_sizes(facts: list[FileFact]) -> dict[str, int]:
     return {
         **dict.fromkeys(STREAMS[:5], len(facts)),
-        "derived_hash_occurrences": sum(
-            fact.name != b"galleryinfo.txt" for fact in facts
-        ),
+        "derived_hash_occurrences": len(facts),
         "stored_hash_occurrences": len(content_occurrences(facts)),
     }
 
 
 def expected_stream_rows(facts: list[FileFact]) -> dict[str, list[Parameters]]:
     """Construct each complete ordered stream from fixture facts, without SQL."""
+    return {kind: list(rows) for kind, rows in fixture_streams(facts).items()}
+
+
+def fixture_streams(facts: list[FileFact]) -> dict[str, Iterator[Parameters]]:
+    """Two sorted fact-reference arrays, with no seven full tuple-row copies."""
     ordered = sorted(facts, key=lambda fact: fact.coordinate)
+    by_digest = _digest_order(facts)
     return {
-        "anchors": [
+        "anchors": (
             (
                 *fact.coordinate,
                 fact.number,
@@ -292,19 +355,16 @@ def expected_stream_rows(facts: list[FileFact]) -> dict[str, list[Parameters]]:
                 fact.name,
             )
             for fact in ordered
-        ],
+        ),
         **{
-            kind: [(*fact.coordinate, fact.key) for fact in ordered]
+            kind: ((*fact.coordinate, fact.key) for fact in ordered)
             for kind in STREAMS[1:5]
         },
-        "derived_hash_occurrences": sorted(
+        "derived_hash_occurrences": (
             (fact.gallery, fact.observation, fact.digest, fact.key)
-            for fact in facts
-            if fact.name != b"galleryinfo.txt"
+            for fact in by_digest
         ),
-        "stored_hash_occurrences": [
-            (*key, count) for key, count in sorted(content_occurrences(facts).items())
-        ],
+        "stored_hash_occurrences": _occurrence_rows(by_digest),
     }
 
 
@@ -328,6 +388,10 @@ def fixed_query_kind(sql: str) -> str | None:
     relation = re.search(r"\bFROM (\w+)\b", normalized)
     if relation is not None and relation[1] in REGISTRY_QUERIES:
         return relation[1]
+    if normalized.startswith(
+        "SELECT file_key FROM catalog_file_name_identities WHERE name_bytes = %s"
+    ):
+        return METADATA_IDENTITY_QUERY
     if (
         "FROM operational_cleanup_jobs AS job" in normalized
         and "job.state = 'OPEN'" in normalized
@@ -347,7 +411,7 @@ def tuple_seek_baseline(sql: str, parameters: Parameters) -> tuple[str, Paramete
     if matched is None:
         raise ValueError("expected exactly one recognized role keyset")
     columns = [value.strip() for value in matched[4].split(",")]
-    offset = int(len(columns) == 4)
+    offset = int(matched[2].startswith("name.name_bytes <> %s AND "))
     prefix = "name.name_bytes <> %s AND " if offset else ""
     if len(columns) not in {3, 4} or len(parameters) != (
         offset + len(columns) * (len(columns) + 1) // 2 + len(columns) + 1
@@ -390,6 +454,32 @@ def degraded_order(sql: str, parameters: Parameters) -> tuple[str, Parameters]:
         if count != 1:
             raise ValueError("negative control requires both int63 key columns")
     return parts[0] + "ORDER BY" + order, parameters
+
+
+def joined_content_baseline(sql: str, parameters: Parameters) -> tuple[str, Parameters]:
+    """Restore the former joins/filter only on a captured raw derived query.
+
+    Metadata fixtures intentionally return a different SQL page: its expected
+    CONTENT page is independently constructed from the same cursor below.
+    Neither this diagnostic nor its joins enter a production execution path.
+    """
+    if query_kind(sql) != "derived_hash_occurrences" or " JOIN " in " ".join(
+        sql.split()
+    ):
+        raise ValueError("expected the production single-table derived scan")
+    before, separator, after = sql.partition("WHERE")
+    if not separator:
+        raise ValueError("derived scan lacks its keyset predicate")
+    joins = """
+        JOIN catalog_gallery_observation_file_seals AS sealed
+          ON sealed.gallery_id = file_sha.gallery_id
+         AND sealed.observation_id = file_sha.observation_id
+         AND sealed.file_key = file_sha.file_key
+        JOIN catalog_file_name_identities AS name
+          ON name.file_key = file_sha.file_key
+        WHERE name.name_bytes <> %s AND
+    """
+    return before + joins + after, (b"galleryinfo.txt", *parameters)
 
 
 def _escape_nonstandard_strings(raw: str) -> str:
@@ -501,16 +591,12 @@ def table_row_visits(plan: dict[str, Any]) -> float:
 
 
 def seek_budget(kind: str, facts: list[FileFact]) -> int:
-    # At most 128 returned CONTENT files plus every metadata exclusion in this
-    # fixture. This is not a universal LIMIT-to-work implication. Eight access
-    # units cover the leading scan and up to five anchor point joins, with seek
-    # slack. B-tree depth/CPU/physical IO are not proven constant by this budget.
-    filtered = (
-        sum(fact.name == b"galleryinfo.txt" for fact in facts)
-        if kind == "derived_hash_occurrences"
-        else 0
-    )
-    return 8 * (PAGE_SIZE + filtered + 1) + 32
+    # Every production stream now pages raw index entries; metadata exclusions
+    # happen after the derived SQL page. No whole-fixture cardinality may relax
+    # the fixed budget. Eight accesses cover scan plus up to five anchor joins.
+    if kind not in STREAMS or not facts:
+        raise ValueError("seek budget requires a known stream and nonempty fixture")
+    return 8 * (PAGE_SIZE + 1) + 32
 
 
 def cost_verdict(visits: float, handler_operations: list[int], budget: int) -> str:
@@ -540,14 +626,17 @@ class CapturedQuery:
 
 
 def capture_validator(
-    connector: SQLConnector, facts: list[FileFact]
+    connector: SQLConnector,
+    facts: list[FileFact],
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, list[CapturedQuery]], dict[str, Any]]:
     captured: dict[str, list[CapturedQuery]] = defaultdict(list)
-    expected_rows = expected_stream_rows(facts)
+    expected_rows = fixture_streams(facts)
     all_calls = 0
     fixed_calls: Counter[str] = Counter()
     unclassified_calls = 0
     original = connector.fetch_all
+    original_one = connector.fetch_one
 
     def capture(sql: str, parameters: Parameters = ()) -> list[tuple[Any, ...]]:
         nonlocal all_calls, unclassified_calls
@@ -557,10 +646,11 @@ def capture_validator(
         all_calls += 1
         kind = query_kind(sql)
         if kind is not None:
-            offset = len(captured[kind]) * PAGE_SIZE
-            if rows != expected_rows[kind][offset : offset + PAGE_SIZE]:
+            if rows != list(islice(expected_rows[kind], PAGE_SIZE)):
                 raise RuntimeError(f"role stream differs from fixture facts: {kind}")
             captured[kind].append(CapturedQuery(sql, parameters, len(rows), elapsed))
+            if progress is not None and (len(captured[kind]) % 128 == 0 or not rows):
+                progress(f"scan:{kind}:{len(captured[kind])}")
         elif (fixed_kind := fixed_query_kind(sql)) is not None:
             fixed_calls[fixed_kind] += 1
             if fixed_kind == CLEANUP_AUTHORITY_QUERY and rows:
@@ -569,8 +659,29 @@ def capture_validator(
             unclassified_calls += 1
         return rows
 
+    def capture_one(sql: str, parameters: Parameters = ()) -> tuple[Any, ...]:
+        nonlocal all_calls, unclassified_calls
+        row = original_one(sql, parameters)
+        all_calls += 1
+        kind = fixed_query_kind(sql)
+        if kind != METADATA_IDENTITY_QUERY:
+            unclassified_calls += 1
+            return row
+        fixed_calls[kind] += 1
+        expected = (
+            (identity.file_key(b"galleryinfo.txt"),)
+            if any(fact.name == b"galleryinfo.txt" for fact in facts)
+            else ()
+        )
+        if parameters != (b"galleryinfo.txt",) or row != expected:
+            raise RuntimeError("metadata file identity differs from fixture facts")
+        return row
+
     started = time.perf_counter()
-    with patch.object(connector, "fetch_all", capture):
+    with (
+        patch.object(connector, "fetch_all", capture),
+        patch.object(connector, "fetch_one", capture_one),
+    ):
         role.check_role_derivation_v1(connector)
     elapsed = time.perf_counter() - started
     if set(captured) != set(STREAMS):
@@ -580,7 +691,14 @@ def capture_validator(
     for kind, calls in FIXED_QUERY_CALLS.items():
         if fixed_calls[kind] != calls:
             raise RuntimeError(f"fixed role query count mismatch: {kind}")
-    expected = stream_sizes(facts)
+    if any(next(rows, None) is not None for rows in expected_rows.values()):
+        raise RuntimeError("role stream ended before all fixture facts were read")
+    expected = {
+        **dict.fromkeys(STREAMS[:6], len(facts)),
+        "stored_hash_occurrences": sum(
+            1 for _ in _occurrence_rows(_digest_order(facts))
+        ),
+    }
     for kind, queries in captured.items():
         if (
             len(queries) != (expected[kind] + PAGE_SIZE - 1) // PAGE_SIZE + 1
@@ -674,42 +792,82 @@ def profile_query(
 
 
 def measure_case(
-    connector: SQLConnector, shape: Shape, repetitions: int
+    connector: SQLConnector,
+    shape: Shape,
+    repetitions: int,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     if connector.fetch_one("SELECT @@foreign_key_checks")[0] != 1:
         raise RuntimeError("fixture requires active foreign-key enforcement")
     connector.rollback()
     facts = file_facts(shape)
-    seed_fixture(connector, facts)
+    seed_fixture(connector, facts, progress)
     raw = raw_mariadb(connector)
     cycles = []
     for _cycle in range(3):
+        if progress is not None:
+            progress(f"validator_cycle:{_cycle + 1}")
         before = counters(raw, HANDLER_STATUS)
-        captured, validator = capture_validator(connector, facts)
+        captured, validator = capture_validator(connector, facts, progress)
         validator["handler_delta"] = counter_delta(
             before, counters(raw, HANDLER_STATUS)
         )
         cycles.append(validator)
-    expected_rows = expected_stream_rows(facts)
+    expected_rows = fixture_streams(facts)
+    by_digest = _digest_order(facts)
     samples: list[dict[str, Any]] = []
     for kind, queries in captured.items():
         positions = sample_positions(queries)
+        consumed = 0
         # One measurement per unique cursor; labels can alias on a one-page set.
-        for index in dict.fromkeys(positions.values()):
+        for index in sorted(set(positions.values())):
             query = queries[index]
             offset = index * PAGE_SIZE
-            expected = expected_rows[kind][offset : offset + PAGE_SIZE]
+            for _ in islice(expected_rows[kind], offset - consumed):
+                pass
+            expected = list(islice(expected_rows[kind], PAGE_SIZE))
+            consumed = offset + len(expected)
             variants = {}
-            for name, (sql, parameters) in {
+            queries_to_profile = {
                 "production": (query.sql, query.parameters),
                 "tuple_seek_baseline": tuple_seek_baseline(query.sql, query.parameters),
                 "negative_order": degraded_order(query.sql, query.parameters),
-            }.items():
+            }
+            if kind == "derived_hash_occurrences":
+                queries_to_profile["former_joined_content"] = joined_content_baseline(
+                    query.sql, query.parameters
+                )
+            for name, (sql, parameters) in queries_to_profile.items():
+                if progress is not None:
+                    progress(f"profile:{kind}:{index}:{name}")
+                variant_expected = expected
+                if name == "former_joined_content":
+                    after = query.parameters[-5:-1]
+                    start = bisect_right(
+                        by_digest,
+                        after,
+                        key=lambda fact: (
+                            fact.gallery,
+                            fact.observation,
+                            fact.digest,
+                            fact.key,
+                        ),
+                    )
+                    variant_expected = list(
+                        islice(
+                            (
+                                (fact.gallery, fact.observation, fact.digest, fact.key)
+                                for fact in islice(by_digest, start, None)
+                                if fact.name != b"galleryinfo.txt"
+                            ),
+                            PAGE_SIZE,
+                        )
+                    )
                 variants[name] = profile_query(
                     raw,
                     sql,
                     parameters,
-                    expected,
+                    variant_expected,
                     repetitions=repetitions,
                     budget=seek_budget(kind, facts),
                 )
@@ -726,11 +884,13 @@ def measure_case(
     return {
         "shape": asdict(shape),
         "input_counts": {
-            "galleries": 16,
-            "observations_per_gallery": 2,
+            "galleries": len({fact.gallery for fact in facts}),
+            "observations": len({(fact.gallery, fact.observation) for fact in facts}),
+            "configured_observations_per_gallery": shape.observations,
+            "distinct_file_names": len({fact.key for fact in facts}),
             "metadata_files": sum(fact.name == b"galleryinfo.txt" for fact in facts),
-            "content_files": sum(content_occurrences(facts).values()),
-            "hash_occurrence_groups": len(content_occurrences(facts)),
+            "content_files": sum(fact.name != b"galleryinfo.txt" for fact in facts),
+            "hash_occurrence_groups": sum(1 for _ in _occurrence_rows(by_digest)),
         },
         "validator": validator,
         "validator_cycles": cycles,
@@ -765,10 +925,10 @@ def contract() -> dict[str, Any]:
             "client seconds",
         ],
         "target": "Avoid prefix-length work: seek descent plus bounded pages/point joins, not strict O(1) physical storage work.",
-        "budget": "8*(128 + fixture metadata exclusions for derived stream + 1)+32. Derived stream pages raw CONTENT files; stored stream pages distinct observation/hash groups, whose counts differ under duplication.",
-        "stream_call_model": "Sum ceil(stream_rows/128)+1 across five raw-file streams, one CONTENT-file stream, and one distinct observation/hash-group stream, including each terminal empty page. For distinct CONTENT-only inputs this is 7*(ceil(N/128)+1).",
-        "fixed_call_model": "Exactly seven registry SELECTs and one empty OPEN observation-cleanup authority SELECT per validator call. Total SELECTs equal stream SELECTs + 8; the fixed probe does not relax any stream or seek-work budget.",
-        "counterexample": "Former tuple seek is a dev-only prefix-rescan baseline. Same-output +0 numeric ORDER BY denies ordered-index shortcut; every stream at the largest default shape must reject this control.",
+        "budget": "8*(128+1)+32 = 1064 access requests/table visits per sampled production page, independent of whole-database or metadata cardinality. Raw derived pages include metadata; Python excludes it after cursor advancement. Stored stream pages distinct CONTENT observation/hash groups.",
+        "stream_call_model": "Sum ceil(stream_rows/128)+1 across six raw-file streams and one distinct CONTENT observation/hash-group stream, including each terminal empty page. For distinct CONTENT-only inputs this is 7*(ceil(N/128)+1).",
+        "fixed_call_model": "Exactly seven registry SELECTs, one empty OPEN observation-cleanup authority SELECT and one exact metadata filename identity lookup per validator call. Total SELECTs equal stream SELECTs + 9; the fixed probe does not relax any stream or seek-work budget.",
+        "counterexample": "Former joined CONTENT query is replayed only at sampled cursors: shared filenames expose name-first fan-out and filesort. Its independently computed CONTENT page differs from the raw production page only when metadata is present. Former tuple seek is a dev-only prefix-rescan baseline. Same-output +0 numeric ORDER BY denies ordered-index shortcut; every stream at the largest default shape must reject this control.",
         "independent_oracle": "Every production validator page and every profiled SELECT is compared to ordered rows built directly from fixture facts. Three complete validator cycles reuse unchanged input; each sampled query has three SELECT repetitions by default.",
         "limitations": [
             "FK-valid role file families only; not full observation descriptors, READY audit, publication or recovery.",
@@ -788,6 +948,9 @@ def main() -> None:
         "--scales", type=int, nargs="+", default=[127, 128, 129, 4096, 32768]
     )
     parser.add_argument("--regimes", choices=REGIMES, nargs="+", default=list(REGIMES))
+    parser.add_argument("--galleries", type=int, default=16)
+    parser.add_argument("--observations", type=int, default=2)
+    parser.add_argument("--shared-names", action="store_true")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--output", type=Path, required=True)
@@ -798,7 +961,11 @@ def main() -> None:
         parser.error("repetitions must be 1..5 and timeout-seconds 1..1800")
     if args.output.exists():
         parser.error("output must be a new file")
-    shapes = [Shape(n, regime) for regime in args.regimes for n in args.scales]
+    shapes = [
+        Shape(n, regime, args.galleries, args.observations, args.shared_names)
+        for regime in args.regimes
+        for n in args.scales
+    ]
     if len(shapes) > 15 or len(shapes) != len(set(shapes)):
         parser.error("at most 15 distinct cases per invocation")
     report: dict[str, Any] = {
@@ -842,7 +1009,12 @@ def main() -> None:
                         "max_statement_time",
                     )
                 }
-                case = measure_case(connector, shape, args.repetitions)
+                case = measure_case(
+                    connector,
+                    shape,
+                    args.repetitions,
+                    lambda event: print(json.dumps({"progress": event}), flush=True),
+                )
                 report["cases"].append(case)
                 write_report(args.output, report)
                 print(
