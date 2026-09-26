@@ -536,8 +536,12 @@ def test_binary_condition_with_raw_quote_keeps_counts_and_original_evidence(
 @pytest.mark.skipif(
     not hasattr(signal, "SIGALRM"), reason="manual CLI requires POSIX cooperative alarm"
 )
+@pytest.mark.parametrize("timeout_seconds", (900, 1801, 3600))
 def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: int,
 ) -> None:
     output = tmp_path / "report.json"
     closed = []
@@ -571,6 +575,8 @@ def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
             "127",
             "--regimes",
             "distinct",
+            "--timeout-seconds",
+            str(timeout_seconds),
             "--output",
             str(output),
         ],
@@ -580,3 +586,36 @@ def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
     assert closed == [True]
     assert json.loads(output.read_text())["status"] == "incomplete"
     assert json.loads(output.read_text())["error"]["type"] == "ValueError"
+    assert (
+        json.loads(output.read_text())["configured_timeout_seconds"] == timeout_seconds
+    )
+
+
+@pytest.mark.parametrize("timeout_seconds", (0, 3601))
+def test_cli_rejects_unbounded_execution_envelope_before_database_or_report(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: int,
+) -> None:
+    output = tmp_path / "must-not-exist.json"
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("invalid CLI started a database fixture")
+
+    monkeypatch.setattr(probe, "databases", forbidden)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "role-probe",
+            "--timeout-seconds",
+            str(timeout_seconds),
+            "--output",
+            str(output),
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        probe.main()
+    assert error.value.code == 2
+    assert not output.exists()

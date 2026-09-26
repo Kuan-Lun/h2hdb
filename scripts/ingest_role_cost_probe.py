@@ -957,8 +957,8 @@ def main() -> None:
     args = parser.parse_args()
     if not all(hasattr(signal, name) for name in ("SIGALRM", "setitimer")):
         parser.error("manual probe requires a POSIX cooperative alarm")
-    if not 1 <= args.repetitions <= 5 or not 1 <= args.timeout_seconds <= 1800:
-        parser.error("repetitions must be 1..5 and timeout-seconds 1..1800")
+    if not 1 <= args.repetitions <= 5 or not 1 <= args.timeout_seconds <= 3600:
+        parser.error("repetitions must be 1..5 and timeout-seconds 1..3600")
     if args.output.exists():
         parser.error("output must be a new file")
     shapes = [
@@ -985,7 +985,8 @@ def main() -> None:
                 ROOT / "tests/vnext_canonical_value_fixtures.py",
             )
         },
-        "timeout_contract": "POSIX cooperative alarm; Docker/driver teardown is not a hard deadline.",
+        "configured_timeout_seconds": args.timeout_seconds,
+        "timeout_contract": "POSIX cooperative execution envelope covering container setup, fixture seeding, validator cycles and sampled diagnostics. Docker/driver teardown may exceed this alarm; this is not a hard deadline. It does not change the per-page cost budget or the separate full READY audit cost contract.",
     }
     write_report(args.output, report)
 
