@@ -3458,6 +3458,7 @@ WHERE current_item.revision = %s
             AND old_scalar.summary_sha256 = current_scalar.summary_sha256
             AND old_scalar.language_sha256 = current_scalar.language_sha256
             AND old_scalar.modified_at = current_scalar.modified_at
+            AND old_scalar.upload_time = current_scalar.upload_time
         )
     )
     OR EXISTS (
@@ -3474,6 +3475,7 @@ WHERE current_item.revision = %s
             AND current_scalar.summary_sha256 = old_scalar.summary_sha256
             AND current_scalar.language_sha256 = old_scalar.language_sha256
             AND current_scalar.modified_at = old_scalar.modified_at
+            AND current_scalar.upload_time = old_scalar.upload_time
         )
     )
     OR EXISTS (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import patch
@@ -194,6 +195,64 @@ def test_same_gid_locations_keep_distinct_times_and_selected_winner_time(
             (_GID,),
         ) == [(_NEW_UPLOAD,), (_OLD_UPLOAD,)]
     assert full_check(db_config).state == "READY"
+
+
+def test_upload_time_only_correction_counts_one_changed_gallery(
+    db_config: CoreConfig,
+) -> None:
+    initialize_database(db_config)
+    original = gallery(
+        _GID,
+        upload_time=_OLD_UPLOAD,
+        other_files={METADATA_NAME: b"Upload Time: 2018-12-01 17:53\n"},
+    )
+    source = MarkerSource((original, gallery(_GID + 1)))
+    library = MemoryLibrary(source)
+    with VNextIngestFacade(db_config, clock=Clock()) as facade:
+        run_ingest_turn(facade, source=source, library=library)
+    source.put(
+        replace(
+            original,
+            upload_time=_NEW_UPLOAD,
+            files={
+                **original.files,
+                METADATA_NAME: b"Upload Time: 2018-12-01 17:49\n",
+            },
+        )
+    )
+    with VNextIngestFacade(db_config, clock=Clock()) as facade:
+        run_ingest_turn(facade, source=source, library=library)
+        published = VNextCatalogFacade(db_config).discover_publications().publications
+        target = next(item for item in published if item.gid == _GID)
+        assert target.published_at == _instant(_NEW_UPLOAD)
+        with closing(open_connector(db_config)) as connector:
+            unchanged_scalars = connector.fetch_all(
+                "SELECT published.gallery_id, published.summary_sha256, "
+                "published.language_sha256, published.modified_at, "
+                "published.download_time FROM catalog_publications AS published "
+                "JOIN catalog_publication_identities AS identity "
+                "ON identity.publication_key = published.publication_key "
+                "WHERE identity.gid = %s ORDER BY published.revision",
+                (_GID,),
+            )
+            assert len(unchanged_scalars) == 2
+            assert unchanged_scalars[0] == unchanged_scalars[1]
+            expected = [(1, 2, 0, 0, 0), (2, 0, 1, 0, 0)]
+            for relation in (
+                "catalog_publication_commits",
+                "catalog_publication_receipts",
+            ):
+                assert (
+                    connector.fetch_all(
+                        "SELECT revision, new_galleries, changed_galleries, "
+                        "removed_galleries, duplicate_losers "
+                        f"FROM {relation} ORDER BY revision"
+                    )
+                    == expected
+                )
+        assert full_check(db_config).state == "READY"
+        drain_maintenance(facade)
+        assert full_check(db_config).state == "READY"
 
 
 def test_publication_upload_time_family_replays_exactly_and_rejects_mutation(
