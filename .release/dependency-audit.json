@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-25T12:38:45+00:00",
+  "checked_at": "2026-09-26T06:11:31+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.42.1",
+  "project_version": "0.42.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, optional/development and Node candidates against the 0.42.0 upstream review and fresh registry discovery for this release. All 12 Python entries and the Node candidate are unchanged, satisfy the declared bounds, and the latest Python candidates are installed in the local Python 3.14 environment. Existing upper-bound compatibility reviews carry forward; no new release notes or dependency changes require new exceptions. The 0.42.1 change batches bounded SQL facts and cleanup and removes a SQLite marker-view materialization, without changing schema 8, public facades, durable cursor/transaction contracts, or consumer dependency requirements. Validate installed candidates with fast checks, two-backend targeted and manual cleanup tests and the exact-tree release gate.",
+    "note": "Reviewed all build, runtime, optional, development and Node direct dependencies against the generated registry candidates. Latest versions and all declared bounds are unchanged from the reviewed 0.42.1 receipt; installed Python dependencies match the discovered latest versions and local markdownlint-cli2 is 0.23.3. No dependency or support-range changes are required. Ruff, strict mypy, focused SQLite and live MariaDB audit regressions, deep cost counterexamples, and the paired complete READY benchmark passed; the final exact-tree release gate remains separate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
