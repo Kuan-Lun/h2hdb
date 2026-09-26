@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-26T06:11:31+00:00",
+  "checked_at": "2026-09-26T18:24:02+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.42.2",
+  "project_version": "0.43.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all build, runtime, optional, development and Node direct dependencies against the generated registry candidates. Latest versions and all declared bounds are unchanged from the reviewed 0.42.1 receipt; installed Python dependencies match the discovered latest versions and local markdownlint-cli2 is 0.23.3. No dependency or support-range changes are required. Ruff, strict mypy, focused SQLite and live MariaDB audit regressions, deep cost counterexamples, and the paired complete READY benchmark passed; the final exact-tree release gate remains separate.",
+    "note": "Reviewed every build, runtime, optional/development and Node direct dependency against the discovered registry latest, including versions outside declared bounds. External latest candidates and bounds are unchanged from the reviewed 0.42.2 receipt; no dependency changes are required. Schema 9 intentionally changes the data model while keeping public facade/value signatures. Focused SQLite and live MariaDB timestamp corrections, published reads and constraint-scope regressions passed; full converter recovery, exact-tree review, release gate and cross-consumer acceptance are separate evidence.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
