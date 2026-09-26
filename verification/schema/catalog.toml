@@ -24,13 +24,13 @@ stress_gallery_count = 1000000
 selected_catalog_family_count = 30
 selected_catalog_physical_relations_before = 190
 selected_catalog_physical_relations_after = 54
-catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "source_collection", "source_collection_manifest_policy", "source_collection_qualification_policy", "source_collection_created_at", "source_collection_observation", "source_collection_consumption"]
+catalog_relations_added_after_recomposition = ["title_search_posting", "gallery_observation_completion_marker", "tag_publication_order", "tag_directory_order", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "source_collection", "source_collection_manifest_policy", "source_collection_qualification_policy", "source_collection_created_at", "source_collection_observation", "source_collection_consumption", "gallery_observation_upload_time", "catalog_publication_upload_time"]
 catalog_physical_table_count_before = 306
-catalog_physical_table_count_after = 184
+catalog_physical_table_count_after = 186
 operational_physical_table_count_before = 75
 operational_physical_table_count_after = 73
 total_physical_table_count_before = 381
-total_physical_table_count_after = 257
+total_physical_table_count_after = 259
 conditional_one_gigabyte_limit_required = true
 mariadb_measurement_version = "10.11.11"
 affected_catalog_relations = [
@@ -286,6 +286,7 @@ read_obligation = "read the authoritative file-name identity row, recompute file
 
 [gallery_observation_identity_contract]
 qualification_obligation = "Before the immutable observation seal, exact-compare the complete source qualification scalar family against METADATA codec v2; qualification_policy_sha256 is sha256 of h2hdb-source-qualification-policy-v1 NUL, the registered artifact policy digest and one artifacts-required byte. Marker reuse requires this exact policy as well as producer completion evidence. Retain every source membership while restricting analysis to accepted observations; READY independently decodes canonical metadata and compares every mandatory and rejected-only child. The adapter owns image validity, and metadata-only adapters attest accepted neutral data. No claim is made that SQL proves image decoding or external storage availability."
+upload_time_obligation = "Every retained observation records the exact upload_time from its canonical METADATA under (gallery_id, observation_id), independently of GID and every other observation. The metadata-local row must reference that scalar. Writes exact-compare retries; the existing bounded qualification audit reuses the same decoded metadata receipt and loads upload values in the same 128-observation keyset page, without another metadata traversal or per-observation timestamp query. Covered GO_OBSERVATION_FACTS cleanup coordinates require the corresponding scalar to remain absent."
 relation = "gallery_observation"
 gallery_attribute = "gallery_id"
 identifier_attribute = "observation_id"
@@ -656,6 +657,7 @@ child_phases = [
   ["catalog_publication_content"],
   ["catalog_subject"],
   ["catalog_artifact"],
+  ["catalog_publication_upload_time"],
 ]
 
 [[retention_target]]
@@ -752,7 +754,7 @@ machine_gates = [
 derived_views = ["publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
   ["title_search_posting", "tag_directory_order"],
-  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "search_posting", "catalog_publication_storage", "catalog_publication_download_time", "prepared_page", "prepared_thumbnail", "catalog_page", "catalog_thumbnail"],
+  ["publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "search_posting", "catalog_publication_storage", "catalog_publication_download_time", "catalog_publication_upload_time", "prepared_page", "prepared_thumbnail", "catalog_page", "catalog_thumbnail"],
   ["prepared_storage_object", "catalog_storage_object"],
   ["prepared_resource_blob"],
   ["prepared_artifact", "prepared_artifact_descriptor", "catalog_contributor", "search_document"],
@@ -854,7 +856,7 @@ child_phases = [
   ["gallery_observation_file_seal"],
   ["gallery_observation_file_file_sha256", "gallery_observation_file_artifact_role", "gallery_observation_file_file_no"],
   ["gallery_observation_file_anchor"],
-  ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"],
+  ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_upload_time", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"],
   ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"],
 ]
 
@@ -1060,13 +1062,13 @@ derived_views = []
 child_phases = []
 
 [[retention_target]]
-target = "GALLERY_UPLOAD_TIME"
-root_relation = "gallery_upload_time"
+target = "GALLERY_GID_IDENTITY"
+root_relation = "gallery_gid_identity"
 root_key = ["gid"]
 external_blockers = [
-  { relation = "source_gallery_name_gid", attributes = ["gid"], referenced_relation = "gallery_upload_time", referenced_attributes = ["gid"] },
-  { relation = "publication_identity", attributes = ["gid"], referenced_relation = "gallery_upload_time", referenced_attributes = ["gid"] },
-  { relation = "analysis_impacted_gid_storage", attributes = ["gid"], referenced_relation = "gallery_upload_time", referenced_attributes = ["gid"] },
+  { relation = "source_gallery_name_gid", attributes = ["gid"], referenced_relation = "gallery_gid_identity", referenced_attributes = ["gid"] },
+  { relation = "publication_identity", attributes = ["gid"], referenced_relation = "gallery_gid_identity", referenced_attributes = ["gid"] },
+  { relation = "analysis_impacted_gid_storage", attributes = ["gid"], referenced_relation = "gallery_gid_identity", referenced_attributes = ["gid"] },
 ]
 retained_outliving = []
 semantic_blockers = []
@@ -1519,7 +1521,7 @@ cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positiv
 batch_rule = "the registry remains exactly seventeen ordered stages, with candidate-owned wide checkpoints only for the first sixteen; FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint. Every maximum-128 candidate batch locks one wide checkpoint, derives the next exact server-side keyset page, inserts one immutable wide current receipt under both generation and batch candidate keys, generation-CASes the complete wide checkpoint, and deletes the safely acknowledged predecessor receipt in the same bounded transaction. The read-only current receipt projection derives committed_generation, next_processed_count, terminal and next_state; exact retained batch-key or generation replay compares every field with zero DML. Once an exact successor or terminal projection handoff is durable, the superseded receipt is pruned and an older retry returns stale/not-found with zero DML; no time-based replay window or lifetime history is retained. Terminal is exactly an empty page with unchanged cursor/count and COMPLETE next state; every nonterminal page has positive row_count and OPEN next state; caller values never authorize mutation"
 projection_seal_rule = "after VALIDATE_DUPLICATE_LOSER becomes COMPLETE, one short certification transaction locks the candidate definition seal and terminal checkpoints for VALIDATE_SELECTION, VALIDATE_CATALOG_PROJECTION, VALIDATE_ARTIFACT_INPUT_DELTA, VALIDATE_PREPARED_ARTIFACT, VALIDATE_CREATE, VALIDATE_REBUILD, VALIDATE_DELETE, VALIDATE_UNCHANGED, VALIDATE_NEW_GALLERY, VALIDATE_CHANGED_GALLERY, VALIDATE_REMOVED_GALLERY, and VALIDATE_DUPLICATE_LOSER; require VALIDATE_CATALOG_PROJECTION terminal COMPLETE after its independent exact child merge but never compare its child processed_count with publication count; take publication_count only from terminal VALIDATE_SELECTION, require prepared_artifact_count equals create_count plus rebuild_count, and require artifact_input_count equals create_count plus rebuild_count plus unchanged_count; insert only the PK-only publication_candidate_projection_seal certification marker after all equations hold, so graph-derived candidate lifecycle becomes SEALED; the logical projection derives only create_count, rebuild_count, delete_count, new_galleries, and changed_galleries by fixed O(1) terminal-receipt joins, while every other receipt-owned count remains derived at its authority; never copy terminal validation scalars; never SUM receipts or child relations, trust an audit digest, or seal from a BUILD stage"
 finalization_rule = "after the initial pointer transaction inserts a reader-invisible DB_COMMITTED successor without changing the common head, the external library adapter activates adapter-issued opaque storage-object pages in batches of at most 128 and reconciles at most 128 installs or removals per call until its durable checkpoint reports READY. Only then FINALIZE_ARTIFACTS uses the permanent receipt-owned checkpoint and typed publication_resource_v2 cursor: issue exact-loads the sealed immutable prepared-resource set in (publication_key, resource_kind) order with LIMIT 129, returns at most 128 resources without mutation, and proves every returned token, key, digest, size and generation from durable authority; external token release is idempotent; commit exact-revalidates acknowledgements, compare-and-swaps each acknowledged resource, advances the typed cursor, inserts one immutable current finalization receipt, generation-CASes the checkpoint, and deletes its safely acknowledged predecessor in one bounded transaction. No publication-count scalar is reinterpreted as a resource count. Terminal is authorized only when the locked cursor suffix contains zero resources after all prior pages completed their per-resource atomic CAS; that empty transaction writes the COMPLETE checkpoint and PUBLISHED marker, CASes the common head, and exact-deletes both working roots atomically. Retained batch-key or start-generation replay returns the exact derived response with zero DML; pruned retries return stale/not-found; the retained terminal receipt owns finalized_at and response loss resumes cleanup without republishing."
-runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; publish the selected observation download_time as one immutable occurrence-key child for every selected publication and independently exact-compare it before sealing; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes plus artifact old/new delta classification; consume only adapter-issued neutral render evidence, establish the core-recomputed resource byte digest/size from a bounded core-owned destination, persist prepared_resource_blob authority before external protection, and exact-validate each acquisition plus optional thumbnail bundle, dense page_index sequence, and every extent end within its sealed storage object; derive each bounded protection token from locked resource facts; obtain every adapter-issued storage key through the storage-object-key v2 framing, require the complete frame to be at most 4096 bytes, encode u32be(segment_count) plus length-prefixed strict_utf8_segment values, and reject unsafe segments, malformed framing, trailing bytes, or any non-exact EOF; confirm each protected resource only after its exact object digest/size matches the pre-protection blob authority; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, typed resource-cursor finalization exact-compares every immutable resource, compares the candidate-pinned base head, CASes the PUBLISHED revision, and deletes the exact working roots; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
+runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; publish the selected observation upload_time atomically with its existing PUBLICATION child and download_time with its existing DOWNLOAD_TIME child; both are separate immutable occurrence-key relations, independently exact-compared before sealing without adding a catalog-child kind or changing its cursor/count schedule; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes plus artifact old/new delta classification; consume only adapter-issued neutral render evidence, establish the core-recomputed resource byte digest/size from a bounded core-owned destination, persist prepared_resource_blob authority before external protection, and exact-validate each acquisition plus optional thumbnail bundle, dense page_index sequence, and every extent end within its sealed storage object; derive each bounded protection token from locked resource facts; obtain every adapter-issued storage key through the storage-object-key v2 framing, require the complete frame to be at most 4096 bytes, encode u32be(segment_count) plus length-prefixed strict_utf8_segment values, and reject unsafe segments, malformed framing, trailing bytes, or any non-exact EOF; confirm each protected resource only after its exact object digest/size matches the pre-protection blob authority; before graph-derived candidate lifecycle SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert only the PK-only publication_candidate_projection_seal after exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers equations hold; derive the five logical projection counts only through fixed terminal-receipt joins; the initial pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, compares only O(1) certification, terminal receipt, catalog_revision, and publication_receipt scalars, and inserts an immutable reader-invisible DB_COMMITTED successor without head CAS, never COUNT or SUM over child rows; after bounded library activation READY, typed resource-cursor finalization exact-compares every immutable resource, compares the candidate-pinned base head, CASes the PUBLISHED revision, and deletes the exact working roots; never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
 
 [[publication_atomic_contract.batch_stage]]
 name = "BUILD_SELECTION"
@@ -1844,9 +1846,9 @@ ready_check = "catalog_refinement.check_source_qualification_v1"
 writer_hook = "catalog_writer.validate_source_qualification"
 writer_hook_version = 1
 scope = "catalog.source-qualification"
-relations = ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation", "gallery_observation_tree_root", "source_build_gallery"]
-covers = ["machine_contract.source-qualification", "gallery_observation_identity_contract.qualification_obligation"]
-description = "Canonical METADATA v2 seals the exact source qualification policy and adapter-issued accepted/rejected result. Every observation has exactly one policy and disposition child; rejected observations also have one bounded reason and one observed PAGE leaf, and accepted observations have neither rejection child. Full source membership remains present for admission and deletion; only accepted members contribute to global analysis. Fresh source preparation derives the qualification policy from the complete registered artifact policy and artifacts-required mode, compares it on marker reuse, and fences it through the prepared source policy. Source mutation and storage failures do not become rejected observations."
+relations = ["gallery_gid_identity", "gallery_observation_upload_time", "gallery_observation_metadata_local", "gallery_observation_metadata", "gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation", "gallery_observation_tree_root", "source_build_gallery"]
+covers = ["machine_contract.source-qualification", "gallery_observation_identity_contract.qualification_obligation", "gallery_observation_identity_contract.upload_time_obligation"]
+description = "Canonical METADATA v2 seals the exact source qualification policy and adapter-issued accepted/rejected result. Every observation has exactly one policy and disposition child; rejected observations also have one bounded reason and one observed PAGE leaf, and accepted observations have neither rejection child. Full source membership remains present for admission and deletion; only accepted members contribute to global analysis. Fresh source preparation derives the qualification policy from the complete registered artifact policy and artifacts-required mode, compares it on marker reuse, and fences it through the prepared source policy. Source mutation and storage failures do not become rejected observations. The same canonical METADATA traversal independently exact-compares observation-local upload time, using a joined bounded keyset page and requiring covered retired values to be absent; it never substitutes a different observation or a GID-global timestamp."
 
 [[semantic_obligation]]
 id = "catalog.source-completion-marker.v1"
@@ -1990,7 +1992,7 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "prepared_resource_blob", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication_download_time", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "prepared_resource_blob", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor", "catalog_revision", "catalog_publication_download_time", "catalog_publication_upload_time", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
 covers = [
   "machine_contract.publication-atomicity",
   "publication_atomic_contract.selection_rule",
@@ -2082,7 +2084,7 @@ ready_check = "catalog_refinement.check_physical_domains_v1"
 writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
-relations = [
+relations = ["gallery_gid_identity", "gallery_observation_upload_time",
   "source_collection",
   "source_collection_manifest_policy",
   "source_collection_qualification_policy",
@@ -2225,7 +2227,7 @@ relations = [
   "display_title_choice",
   "title_sort",
   "catalog_publication_storage",
-  "catalog_publication_download_time",
+  "catalog_publication_download_time", "catalog_publication_upload_time",
   "catalog_publication_occurrence_identity",
   "catalog_publication",
   "catalog_publication_order",
@@ -3891,14 +3893,12 @@ foreign_keys = [
 rationale = "Select the one producer-verified completion marker from an already sealed observation. Its digest, size and complete stat tuple remain owned by existing normalized FILE, content_blob and filesystem facts; its interpretation version is the observation scan version. Insert only after matching the stable pre/post-scan marker, exact-replay without update, and delete child-first before observation/file cleanup without independently pinning obsolete source history."
 
 [[relation]]
-name = "gallery_upload_time"
+name = "gallery_gid_identity"
 kind = "source_of_truth"
-attributes = ["gid", "upload_time"]
+attributes = ["gid"]
 declared_keys = [["gid"]]
-fds = [
-  { determinant = ["gid"], dependent = ["upload_time"] },
-]
-rationale = "Store the one immutable upstream upload timestamp determined by a positive E-Hentai gallery ID. Multiple source basenames and filesystem locations may share this row."
+fds = []
+rationale = "Register one positive upstream GID independently of mutable upstream metadata. Multiple source locations and observations may report different upload times for the same GID; each observation retains its own immutable value."
 
 [[relation]]
 name = "source_gallery_name_gid"
@@ -3909,9 +3909,9 @@ fds = [
   { determinant = ["source_gallery_name"], dependent = ["gid"] },
 ]
 foreign_keys = [
-  { attributes = ["gid"], relation = "gallery_upload_time", referenced_attributes = ["gid"] },
+  { attributes = ["gid"], relation = "gallery_gid_identity", referenced_attributes = ["gid"] },
 ]
-rationale = "Persist the parser's deterministic exact-basename-to-GID function. Equal basenames in different nested locators must resolve to the same GID; distinct basenames may resolve to one shared GID and upload timestamp."
+rationale = "Persist the parser's deterministic exact-basename-to-GID function. Equal basenames in different nested locators must resolve to the same GID; distinct basenames may resolve to one shared GID independently of observation-local upload times."
 
 [[relation]]
 name = "gallery_source_name_access"
@@ -3925,7 +3925,7 @@ foreign_keys = [
   { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["source_gallery_name"], relation = "source_gallery_name_gid", referenced_attributes = ["source_gallery_name"] },
 ]
-materialization = { authoritative = false, rationale = "Provide one FK-addressable narrow access path from a gallery location to its exact parser basename without repeating GID or upload time.", derived_from = ["gallery_identity", "source_locator_identity", "source_gallery_name_gid"], refresh_strategy = "insert or exact-compare only the source_gallery_name obtained by joining gallery_identity.locator_sha256 to source_locator_identity after its deterministic basename-to-GID row exists" }
+materialization = { authoritative = false, rationale = "Provide one FK-addressable narrow access path from a gallery location to its exact parser basename without repeating GID.", derived_from = ["gallery_identity", "source_locator_identity", "source_gallery_name_gid"], refresh_strategy = "insert or exact-compare only the source_gallery_name obtained by joining gallery_identity.locator_sha256 to source_locator_identity after its deterministic basename-to-GID row exists" }
 
 [[relation]]
 name = "gallery_observation_validation_policy"
@@ -3974,8 +3974,9 @@ fds = [
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] },
   { attributes = ["gallery_id"], relation = "gallery_source_name_access", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_upload_time", referenced_attributes = ["gallery_id", "observation_id"] },
 ]
-rationale = "Store both mandatory observation-local timestamps atomically at the complete observation key. The key is the sole determinant, so the recomposed relation is BCNF; its gallery access FK makes the separate basename-to-GID-to-upload-time chain total before the global metadata projection becomes visible."
+rationale = "Store both mandatory observation-local download and modified timestamps atomically. Its observation-upload-time foreign key makes all three metadata times total before the read projection becomes visible; the separate gallery access chain determines only GID."
 
 [[relation]]
 name = "gallery_observation_metadata"
@@ -3991,13 +3992,13 @@ attributes = [
 declared_keys = [["gallery_id", "observation_id"]]
 fds = [
   { determinant = ["gallery_id"], dependent = ["gid"] },
-  { determinant = ["gid"], dependent = ["upload_time"] },
+  { determinant = ["gallery_id", "observation_id"], dependent = ["upload_time"] },
   { determinant = ["gallery_id", "observation_id"], dependent = ["download_time", "modified_time"] },
 ]
 foreign_keys = [
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_metadata_local", referenced_attributes = ["gallery_id", "observation_id"] },
 ]
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "gallery_observation_metadata_projection", rationale = "Expose the complete global metadata read shape by joining the atomic observation-local timestamps to the normalized gallery basename, GID, and upload-time chain without repeating any non-key determinant in a base table.", derived_from = ["gallery_observation_metadata_local", "gallery_source_name_access", "source_gallery_name_gid", "gallery_upload_time"], refresh_strategy = "read-only non-materialized exact inner joins from the local observation row through the mandatory gallery access chain" }
+materialization = { authoritative = false, storage = "logical_view", view_pattern = "gallery_observation_metadata_projection", rationale = "Expose all three observation-local times and the independently normalized gallery basename/GID chain; no GID-to-upload-time dependency is assumed.", derived_from = ["gallery_observation_metadata_local", "gallery_source_name_access", "source_gallery_name_gid", "gallery_observation_upload_time"], refresh_strategy = "read-only non-materialized exact inner joins from the local observation row through the mandatory gallery access chain" }
 
 [[relation]]
 name = "gallery_observation_scan"
@@ -4726,7 +4727,7 @@ declared_keys = [["analysis_id", "gid"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gid"], relation = "gallery_upload_time", referenced_attributes = ["gid"] },
+  { attributes = ["gid"], relation = "gallery_gid_identity", referenced_attributes = ["gid"] },
 ]
 materialization = { authoritative = false, rationale = "Freeze only the distinct analysis/GID workset key. The PK-only row is BCNF; its minimum witness is derived from normalized gallery provenance instead of repeating witness_gallery_id beside the globally determined GID.", derived_from = ["analysis_impacted_gid_provenance_storage"], refresh_strategy = "insert only after the first exact provenance storage row; exact replay validates the complete derived provenance view and immutable minimum" }
 
@@ -5593,8 +5594,8 @@ fds = [
   { determinant = ["publication_key"], dependent = ["gid"] },
   { determinant = ["gid"], dependent = ["publication_key"] },
 ]
-foreign_keys = [{ attributes = ["gid"], relation = "gallery_upload_time", referenced_attributes = ["gid"] }]
-rationale = "Store only the collision-checked publication-key/GID bijection and require the immutable GID upload-time authority, from which published_at is total. Strict reversible publication-id and artifact-name codecs decode to canonical positive signed-int63 GID and are recomputed at every boundary; SHA-256 is never assumed injective, and every stored-pair conflict full-compares publication_key and GID, so neither textual rendering is stored."
+foreign_keys = [{ attributes = ["gid"], relation = "gallery_gid_identity", referenced_attributes = ["gid"] }]
+rationale = "Store only the collision-checked publication-key/GID bijection and require the independent immutable GID identity. Published time belongs to the selected observation and is sealed per publication occurrence. Strict reversible publication-id and artifact-name codecs decode to canonical positive signed-int63 GID and are recomputed at every boundary; SHA-256 is never assumed injective, and every stored-pair conflict full-compares publication_key and GID, so neither textual rendering is stored."
 
 [[relation]]
 name = "display_title_policy"
@@ -5694,18 +5695,18 @@ rationale = "Publish the selected observation download_time as one immutable ato
 [[relation]]
 name = "catalog_publication"
 kind = "controlled_materialization"
-attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
+attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"]
 declared_keys = [
   ["revision", "publication_key"],
   ["revision", "gallery_id"],
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
 ]
 foreign_keys = []
-materialization = { authoritative = false, storage = "logical_view", view_pattern = "catalog_publication_projection", rationale = "Expose the catalog publication shape from three BCNF occurrence projections. gallery_id globally determines publication_key, while the collision-checked revision occurrence identity enforces the reverse revision-scoped winner uniqueness without storing the violating pair in one base.", derived_from = ["catalog_publication_storage", "catalog_publication_occurrence_identity", "catalog_publication_download_time", "gallery_source_name_access", "source_gallery_name_gid", "publication_identity"], refresh_strategy = "read-only exact join of the total occurrence scalar and download-time facts plus an inner congruence join through the immutable gallery/name/GID/publication chain" }
+materialization = { authoritative = false, storage = "logical_view", view_pattern = "catalog_publication_projection", rationale = "Expose the catalog publication shape from four BCNF occurrence projections. gallery_id globally determines publication_key, while the collision-checked revision occurrence identity enforces the reverse revision-scoped winner uniqueness without storing the violating pair in one base.", derived_from = ["catalog_publication_storage", "catalog_publication_occurrence_identity", "catalog_publication_download_time", "catalog_publication_upload_time", "gallery_source_name_access", "source_gallery_name_gid", "publication_identity"], refresh_strategy = "read-only exact join of the total occurrence scalar, download-time and upload-time facts plus an inner congruence join through the immutable gallery/name/GID/publication chain" }
 
 [[relation]]
 name = "catalog_publication_order"
@@ -5959,7 +5960,7 @@ fds = [
 foreign_keys = [
   { attributes = ["revision", "publication_key", "tag_id"], relation = "catalog_subject", referenced_attributes = ["revision", "publication_key", "tag_id"] },
 ]
-materialization = { authoritative = false, rationale = "Enumerate every exact tag membership densely by immutable uploaded time descending, existing casefolded UTF-8 display-title sort bytes ascending, and publication_key ascending. Reciprocal tag/position and tag/publication keys permit bounded indexed pagination without request-time sorting or grouping.", derived_from = ["catalog_subject", "publication_identity", "gallery_upload_time", "catalog_publication_title", "title_sort"], refresh_strategy = "candidate disk projection externally sorts every tag membership once, bounded child batches copy it, independent candidate validation and READY reconstruction prove exact membership and order" }
+materialization = { authoritative = false, rationale = "Enumerate every exact tag membership densely by immutable publication-occurrence uploaded time descending, existing casefolded UTF-8 display-title sort bytes ascending, and publication_key ascending. Reciprocal tag/position and tag/publication keys permit bounded indexed pagination without request-time sorting or grouping.", derived_from = ["catalog_subject", "publication_identity", "catalog_publication_occurrence_identity", "catalog_publication_upload_time", "catalog_publication_title", "title_sort"], refresh_strategy = "candidate disk projection externally sorts every tag membership once, bounded child batches copy it, independent candidate validation and READY reconstruction prove exact membership and order" }
 
 [[relation]]
 name = "tag_directory_order"
@@ -5974,7 +5975,7 @@ foreign_keys = [
   { attributes = ["revision"], relation = "catalog_revision_descriptor", referenced_attributes = ["revision"] },
   { attributes = ["namespace", "tag_value_sha256"], relation = "tag_term", referenced_attributes = ["namespace", "tag_value_sha256"] },
 ]
-materialization = { authoritative = false, rationale = "Enumerate each exact namespace's current tag values by maximum member uploaded time descending and unsigned canonical UTF-8 tag value bytes ascending. The latest time derives from tag_publication_order position zero, avoiding duplicate mutable authority or a tag_id/namespace hidden dependency.", derived_from = ["tag_publication_order", "tag_term", "publication_identity", "gallery_upload_time"], refresh_strategy = "candidate disk projection computes latest membership once, assigns dense namespace-scoped positions, copies bounded children before discovery seal, and independently reconstructs both order relations in validation and READY; bounded CP_ORDER cleanup joins the directory through exact tag_term identity to tag_publication_order position zero, deletes the directory before that latest-member publication order and its subject, and releases obsolete canonical tag values even when an audit-only revision descriptor remains" }
+materialization = { authoritative = false, rationale = "Enumerate each exact namespace's current tag values by maximum member uploaded time descending and unsigned canonical UTF-8 tag value bytes ascending. The latest time derives from tag_publication_order position zero, avoiding duplicate mutable authority or a tag_id/namespace hidden dependency.", derived_from = ["tag_publication_order", "tag_term", "publication_identity", "catalog_publication_occurrence_identity", "catalog_publication_upload_time"], refresh_strategy = "candidate disk projection computes latest membership once, assigns dense namespace-scoped positions, copies bounded children before discovery seal, and independently reconstructs both order relations in validation and READY; bounded CP_ORDER cleanup joins the directory through exact tag_term identity to tag_publication_order position zero, deletes the directory before that latest-member publication order and its subject, and releases obsolete canonical tag values even when an audit-only revision descriptor remains" }
 
 [[relation]]
 name = "publication_commit_anchor"
@@ -6198,7 +6199,7 @@ universal_attributes = [
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["gid"] },
-  { determinant = ["gid"], dependent = ["upload_time"] },
+  { determinant = ["gallery_id", "observation_id"], dependent = ["upload_time"] },
   { determinant = ["gallery_id", "observation_id"], dependent = ["download_time", "modified_time"] },
   { determinant = ["gallery_id", "observation_id"], dependent = ["scan_observation_sha256", "scan_observation_version", "source_file_count"] },
 ]
@@ -6206,7 +6207,7 @@ projections = [
   { relation = "gallery_observation_metadata", attributes = ["gallery_id", "observation_id", "gid", "upload_time", "download_time", "modified_time"] },
   { relation = "gallery_observation_scan", attributes = ["gallery_id", "observation_id", "scan_observation_sha256", "scan_observation_version", "source_file_count"] },
 ]
-rationale = "Decompose the global read-only metadata projection from the atomically recomposed scanner receipt base. The metadata projection retains the real gallery_id-to-GID and GID-to-upload-time dependencies, while the scan base has only the observation-key determinant; positive complete observations reconstruct losslessly and no audit digest receives identity authority."
+rationale = "Decompose the global read-only metadata projection from the atomically recomposed scanner receipt base. The metadata projection retains gallery_id-to-GID and all observation-key-to-time dependencies, while the scan base has only the observation-key determinant; positive complete observations reconstruct losslessly and no audit digest receives identity authority."
 
 [[decomposition]]
 name = "gallery_observation_discovery_and_page_count"
@@ -6552,6 +6553,24 @@ projections = [
 rationale = "Split the selected observation download time from the collision-checked publication occurrence identity. The shared occurrence digest is a key of both projections, so the binary decomposition is lossless and dependency-preserving while keeping the timestamp in one narrow atomic base."
 
 [[decomposition]]
+name = "catalog_publication_occurrence_and_upload_time"
+universal_attributes = [
+  "catalog_occurrence_sha256",
+  "revision",
+  "publication_key",
+  "upload_time",
+]
+fds = [
+  { determinant = ["catalog_occurrence_sha256"], dependent = ["revision", "publication_key", "upload_time"] },
+  { determinant = ["revision", "publication_key"], dependent = ["catalog_occurrence_sha256", "upload_time"] },
+]
+projections = [
+  { relation = "catalog_publication_occurrence_identity", attributes = ["catalog_occurrence_sha256", "revision", "publication_key"] },
+  { relation = "catalog_publication_upload_time", attributes = ["catalog_occurrence_sha256", "upload_time"] },
+]
+rationale = "Split the selected observation upload time from the collision-checked publication occurrence identity. The shared occurrence digest is a key of both projections, so the binary decomposition is lossless and dependency-preserving while keeping the timestamp in one narrow atomic base."
+
+[[decomposition]]
 name = "catalog_publication_and_title_basis"
 universal_attributes = [
   "revision",
@@ -6563,35 +6582,19 @@ universal_attributes = [
   "language_sha256",
   "modified_at",
   "download_time",
+  "upload_time",
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
   { determinant = ["source_gallery_name"], dependent = ["publication_key"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
   { relation = "catalog_publication_title", attributes = ["revision", "publication_key", "source_title_sha256", "source_gallery_name"] },
 ]
 rationale = "Expose the historical publication and title read shapes from the normalized occurrence storage. The publication occurrence key determines the shared intersection, while gallery_id -> publication_key and source_gallery_name -> publication_key are declared explicitly in their respective logical projections; the binary read decomposition is lossless and dependency-preserving without claiming either denormalized view is a physical BCNF base."
-
-[[decomposition]]
-name = "publication_identity_and_gallery_upload_time"
-universal_attributes = [
-  "publication_key",
-  "gid",
-  "upload_time",
-]
-fds = [
-  { determinant = ["publication_key"], dependent = ["gid", "upload_time"] },
-  { determinant = ["gid"], dependent = ["publication_key", "upload_time"] },
-]
-projections = [
-  { relation = "publication_identity", attributes = ["publication_key", "gid"] },
-  { relation = "gallery_upload_time", attributes = ["gid", "upload_time"] },
-]
-rationale = "Separate the collision-checked publication-key/GID bijection from immutable upstream upload time. Their shared GID is a key of both projections, so the join is lossless and catalog published_at is a total read-time alias of upload_time rather than stored occurrence state."
 
 [[decomposition]]
 name = "catalog_publication_and_optional_content"
@@ -6603,15 +6606,16 @@ universal_attributes = [
   "language_sha256",
   "modified_at",
   "download_time",
+  "upload_time",
   "content_sha256",
 ]
 fds = [
   { determinant = ["gallery_id"], dependent = ["publication_key"] },
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time", "content_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time", "content_sha256"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
+  { relation = "catalog_publication", attributes = ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
   { relation = "catalog_publication_content", attributes = ["revision", "publication_key", "content_sha256"] },
 ]
 rationale = "Separate optional effective-content identity from the mandatory publication row. Positive content rows reconstruct losslessly by the publication key; row absence remains distinct from an invented empty content digest."
@@ -6708,6 +6712,28 @@ foreign_keys = [
   { attributes = ["build_id"], relation = "source_build_descriptor", referenced_attributes = ["build_id"] },
 ]
 rationale = "Immutable completion binding to a SEALED source build of the same scope and manifest policy. It is inserted exactly with CONSUMED and working-slot release."
+
+[[relation]]
+name = "gallery_observation_upload_time"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "upload_time"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [{ determinant = ["gallery_id", "observation_id"], dependent = ["upload_time"] }]
+foreign_keys = [{ attributes = ["gallery_id", "observation_id"], relation = "gallery_observation_allocation", referenced_attributes = ["gallery_id", "observation_id"] }]
+rationale = "Preserve the exact upload timestamp decoded from this observation's canonical METADATA stream. The complete observation key is the sole determinant; later observations or other locations sharing the same GID may report a different value without changing retained source facts. The metadata writer exact-compares replay within one observation and creates this mandatory scalar before its metadata-local child."
+
+[[relation]]
+name = "catalog_publication_upload_time"
+kind = "source_of_truth"
+attributes = ["catalog_occurrence_sha256", "upload_time"]
+declared_keys = [["catalog_occurrence_sha256"]]
+fds = [
+  { determinant = ["catalog_occurrence_sha256"], dependent = ["upload_time"] },
+]
+foreign_keys = [
+  { attributes = ["catalog_occurrence_sha256"], relation = "catalog_publication_occurrence_identity", referenced_attributes = ["catalog_occurrence_sha256"] },
+]
+rationale = "Publish the selected observation upload_time as one immutable atomic occurrence fact. Keeping this independent from the already-wide scalar/title payload preserves BCNF and the narrow physical-table rule while the occurrence foreign key and publication seal require exactly one value for every published publication."
 
 [[semantic_obligation]]
 id = "catalog.source-collection-durable-observations.v1"

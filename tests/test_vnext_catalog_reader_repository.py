@@ -556,8 +556,8 @@ def _published_fixture(
     gid = 123
     key = publication_key(gid)
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-        (gid, 2000000),
+        "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+        (gid,),
     )
     assert seed_publication_identity(connector, gid=gid).publication_key == key
     connector.execute(
@@ -585,6 +585,7 @@ def _published_fixture(
         modified_at=3000000,
         source_title_sha256=source_title,
         download_time=2500000,
+        upload_time=2000000,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "
@@ -663,8 +664,8 @@ def _add_recent_artifact_publication(
     key = publication_key(gid)
     gallery_name = f"gallery-{gid}".encode("ascii")
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-        (gid, upload_time),
+        "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+        (gid,),
     )
     seed_publication_identity(connector, gid=gid)
     connector.execute(
@@ -687,6 +688,7 @@ def _add_recent_artifact_publication(
         modified_at=3000000 + gid,
         source_title_sha256=values["source_title"],
         download_time=download_time,
+        upload_time=upload_time,
     )
     seed_catalog_publication_title(
         connector,
@@ -1114,9 +1116,8 @@ def _seed_tag_browse_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
             locator_sha256=locator,
         )
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, %s)",
-            (gid, uploaded),
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+            (gid,),
         )
         seed_publication_identity(connector, gid=gid)
         connector.execute(
@@ -1154,6 +1155,7 @@ def _seed_tag_browse_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
             modified_at=uploaded,
             source_title_sha256=source_title,
             download_time=uploaded,
+            upload_time=uploaded,
         )
         seed_catalog_publication_title(
             connector,
@@ -3717,7 +3719,7 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             "catalog_gallery_identities",
             "catalog_gallery_source_name_accesses",
             "catalog_source_gallery_name_gids",
-            "catalog_gallery_upload_times",
+            "catalog_gallery_gid_identities",
             "catalog_source_locator_identity",
         ):
             assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)

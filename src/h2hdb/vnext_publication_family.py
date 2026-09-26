@@ -11,10 +11,12 @@ from __future__ import annotations
 __all__ = [
     "CatalogContributorFamily",
     "CatalogPublicationDownloadTimeFamily",
+    "CatalogPublicationUploadTimeFamily",
     "CatalogPublicationFamily",
     "CatalogPublicationTitleFamily",
     "compare_catalog_publication_families",
     "compare_catalog_publication_download_time_families",
+    "compare_catalog_publication_upload_time_families",
     "PublicationCandidateFamily",
     "PublicationFamilyCollisionError",
     "PublicationFamilyPartialError",
@@ -22,6 +24,7 @@ __all__ = [
     "PublicationSelectionFamily",
     "ensure_catalog_contributor_family",
     "ensure_catalog_publication_download_time_family",
+    "ensure_catalog_publication_upload_time_family",
     "ensure_catalog_publication_family",
     "ensure_catalog_publication_title_family",
     "ensure_publication_candidate_family",
@@ -29,6 +32,7 @@ __all__ = [
     "ensure_publication_selection_family",
     "load_catalog_contributor_family",
     "load_catalog_publication_download_time_family",
+    "load_catalog_publication_upload_time_family",
     "load_catalog_publication_family",
     "load_catalog_publication_title_family",
     "load_publication_candidate_family",
@@ -60,6 +64,7 @@ _SELECTION_STORAGE = "catalog_publication_selection_storage"
 _PUBLICATION_OCCURRENCE_IDENTITY = "catalog_publication_occurrence_identities"
 _PUBLICATION_STORAGE = "catalog_publication_storage"
 _PUBLICATION_DOWNLOAD_TIME = "catalog_publication_download_times"
+_PUBLICATION_UPLOAD_TIME = "catalog_publication_upload_times"
 _PUBLICATION = "catalog_publications"
 _TITLE = "catalog_publication_titles"
 
@@ -86,6 +91,14 @@ _DOWNLOAD_TIME_FAMILY_SELECT = (
     f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
     f"LEFT JOIN {_PUBLICATION_DOWNLOAD_TIME} AS downloaded "
     "ON downloaded.catalog_occurrence_sha256 = "
+    "occurrence.catalog_occurrence_sha256 "
+)
+_UPLOAD_TIME_FAMILY_SELECT = (
+    "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
+    "occurrence.publication_key, uploaded.upload_time "
+    f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
+    f"LEFT JOIN {_PUBLICATION_UPLOAD_TIME} AS uploaded "
+    "ON uploaded.catalog_occurrence_sha256 = "
     "occurrence.catalog_occurrence_sha256 "
 )
 
@@ -205,6 +218,24 @@ class CatalogPublicationDownloadTimeFamily:
         require_int63(
             self.download_time,
             field="catalog publication download_time",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPublicationUploadTimeFamily:
+    revision: int
+    publication_key: bytes
+    upload_time: int
+
+    def __post_init__(self) -> None:
+        require_positive_int63(self.revision, field="catalog upload-time revision")
+        require_digest32(
+            self.publication_key,
+            field="catalog upload-time publication_key",
+        )
+        require_int63(
+            self.upload_time,
+            field="catalog publication upload_time",
         )
 
 
@@ -798,6 +829,34 @@ def compare_catalog_publication_download_time_families(
     )
 
 
+def compare_catalog_publication_upload_time_families(
+    connector: Any,
+    families: tuple[CatalogPublicationUploadTimeFamily, ...],
+) -> None:
+    """Compare bounded upload facts through their exact occurrence identities."""
+
+    if len(families) > 128:
+        raise ValueError("catalog upload-time family batch exceeds 128 rows")
+    expected = []
+    for family in families:
+        if not isinstance(family, CatalogPublicationUploadTimeFamily):
+            raise TypeError("family must be CatalogPublicationUploadTimeFamily")
+        family.__post_init__()
+        expected.append(
+            (
+                identity.catalog_publication_occurrence_sha256(
+                    family.revision, family.publication_key
+                ),
+                family.revision,
+                family.publication_key,
+                family.upload_time,
+            )
+        )
+    _compare_occurrence_family_batch(
+        connector, select=_UPLOAD_TIME_FAMILY_SELECT, expected=tuple(expected)
+    )
+
+
 def ensure_catalog_publication_family(
     connector: Any,
     family: CatalogPublicationFamily,
@@ -1006,6 +1065,148 @@ def ensure_catalog_publication_download_time_family(
         if raced != family:
             raise PublicationFamilyCollisionError(
                 "catalog download-time concurrent replay changed exact facts"
+            ) from error
+        return raced, False
+    return family, True
+
+
+def _upload_time_family_row(
+    connector: Any,
+    revision: int,
+    publication_key: bytes,
+    *,
+    backend: str,
+    locking: bool,
+) -> tuple[Any, ...]:
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        revision, publication_key
+    )
+    rows = connector.fetch_all(
+        _UPLOAD_TIME_FAMILY_SELECT
+        + "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
+        "(occurrence.revision = %s AND occurrence.publication_key = %s) LIMIT 2"
+        + _locking_suffix(backend=backend, locking=locking),
+        (occurrence, revision, publication_key),
+    )
+    if not rows:
+        return ()
+    if len(rows) != 1:
+        raise PublicationFamilyCollisionError(
+            "catalog upload-time occurrence resolves to multiple rows"
+        )
+    return tuple(rows[0])
+
+
+def load_catalog_publication_upload_time_family(
+    connector: Any,
+    *,
+    revision: int,
+    publication_key: bytes,
+    backend: str = "sqlite",
+    locking: bool = False,
+) -> CatalogPublicationUploadTimeFamily | None:
+    catalog_revision = require_positive_int63(revision, field="catalog revision")
+    publication = require_digest32(publication_key, field="catalog publication_key")
+    row = _upload_time_family_row(
+        connector,
+        catalog_revision,
+        publication,
+        backend=backend,
+        locking=locking,
+    )
+    if not row:
+        return None
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        catalog_revision, publication
+    )
+    if len(row) != 4 or tuple(row[:3]) != (
+        occurrence,
+        catalog_revision,
+        publication,
+    ):
+        raise PublicationFamilyCollisionError(
+            "catalog upload-time occurrence has an invalid shape or collision"
+        )
+    if row[3] is None:
+        raise PublicationFamilyPartialError(
+            "catalog publication occurrence has no upload-time fact"
+        )
+    try:
+        return CatalogPublicationUploadTimeFamily(
+            catalog_revision,
+            publication,
+            row[3],
+        )
+    except (TypeError, ValueError) as error:
+        raise PublicationFamilyCollisionError(
+            "catalog publication upload time contains invalid facts"
+        ) from error
+
+
+def ensure_catalog_publication_upload_time_family(
+    connector: Any,
+    family: CatalogPublicationUploadTimeFamily,
+    *,
+    backend: str = "sqlite",
+) -> tuple[CatalogPublicationUploadTimeFamily, bool]:
+    if not isinstance(family, CatalogPublicationUploadTimeFamily):
+        raise TypeError("family must be CatalogPublicationUploadTimeFamily")
+    row = _upload_time_family_row(
+        connector,
+        family.revision,
+        family.publication_key,
+        backend=backend,
+        locking=False,
+    )
+    if not row:
+        raise PublicationFamilyPartialError(
+            "catalog upload time has no publication occurrence identity"
+        )
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        family.revision, family.publication_key
+    )
+    if len(row) != 4 or tuple(row[:3]) != (
+        occurrence,
+        family.revision,
+        family.publication_key,
+    ):
+        raise PublicationFamilyCollisionError(
+            "catalog upload-time occurrence has an invalid shape or collision"
+        )
+    if row[3] is not None:
+        existing = load_catalog_publication_upload_time_family(
+            connector,
+            revision=family.revision,
+            publication_key=family.publication_key,
+            backend=backend,
+        )
+        if existing != family:
+            raise PublicationFamilyCollisionError(
+                "catalog upload-time replay changed exact facts"
+            )
+        return family, False
+    try:
+        connector.execute(
+            f"INSERT INTO {_PUBLICATION_UPLOAD_TIME} "
+            "(catalog_occurrence_sha256, upload_time) VALUES (%s, %s)",
+            (occurrence, family.upload_time),
+        )
+    except DatabaseDuplicateKeyError as error:
+        try:
+            raced = load_catalog_publication_upload_time_family(
+                connector,
+                revision=family.revision,
+                publication_key=family.publication_key,
+                backend=backend,
+                locking=True,
+            )
+        except PublicationFamilyCollisionError:
+            raise PublicationFamilyCollisionError(
+                "catalog upload-time concurrent replay left conflicting facts"
+            ) from error
+        if raced != family:
+            raise PublicationFamilyCollisionError(
+                "catalog upload-time concurrent replay changed exact facts"
             ) from error
         return raced, False
     return family, True

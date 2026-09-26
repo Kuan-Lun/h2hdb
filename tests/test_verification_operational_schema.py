@@ -1395,19 +1395,19 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
         operational_refinement.check_cleanup_reachability_v1(string_blocker, physical)
 
     missing_publication_identity = deepcopy(logical)
-    upload_time = next(
+    gid_identity = next(
         value
         for value in missing_publication_identity["cleanup_target"]
-        if value["target_kind"] == "GALLERY_UPLOAD_TIME"
+        if value["target_kind"] == "GALLERY_GID_IDENTITY"
     )
-    assert upload_time["retention_roots"] == [
+    assert gid_identity["retention_roots"] == [
         "source_gallery_name_gid.gid",
         "publication_identity.gid",
         "analysis_impacted_gid_storage.gid",
     ]
-    upload_time["retained_fk_edges"] = [
+    gid_identity["retained_fk_edges"] = [
         edge
-        for edge in upload_time["retained_fk_edges"]
+        for edge in gid_identity["retained_fk_edges"]
         if edge["relation"] != "publication_identity"
     ]
     with pytest.raises(ValueError, match="structured FK boundary"):

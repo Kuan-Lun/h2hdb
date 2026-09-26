@@ -312,7 +312,7 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_metadata_view_joins_local_time_and_global_gid_authority(
+def test_generated_metadata_view_joins_observation_time_and_global_gid_authority(
     backend: str,
 ) -> None:
     payload = ARTIFACT_DATA["backends"][backend]
@@ -327,7 +327,7 @@ def test_generated_metadata_view_joins_local_time_and_global_gid_authority(
         "gallery_observation_metadata_local",
         "gallery_source_name_access",
         "source_gallery_name_gid",
-        "gallery_upload_time",
+        "gallery_observation_upload_time",
     )
     statements = dict(payload["slices"])["relation:gallery_observation_metadata"]
     assert len(statements) == 1
@@ -337,10 +337,12 @@ def test_generated_metadata_view_joins_local_time_and_global_gid_authority(
     assert "catalog_gallery_observation_metadata_locals" in sql
     assert "catalog_gallery_source_name_accesses" in sql
     assert "catalog_source_gallery_name_gids" in sql
-    assert "catalog_gallery_upload_times" in sql
+    assert "catalog_gallery_observation_upload_times" in sql
     quote = '"' if backend == "sqlite" else "`"
     assert f"local.{quote}download_time{quote}" in sql
     assert f"local.{quote}modified_time{quote}" in sql
+    for key in ("gallery_id", "observation_id"):
+        assert f"upload.{quote}{key}{quote}\n   = local.{quote}{key}{quote}" in sql
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -868,13 +870,13 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
         assert tuple(provider.semantic_validators) == (
             expected_recurring_obligation_ids
         )
-        assert tuple(provider.writer_hook_bindings) == tuple(
+        assert frozenset(provider.writer_hook_bindings) == frozenset(
             catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS
         )
         assert tuple(provider.writer_hook_bindings) == (
             expected_recurring_obligation_ids
         )
-        assert len(provider.writer_hook_bindings) == 32
+        assert len(provider.writer_hook_bindings) == 37
         assert not provider.blockers
         assert not any("validators are missing" in value for value in provider.blockers)
         assert not any("undeclared IDs" in value for value in provider.blockers)
@@ -931,8 +933,8 @@ def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> Non
         obligation for obligation in recurring if obligation["id"] not in installed_ids
     )
 
-    assert len(recurring) == 32
-    assert len(installed_ids) == 32
+    assert len(recurring) == 37
+    assert len(installed_ids) == 37
     assert len(writer_blockers) == len(unresolved) == 0
     assert installed_ids == frozenset(value["id"] for value in recurring)
     assert installed_ids.isdisjoint(building_only_ids)
@@ -1130,7 +1132,7 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
 def test_generated_manifests_are_backend_specific_and_well_formed() -> None:
     assert ARTIFACT_DATA["artifact_version"] == 1
     assert ARTIFACT_DATA["epoch"] == 3
-    assert ARTIFACT_DATA["schema_version"] == 7
+    assert ARTIFACT_DATA["schema_version"] == 9
     assert len(ARTIFACT_DATA["source_manifest_sha256"]) == 64
     sqlite_manifest = ARTIFACT_DATA["backends"]["sqlite"]["ddl_manifest_sha256"]
     mariadb_manifest = ARTIFACT_DATA["backends"]["mariadb"]["ddl_manifest_sha256"]
@@ -1448,3 +1450,25 @@ def test_mariadb_check_normalization_preserves_not_equal_literals() -> None:
     assert provider_module._normalize_check(
         "label = 'literal != value'"
     ) != provider_module._normalize_check("label = 'literal <> value'")
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_generated_publication_view_uses_occurrence_upload_authority(
+    backend: str,
+) -> None:
+    payload = ARTIFACT_DATA["backends"][backend]
+    relation = next(
+        item
+        for item in payload["relations"]
+        if item["relation"] == "catalog_publication"
+    )
+    assert "catalog_publication_upload_time" in relation["view_dependencies"]
+    sql = dict(payload["slices"])["relation:catalog_publication"][0][3]
+    quote = '"' if backend == "sqlite" else "`"
+    assert "catalog_publication_upload_times" in sql
+    assert f"upload.{quote}upload_time{quote}" in sql
+    assert (
+        f"upload.{quote}catalog_occurrence_sha256{quote}\n"
+        f"   = occurrence.{quote}catalog_occurrence_sha256{quote}"
+    ) in sql
+    assert "catalog_gallery_observation_upload_times" not in sql

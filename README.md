@@ -416,18 +416,77 @@ or add reads; logical read counts do not reveal physical HDD reads.
 
 ## Upgrade or restore a database
 
-This release uses **epoch 3, schema version 8**. `migrate` initializes this
+This release uses **epoch 3, schema version 9**. `migrate` initializes this
 schema; it does not automatically upgrade older databases. Back up the database
 and its matching library storage before changing the deployed application set.
 
-### Previously upgraded databases and historical conversion
+### Schema 8 to 9
+
+Stop all consumers and use `scripts/upgrade-observation-upload-time-schema.py`
+or its Docker bundle to convert an exact schema-8 database. The conversion
+preserves existing observations, published timestamps, queue and staging facts,
+and external CBZ/artwork bytes. Upload time now belongs to each source
+observation and each published occurrence, so a later source correction can be
+recorded without rewriting earlier observations or an existing publication.
+Ingest, OPDS, Komga and downloader must use the matching Core version range
+before consumers restart. The library journal format is unchanged.
+
+The converter copies bounded pages and resumes its own recorded intermediate
+states. It first completes any affected, already-open cleanup cycle using an
+explicit Core 0.42.2 wheel in an isolated offline process. It does not start a
+new cleanup cycle. SQLite foreign-key replacement needs an atomic rebuild of
+each affected table; its transaction duration depends on the table size.
+MariaDB resumes individually committed DDL by checking exact object shapes.
+
+The full audit uses one offline transaction so its successful result and the
+resumable `AUDITED` checkpoint commit together. An interruption before that
+commit requires another audit; after that commit, retry only validates the
+saved state and activates `READY`. Keep consumers stopped until the converter
+reports successful completion. The converter never repairs an invalid audit
+by discarding retained data. These offline transaction exceptions do not apply
+to normal ingest operations.
+
+Build the Docker bundle from the current checkout wheel and a trusted Core
+0.42.2 wheel. The builder verifies the target runtime files and the historical
+schema resource, records both wheel hashes, and packages the old wheel only for
+the isolated cleanup worker. Set the deployment root and existing database
+network to match your installation:
+
+```bash
+python scripts/build-observation-upload-time-upgrade-bundle.py \
+  --wheel dist/h2hdb-0.43.0-py3-none-any.whl \
+  --source-wheel /path/to/h2hdb-0.42.2-py3-none-any.whl \
+  --deployment-root /volume1/kl_wang/mynas/exhentai/h2hdb \
+  --network exhentai-h2hdb-backend \
+  --output dist/h2hdb-schema8-to9-docker-0.43.0.tar.gz
+```
+
+Copy the bundle beside the deployment `.env`. With all consumers stopped,
+extract it and run this command from that directory:
+
+```bash
+tar -xzf h2hdb-schema8-to9-docker-0.43.0.tar.gz
+sudo docker compose --env-file .env \
+  -f ./h2hdb-schema8-to9-docker-0.43.0/compose.yaml \
+  run --rm --build --no-deps upgrade \
+  --config /h2hdb-config/h2hdb-config.json \
+  --consumers-stopped
+```
+
+The bundle uses `MEDIA_UID`/`MEDIA_GID`, the existing database and writer
+environment files, and a read-only config mount. It does not mount the library
+or download tree. This Compose bundle targets an existing MariaDB deployment;
+SQLite conversion instead needs explicit access to the local database file and
+its directory. Repeating the same command resumes its own incomplete conversion
+or reports `already_converted` after successful activation. Build time and full
+audit time are separate; progress output does not itself prove completion.
+
+### Historical conversions
 
 The schema-7-to-8 converter, Docker bundle builder, and converter-only audit
-writer have been retired from this checkout. An already upgraded schema-8
-database requires no further conversion, data deletion, or CBZ regeneration.
-The schema, public runtime facades, and media formats are unchanged. Removing
-the documented checkout tools is a breaking tooling change; verify each
-consumer's declared Core version range before updating application images.
+writer have been retired from this checkout. A schema-8 database requires the
+conversion above; no data deletion or CBZ regeneration is required. Current
+runtime accepts only schema 9 and has no older-schema compatibility path.
 
 For an installation that has not completed conversion, use a separate checkout
 of Core **0.41.2**, commit
@@ -437,11 +496,13 @@ do not combine its converter with a newer Core wheel. It supports the exact
 schema-7 database and its own interrupted conversion, preserving existing
 catalog, queue, source observations, and external media. Keep all consumers
 stopped, retain a verified database/library backup, and wait for successful
-full validation and `READY` activation before resuming them. A failed audit
+full validation and `READY` activation, then run the schema-8-to-9 conversion
+before resuming current consumers. A failed audit
 must not be bypassed by editing the marker or running `migrate`.
 
 Historical schema 6 first requires the Core 0.40.0 converter and matching
-environment to reach schema 7, then the Core 0.41.2 converter. Current runtime
+environment to reach schema 7, then the Core 0.41.2 converter to schema 8 and
+this release's converter to schema 9. Current runtime
 has no older-schema fallback. To return to old software, restore the matching
 pre-upgrade database backup; there is no automatic downgrade.
 

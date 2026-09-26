@@ -1949,7 +1949,7 @@ def test_mariadb_metadata_shared_fact_writes_are_serialized_by_ingest_head() -> 
 def _metadata_vertical_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
     return (
         connector.fetch_all(
-            "SELECT gid, upload_time FROM catalog_gallery_upload_times ORDER BY gid"
+            "SELECT gid FROM catalog_gallery_gid_identities ORDER BY gid"
         ),
         connector.fetch_all(
             "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids "
@@ -1962,6 +1962,11 @@ def _metadata_vertical_snapshot(connector: SQLiteConnector) -> tuple[object, ...
         connector.fetch_all(
             "SELECT gallery_id, observation_id, download_time, modified_time "
             "FROM catalog_gallery_observation_metadata_locals "
+            "ORDER BY gallery_id, observation_id"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, observation_id, upload_time "
+            "FROM catalog_gallery_observation_upload_times "
             "ORDER BY gallery_id, observation_id"
         ),
     )
@@ -2003,10 +2008,11 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
         )
         assert committed.state == "COMPLETE"
         expected = (
-            [(12_345, 100)],
+            [(12_345,)],
             [(b"gallery", 12_345)],
             [(gallery_id, b"gallery")],
             [(gallery_id, handle.observation_id, 101, 102)],
+            [(gallery_id, handle.observation_id, 100)],
         )
         assert _metadata_vertical_snapshot(connector) == expected
         assert connector.fetch_one(
@@ -2035,9 +2041,10 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
 @pytest.mark.parametrize(
     "failed_table",
     (
-        "catalog_gallery_upload_times",
+        "catalog_gallery_gid_identities",
         "catalog_source_gallery_name_gids",
         "catalog_gallery_source_name_accesses",
+        "catalog_gallery_observation_upload_times",
         "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_metadata_digests",
         "catalog_gallery_observation_page_counts",
@@ -2076,6 +2083,7 @@ def test_metadata_vertical_insert_fault_rolls_back_every_fact(
             _put_metadata(connector, gate, turn, handle, command, now=21)
         assert _request_snapshot(connector) == before
         assert _metadata_vertical_snapshot(connector) == (
+            [],
             [],
             [],
             [],
@@ -2250,6 +2258,7 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
             [],
             [],
             [(gallery_id, handle.observation_id, 21, 999)],
+            [],
         )
         assert (
             connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_metadata")
@@ -2314,9 +2323,10 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
     assert "identity.gallery_id = %s" in derived_query
     assert derived_data == (1,)
     ordered_tables = (
-        "catalog_gallery_upload_times",
+        "catalog_gallery_gid_identities",
         "catalog_source_gallery_name_gids",
         "catalog_gallery_source_name_accesses",
+        "catalog_gallery_observation_upload_times",
         "catalog_gallery_observation_metadata_locals",
     )
     pilot_executions = tuple(

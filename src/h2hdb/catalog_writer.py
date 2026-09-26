@@ -857,6 +857,9 @@ _BOUND_BINDINGS = (
         ),
         frozenset(
             {
+                "gallery_gid_identity",
+                "gallery_observation_upload_time",
+                "gallery_observation_metadata_local",
                 "gallery_observation_validation_policy",
                 "gallery_observation_validation_disposition",
                 "gallery_observation_validation_reason",

@@ -316,7 +316,8 @@ phases = [
   { phase = "CP_CONTENT", order = 5, relations = ["catalog_publication_content"] },
   { phase = "CP_SUBJECT", order = 6, relations = ["catalog_subject"] },
   { phase = "CP_ARTIFACT", order = 7, relations = ["catalog_artifact"] },
-  { phase = "CP_ROOT", order = 8, relations = ["catalog_publication_occurrence_identity"] },
+  { phase = "CP_UPLOAD_TIME", order = 8, relations = ["catalog_publication_upload_time"] },
+  { phase = "CP_ROOT", order = 9, relations = ["catalog_publication_occurrence_identity"] },
 ]
 
 [[cleanup_target]]
@@ -437,7 +438,7 @@ conditional_blockers = [
 ]
 machine_gates = [{ id = "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)", semantic_obligation_id = "catalog.retention.v2" }]
 phases = [
-  { phase = "PC_SEALS", order = 1, relations = ["tag_directory_order", "prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "title_search_posting", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time"] },
+  { phase = "PC_SEALS", order = 1, relations = ["tag_directory_order", "prepared_page", "prepared_thumbnail", "prepared_storage_object", "prepared_resource_blob", "title_search_posting", "search_posting", "catalog_page", "catalog_thumbnail", "catalog_storage_object", "publication_candidate_preparation", "publication_candidate_projection_seal", "publication_batch_receipt_stored", "artifact_operation", "catalog_publication_storage", "catalog_publication_download_time", "catalog_publication_upload_time"] },
   { phase = "PC_PREPARED", order = 2, relations = ["prepared_artifact", "prepared_artifact_descriptor", "search_document", "catalog_contributor"] },
   { phase = "PC_INPUT", order = 3, relations = ["artifact_input"] },
   { phase = "PC_CHECKPOINT", order = 4, relations = ["publication_checkpoint"] },
@@ -503,7 +504,7 @@ phases = [
   { phase = "GO_FILESYSTEM_VALUES", order = 10, relations = ["gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns"] },
   { phase = "GO_FILESYSTEM_ANCHOR", order = 11, relations = ["gallery_observation_file_filesystem_anchor"] },
   { phase = "GO_FILES", order = 12, relations = ["gallery_observation_file_seal", "gallery_observation_file_file_sha256", "gallery_observation_file_file_no", "gallery_observation_file_artifact_role", "gallery_observation_file_anchor"] },
-  { phase = "GO_OBSERVATION_FACTS", order = 13, relations = ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"] },
+  { phase = "GO_OBSERVATION_FACTS", order = 13, relations = ["gallery_observation_validation_policy", "gallery_observation_validation_disposition", "gallery_observation_validation_reason", "gallery_observation_validation_source", "gallery_observation_metadata_local", "gallery_observation_upload_time", "gallery_observation_directory", "gallery_observation_stat", "gallery_observation_scan"] },
   { phase = "GO_DESCRIPTOR", order = 14, relations = ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count"] },
   { phase = "GO_ROOT", order = 15, relations = ["gallery_observation_allocation"] },
 ]
@@ -754,23 +755,23 @@ retained_fk_edges = [{ relation = "gallery_source_name_access", attributes = ["s
 phases = [{ phase = "SNG_ROOT", order = 1, relations = ["source_gallery_name_gid"] }]
 
 [[cleanup_target]]
-target_kind = "GALLERY_UPLOAD_TIME"
+target_kind = "GALLERY_GID_IDENTITY"
 mode = "SWEEP"
 sweep_shard_count = 256
 selection_order_id = "gid_mod_256_then_gid_v1"
-root_relation = "gallery_upload_time"
+root_relation = "gallery_gid_identity"
 root_key = ["gid"]
 key_codec = "target_kind_tag16_u64be_zero8_v1"
-eligible_predicate_id = "gallery_upload_time_unreferenced_v1"
-blocker_query_id = "gallery_upload_time_retention_roots_v1"
-writer_hook = "h2hdb.cleanup.gallery_upload_time.v1"
+eligible_predicate_id = "gallery_gid_identity_unreferenced_v1"
+blocker_query_id = "gallery_gid_identity_retention_roots_v1"
+writer_hook = "h2hdb.cleanup.gallery_gid_identity.v1"
 retention_roots = ["source_gallery_name_gid.gid", "publication_identity.gid", "analysis_impacted_gid_storage.gid"]
 retained_fk_edges = [
   { relation = "source_gallery_name_gid", attributes = ["gid"] },
   { relation = "publication_identity", attributes = ["gid"] },
   { relation = "analysis_impacted_gid_storage", attributes = ["gid"] },
 ]
-phases = [{ phase = "GUT_ROOT", order = 1, relations = ["gallery_upload_time"] }]
+phases = [{ phase = "GGI_ROOT", order = 1, relations = ["gallery_gid_identity"] }]
 
 [[cleanup_target]]
 target_kind = "CANONICAL_VALUE_UPLOAD"
@@ -1570,14 +1571,14 @@ value = [{ attribute = "target_kind", type = "ascii_enum", text = "SOURCE_GALLER
 invariant = "SOURCE_GALLERY_NAME_GID sweeps exact basename-to-GID facts only after no gallery access row references the basename."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-target.gallery-upload-time.v1"
+id = "h2hdb.operational.cleanup-target.gallery-gid-identity.v1"
 columns = ["target_kind"]
-values = ["GALLERY_UPLOAD_TIME"]
+values = ["GALLERY_GID_IDENTITY"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_target_kind"
-value = [{ attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }]
-invariant = "GALLERY_UPLOAD_TIME sweeps shared GID timestamps only after neither an exact source basename nor a publication identity references the GID."
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "GALLERY_GID_IDENTITY" }]
+invariant = "GALLERY_GID_IDENTITY sweeps independent GID identities only after neither an exact source basename nor a publication identity references the GID."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.publication-commit.v1"
@@ -1841,6 +1842,16 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "CP_DOWNLOAD_TIME" }
 invariant = "Delete the immutable selected-observation download time before its publication occurrence identity."
 
 [[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.cp-upload-time.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["CP_UPLOAD_TIME", "CATALOG_PUBLICATION", "8"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_UPLOAD_TIME" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "Delete the immutable selected-observation upload time after publication order cleanup and before its publication occurrence identity."
+
+[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-contributor.v1"
 columns = ["phase", "target_kind", "phase_order"]
 values = ["CP_CONTRIBUTOR", "CATALOG_PUBLICATION", "3"]
@@ -1893,11 +1904,11 @@ invariant = "Delete catalog artifact occurrences before their publication occurr
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ROOT", "CATALOG_PUBLICATION", "8"]
+values = ["CP_ROOT", "CATALOG_PUBLICATION", "9"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
 invariant = "Delete the finalized non-head catalog publication occurrence only after every revision-scoped payload child."
 
 [[bootstrap_seed]]
@@ -2640,14 +2651,14 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "SNG_ROOT" }, { attr
 invariant = "Delete an exact basename-to-GID fact only after the access-path blocker recheck finds no gallery location."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.gut-root.v1"
+id = "h2hdb.operational.cleanup-phase.ggi-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GUT_ROOT", "GALLERY_UPLOAD_TIME", "1"]
+values = ["GGI_ROOT", "GALLERY_GID_IDENTITY", "1"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GUT_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "Delete a shared GID upload timestamp only after neither a basename-to-GID row nor a publication identity references it."
+value = [{ attribute = "phase", type = "ascii_enum", text = "GGI_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_GID_IDENTITY" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Delete a shared GID identity only after neither a basename-to-GID row nor a publication identity references it."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cvu-root.v1"
@@ -3027,16 +3038,16 @@ target_kind_tag_hex = "c976a237cd5c7f8e68b29150af31ae6f"
 invariant = "Seed exactly 256 basename byte-order shards; each sweep preserves mappings still reached by a gallery access row."
 
 [[bootstrap_seed_range]]
-id = "h2hdb.operational.cleanup-sweep.gallery-upload-time.v1"
+id = "h2hdb.operational.cleanup-sweep.gallery-gid-identity.v1"
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_sweep_target"
-target_kind = "GALLERY_UPLOAD_TIME"
+target_kind = "GALLERY_GID_IDENTITY"
 shard_start = 0
 shard_end = 255
 key_codec = "target_kind_tag16_u64be_zero8_v1"
-target_kind_tag_hex = "56ec4397b9e9c240398b3e1baf1d1c75"
-invariant = "Seed exactly 256 positive-GID shards; each sweep preserves timestamps reached through any basename mapping or publication identity."
+target_kind_tag_hex = "f60dea9ec8cb1c74b37c55d430e2632d"
+invariant = "Seed exactly 256 positive-GID shards; each sweep preserves GID identities reached through any basename mapping or publication identity."
 
 
 

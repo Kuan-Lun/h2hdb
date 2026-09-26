@@ -725,7 +725,11 @@ class VNextCatalogReaderRepository:
             "AND membership.publication_key = ordering.publication_key AND membership.tag_id = ordering.tag_id "
             "LEFT JOIN catalog_publication_identities AS publication "
             "ON publication.publication_key = ordering.publication_key "
-            "LEFT JOIN catalog_gallery_upload_times AS upload ON upload.gid = publication.gid "
+            "LEFT JOIN catalog_publication_occurrence_identities AS occurrence "
+            "ON occurrence.revision = ordering.revision "
+            "AND occurrence.publication_key = ordering.publication_key "
+            "LEFT JOIN catalog_publication_upload_times AS upload "
+            "ON upload.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
             "WHERE directory.revision = %s AND directory.namespace = %s "
             "AND directory.position > %s ORDER BY directory.position LIMIT %s",
             (pinned.revision, namespace_bytes, after_position, page_limit + 1),
@@ -980,8 +984,8 @@ class VNextCatalogReaderRepository:
             "occurrence.catalog_occurrence_sha256 "
             "LEFT JOIN catalog_publication_identities AS identity "
             "ON identity.publication_key = artifact.publication_key "
-            "LEFT JOIN catalog_gallery_upload_times AS upload "
-            "ON upload.gid = identity.gid "
+            "LEFT JOIN catalog_publication_upload_times AS upload "
+            "ON upload.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
             "WHERE artifact.revision = %s "
             f"ORDER BY {order_expression} DESC, identity.gid DESC LIMIT 128",
             (pinned.revision,),
@@ -1476,7 +1480,7 @@ class VNextCatalogReaderRepository:
             "publication.publication_key, publication.gallery_id, "
             "publication.summary_sha256, publication.language_sha256, "
             "publication.modified_at, publication.download_time, "
-            "identity.gid, upload.upload_time, "
+            "identity.gid, publication.upload_time, "
             "title.publication_key, title.source_title_sha256, "
             "title.source_gallery_name, "
             "committed.receipt_id, committed.display_title_policy_id, "
@@ -1491,7 +1495,6 @@ class VNextCatalogReaderRepository:
             "AND publication.publication_key = family.publication_key "
             "LEFT JOIN catalog_publication_identities AS identity "
             "ON identity.publication_key = publication.publication_key "
-            "LEFT JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
             "LEFT JOIN catalog_publication_titles AS title "
             "ON title.revision = publication.revision "
             "AND title.publication_key = publication.publication_key "
@@ -2671,9 +2674,11 @@ def _discovery_filter_sql(
     if query.uploaded is not None:
         bounds, values = _timestamp_range_sql("upload.upload_time", query.uploaded)
         clauses.append(
-            "AND EXISTS (SELECT 1 FROM catalog_publication_identities AS uploaded_identity "
-            "JOIN catalog_gallery_upload_times AS upload ON upload.gid = uploaded_identity.gid "
-            "WHERE uploaded_identity.publication_key = publication.publication_key "
+            "AND EXISTS (SELECT 1 FROM catalog_publication_occurrence_identities AS occurrence "
+            "JOIN catalog_publication_upload_times AS upload "
+            "ON upload.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
+            "WHERE occurrence.revision = publication.revision "
+            "AND occurrence.publication_key = publication.publication_key "
             + bounds
             + ") "
         )

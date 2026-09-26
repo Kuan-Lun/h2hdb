@@ -69,11 +69,13 @@ from h2hdb.vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
+    CatalogPublicationUploadTimeFamily,
     PublicationIdentityFamily,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    ensure_catalog_publication_upload_time_family,
     ensure_publication_identity_family,
 )
 from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
@@ -114,6 +116,7 @@ _PRODUCTION_FAMILY_BINDINGS = (
     "ensure_publication_identity_family",
     "ensure_catalog_publication_family",
     "ensure_catalog_publication_download_time_family",
+    "ensure_catalog_publication_upload_time_family",
     "ensure_catalog_publication_title_family",
     "ensure_catalog_contributor_family",
     "ensure_tag_term",
@@ -979,9 +982,9 @@ def _seed_one_publication(
     )
     writer.insert(
         connector,
-        "catalog_gallery_upload_times",
-        ("gid", "upload_time"),
-        (assignment.gid, modified_at - 2),
+        "catalog_gallery_gid_identities",
+        ("gid",),
+        (assignment.gid,),
     )
     publication_key = identity.publication_key(assignment.gid)
     ensure_publication_identity_family(
@@ -1031,6 +1034,14 @@ def _seed_one_publication(
             REVISION,
             publication_key,
             modified_at - 1,
+        ),
+    )
+    ensure_catalog_publication_upload_time_family(
+        connector,
+        CatalogPublicationUploadTimeFamily(
+            REVISION,
+            publication_key,
+            modified_at - 2,
         ),
     )
     ensure_catalog_publication_title_family(

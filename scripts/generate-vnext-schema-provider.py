@@ -80,7 +80,7 @@ def _ddl_identifier(value: str) -> str:
 
 
 EPOCH = 3
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 CONTROL_RELATION = "schema_epoch_control"
 CONTROL_TABLE = "h2hdb_schema_epoch"
 _SAFE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1451,7 +1451,7 @@ def _render_gallery_observation_metadata_view(
     relations: Mapping[str, dict[str, Any]],
     backend: str,
 ) -> str:
-    """Join observation-local times to the normalized basename/GID/time chain."""
+    """Join observation-local time authority to the normalized basename/GID chain."""
 
     sources = {
         str(source["name"]): source for source in _view_sources(relation, relations)
@@ -1459,7 +1459,7 @@ def _render_gallery_observation_metadata_view(
     local = sources["gallery_observation_metadata_local"]
     access = sources["gallery_source_name_access"]
     name_gid = sources["source_gallery_name_gid"]
-    upload = sources["gallery_upload_time"]
+    upload = sources["gallery_observation_upload_time"]
 
     def q(value: str) -> str:
         return _quote(value, backend)
@@ -1484,8 +1484,10 @@ def _render_gallery_observation_metadata_view(
         f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
         f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
         f"JOIN {q(str(upload['table']))} AS upload\n"
-        f"  ON upload.{q(_column_name(upload, 'gid'))}\n"
-        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}",
+        f"  ON upload.{q(_column_name(upload, 'gallery_id'))}\n"
+        f"   = local.{q(_column_name(local, 'gallery_id'))}\n"
+        f" AND upload.{q(_column_name(upload, 'observation_id'))}\n"
+        f"   = local.{q(_column_name(local, 'observation_id'))}",
     )
 
 
@@ -1593,6 +1595,7 @@ def _render_catalog_publication_view(
     storage = sources["catalog_publication_storage"]
     occurrence = sources["catalog_publication_occurrence_identity"]
     download = sources["catalog_publication_download_time"]
+    upload = sources["catalog_publication_upload_time"]
     access = sources["gallery_source_name_access"]
     name_gid = sources["source_gallery_name_gid"]
     publication = sources["publication_identity"]
@@ -1610,6 +1613,7 @@ def _render_catalog_publication_view(
         "language_sha256": f"stored.{q(_column_name(storage, 'language_sha256'))}",
         "modified_at": f"stored.{q(_column_name(storage, 'modified_at'))}",
         "download_time": f"download.{q(_column_name(download, 'download_time'))}",
+        "upload_time": f"upload.{q(_column_name(upload, 'upload_time'))}",
     }
     return _render_projection_view(
         relation,
@@ -1621,6 +1625,9 @@ def _render_catalog_publication_view(
         f"   = stored.{q(_column_name(storage, 'catalog_occurrence_sha256'))}\n"
         f"JOIN {q(str(download['table']))} AS download\n"
         f"  ON download.{q(_column_name(download, 'catalog_occurrence_sha256'))}\n"
+        f"   = occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
+        f"JOIN {q(str(upload['table']))} AS upload\n"
+        f"  ON upload.{q(_column_name(upload, 'catalog_occurrence_sha256'))}\n"
         f"   = occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
         f"JOIN {q(str(access['table']))} AS access\n"
         f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"

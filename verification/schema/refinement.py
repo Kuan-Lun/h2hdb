@@ -2381,6 +2381,7 @@ def _render_derived_view(
             storage = source_by_name["catalog_publication_storage"]
             occurrence = source_by_name["catalog_publication_occurrence_identity"]
             download = source_by_name["catalog_publication_download_time"]
+            upload = source_by_name["catalog_publication_upload_time"]
             access = source_by_name["gallery_source_name_access"]
             name_gid = source_by_name["source_gallery_name_gid"]
             publication = source_by_name["publication_identity"]
@@ -2392,6 +2393,7 @@ def _render_derived_view(
                 "language_sha256": f"stored.{column(storage, 'language_sha256')}",
                 "modified_at": f"stored.{column(storage, 'modified_at')}",
                 "download_time": f"download.{column(download, 'download_time')}",
+                "upload_time": f"upload.{column(upload, 'upload_time')}",
             }
             from_sql = (
                 f"FROM {table(storage)} AS stored\n"
@@ -2400,6 +2402,9 @@ def _render_derived_view(
                 f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
                 f"JOIN {table(download)} AS download\n"
                 f"  ON download.{column(download, 'catalog_occurrence_sha256')}\n"
+                f"   = occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+                f"JOIN {table(upload)} AS upload\n"
+                f"  ON upload.{column(upload, 'catalog_occurrence_sha256')}\n"
                 f"   = occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
                 f"JOIN {table(access)} AS access\n"
                 f"  ON access.{column(access, 'gallery_id')}\n"
@@ -2489,7 +2494,7 @@ def _render_derived_view(
             local = source_by_name["gallery_observation_metadata_local"]
             access = source_by_name["gallery_source_name_access"]
             name_gid = source_by_name["source_gallery_name_gid"]
-            upload = source_by_name["gallery_upload_time"]
+            upload = source_by_name["gallery_observation_upload_time"]
             expressions = {
                 "gallery_id": f"local.{column(local, 'gallery_id')}",
                 "observation_id": f"local.{column(local, 'observation_id')}",
@@ -2507,8 +2512,10 @@ def _render_derived_view(
                 f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
                 f"   = access.{column(access, 'source_gallery_name')}\n"
                 f"JOIN {table(upload)} AS upload\n"
-                f"  ON upload.{column(upload, 'gid')}\n"
-                f"   = name_gid.{column(name_gid, 'gid')}"
+                f"  ON upload.{column(upload, 'gallery_id')}\n"
+                f"   = local.{column(local, 'gallery_id')}\n"
+                f" AND upload.{column(upload, 'observation_id')}\n"
+                f"   = local.{column(local, 'observation_id')}"
             )
         case "analysis_ancestry_endpoint":
             (ancestry,) = sources
@@ -4593,12 +4600,48 @@ def _validate_physical_schema(
                     f"derived view {relation_spec.relation!r} cannot reference itself"
                 )
             match derived.pattern:
+                case "catalog_publication_projection":
+                    publication_sources = (
+                        "catalog_publication_storage",
+                        "catalog_publication_occurrence_identity",
+                        "catalog_publication_download_time",
+                        "catalog_publication_upload_time",
+                        "gallery_source_name_access",
+                        "source_gallery_name_gid",
+                        "publication_identity",
+                    )
+                    if derived.source_relations != publication_sources:
+                        raise ValueError("catalog publication source authority drifted")
+                    for scalar_name, value in (
+                        ("catalog_publication_download_time", "download_time"),
+                        ("catalog_publication_upload_time", "upload_time"),
+                    ):
+                        scalar = physical.relation(scalar_name)
+                        assert scalar is not None
+                        if tuple(column.attribute for column in scalar.columns) != (
+                            "catalog_occurrence_sha256",
+                            value,
+                        ) or scalar.primary_key != ("catalog_occurrence_sha256",):
+                            raise ValueError(
+                                "catalog publication scalar authority shape drifted"
+                            )
+                    if tuple(column.attribute for column in relation_spec.columns) != (
+                        "revision",
+                        "publication_key",
+                        "gallery_id",
+                        "summary_sha256",
+                        "language_sha256",
+                        "modified_at",
+                        "download_time",
+                        "upload_time",
+                    ):
+                        raise ValueError("catalog publication projection shape drifted")
                 case "gallery_observation_metadata_projection":
                     expected_sources: tuple[str, ...] = (
                         "gallery_observation_metadata_local",
                         "gallery_source_name_access",
                         "source_gallery_name_gid",
-                        "gallery_upload_time",
+                        "gallery_observation_upload_time",
                     )
                     if derived.source_relations != expected_sources:
                         raise ValueError(
@@ -4621,7 +4664,11 @@ def _validate_physical_schema(
                             "source_gallery_name",
                         ),
                         "source_gallery_name_gid": ("source_gallery_name", "gid"),
-                        "gallery_upload_time": ("gid", "upload_time"),
+                        "gallery_observation_upload_time": (
+                            "gallery_id",
+                            "observation_id",
+                            "upload_time",
+                        ),
                     }
                     for source_name, expected_shape in expected_shapes.items():
                         source = source_by_name[source_name]

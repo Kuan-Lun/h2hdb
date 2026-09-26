@@ -10,6 +10,10 @@ import h2hdb.vnext_queue_repository as queue_repository_module
 from h2hdb import vnext_identity as identity
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_domains import INT63_MAX
+from h2hdb.vnext_publication_family import (
+    CatalogPublicationUploadTimeFamily,
+    ensure_catalog_publication_upload_time_family,
+)
 from h2hdb.vnext_queue_repository import (
     DeletionGenerationExhaustedError,
     PendingRedownloadCursor,
@@ -130,6 +134,14 @@ def _seed_current_catalog_candidates(
                 "INSERT INTO catalog_publication_download_times "
                 "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
                 (occurrence, redownload_at),
+            )
+            ensure_catalog_publication_upload_time_family(
+                connector,
+                CatalogPublicationUploadTimeFamily(
+                    revision=1,
+                    publication_key=publication_key,
+                    upload_time=redownload_at,
+                ),
             )
             connector.execute(
                 "INSERT INTO operational_gallery_redownload_states "

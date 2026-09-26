@@ -134,6 +134,9 @@ class _ReadRecorder:
     def queries(self) -> list[str]:
         return [query for query, _data, _row_count in self.reads]
 
+    def primary_key_table_reference(self, relation: str) -> str:
+        return self.connector.primary_key_table_reference(relation)
+
     def fetch_all(
         self, query: str, data: tuple[Any, ...] = ()
     ) -> list[tuple[Any, ...]]:
@@ -595,8 +598,8 @@ def _insert_impacted_gallery_workset(
 ) -> None:
     scope_key = vnext_identity.source_scope_key("filesystem", b"r" * 32, 1)
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-        (17, 1),
+        "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+        (17,),
     )
     for gallery_id in (1, 2):
         locator_sha256 = bytes((gallery_id,)) * 32
@@ -1028,9 +1031,7 @@ def _insert_nonempty_discovery_projection(
         "UPDATE catalog_revision_descriptors "
         "SET publication_count = 1 WHERE revision = 1"
     )
-    connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (17, 1)"
-    )
+    connector.execute("INSERT INTO catalog_gallery_gid_identities (gid) VALUES (17)")
     connector.execute(
         "INSERT INTO catalog_publication_identities (publication_key, gid) "
         "VALUES (%s, 17)",
@@ -1062,6 +1063,11 @@ def _insert_nonempty_discovery_projection(
     connector.execute(
         "INSERT INTO catalog_publication_download_times "
         "(catalog_occurrence_sha256, download_time) VALUES (%s, 1)",
+        (occurrence,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_upload_times "
+        "(catalog_occurrence_sha256, upload_time) VALUES (%s, 1)",
         (occurrence,),
     )
     connector.execute(
@@ -1912,6 +1918,7 @@ def test_ready_rejects_non_utf8_subject_namespace(tmp_path: Path) -> None:
     (
         "missing_payload",
         "missing_download_time",
+        "missing_upload_time",
         "missing_gallery_chain",
         "wrong_gallery_publication",
     ),
@@ -1930,9 +1937,8 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
     try:
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, %s)",
-            (17, 1),
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+            (17,),
         )
         connector.execute(
             "INSERT INTO catalog_source_gallery_name_gids "
@@ -1967,6 +1973,11 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
             "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
             (occurrence, 1),
         )
+        connector.execute(
+            "INSERT INTO catalog_publication_upload_times "
+            "(catalog_occurrence_sha256, upload_time) VALUES (%s, %s)",
+            (occurrence, 1),
+        )
         connector.execute("PRAGMA foreign_keys = ON")
 
         catalog_refinement._validate_catalog_occurrence_storage(
@@ -1987,6 +1998,12 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
                     "WHERE catalog_occurrence_sha256 = %s",
                     (occurrence,),
                 )
+            case "missing_upload_time":
+                connector.execute(
+                    "DELETE FROM catalog_publication_upload_times "
+                    "WHERE catalog_occurrence_sha256 = %s",
+                    (occurrence,),
+                )
             case "missing_gallery_chain":
                 connector.execute(
                     "DELETE FROM catalog_gallery_source_name_accesses "
@@ -1996,9 +2013,8 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
             case _:
                 other_publication_key = vnext_identity.publication_key(18)
                 connector.execute(
-                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                    "VALUES (%s, %s)",
-                    (18, 1),
+                    "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+                    (18,),
                 )
                 connector.execute(
                     "INSERT INTO catalog_source_gallery_name_gids "
@@ -2018,7 +2034,7 @@ def test_catalog_occurrence_storage_rejects_relational_corruption(
 
         with pytest.raises(
             catalog_refinement.CatalogSemanticValidationError,
-            match="identity/storage/download-time is not congruent",
+            match="identity/storage/timestamps are not congruent",
         ):
             catalog_refinement._validate_catalog_occurrence_storage(
                 connector,

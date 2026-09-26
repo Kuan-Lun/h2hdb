@@ -109,7 +109,7 @@ class CleanupTargetKind(StrEnum):
     PUBLICATION_IDENTITY = "PUBLICATION_IDENTITY"
     GALLERY_IDENTITY = "GALLERY_IDENTITY"
     SOURCE_GALLERY_NAME_GID = "SOURCE_GALLERY_NAME_GID"
-    GALLERY_UPLOAD_TIME = "GALLERY_UPLOAD_TIME"
+    GALLERY_GID_IDENTITY = "GALLERY_GID_IDENTITY"
     CANONICAL_VALUE_UPLOAD = "CANONICAL_VALUE_UPLOAD"
     HASH_CACHE_OBSERVATION = "HASH_CACHE_OBSERVATION"
 
@@ -133,7 +133,7 @@ _MAINTENANCE_TARGET_PRIORITY = (
     CleanupTargetKind.PUBLICATION_IDENTITY,
     CleanupTargetKind.GALLERY_IDENTITY,
     CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
-    CleanupTargetKind.GALLERY_UPLOAD_TIME,
+    CleanupTargetKind.GALLERY_GID_IDENTITY,
     CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
     CleanupTargetKind.FILE_NAME_IDENTITY,
     CleanupTargetKind.HASH_CACHE_OBSERVATION,
@@ -5010,6 +5010,14 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
         batch_exact_primary_keys=True,
     )
+    upload_time = _indirect_spec(
+        "catalog_publication_upload_times",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_upload_times AS c "
+        "JOIN catalog_publication_occurrence_identities AS r "
+        "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
+        batch_exact_primary_keys=True,
+    )
     tag_directory = _indirect_spec(
         "catalog_tag_directory_order",
         ("revision", "namespace", "position"),
@@ -5080,6 +5088,7 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             ),
         ),
         "CP_ARTIFACT": (direct("catalog_artifacts", key),),
+        "CP_UPLOAD_TIME": (upload_time,),
         "CP_ROOT": (direct(root, key),),
     }
 
@@ -5335,6 +5344,20 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         extra_predicate=uncommitted,
     )
 
+    projection_upload_time = _indirect_spec(
+        "catalog_publication_upload_times",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_upload_times AS c "
+        "JOIN catalog_publication_occurrence_identities AS occurrence "
+        "ON occurrence.catalog_occurrence_sha256 = "
+        "c.catalog_occurrence_sha256 "
+        "JOIN catalog_publication_candidates AS reserved "
+        "ON reserved.reserved_revision = occurrence.revision "
+        "JOIN catalog_publication_candidates AS r "
+        "ON r.candidate_id = reserved.candidate_id",
+        extra_predicate=uncommitted,
+    )
+
     def projection(table: str, primary_key: tuple[str, ...]) -> _StaticDeleteSpec:
         return _indirect_spec(
             table,
@@ -5401,6 +5424,7 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
             projection_storage,
             projection_download_time,
+            projection_upload_time,
         ),
         "PC_PREPARED": (
             prepared,
@@ -5998,6 +6022,7 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 "catalog_gallery_observation_validation_dispositions",
                 "catalog_gallery_observation_validation_policies",
                 "catalog_gallery_observation_metadata_locals",
+                "catalog_gallery_observation_upload_times",
                 "catalog_gallery_observation_directories",
                 "catalog_gallery_observation_stat",
                 "catalog_gallery_observation_scans",
@@ -6287,7 +6312,7 @@ def _source_gallery_name_gid_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]
     return {"SNG_ROOT": (_owned_spec(root, key, root, key),)}
 
 
-_GALLERY_UPLOAD_TIME_ELIGIBILITY = """
+_GALLERY_GID_IDENTITY_ELIGIBILITY = """
 NOT EXISTS (SELECT 1 FROM catalog_source_gallery_name_gids x
             WHERE x.gid = r.gid)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_identities x
@@ -6297,10 +6322,10 @@ AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_gid_storage x
 """
 
 
-def _gallery_upload_time_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_gallery_upload_times"
+def _gallery_gid_identity_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_gallery_gid_identities"
     key = ("gid",)
-    return {"GUT_ROOT": (_owned_spec(root, key, root, key),)}
+    return {"GGI_ROOT": (_owned_spec(root, key, root, key),)}
 
 
 _CANONICAL_UPLOAD_ELIGIBILITY = """
@@ -6869,14 +6894,14 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         _source_gallery_name_gid_phases(),
         variable_width_shard=True,
     ),
-    CleanupTargetKind.GALLERY_UPLOAD_TIME: _StaticTargetPlan(
-        CleanupTargetKind.GALLERY_UPLOAD_TIME,
-        "catalog_gallery_upload_times",
+    CleanupTargetKind.GALLERY_GID_IDENTITY: _StaticTargetPlan(
+        CleanupTargetKind.GALLERY_GID_IDENTITY,
+        "catalog_gallery_gid_identities",
         ("gid",),
         "gid",
         None,
-        _GALLERY_UPLOAD_TIME_ELIGIBILITY,
-        _gallery_upload_time_phases(),
+        _GALLERY_GID_IDENTITY_ELIGIBILITY,
+        _gallery_gid_identity_phases(),
     ),
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _StaticTargetPlan(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
@@ -7245,8 +7270,8 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
     CleanupTargetKind.SOURCE_GALLERY_NAME_GID: _static_strategy(
         CleanupTargetKind.SOURCE_GALLERY_NAME_GID
     ),
-    CleanupTargetKind.GALLERY_UPLOAD_TIME: _static_strategy(
-        CleanupTargetKind.GALLERY_UPLOAD_TIME
+    CleanupTargetKind.GALLERY_GID_IDENTITY: _static_strategy(
+        CleanupTargetKind.GALLERY_GID_IDENTITY
     ),
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _static_strategy(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD

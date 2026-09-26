@@ -2047,6 +2047,7 @@ _CLEANUP_TARGET_SHAPES = {
             "CP_CONTENT",
             "CP_SUBJECT",
             "CP_ARTIFACT",
+            "CP_UPLOAD_TIME",
             "CP_ROOT",
         ),
     ),
@@ -2264,14 +2265,14 @@ _CLEANUP_TARGET_SHAPES = {
         "h2hdb.cleanup.source_gallery_name_gid.v1",
         ("SNG_ROOT",),
     ),
-    "GALLERY_UPLOAD_TIME": (
-        "gallery_upload_time",
+    "GALLERY_GID_IDENTITY": (
+        "gallery_gid_identity",
         ("gid",),
         "target_kind_tag16_u64be_zero8_v1",
-        "gallery_upload_time_unreferenced_v1",
-        "gallery_upload_time_retention_roots_v1",
-        "h2hdb.cleanup.gallery_upload_time.v1",
-        ("GUT_ROOT",),
+        "gallery_gid_identity_unreferenced_v1",
+        "gallery_gid_identity_retention_roots_v1",
+        "h2hdb.cleanup.gallery_gid_identity.v1",
+        ("GGI_ROOT",),
     ),
     "CANONICAL_VALUE_UPLOAD": (
         "canonical_value_upload",
@@ -2315,7 +2316,7 @@ _CLEANUP_SELECTION_ORDERS = {
     "PUBLICATION_IDENTITY": "digest_first_byte_then_digest_v1",
     "GALLERY_IDENTITY": "gallery_id_mod_256_then_gallery_id_v1",
     "SOURCE_GALLERY_NAME_GID": "source_gallery_name_first_byte_then_bytes_v1",
-    "GALLERY_UPLOAD_TIME": "gid_mod_256_then_gid_v1",
+    "GALLERY_GID_IDENTITY": "gid_mod_256_then_gid_v1",
     "CANONICAL_VALUE_UPLOAD": "generation_then_value_sha256_v1",
     "HASH_CACHE_OBSERVATION": "source_digest_first_byte_then_source_fingerprint_v1",
 }
@@ -2829,6 +2830,7 @@ def check_cleanup_reachability_v1(
             "artifact_operation",
             "catalog_publication_storage",
             "catalog_publication_download_time",
+            "catalog_publication_upload_time",
         ],
         [
             "prepared_artifact",
@@ -5502,7 +5504,7 @@ def _validate_bootstrap(
         "PUBLICATION_IDENTITY": "fb6c69d2c3f04eca7b476f654f425843",
         "GALLERY_IDENTITY": "cd3e95057f39f5a06a08a0b5e14f9682",
         "SOURCE_GALLERY_NAME_GID": "c976a237cd5c7f8e68b29150af31ae6f",
-        "GALLERY_UPLOAD_TIME": "56ec4397b9e9c240398b3e1baf1d1c75",
+        "GALLERY_GID_IDENTITY": "f60dea9ec8cb1c74b37c55d430e2632d",
         "HASH_CACHE_OBSERVATION": "b09b8a0a89a3167806670e37a16c7f71",
     }
     range_kinds: set[str] = set()

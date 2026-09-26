@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "cc0df40437304f1e89edd5718709110137b334c03bfe0e493591845e3a3f927b"
+def catalogManifestSha256 : String := "ceb662e6ff7881b7f4077f5d0fff42dbfb38ccbc6ab8d29edf182bd1a0291da9"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -3386,51 +3386,50 @@ theorem gallery_observation_completion_marker_bcnf_check :
 theorem gallery_observation_completion_marker_bcnf : BCNF gallery_observation_completion_marker_contract :=
   bcnfCheck_sound gallery_observation_completion_marker_contract gallery_observation_completion_marker_bcnf_check
 
-def gallery_upload_time_contract : RelationContract where
-  name := "gallery_upload_time"
-  attributes := ["gid", "upload_time"]
+def gallery_gid_identity_contract : RelationContract where
+  name := "gallery_gid_identity"
+  attributes := ["gid"]
   declaredKeys := [["gid"]]
   declaredFDs := [
-    { determinant := ["gid"], dependent := ["upload_time"] }
   ]
 
-theorem gallery_upload_time_schema_well_formed :
-    schemaWellFormedCheck gallery_upload_time_contract = true := by
+theorem gallery_gid_identity_schema_well_formed :
+    schemaWellFormedCheck gallery_gid_identity_contract = true := by
   native_decide
 
-theorem gallery_upload_time_candidate_keys_check :
-    keysDetermineAllCheck gallery_upload_time_contract = true := by
+theorem gallery_gid_identity_candidate_keys_check :
+    keysDetermineAllCheck gallery_gid_identity_contract = true := by
   native_decide
 
-theorem gallery_upload_time_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_upload_time_contract :=
-  keysDetermineAllCheck_sound gallery_upload_time_contract
-    gallery_upload_time_candidate_keys_check
+theorem gallery_gid_identity_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_gid_identity_contract :=
+  keysDetermineAllCheck_sound gallery_gid_identity_contract
+    gallery_gid_identity_candidate_keys_check
 
-theorem gallery_upload_time_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_upload_time_contract = true := by
+theorem gallery_gid_identity_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_gid_identity_contract = true := by
   native_decide
 
-theorem gallery_upload_time_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_upload_time_contract :=
-  declaredKeysMinimalCheck_sound gallery_upload_time_contract
-    gallery_upload_time_candidate_keys_minimal_check
+theorem gallery_gid_identity_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_gid_identity_contract :=
+  declaredKeysMinimalCheck_sound gallery_gid_identity_contract
+    gallery_gid_identity_candidate_keys_minimal_check
 
-theorem gallery_upload_time_closure_fixed_check :
-    closureFixedPointCheck gallery_upload_time_contract = true := by
+theorem gallery_gid_identity_closure_fixed_check :
+    closureFixedPointCheck gallery_gid_identity_contract = true := by
   native_decide
 
-theorem gallery_upload_time_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_upload_time_contract :=
-  closureFixedPointCheck_sound gallery_upload_time_contract
-    gallery_upload_time_closure_fixed_check
+theorem gallery_gid_identity_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_gid_identity_contract :=
+  closureFixedPointCheck_sound gallery_gid_identity_contract
+    gallery_gid_identity_closure_fixed_check
 
-theorem gallery_upload_time_bcnf_check :
-    bcnfCheck gallery_upload_time_contract = true := by
+theorem gallery_gid_identity_bcnf_check :
+    bcnfCheck gallery_gid_identity_contract = true := by
   native_decide
 
-theorem gallery_upload_time_bcnf : BCNF gallery_upload_time_contract :=
-  bcnfCheck_sound gallery_upload_time_contract gallery_upload_time_bcnf_check
+theorem gallery_gid_identity_bcnf : BCNF gallery_gid_identity_contract :=
+  bcnfCheck_sound gallery_gid_identity_contract gallery_gid_identity_bcnf_check
 
 def source_gallery_name_gid_contract : RelationContract where
   name := "source_gallery_name_gid"
@@ -3760,7 +3759,7 @@ def gallery_observation_metadata_contract : RelationContract where
   declaredKeys := [["gallery_id", "observation_id"]]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["gid"] },
-    { determinant := ["gid"], dependent := ["upload_time"] },
+    { determinant := ["gallery_id", "observation_id"], dependent := ["upload_time"] },
     { determinant := ["gallery_id", "observation_id"], dependent := ["download_time", "modified_time"] }
   ]
 
@@ -9835,12 +9834,12 @@ theorem catalog_publication_download_time_bcnf : BCNF catalog_publication_downlo
 
 def catalog_publication_contract : RelationContract where
   name := "catalog_publication"
-  attributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
+  attributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"]
   declaredKeys := [["revision", "publication_key"], ["revision", "gallery_id"]]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time"] }
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] }
   ]
 
 theorem catalog_publication_schema_well_formed :
@@ -11507,6 +11506,98 @@ theorem source_collection_consumption_bcnf_check :
 theorem source_collection_consumption_bcnf : BCNF source_collection_consumption_contract :=
   bcnfCheck_sound source_collection_consumption_contract source_collection_consumption_bcnf_check
 
+def gallery_observation_upload_time_contract : RelationContract where
+  name := "gallery_observation_upload_time"
+  attributes := ["gallery_id", "observation_id", "upload_time"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["upload_time"] }
+  ]
+
+theorem gallery_observation_upload_time_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_upload_time_contract = true := by
+  native_decide
+
+theorem gallery_observation_upload_time_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_upload_time_contract = true := by
+  native_decide
+
+theorem gallery_observation_upload_time_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_upload_time_contract :=
+  keysDetermineAllCheck_sound gallery_observation_upload_time_contract
+    gallery_observation_upload_time_candidate_keys_check
+
+theorem gallery_observation_upload_time_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_upload_time_contract = true := by
+  native_decide
+
+theorem gallery_observation_upload_time_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_upload_time_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_upload_time_contract
+    gallery_observation_upload_time_candidate_keys_minimal_check
+
+theorem gallery_observation_upload_time_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_upload_time_contract = true := by
+  native_decide
+
+theorem gallery_observation_upload_time_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_upload_time_contract :=
+  closureFixedPointCheck_sound gallery_observation_upload_time_contract
+    gallery_observation_upload_time_closure_fixed_check
+
+theorem gallery_observation_upload_time_bcnf_check :
+    bcnfCheck gallery_observation_upload_time_contract = true := by
+  native_decide
+
+theorem gallery_observation_upload_time_bcnf : BCNF gallery_observation_upload_time_contract :=
+  bcnfCheck_sound gallery_observation_upload_time_contract gallery_observation_upload_time_bcnf_check
+
+def catalog_publication_upload_time_contract : RelationContract where
+  name := "catalog_publication_upload_time"
+  attributes := ["catalog_occurrence_sha256", "upload_time"]
+  declaredKeys := [["catalog_occurrence_sha256"]]
+  declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["upload_time"] }
+  ]
+
+theorem catalog_publication_upload_time_schema_well_formed :
+    schemaWellFormedCheck catalog_publication_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_upload_time_candidate_keys_check :
+    keysDetermineAllCheck catalog_publication_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_upload_time_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes catalog_publication_upload_time_contract :=
+  keysDetermineAllCheck_sound catalog_publication_upload_time_contract
+    catalog_publication_upload_time_candidate_keys_check
+
+theorem catalog_publication_upload_time_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck catalog_publication_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_upload_time_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal catalog_publication_upload_time_contract :=
+  declaredKeysMinimalCheck_sound catalog_publication_upload_time_contract
+    catalog_publication_upload_time_candidate_keys_minimal_check
+
+theorem catalog_publication_upload_time_closure_fixed_check :
+    closureFixedPointCheck catalog_publication_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_upload_time_closure_reached_fixed_point :
+    ClosureReachedFixedPoint catalog_publication_upload_time_contract :=
+  closureFixedPointCheck_sound catalog_publication_upload_time_contract
+    catalog_publication_upload_time_closure_fixed_check
+
+theorem catalog_publication_upload_time_bcnf_check :
+    bcnfCheck catalog_publication_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_upload_time_bcnf : BCNF catalog_publication_upload_time_contract :=
+  bcnfCheck_sound catalog_publication_upload_time_contract catalog_publication_upload_time_bcnf_check
+
 theorem publication_commit_has_six_equivalent_candidate_keys :
     publication_commit_contract.declaredKeys.length = 6 := by
   native_decide
@@ -11569,7 +11660,7 @@ def manifestContracts : List RelationContract := [
   gallery_observation_tree_root_contract,
   gallery_observation_contract,
   gallery_observation_completion_marker_contract,
-  gallery_upload_time_contract,
+  gallery_gid_identity_contract,
   source_gallery_name_gid_contract,
   gallery_source_name_access_contract,
   gallery_observation_validation_policy_contract,
@@ -11749,16 +11840,20 @@ def manifestContracts : List RelationContract := [
   source_collection_qualification_policy_contract,
   source_collection_created_at_contract,
   source_collection_observation_contract,
-  source_collection_consumption_contract
+  source_collection_consumption_contract,
+  gallery_observation_upload_time_contract,
+  catalog_publication_upload_time_contract
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 230 := by
+    manifestContracts.length = 232 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
 
 def catalogPhysicalDomainContracts : List RelationContract := [
+  gallery_gid_identity_contract,
+  gallery_observation_upload_time_contract,
   source_collection_contract,
   source_collection_manifest_policy_contract,
   source_collection_qualification_policy_contract,
@@ -11901,6 +11996,7 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   title_sort_contract,
   catalog_publication_storage_contract,
   catalog_publication_download_time_contract,
+  catalog_publication_upload_time_contract,
   catalog_publication_occurrence_identity_contract,
   catalog_publication_contract,
   catalog_publication_order_contract,
@@ -11918,6 +12014,8 @@ def catalogPhysicalDomainContracts : List RelationContract := [
 ]
 
 def catalogPhysicalDomainMutationContracts : List RelationContract := [
+  gallery_gid_identity_contract,
+  gallery_observation_upload_time_contract,
   source_collection_contract,
   source_collection_manifest_policy_contract,
   source_collection_qualification_policy_contract,
@@ -12042,6 +12140,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   title_sort_contract,
   catalog_publication_storage_contract,
   catalog_publication_download_time_contract,
+  catalog_publication_upload_time_contract,
   catalog_publication_occurrence_identity_contract,
   catalog_publication_order_contract,
   catalog_publication_content_contract,
@@ -12080,11 +12179,11 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 156 := by
+    catalogPhysicalDomainContracts.length = 159 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 134 := by
+    catalogPhysicalDomainMutationContracts.length = 137 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
@@ -13074,7 +13173,7 @@ def gallery_observation_metadata_and_scan_contract : BinaryDecompositionContract
   rightAttributes := ["gallery_id", "observation_id", "scan_observation_sha256", "scan_observation_version", "source_file_count"]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["gid"] },
-    { determinant := ["gid"], dependent := ["upload_time"] },
+    { determinant := ["gallery_id", "observation_id"], dependent := ["upload_time"] },
     { determinant := ["gallery_id", "observation_id"], dependent := ["download_time", "modified_time"] },
     { determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_sha256", "scan_observation_version", "source_file_count"] }
   ]
@@ -13888,16 +13987,61 @@ theorem catalog_publication_occurrence_and_download_time_dependency_preserving :
   dependencyPreservationCheck_sound catalog_publication_occurrence_and_download_time_contract
     catalog_publication_occurrence_and_download_time_dependency_preservation_check
 
+def catalog_publication_occurrence_and_upload_time_contract : BinaryDecompositionContract where
+  name := "catalog_publication_occurrence_and_upload_time"
+  universalAttributes := ["catalog_occurrence_sha256", "revision", "publication_key", "upload_time"]
+  leftAttributes := ["catalog_occurrence_sha256", "revision", "publication_key"]
+  rightAttributes := ["catalog_occurrence_sha256", "upload_time"]
+  declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["revision", "publication_key", "upload_time"] },
+    { determinant := ["revision", "publication_key"], dependent := ["catalog_occurrence_sha256", "upload_time"] }
+  ]
+
+theorem catalog_publication_occurrence_and_upload_time_projection_check :
+    binaryDecompositionWellFormedCheck
+      catalog_publication_occurrence_and_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_upload_time_projection_well_formed :
+    BinaryDecompositionWellFormed catalog_publication_occurrence_and_upload_time_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    catalog_publication_occurrence_and_upload_time_contract catalog_publication_occurrence_and_upload_time_projection_check
+
+theorem catalog_publication_occurrence_and_upload_time_intersection_check :
+    sameAttrSet (attributeIntersection
+      catalog_publication_occurrence_and_upload_time_contract.leftAttributes
+      catalog_publication_occurrence_and_upload_time_contract.rightAttributes)
+      ["catalog_occurrence_sha256"] = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_upload_time_lossless_check :
+    binaryLosslessCheck catalog_publication_occurrence_and_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_upload_time_lossless : BinaryLossless catalog_publication_occurrence_and_upload_time_contract :=
+  ⟨catalog_publication_occurrence_and_upload_time_projection_well_formed,
+    binaryLosslessCheck_sound catalog_publication_occurrence_and_upload_time_contract
+      catalog_publication_occurrence_and_upload_time_lossless_check⟩
+
+theorem catalog_publication_occurrence_and_upload_time_dependency_preservation_check :
+    dependencyPreservationCheck catalog_publication_occurrence_and_upload_time_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_upload_time_dependency_preserving :
+    DependencyPreserving catalog_publication_occurrence_and_upload_time_contract :=
+  dependencyPreservationCheck_sound catalog_publication_occurrence_and_upload_time_contract
+    catalog_publication_occurrence_and_upload_time_dependency_preservation_check
+
 def catalog_publication_and_title_basis_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_title_basis"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"]
-  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"]
+  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"]
   rightAttributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
     { determinant := ["source_gallery_name"], dependent := ["publication_key"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"] }
   ]
 
 theorem catalog_publication_and_title_basis_projection_check :
@@ -13935,60 +14079,15 @@ theorem catalog_publication_and_title_basis_dependency_preserving :
   dependencyPreservationCheck_sound catalog_publication_and_title_basis_contract
     catalog_publication_and_title_basis_dependency_preservation_check
 
-def publication_identity_and_gallery_upload_time_contract : BinaryDecompositionContract where
-  name := "publication_identity_and_gallery_upload_time"
-  universalAttributes := ["publication_key", "gid", "upload_time"]
-  leftAttributes := ["publication_key", "gid"]
-  rightAttributes := ["gid", "upload_time"]
-  declaredFDs := [
-    { determinant := ["publication_key"], dependent := ["gid", "upload_time"] },
-    { determinant := ["gid"], dependent := ["publication_key", "upload_time"] }
-  ]
-
-theorem publication_identity_and_gallery_upload_time_projection_check :
-    binaryDecompositionWellFormedCheck
-      publication_identity_and_gallery_upload_time_contract = true := by
-  native_decide
-
-theorem publication_identity_and_gallery_upload_time_projection_well_formed :
-    BinaryDecompositionWellFormed publication_identity_and_gallery_upload_time_contract :=
-  binaryDecompositionWellFormedCheck_sound
-    publication_identity_and_gallery_upload_time_contract publication_identity_and_gallery_upload_time_projection_check
-
-theorem publication_identity_and_gallery_upload_time_intersection_check :
-    sameAttrSet (attributeIntersection
-      publication_identity_and_gallery_upload_time_contract.leftAttributes
-      publication_identity_and_gallery_upload_time_contract.rightAttributes)
-      ["gid"] = true := by
-  native_decide
-
-theorem publication_identity_and_gallery_upload_time_lossless_check :
-    binaryLosslessCheck publication_identity_and_gallery_upload_time_contract = true := by
-  native_decide
-
-theorem publication_identity_and_gallery_upload_time_lossless : BinaryLossless publication_identity_and_gallery_upload_time_contract :=
-  ⟨publication_identity_and_gallery_upload_time_projection_well_formed,
-    binaryLosslessCheck_sound publication_identity_and_gallery_upload_time_contract
-      publication_identity_and_gallery_upload_time_lossless_check⟩
-
-theorem publication_identity_and_gallery_upload_time_dependency_preservation_check :
-    dependencyPreservationCheck publication_identity_and_gallery_upload_time_contract = true := by
-  native_decide
-
-theorem publication_identity_and_gallery_upload_time_dependency_preserving :
-    DependencyPreserving publication_identity_and_gallery_upload_time_contract :=
-  dependencyPreservationCheck_sound publication_identity_and_gallery_upload_time_contract
-    publication_identity_and_gallery_upload_time_dependency_preservation_check
-
 def catalog_publication_and_optional_content_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_optional_content"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"]
-  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time", "content_sha256"]
+  leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time"]
   rightAttributes := ["revision", "publication_key", "content_sha256"]
   declaredFDs := [
     { determinant := ["gallery_id"], dependent := ["publication_key"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "content_sha256"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time", "content_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "download_time", "upload_time", "content_sha256"] }
   ]
 
 theorem catalog_publication_and_optional_content_projection_check :
@@ -14097,8 +14196,8 @@ theorem all_manifest_decompositions_lossless :
     BinaryLossless publication_selection_occurrence_and_gallery_contract ∧
     BinaryLossless catalog_publication_occurrence_and_payload_contract ∧
     BinaryLossless catalog_publication_occurrence_and_download_time_contract ∧
+    BinaryLossless catalog_publication_occurrence_and_upload_time_contract ∧
     BinaryLossless catalog_publication_and_title_basis_contract ∧
-    BinaryLossless publication_identity_and_gallery_upload_time_contract ∧
     BinaryLossless catalog_publication_and_optional_content_contract ∧
     BinaryLossless gallery_observation_page_bytes_and_descriptor_contract := by
   exact ⟨source_build_and_optional_base_source_lossless,
@@ -14126,8 +14225,8 @@ theorem all_manifest_decompositions_lossless :
     publication_selection_occurrence_and_gallery_lossless,
     catalog_publication_occurrence_and_payload_lossless,
     catalog_publication_occurrence_and_download_time_lossless,
+    catalog_publication_occurrence_and_upload_time_lossless,
     catalog_publication_and_title_basis_lossless,
-    publication_identity_and_gallery_upload_time_lossless,
     catalog_publication_and_optional_content_lossless,
     gallery_observation_page_bytes_and_descriptor_lossless⟩
 
@@ -14157,8 +14256,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     DependencyPreserving publication_selection_occurrence_and_gallery_contract ∧
     DependencyPreserving catalog_publication_occurrence_and_payload_contract ∧
     DependencyPreserving catalog_publication_occurrence_and_download_time_contract ∧
+    DependencyPreserving catalog_publication_occurrence_and_upload_time_contract ∧
     DependencyPreserving catalog_publication_and_title_basis_contract ∧
-    DependencyPreserving publication_identity_and_gallery_upload_time_contract ∧
     DependencyPreserving catalog_publication_and_optional_content_contract ∧
     DependencyPreserving gallery_observation_page_bytes_and_descriptor_contract := by
   exact ⟨source_build_and_optional_base_source_dependency_preserving,
@@ -14186,8 +14285,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     publication_selection_occurrence_and_gallery_dependency_preserving,
     catalog_publication_occurrence_and_payload_dependency_preserving,
     catalog_publication_occurrence_and_download_time_dependency_preserving,
+    catalog_publication_occurrence_and_upload_time_dependency_preserving,
     catalog_publication_and_title_basis_dependency_preserving,
-    publication_identity_and_gallery_upload_time_dependency_preserving,
     catalog_publication_and_optional_content_dependency_preserving,
     gallery_observation_page_bytes_and_descriptor_dependency_preserving⟩
 
@@ -14235,7 +14334,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_observation_tree_root_contract ∧
     BCNF gallery_observation_contract ∧
     BCNF gallery_observation_completion_marker_contract ∧
-    BCNF gallery_upload_time_contract ∧
+    BCNF gallery_gid_identity_contract ∧
     BCNF source_gallery_name_gid_contract ∧
     BCNF gallery_source_name_access_contract ∧
     BCNF gallery_observation_validation_policy_contract ∧
@@ -14376,7 +14475,9 @@ theorem all_manifest_base_relations_bcnf :
     BCNF source_collection_qualification_policy_contract ∧
     BCNF source_collection_created_at_contract ∧
     BCNF source_collection_observation_contract ∧
-    BCNF source_collection_consumption_contract := by
+    BCNF source_collection_consumption_contract ∧
+    BCNF gallery_observation_upload_time_contract ∧
+    BCNF catalog_publication_upload_time_contract := by
   exact ⟨canonical_digest_policy_bcnf,
     canonical_value_allocation_anchor_bcnf,
     canonical_value_allocation_digest_domain_bcnf,
@@ -14419,7 +14520,7 @@ theorem all_manifest_base_relations_bcnf :
     gallery_observation_tree_root_bcnf,
     gallery_observation_bcnf,
     gallery_observation_completion_marker_bcnf,
-    gallery_upload_time_bcnf,
+    gallery_gid_identity_bcnf,
     source_gallery_name_gid_bcnf,
     gallery_source_name_access_bcnf,
     gallery_observation_validation_policy_bcnf,
@@ -14560,7 +14661,9 @@ theorem all_manifest_base_relations_bcnf :
     source_collection_qualification_policy_bcnf,
     source_collection_created_at_bcnf,
     source_collection_observation_bcnf,
-    source_collection_consumption_bcnf⟩
+    source_collection_consumption_bcnf,
+    gallery_observation_upload_time_bcnf,
+    catalog_publication_upload_time_bcnf⟩
 
 set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
@@ -14613,7 +14716,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_tree_root_contract ∧
     KeysDetermineAllAttributes gallery_observation_contract ∧
     KeysDetermineAllAttributes gallery_observation_completion_marker_contract ∧
-    KeysDetermineAllAttributes gallery_upload_time_contract ∧
+    KeysDetermineAllAttributes gallery_gid_identity_contract ∧
     KeysDetermineAllAttributes source_gallery_name_gid_contract ∧
     KeysDetermineAllAttributes gallery_source_name_access_contract ∧
     KeysDetermineAllAttributes gallery_observation_validation_policy_contract ∧
@@ -14793,7 +14896,9 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes source_collection_qualification_policy_contract ∧
     KeysDetermineAllAttributes source_collection_created_at_contract ∧
     KeysDetermineAllAttributes source_collection_observation_contract ∧
-    KeysDetermineAllAttributes source_collection_consumption_contract := by
+    KeysDetermineAllAttributes source_collection_consumption_contract ∧
+    KeysDetermineAllAttributes gallery_observation_upload_time_contract ∧
+    KeysDetermineAllAttributes catalog_publication_upload_time_contract := by
   exact ⟨canonical_digest_policy_candidate_keys_determine_all_attributes,
     canonical_value_allocation_anchor_candidate_keys_determine_all_attributes,
     canonical_value_allocation_digest_domain_candidate_keys_determine_all_attributes,
@@ -14843,7 +14948,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_tree_root_candidate_keys_determine_all_attributes,
     gallery_observation_candidate_keys_determine_all_attributes,
     gallery_observation_completion_marker_candidate_keys_determine_all_attributes,
-    gallery_upload_time_candidate_keys_determine_all_attributes,
+    gallery_gid_identity_candidate_keys_determine_all_attributes,
     source_gallery_name_gid_candidate_keys_determine_all_attributes,
     gallery_source_name_access_candidate_keys_determine_all_attributes,
     gallery_observation_validation_policy_candidate_keys_determine_all_attributes,
@@ -15023,7 +15128,9 @@ theorem all_manifest_candidate_keys_determine_attributes :
     source_collection_qualification_policy_candidate_keys_determine_all_attributes,
     source_collection_created_at_candidate_keys_determine_all_attributes,
     source_collection_observation_candidate_keys_determine_all_attributes,
-    source_collection_consumption_candidate_keys_determine_all_attributes⟩
+    source_collection_consumption_candidate_keys_determine_all_attributes,
+    gallery_observation_upload_time_candidate_keys_determine_all_attributes,
+    catalog_publication_upload_time_candidate_keys_determine_all_attributes⟩
 
 /- END GENERATED CATALOG CONTRACTS -/
 

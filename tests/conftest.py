@@ -27,6 +27,7 @@ DEEP_TEST_FILES = frozenset(
     {
         "test_storage_guest_powercut_harness.py",
         "test_operational_refinement_runtime.py",
+        "test_upgrade_observation_upload_time_schema.py",
         "test_vnext_schema_provider_generation.py",
         "test_vnext_bootstrap_fault_matrix.py",
         "test_vnext_identity_corruption_matrix.py",

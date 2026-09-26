@@ -5460,17 +5460,12 @@ def _persist_metadata_facts(
     )
     _insert_or_require(
         connector,
-        label="gallery upload time",
-        select_sql=(
-            "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s"
-        ),
+        label="gallery GID identity",
+        select_sql=("SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s"),
         select_data=(receipt.gid,),
-        insert_sql=(
-            "INSERT INTO catalog_gallery_upload_times "
-            "(gid, upload_time) VALUES (%s, %s)"
-        ),
-        insert_data=(receipt.gid, receipt.upload_time),
-        expected=(receipt.upload_time,),
+        insert_sql="INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+        insert_data=(receipt.gid,),
+        expected=(receipt.gid,),
     )
     _insert_or_require(
         connector,
@@ -5501,6 +5496,21 @@ def _persist_metadata_facts(
         ),
         insert_data=(handle.gallery_id, source_gallery_name),
         expected=(source_gallery_name,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery observation upload time",
+        select_sql=(
+            "SELECT upload_time FROM catalog_gallery_observation_upload_times "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=(handle.gallery_id, handle.observation_id),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_upload_times "
+            "(gallery_id, observation_id, upload_time) VALUES (%s, %s, %s)"
+        ),
+        insert_data=(handle.gallery_id, handle.observation_id, receipt.upload_time),
+        expected=(receipt.upload_time,),
     )
     _insert_or_require(
         connector,

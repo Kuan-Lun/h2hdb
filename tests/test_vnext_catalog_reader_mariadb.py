@@ -39,10 +39,12 @@ from h2hdb.vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
+    CatalogPublicationUploadTimeFamily,
     PublicationFamilyCollisionError,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    ensure_catalog_publication_upload_time_family,
 )
 
 
@@ -212,6 +214,11 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
         publication_key=publication.publication_key,
         download_time=10,
     )
+    upload_time = CatalogPublicationUploadTimeFamily(
+        revision=publication.revision,
+        publication_key=publication.publication_key,
+        upload_time=9,
+    )
     try:
         connector.execute("SET FOREIGN_KEY_CHECKS = 0")
         with connector.transaction():
@@ -240,6 +247,9 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
                 download_time,
                 backend="mariadb",
             ) == (download_time, True)
+            assert ensure_catalog_publication_upload_time_family(
+                connector, upload_time, backend="mariadb"
+            ) == (upload_time, True)
             assert ensure_catalog_publication_title_family(
                 connector,
                 title,
@@ -257,6 +267,9 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
                 download_time,
                 backend="mariadb",
             ) == (download_time, False)
+            assert ensure_catalog_publication_upload_time_family(
+                connector, upload_time, backend="mariadb"
+            ) == (upload_time, False)
             assert ensure_catalog_publication_title_family(
                 connector,
                 title,
@@ -287,7 +300,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
 
         assert connector.fetch_one(
             "SELECT gallery_id, summary_sha256, language_sha256, modified_at, "
-            "download_time "
+            "download_time, upload_time "
             "FROM catalog_publications WHERE revision = %s "
             "AND publication_key = %s",
             (publication.revision, publication.publication_key),
@@ -297,6 +310,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
             publication.language_sha256,
             publication.modified_at,
             download_time.download_time,
+            upload_time.upload_time,
         )
         assert connector.fetch_one(
             "SELECT source_title_sha256, source_gallery_name "
@@ -370,8 +384,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 (b"default", b"r" * 16),
             )
             connector.execute(
-                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                "VALUES (%s, 2000000)",
+                "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
                 (gid,),
             )
             connector.execute(
@@ -408,6 +421,13 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                     revision=1,
                     publication_key=publication_key,
                     download_time=2_500_000,
+                ),
+                backend="mariadb",
+            )
+            ensure_catalog_publication_upload_time_family(
+                connector,
+                CatalogPublicationUploadTimeFamily(
+                    revision=1, publication_key=publication_key, upload_time=2_000_000
                 ),
                 backend="mariadb",
             )
@@ -882,9 +902,8 @@ def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
                 (publication_key, gid),
             )
             connector.execute(
-                "INSERT INTO catalog_gallery_upload_times "
-                "(gid, upload_time) VALUES (%s, %s)",
-                (gid, 6_000_000),
+                "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+                (gid,),
             )
             connector.execute(
                 "INSERT INTO catalog_publication_occurrence_identities "
@@ -896,6 +915,11 @@ def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
                 "INSERT INTO catalog_publication_download_times "
                 "(catalog_occurrence_sha256, download_time) VALUES (%s, %s)",
                 (occurrence_sha256, 8_000_000),
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_upload_times "
+                "(catalog_occurrence_sha256, upload_time) VALUES (%s, %s)",
+                (occurrence_sha256, 6_000_000),
             )
             connector.execute(
                 "INSERT INTO catalog_artifacts "
