@@ -590,14 +590,14 @@ value = [{ attribute = "target_kind", type = "ascii_enum", text = "SOURCE_GALLER
 invariant = "SOURCE_GALLERY_NAME_GID sweeps exact basename-to-GID facts only after no gallery access row references the basename."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-target.gallery-upload-time.v1"
+id = "h2hdb.operational.cleanup-target.gallery-gid-identity.v1"
 columns = ["target_kind"]
-values = ["GALLERY_UPLOAD_TIME"]
+values = ["GALLERY_GID_IDENTITY"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_target_kind"
-value = [{ attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }]
-invariant = "GALLERY_UPLOAD_TIME sweeps shared GID timestamps only after neither an exact source basename nor a publication identity references the GID."
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "GALLERY_GID_IDENTITY" }]
+invariant = "GALLERY_GID_IDENTITY sweeps independent GID identities only after neither an exact source basename nor a publication identity references the GID."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.publication-commit.v1"
@@ -860,6 +860,16 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "CP_DOWNLOAD_TIME" }
 invariant = "Delete the immutable selected-observation download time before its publication occurrence identity."
 
 [[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.cp-upload-time.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["CP_UPLOAD_TIME", "CATALOG_PUBLICATION", "8"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_UPLOAD_TIME" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "Delete the immutable selected-observation upload time after publication order cleanup and before its publication occurrence identity."
+
+[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-contributor.v1"
 columns = ["phase", "target_kind", "phase_order"]
 values = ["CP_CONTRIBUTOR", "CATALOG_PUBLICATION", "3"]
@@ -912,11 +922,11 @@ invariant = "Delete catalog artifact occurrences before their publication occurr
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cp-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["CP_ROOT", "CATALOG_PUBLICATION", "8"]
+values = ["CP_ROOT", "CATALOG_PUBLICATION", "9"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "CP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "CATALOG_PUBLICATION" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
 invariant = "Delete the finalized non-head catalog publication occurrence only after every revision-scoped payload child."
 
 [[bootstrap_seed]]
@@ -1660,14 +1670,14 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "SNG_ROOT" }, { attr
 invariant = "Delete an exact basename-to-GID fact only after the access-path blocker recheck finds no gallery location."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.gut-root.v1"
+id = "h2hdb.operational.cleanup-phase.ggi-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GUT_ROOT", "GALLERY_UPLOAD_TIME", "1"]
+values = ["GGI_ROOT", "GALLERY_GID_IDENTITY", "1"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GUT_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "Delete a shared GID upload timestamp only after neither a basename-to-GID row nor a publication identity references it."
+value = [{ attribute = "phase", type = "ascii_enum", text = "GGI_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_GID_IDENTITY" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Delete a shared GID identity only after neither a basename-to-GID row nor a publication identity references it."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cvu-root.v1"
@@ -2046,16 +2056,16 @@ target_kind_tag_hex = "c976a237cd5c7f8e68b29150af31ae6f"
 invariant = "Seed exactly 256 basename byte-order shards; each sweep preserves mappings still reached by a gallery access row."
 
 [[bootstrap_seed_range]]
-id = "h2hdb.operational.cleanup-sweep.gallery-upload-time.v1"
+id = "h2hdb.operational.cleanup-sweep.gallery-gid-identity.v1"
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_sweep_target"
-target_kind = "GALLERY_UPLOAD_TIME"
+target_kind = "GALLERY_GID_IDENTITY"
 shard_start = 0
 shard_end = 255
 key_codec = "target_kind_tag16_u64be_zero8_v1"
-target_kind_tag_hex = "56ec4397b9e9c240398b3e1baf1d1c75"
-invariant = "Seed exactly 256 positive-GID shards; each sweep preserves timestamps reached through any basename mapping or publication identity."
+target_kind_tag_hex = "f60dea9ec8cb1c74b37c55d430e2632d"
+invariant = "Seed exactly 256 positive-GID shards; each sweep preserves GID identities reached through any basename mapping or publication identity."
 
 [[external_stub]]
 relation = "source_build_descriptor"
@@ -6855,8 +6865,8 @@ sqlite_expression = "typeof(target_kind) = 'text'"
 mariadb_expression = "target_kind IS NOT NULL"
 [[relation.check]]
 name = "ck_cleanup_target_kind_target_kind_registry"
-sqlite_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
-mariadb_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+sqlite_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_GID_IDENTITY', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+mariadb_expression = "target_kind IN ('SOURCE_COLLECTION', 'SOURCE_BUILD', 'ANALYSIS_RUN', 'CATALOG_PUBLICATION', 'PUBLICATION_COMMIT', 'CATALOG_REVISION_DESCRIPTOR', 'SOURCE_REVISION_DESCRIPTOR', 'PUBLICATION_GENERATION', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'STORAGE_OBJECT_KEY', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_GID_IDENTITY', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
 
 [[relation]]
 name = "cleanup_sweep_target"
@@ -6939,8 +6949,8 @@ sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 mariadb_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_registry"
-sqlite_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
-mariadb_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+sqlite_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_UPLOAD_TIME', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GGI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+mariadb_expression = "phase IN ('SC_MEMBERS', 'SC_CLAIM', 'SC_METADATA', 'SC_STATE', 'SC_ROOT', 'SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_STATE', 'SB_ROOT', 'AR_BATCH', 'AR_COMPONENT', 'AR_OVERLAY', 'AR_FILE_HASH_VALUES', 'AR_IMPACT_PROVENANCE', 'AR_FILE_HASH_ANCHOR', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_COMPLETION', 'AR_STATE', 'AR_ROOT', 'CP_STORAGE', 'CP_DOWNLOAD_TIME', 'CP_CONTRIBUTOR', 'CP_ORDER', 'CP_CONTENT', 'CP_SUBJECT', 'CP_ARTIFACT', 'CP_UPLOAD_TIME', 'CP_ROOT', 'PCOM_RELEASE_BUILD_BASE', 'PCOM_PREPARATION_BINDING', 'PCOM_PREPARATION_BATCH', 'PCOM_PREPARATION_CHECKPOINT', 'PCOM_PREPARATION', 'PCOM_EVENT', 'PCOM_FINALIZATION_MARKER', 'PCOM_FINALIZATION_BATCH', 'PCOM_COMMIT_EFFECT_ROOT', 'PCOM_FINALIZATION_CHECKPOINT', 'PCOM_ANCHOR', 'CRD_ROOT', 'SRD_ROOT', 'PG_EDGE', 'PG_ROOT', 'PC_SEALS', 'PC_PREPARED', 'PC_INPUT', 'PC_CHECKPOINT', 'PC_SELECTION_STORAGE', 'PC_CONTENT', 'PC_SUBJECT', 'PC_BASES', 'PC_SELECTION_IDENTITY', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_OBSERVATION_FACTS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_ROOT', 'SK_SEGMENT', 'SK_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GGI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
 [[relation.check]]
 name = "ck_cleanup_phase_order_positive"
 sqlite_expression = "phase_order > 0"

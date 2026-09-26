@@ -86,7 +86,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 96
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 97
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -95,6 +95,9 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         binding["path"]: binding["semantic_obligation_id"] for binding in bindings
     } == owners
     assert owners["gallery_observation_identity_contract.qualification_obligation"] == (
+        "catalog.source-qualification.v1"
+    )
+    assert owners["gallery_observation_identity_contract.upload_time_obligation"] == (
         "catalog.source-qualification.v1"
     )
 
@@ -421,8 +424,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 230
-    assert len(physical_spec.implemented_relations) == 217
+    assert len(logical.relations) == 232
+    assert len(physical_spec.implemented_relations) == 219
     assert set(physical_spec.inline_projections) == {
         "canonical_value_page",
         "canonical_value_page_descriptor",
@@ -489,6 +492,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
         "language_sha256",
         "modified_at",
         "download_time",
+        "upload_time",
     )
     resolved = physical_spec.relation("analysis_file_hash_decision_resolved")
     assert resolved is not None
@@ -509,11 +513,11 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
             "gallery_observation_metadata_local",
             "gallery_source_name_access",
             "source_gallery_name_gid",
-            "gallery_upload_time",
+            "gallery_observation_upload_time",
         ),
     )
     for relation_name in (
-        "gallery_upload_time",
+        "gallery_observation_upload_time",
         "source_gallery_name_gid",
         "gallery_source_name_access",
         "gallery_observation_metadata_local",
@@ -1186,8 +1190,11 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
         )
         connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute(
-            "INSERT INTO catalog_gallery_upload_times VALUES (?, ?)",
-            (1, 1_767_225_600_000_000),
+            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (1,)
+        )
+        connection.execute(
+            "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+            (1, 1, 1_767_225_600_000_000),
         )
         connection.execute(
             "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
@@ -1236,7 +1243,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 217
+    assert len(report.checked_relations) == 219
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -1290,7 +1297,11 @@ def test_metadata_projection_requires_one_complete_local_row() -> None:
         connection.commit()
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(
-            "INSERT INTO catalog_gallery_upload_times VALUES (?, ?)", (7, 11)
+            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+        )
+        connection.execute(
+            "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+            (1, 1, 11),
         )
         connection.execute(
             "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
@@ -1767,8 +1778,8 @@ def test_generation_projections_derive_one_commit_mapping_without_extra_objects(
         (
             "gallery_observation_metadata",
             "catalog_gallery_observation_metadata",
-            "catalog_gallery_upload_times",
-            "catalog_gallery_observation_download_times",
+            "catalog_gallery_observation_upload_times",
+            "catalog_gallery_observation_metadata_locals",
         ),
         (
             "gallery_observation_file_filesystem",
@@ -2515,8 +2526,11 @@ def test_fresh_source_slice_mariadb_ddl_refines_physical_spec(
             connector.execute(statement)
         connector.execute("SET FOREIGN_KEY_CHECKS = 0")
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times VALUES (%s, %s)",
-            (1, 1_767_225_600_000_000),
+            "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (1,)
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_upload_times VALUES (%s, %s, %s)",
+            (1, 1, 1_767_225_600_000_000),
         )
         connector.execute(
             "INSERT INTO catalog_source_gallery_name_gids VALUES (%s, %s)",
@@ -2609,3 +2623,159 @@ def test_current_fresh_mariadb_schema_refines_source_slice(
     assert report.fully_conforms
     assert report.backend == "mariadb"
     refinement.assert_physical_refines(report)
+
+
+@pytest.mark.parametrize(
+    "missing_source",
+    ["catalog_publication_download_time", "catalog_publication_upload_time"],
+)
+def test_physical_publication_projection_requires_both_occurrence_times(
+    missing_source: str,
+) -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical = refinement.load_physical_schema(PHYSICAL, logical)
+    publication = physical.relation("catalog_publication")
+    assert publication is not None and publication.derived_view is not None
+    broken = replace(
+        publication,
+        derived_view=replace(
+            publication.derived_view,
+            source_relations=tuple(
+                name
+                for name in publication.derived_view.source_relations
+                if name != missing_source
+            ),
+        ),
+    )
+    invalid = replace(
+        physical,
+        relations=tuple(
+            broken if item is publication else item for item in physical.relations
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="catalog publication source authority drifted"
+    ):
+        refinement._validate_physical_schema(invalid, logical)
+
+
+def test_metadata_projection_preserves_distinct_upload_times_for_shared_gid() -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical = refinement.load_physical_schema(PHYSICAL, logical)
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(refinement.render_sqlite_ddl(physical))
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for gallery_id, observation_id in ((1, 1), (1, 2), (2, 1)):
+            if observation_id == 1:
+                connection.execute(
+                    "INSERT INTO catalog_gallery_identities VALUES (?, ?, ?, ?)",
+                    (
+                        gallery_id,
+                        bytes([gallery_id]) * 32,
+                        bytes([1]) * 32,
+                        bytes([gallery_id + 1]) * 32,
+                    ),
+                )
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_allocations VALUES (?, ?, ?)",
+                (gallery_id, observation_id, observation_id),
+            )
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+        )
+        for gallery_id in (1, 2):
+            name = f"gallery-{gallery_id}".encode()
+            connection.execute(
+                "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)", (name, 7)
+            )
+            connection.execute(
+                "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
+                (gallery_id, name),
+            )
+        # The local scalar cannot become visible without its exact upload child.
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (?, ?, ?, ?)",
+                (1, 2, 13, 17),
+            )
+        expected = [(1, 1, 7, 11, 13, 17), (1, 2, 7, 23, 13, 17), (2, 1, 7, 29, 13, 17)]
+        for gallery_id, observation_id, _gid, upload, download, modified in expected:
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+                (gallery_id, observation_id, upload),
+            )
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (?, ?, ?, ?)",
+                (gallery_id, observation_id, download, modified),
+            )
+        assert (
+            connection.execute(
+                "SELECT * FROM catalog_gallery_observation_metadata ORDER BY gallery_id, observation_id"
+            ).fetchall()
+            == expected
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+                (1, 1, 99),
+            )
+    finally:
+        connection.close()
+
+
+def test_publication_projection_retains_each_occurrence_upload_time() -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical = refinement.load_physical_schema(PHYSICAL, logical)
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(refinement.render_sqlite_ddl(physical))
+        connection.execute("PRAGMA foreign_keys = OFF")
+        publication_key = bytes([7]) * 32
+        connection.execute(
+            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+        )
+        connection.execute(
+            "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
+            (b"gallery-7", 7),
+        )
+        connection.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
+            (1, b"gallery-7"),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_identities VALUES (?, ?)",
+            (publication_key, 7),
+        )
+        for revision, upload in ((1, 11), (2, 23)):
+            occurrence = bytes([revision]) * 32
+            connection.execute(
+                "INSERT INTO catalog_publication_occurrence_identities VALUES (?, ?, ?)",
+                (occurrence, revision, publication_key),
+            )
+            connection.execute(
+                "INSERT INTO catalog_publication_storage VALUES (?, ?, ?, ?, ?, ?)",
+                (occurrence, 1, bytes(32), bytes(32), 17, bytes(32)),
+            )
+            connection.execute(
+                "INSERT INTO catalog_publication_download_times VALUES (?, ?)",
+                (occurrence, 13),
+            )
+            connection.execute(
+                "INSERT INTO catalog_publication_upload_times VALUES (?, ?)",
+                (occurrence, upload),
+            )
+        assert connection.execute(
+            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision"
+        ).fetchall() == [(1, 11), (2, 23)]
+        connection.execute(
+            "DELETE FROM catalog_publication_upload_times WHERE catalog_occurrence_sha256 = ?",
+            (bytes([2]) * 32,),
+        )
+        assert connection.execute(
+            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision"
+        ).fetchall() == [(1, 11)]
+    finally:
+        connection.close()

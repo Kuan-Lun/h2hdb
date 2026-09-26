@@ -120,9 +120,8 @@ def _seed_projection(
             thumbnail_payload = f"thumbnail-{revision}-{gid}".encode()
             thumbnail_digest = sha256(thumbnail_payload).digest()
             connector.execute(
-                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                "VALUES (%s, %s)",
-                (gid, 2_000_000 + gid),
+                "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+                (gid,),
             )
             seed_publication_identity(connector, gid=gid)
             connector.execute(
@@ -143,6 +142,7 @@ def _seed_projection(
                 summary_sha256=sha256(f"summary-{revision}-{gid}".encode()).digest(),
                 language_sha256=sha256(b"language-zh").digest(),
                 modified_at=3_000_000 + gid,
+                upload_time=2_000_000 + gid,
                 source_title_sha256=sha256(
                     f"source-title-{revision}-{gid}".encode()
                 ).digest(),

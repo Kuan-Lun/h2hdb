@@ -313,7 +313,7 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "gallery_observation_metadata_local",
         "gallery_source_name_access",
         "source_gallery_name_gid",
-        "gallery_upload_time",
+        "gallery_observation_upload_time",
     )
     for relation_name in (
         "gallery_observation_metadata_local",
@@ -516,7 +516,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         plan.operational_physical_table_count_after,
         plan.total_physical_table_count_before,
         plan.total_physical_table_count_after,
-    ) == (306, 184, 75, 73, 381, 257)
+    ) == (306, 186, 75, 73, 381, 259)
     assert plan.conditional_one_gigabyte_limit_required is True
     assert plan.mariadb_measurement_version == "10.11.11"
     assert plan.bounded_registry_relations == (
@@ -720,7 +720,7 @@ def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
         (
             "catalog_physical_table_count_after",
             173,
-            "catalog_physical_table_count_after must be 184",
+            "catalog_physical_table_count_after must be 186",
         ),
         (
             "affected_operational_relations",
@@ -1164,7 +1164,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     )
     assert publication_graph & inline_publication_graph == inline_publication_graph
     assert inline_publication_graph.isdisjoint(physical_domains.relations)
-    assert len(physical_domains.relations) == 156
+    assert len(physical_domains.relations) == 159
 
     invalid_domains = replace(
         physical_domains,
@@ -1192,8 +1192,8 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 156" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 134" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 159" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 137" in catalog_lean
     assert "catalogPhysicalDomainReadOnlyViewContracts.length = 22" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
@@ -3100,6 +3100,7 @@ def test_candidate_retention_requires_exact_uncommitted_projection_fold() -> Non
             "search_posting",
             "catalog_publication_storage",
             "catalog_publication_download_time",
+            "catalog_publication_upload_time",
             "prepared_page",
             "prepared_thumbnail",
             "catalog_page",
@@ -4056,7 +4057,7 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "184 BCNF base relations" in valid.stdout
+    assert "186 BCNF base relations" in valid.stdout
     assert "46 intentional logical projections" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (
@@ -4087,3 +4088,128 @@ fds = [{ determinant = ["a"], dependent = ["b"] }]
     )
     assert invalid.returncode != 0
     assert "not BCNF under F+" in invalid.stderr
+
+
+@pytest.mark.parametrize(
+    "relation_name",
+    [
+        "gallery_gid_identity",
+        "gallery_observation_upload_time",
+        "catalog_publication_upload_time",
+    ],
+)
+def test_upload_time_authority_requires_exact_scalar_key(relation_name: str) -> None:
+    contract = checker.load_contract(CATALOG)
+    assert checker._validate_upload_time_authority(contract) == []
+    relation = next(item for item in contract.relations if item.name == relation_name)
+    broken = replace(relation, declared_keys=(frozenset({"upload_time"}),))
+    invalid = replace(
+        contract,
+        relations=tuple(
+            broken if item is relation else item for item in contract.relations
+        ),
+    )
+    assert any(
+        "must retain its exact observation/occurrence key" in error
+        for error in checker._validate_upload_time_authority(invalid)
+    )
+
+
+@pytest.mark.parametrize(
+    "projection", ["gallery_observation_metadata", "catalog_publication"]
+)
+def test_upload_time_projection_rejects_wrong_authority(projection: str) -> None:
+    contract = checker.load_contract(CATALOG)
+    relation = next(item for item in contract.relations if item.name == projection)
+    assert relation.materialization is not None
+    materialization = dict(relation.materialization)
+    materialization["derived_from"] = tuple(
+        name for name in materialization["derived_from"] if "upload_time" not in name
+    )
+    broken = replace(relation, materialization=materialization)
+    invalid = replace(
+        contract,
+        relations=tuple(
+            broken if item is relation else item for item in contract.relations
+        ),
+    )
+    assert any(
+        "must use its exact observation/occurrence authority" in error
+        for error in checker._validate_upload_time_authority(invalid)
+    )
+
+
+def test_metadata_local_requires_total_observation_upload_authority() -> None:
+    contract = checker.load_contract(CATALOG)
+    relation = next(
+        item
+        for item in contract.relations
+        if item.name == "gallery_observation_metadata_local"
+    )
+    broken = replace(
+        relation,
+        foreign_keys=tuple(
+            fk
+            for fk in relation.foreign_keys
+            if fk.relation != "gallery_observation_upload_time"
+        ),
+    )
+    invalid = replace(
+        contract,
+        relations=tuple(
+            broken if item is relation else item for item in contract.relations
+        ),
+    )
+    assert any(
+        "complete observation upload-time key" in error
+        for error in checker._validate_upload_time_authority(invalid)
+    )
+
+
+@pytest.mark.parametrize("as_decomposition", [False, True])
+def test_upload_time_authority_rejects_transitive_global_identity_claim(
+    as_decomposition: bool,
+) -> None:
+    contract = checker.load_contract(CATALOG)
+    attributes = ("gid", "publication_key", "upload_time")
+    dependencies = (
+        _fd({"gid"}, {"publication_key"}),
+        _fd({"publication_key"}, {"upload_time"}),
+    )
+    if as_decomposition:
+        false_claim = checker.Decomposition(
+            "false_global_upload",
+            frozenset(attributes),
+            dependencies,
+            (),
+            "Negative authority control",
+        )
+        invalid = replace(
+            contract, decompositions=(*contract.decompositions, false_claim)
+        )
+    else:
+        false_relation = _relation(
+            "false_global_upload", attributes, dependencies, (frozenset({"gid"}),)
+        )
+        invalid = replace(contract, relations=(*contract.relations, false_relation))
+    assert any(
+        "falsely derives upload_time" in error
+        for error in checker._validate_upload_time_authority(invalid)
+    )
+
+
+def test_upload_time_audit_obligation_cannot_drop_bounded_metadata_reuse() -> None:
+    contract = checker.load_contract(CATALOG)
+    identity = contract.gallery_observation_identity_contract
+    assert identity is not None
+    invalid = replace(
+        contract,
+        gallery_observation_identity_contract=replace(
+            identity, upload_time_obligation="Trust the global GID timestamp."
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="upload-time authority/audit obligations are incomplete",
+    ):
+        checker.validate_contract(invalid)

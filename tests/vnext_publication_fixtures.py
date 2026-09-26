@@ -14,12 +14,14 @@ from h2hdb.vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
+    CatalogPublicationUploadTimeFamily,
     PublicationCandidateFamily,
     PublicationIdentityFamily,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    ensure_catalog_publication_upload_time_family,
     ensure_publication_candidate_family,
     ensure_publication_identity_family,
 )
@@ -209,6 +211,7 @@ def seed_catalog_publication(
     modified_at: int,
     source_title_sha256: bytes,
     download_time: int = 0,
+    upload_time: int = 0,
     backend: str = "sqlite",
 ) -> CatalogPublicationFamily:
     family = CatalogPublicationFamily(
@@ -228,6 +231,11 @@ def seed_catalog_publication(
             publication_key,
             download_time,
         ),
+        backend=backend,
+    )
+    ensure_catalog_publication_upload_time_family(
+        connector,
+        CatalogPublicationUploadTimeFamily(revision, publication_key, upload_time),
         backend=backend,
     )
     return family

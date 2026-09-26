@@ -102,7 +102,7 @@ _CLEANUP_FROZEN_ROOT_SHAPES: Mapping[str, tuple[tuple[bytes, int], ...]] = (
             "PUBLICATION_IDENTITY": ((b"b", 32),),
             "GALLERY_IDENTITY": ((b"i", 8),),
             "SOURCE_GALLERY_NAME_GID": ((b"b", 255),),
-            "GALLERY_UPLOAD_TIME": ((b"i", 8),),
+            "GALLERY_GID_IDENTITY": ((b"i", 8),),
             "CANONICAL_VALUE_UPLOAD": ((b"i", 8), (b"b", 32)),
             "HASH_CACHE_OBSERVATION": ((b"b", 32), (b"b", 32)),
         }

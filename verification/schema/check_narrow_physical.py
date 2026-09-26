@@ -519,8 +519,12 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("gallery_id", "observation_id"),
         semantic_value=("file_key",),
     ),
-    "catalog_gallery_upload_times": NarrowLayoutDeclaration(
+    "catalog_gallery_gid_identities": NarrowLayoutDeclaration(
         semantic_key=("gid",),
+        semantic_value=(),
+    ),
+    "catalog_gallery_observation_upload_times": NarrowLayoutDeclaration(
+        semantic_key=("gallery_id", "observation_id"),
         semantic_value=("upload_time",),
     ),
     "catalog_source_gallery_name_gids": NarrowLayoutDeclaration(
@@ -722,6 +726,10 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_publication_download_times": NarrowLayoutDeclaration(
         semantic_key=("catalog_occurrence_sha256",),
         semantic_value=("download_time",),
+    ),
+    "catalog_publication_upload_times": NarrowLayoutDeclaration(
+        semantic_key=("catalog_occurrence_sha256",),
+        semantic_value=("upload_time",),
     ),
     "catalog_artifact_adapter_policy": NarrowLayoutDeclaration(
         semantic_key=("policy_fingerprint_sha256",),

@@ -63,7 +63,7 @@ from .domain import (
 from .sql_connector import SQLConnector
 
 V_NEXT_SCHEMA_EPOCH = 3
-V_NEXT_SCHEMA_VERSION = 8
+V_NEXT_SCHEMA_VERSION = 9
 SCHEMA_EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
 MARIADB_SCHEMA_EPOCH_GATE_NAME = "h2hdb:schema-epoch:3"
 
@@ -407,6 +407,9 @@ class _ReadOnlySemanticConnector(SQLConnector):
 
     def check_table_exists(self, table_name: str) -> bool:
         return self._connector.check_table_exists(table_name)
+
+    def primary_key_table_reference(self, relation: str) -> str:
+        return self._connector.primary_key_table_reference(relation)
 
     def commit(self) -> None:
         self._reject_mutation("commit")
@@ -907,6 +910,7 @@ class MariaDBSchemaEpochCatalog:
                 JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS cc
                   ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
                  AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+                 AND cc.TABLE_NAME = tc.TABLE_NAME
                 WHERE tc.TABLE_SCHEMA = DATABASE()
                   AND tc.TABLE_NAME = %s
                   AND tc.CONSTRAINT_TYPE = 'CHECK'

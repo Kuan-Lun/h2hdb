@@ -4131,9 +4131,9 @@ id = "catalog.publication-atomicity.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.data.all-bcnf", "lean.data.canonical-atomic-batch"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
-runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication", "runtime.production.canonical-atomic-batch"] }
-fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication", "fault.production.canonical-atomic-batch"] }
-integration = { status = "covered", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.connector-process-restart", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.observation-upload-time", "runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication", "runtime.production.canonical-atomic-batch"] }
+fault = { status = "covered", evidence = ["fault.production.observation-upload-time", "fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication", "fault.production.canonical-atomic-batch"] }
+integration = { status = "covered", evidence = ["integration.production.observation-upload-time", "integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication", "integration.live-mariadb.pipeline", "integration.pipeline.sqlite-workflows", "integration.production.connector-process-restart", "integration.live-mariadb.lease-reset", "integration.production.canonical-atomic-batch"] }
 
 [[invariant]]
 id = "catalog.discovery-exactness.v1"
@@ -4354,11 +4354,11 @@ integration = { status = "covered", evidence = ["integration.sqlite.gallery-stag
 [[invariant]]
 id = "catalog.source-qualification.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
-lean = { status = "covered", evidence = ["lean.data.source-qualification", "lean.data.overlay-exactness"] }
+lean = { status = "supporting", evidence = ["lean.data.source-qualification", "lean.data.overlay-exactness", "lean.data.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore has no source qualification scalar, decoder policy, or qualified observation projection; arbitrary source-list projection is covered by Lean and concrete persistence by runtime evidence." }
-runtime_refinement = { status = "covered", evidence = ["runtime.production.source-qualification", "runtime.production.writer-bindings"] }
-fault = { status = "covered", evidence = ["fault.production.source-qualification"] }
-integration = { status = "covered", evidence = ["integration.production.source-qualification"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.observation-upload-time", "runtime.production.source-qualification", "runtime.production.writer-bindings"] }
+fault = { status = "covered", evidence = ["fault.production.observation-upload-time", "fault.production.source-qualification"] }
+integration = { status = "covered", evidence = ["integration.production.observation-upload-time", "integration.production.source-qualification"] }
 
 [[evidence]]
 id = "runtime.production.database-audit-schedule"
@@ -4595,3 +4595,54 @@ tla = { status = "not_applicable", rationale = "CatalogCore does not model durab
 runtime_refinement = { status = "covered", evidence = ["runtime.production.source-collections", "runtime.production.writer-bindings"] }
 fault = { status = "covered", evidence = ["fault.production.source-collections"] }
 integration = { status = "covered", evidence = ["integration.sqlite.source-collections", "integration.live-mariadb.source-collections"] }
+
+[[evidence]]
+id = "runtime.production.observation-upload-time"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The observation key determines upload time; PUBLICATION writes its selected observation time atomically with the existing scalar family. The canonical source audit compares joined timestamps while reusing its one metadata traversal, and published readers use occurrence facts rather than a mutable or GID-global value."
+assumptions = ["Core timestamps are exact integer UTC microseconds supplied by the sealed metadata codec; this does not establish which upstream timestamp is objectively correct."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "_persist_metadata_facts"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "check_source_qualification_v1"
+[[evidence.location]]
+path = "src/h2hdb/vnext_publication_candidate_repository.py"
+symbol = "_insert_projection_child"
+[[evidence.location]]
+path = "src/h2hdb/vnext_publication_family.py"
+symbol = "ensure_catalog_publication_upload_time_family"
+
+[[evidence]]
+id = "fault.production.observation-upload-time"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Regressions reject a mutated observation timestamp and an attempted publication-time rewrite. A bare occurrence with only upload time remains a partial publication; timestamp audit cost tests reject extra per-observation SQL or metadata traversal at 0/127/128/129 observations."
+assumptions = ["These finite mutation and cost counterexamples are not a proof of every corruption or a full-library performance SLA."]
+[[evidence.location]]
+path = "tests/test_observation_upload_time.py"
+symbol = "test_upload_audit_rejects_changed_observation_scalar"
+[[evidence.location]]
+path = "tests/test_observation_upload_time.py"
+symbol = "test_upload_audit_batches_timestamps_without_rescanning_metadata"
+[[evidence.location]]
+path = "tests/test_observation_upload_time.py"
+symbol = "test_publication_upload_time_family_replays_exactly_and_rejects_mutation"
+
+[[evidence]]
+id = "integration.production.observation-upload-time"
+layer = "integration"
+strength = "runtime_integration"
+directness = "direct"
+claim = "Production ingest and publication workflows preserve distinct timestamps for observations sharing a GID, leave the prior publication unchanged during preparation, and use the selected observation for later publication, recent results, uploaded filters and tag ordering."
+assumptions = ["Finite backend fixtures exercise database semantics and cleanup, not external CBZ rendering or NAS storage throughput."]
+[[evidence.location]]
+path = "tests/test_observation_upload_time.py"
+symbol = "test_upload_correction_preserves_old_observation_and_publication_until_commit"
+[[evidence.location]]
+path = "tests/test_observation_upload_time.py"
+symbol = "test_same_gid_locations_keep_distinct_times_and_selected_winner_time"

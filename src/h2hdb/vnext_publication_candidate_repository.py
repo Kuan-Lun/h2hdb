@@ -89,6 +89,7 @@ from .vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
+    CatalogPublicationUploadTimeFamily,
     PublicationCandidateFamily,
     PublicationFamilyCollisionError,
     PublicationFamilyPartialError,
@@ -96,10 +97,12 @@ from .vnext_publication_family import (
     PublicationSelectionFamily,
     compare_catalog_publication_download_time_families,
     compare_catalog_publication_families,
+    compare_catalog_publication_upload_time_families,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    ensure_catalog_publication_upload_time_family,
     ensure_publication_candidate_family,
     ensure_publication_identity_family,
     ensure_publication_selection_family,
@@ -3714,17 +3717,6 @@ def _insert_projection_child(
                 expected_domain=b"catalog_language_utf8_v1",
                 child_cursor=child.cursor,
             )
-            published_at = publication.published_at
-            identity_row = work.connector.fetch_one(
-                "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
-                "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
-                "WHERE identity.publication_key = %s",
-                (child.publication_key,),
-            )
-            if identity_row != (published_at,):
-                raise PublicationCandidateConflictError(
-                    "publication published_at differs from immutable GID authority"
-                )
             _insert_projection_title(
                 work,
                 authority,
@@ -3745,6 +3737,15 @@ def _insert_projection_child(
                         language,
                         publication.modified_at,
                         source_title,
+                    ),
+                    backend=work.backend,
+                )
+                ensure_catalog_publication_upload_time_family(
+                    work.connector,
+                    CatalogPublicationUploadTimeFamily(
+                        revision,
+                        child.publication_key,
+                        publication.published_at,
                     ),
                     backend=work.backend,
                 )
@@ -4363,31 +4364,6 @@ def _catalog_child_kind_rows(
     )
 
 
-def _compare_publication_upload_times(
-    work: VNextUnitOfWork,
-    expected: dict[bytes, int],
-) -> None:
-    """Compare publication timestamps through their immutable GID authority."""
-
-    if not expected:
-        return
-    if len(expected) > _CATALOG_BATCH_ROWS:
-        raise ValueError("catalog publication timestamp batch exceeds 128 rows")
-    actual = work.connector.fetch_all(
-        "SELECT identity.publication_key, upload.upload_time "
-        "FROM catalog_publication_identities AS identity "
-        "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
-        "WHERE identity.publication_key IN ("
-        + ", ".join("%s" for _ in expected)
-        + ") LIMIT %s",
-        (*expected, len(expected) + 1),
-    )
-    if len(actual) != len(expected) or set(actual) != set(expected.items()):
-        raise PublicationCandidateConflictError(
-            "catalog publication upload times differ from independent evaluator"
-        )
-
-
 def _compare_projection_children(
     work: VNextUnitOfWork,
     authority: _MutationAuthority,
@@ -4399,7 +4375,7 @@ def _compare_projection_children(
     revision = authority.candidate.reserved_revision
     rows: list[_ProjectionRow] = []
     publications: list[CatalogPublicationFamily] = []
-    upload_times: dict[bytes, int] = {}
+    upload_times: list[CatalogPublicationUploadTimeFamily] = []
     download_times: list[CatalogPublicationDownloadTimeFamily] = []
     search_values: set[bytes] = set()
     for child in children:
@@ -4431,7 +4407,13 @@ def _compare_projection_children(
                         publication.source_title_sha256,
                     )
                 )
-                upload_times[key] = publication.published_at
+                upload_times.append(
+                    CatalogPublicationUploadTimeFamily(
+                        revision,
+                        key,
+                        publication.published_at,
+                    )
+                )
             case _CatalogChildKind.TITLE:
                 title = CatalogPublicationTitleFamily(
                     revision,
@@ -4576,11 +4558,13 @@ def _compare_projection_children(
         compare_catalog_publication_download_time_families(
             work.connector, tuple(download_times)
         )
+        compare_catalog_publication_upload_time_families(
+            work.connector, tuple(upload_times)
+        )
     except PublicationFamilyCollisionError as error:
         raise PublicationCandidateConflictError(
             "catalog occurrence family differs from independent evaluator"
         ) from error
-    _compare_publication_upload_times(work, upload_times)
     _compare_projection_rows(work, rows)
     if search_values:
         try:

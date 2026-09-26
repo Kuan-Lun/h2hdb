@@ -431,9 +431,8 @@ def _seed_selected_galleries(
         )
         source_gallery_name = f"gallery-{gallery_id}".encode()
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, %s)",
-            (10_000 + gallery_id, 1),
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+            (10_000 + gallery_id,),
         )
         connector.execute(
             "INSERT INTO catalog_source_gallery_name_gids "
@@ -444,6 +443,11 @@ def _seed_selected_galleries(
             "INSERT INTO catalog_gallery_source_name_accesses "
             "(gallery_id, source_gallery_name) VALUES (%s, %s)",
             (gallery_id, source_gallery_name),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_upload_times "
+            "(gallery_id, observation_id, upload_time) VALUES (%s, 1, 1)",
+            (gallery_id,),
         )
         connector.execute(
             "INSERT INTO catalog_gallery_observation_metadata_locals "
@@ -1431,9 +1435,8 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         (publication_key,),
     ) == (2,)
     assert connector.fetch_one(
-        "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
-        "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
-        "WHERE identity.publication_key = %s",
+        "SELECT upload_time FROM catalog_publications "
+        "WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (1,)
     assert connector.fetch_one(
@@ -1640,6 +1643,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         failures = (
             "INSERT INTO catalog_publication_occurrence_identities",
             "INSERT INTO catalog_publication_download_times",
+            "INSERT INTO catalog_publication_upload_times",
             "INSERT INTO catalog_title_search_postings",
             "INSERT INTO catalog_publication_batch_receipt_stored",
             "UPDATE catalog_publication_checkpoints",

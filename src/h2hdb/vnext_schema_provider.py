@@ -602,6 +602,7 @@ def _validate_mariadb_relation(
         JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS cc
           ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
          AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+         AND cc.TABLE_NAME = tc.TABLE_NAME
         WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
           AND tc.TABLE_NAME = %s
           AND tc.CONSTRAINT_TYPE = 'CHECK'

@@ -707,6 +707,7 @@ _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
     "catalog_storage_objects",
     "catalog_publication_storage",
     "catalog_publication_download_times",
+    "catalog_publication_upload_times",
     "catalog_contributors",
     "catalog_publication_order",
     "catalog_publication_contents",
@@ -760,7 +761,7 @@ def _seed_catalog_publication_cleanup_fixture(
             (gallery_id, b"g" * 32, b"s" * 32, b"l" * 32),
         ),
         (
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, 0)",
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
             (gid,),
         ),
         (
@@ -830,6 +831,16 @@ def _seed_catalog_publication_cleanup_fixture(
                         b"s" * 32,
                         b"l" * 32,
                         b"t" * 32,
+                    ),
+                ),
+                (
+                    "INSERT INTO catalog_publication_upload_times "
+                    "(catalog_occurrence_sha256, upload_time) VALUES (%s, %s)",
+                    (
+                        identity.catalog_publication_occurrence_sha256(
+                            revision, publication_key
+                        ),
+                        0,
                     ),
                 ),
                 (
@@ -2231,8 +2242,7 @@ def test_leaf_identity_strategies_delete_only_their_fixed_shard(
         else:
             assert insert_sql is not None
             connector.execute(
-                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                "VALUES (%s, 0)",
+                "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
                 (values[1],),
             )
             connector.execute(insert_sql, values)
@@ -2255,8 +2265,7 @@ def test_publication_selection_retains_its_derived_publication_identity(
         publication_key = identity.publication_key(gid)
         candidate_id = bytes((17,)) + b"c" * 15
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, 0)",
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
             (gid,),
         )
         connector.execute(
@@ -2323,7 +2332,7 @@ def test_publication_selection_retains_its_derived_publication_identity(
         connector.close()
 
 
-def test_publication_identity_retains_its_gid_upload_time(
+def test_publication_identity_retains_its_gid_identity(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "publication-upload-time-retention.sqlite3")
@@ -2331,8 +2340,7 @@ def test_publication_identity_retains_its_gid_upload_time(
         gid = 23
         publication_key = identity.publication_key(gid)
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, 123)",
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
             (gid,),
         )
         connector.execute(
@@ -2344,16 +2352,16 @@ def test_publication_identity_retains_its_gid_upload_time(
         cycle = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
         assert connector.fetch_one(
-            "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s",
+            "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
             (gid,),
-        ) == (123,)
+        ) == (gid,)
     finally:
         connector.close()
 
@@ -2458,6 +2466,7 @@ def test_all_strategies_match_the_closed_phase_registry(
             "CP_CONTENT",
             "CP_SUBJECT",
             "CP_ARTIFACT",
+            "CP_UPLOAD_TIME",
             "CP_ROOT",
         ),
         CleanupTargetKind.PUBLICATION_COMMIT: (
@@ -2547,7 +2556,7 @@ def test_all_strategies_match_the_closed_phase_registry(
             "GI_ROOT",
         ),
         CleanupTargetKind.SOURCE_GALLERY_NAME_GID: ("SNG_ROOT",),
-        CleanupTargetKind.GALLERY_UPLOAD_TIME: ("GUT_ROOT",),
+        CleanupTargetKind.GALLERY_GID_IDENTITY: ("GGI_ROOT",),
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD: ("CVU_ROOT",),
         CleanupTargetKind.HASH_CACHE_OBSERVATION: ("HC_FILE", "HC_ROOT"),
     }
@@ -4679,6 +4688,7 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
             if table in {
                 "catalog_publication_storage",
                 "catalog_publication_download_times",
+                "catalog_publication_upload_times",
             }:
                 selector = (
                     f"SELECT COUNT(*) FROM {table} AS child "
@@ -5061,6 +5071,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_gallery_observation_validation_dispositions",
         "catalog_gallery_observation_validation_policies",
         "catalog_gallery_observation_metadata_locals",
+        "catalog_gallery_observation_upload_times",
         "catalog_gallery_observation_directories",
         "catalog_gallery_observation_stat",
         "catalog_gallery_observation_scans",
@@ -5240,8 +5251,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     (b"g" * 32, b"s" * 32, b"l" * 32),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                    "VALUES (%s, 0)",
+                    "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
                     (gid,),
                 ),
                 (
@@ -5492,6 +5502,11 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
                     "language_sha256, modified_at, source_title_sha256) "
                     "VALUES (%s, 1, %s, %s, 1, %s)",
                     (occurrence, b"s" * 32, b"l" * 32, b"t" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_publication_upload_times "
+                    "(catalog_occurrence_sha256, upload_time) VALUES (%s, %s)",
+                    (occurrence, 0),
                 ),
                 (
                     "INSERT INTO catalog_publication_download_times "
@@ -6512,8 +6527,7 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
                     (b"b" * 16,),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                    "VALUES (%s, 10)",
+                    "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
                     (gid,),
                 ),
                 (
@@ -6528,6 +6542,14 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
                         (gallery_id, source_name),
                     )
                     for gallery_id in (42, 298)
+                ],
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_upload_times "
+                        "(gallery_id, observation_id, upload_time) VALUES (%s, %s, 10)",
+                        pair,
+                    )
+                    for pair in ((42, 1), (42, 2), (298, 1))
                 ],
                 *[
                     (
@@ -6569,12 +6591,13 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
             "catalog_gallery_observation_validation_dispositions",
             "catalog_gallery_observation_validation_policies",
             "catalog_gallery_observation_metadata_locals",
+            "catalog_gallery_observation_upload_times",
             "catalog_gallery_observation_directories",
             "catalog_gallery_observation_stat",
             "catalog_gallery_observation_scans",
         )
         assert not {
-            "catalog_gallery_upload_times",
+            "catalog_gallery_gid_identities",
             "catalog_source_gallery_name_gids",
             "catalog_gallery_source_name_accesses",
         }.intersection(
@@ -6592,7 +6615,7 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
         upload_time_cycle = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
         )
@@ -6626,8 +6649,8 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
             (298, 1, gid, 10, 13, 23),
         ]
         assert connector.fetch_all(
-            "SELECT gid, upload_time FROM catalog_gallery_upload_times"
-        ) == [(gid, 10)]
+            "SELECT gid FROM catalog_gallery_gid_identities"
+        ) == [(gid,)]
         assert connector.fetch_all(
             "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids"
         ) == [(source_name, gid)]
@@ -6644,15 +6667,14 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
         connector.close()
 
 
-def test_gallery_upload_time_cleanup_honors_analysis_impacted_gid_storage(
+def test_gallery_gid_identity_cleanup_honors_analysis_impacted_gid_storage(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "upload-time-analysis-gid-retention.sqlite3")
     try:
         gid = 9_101
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-            "VALUES (%s, 10)",
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
             (gid,),
         )
         _fixture_rows(
@@ -6669,15 +6691,15 @@ def test_gallery_upload_time_cleanup_honors_analysis_impacted_gid_storage(
         retained = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
         )
         assert _drain(connector, gate, retained)[-1].deleted_count == 0
         assert connector.fetch_one(
-            "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s",
+            "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
             (gid,),
-        ) == (10,)
+        ) == (gid,)
 
         connector.execute(
             "DELETE FROM catalog_analysis_impacted_gid_storage WHERE gid = %s",
@@ -6686,7 +6708,7 @@ def test_gallery_upload_time_cleanup_honors_analysis_impacted_gid_storage(
         reclaim = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
             now=100,
@@ -6694,7 +6716,7 @@ def test_gallery_upload_time_cleanup_honors_analysis_impacted_gid_storage(
         assert _drain(connector, gate, reclaim, now=101)[-1].deleted_count == 1
         assert (
             connector.fetch_one(
-                "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s",
+                "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
                 (gid,),
             )
             == ()
@@ -6715,8 +6737,7 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
             connector,
             [
                 (
-                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-                    "VALUES (%s, 10)",
+                    "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
                     (gid,),
                 ),
                 (
@@ -6749,7 +6770,7 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
         blocked_upload = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
         )
@@ -6779,12 +6800,12 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
         upload = _begin(
             connector,
             gate,
-            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            CleanupTargetKind.GALLERY_GID_IDENTITY,
             gid % 256,
             max_rows=8,
         )
         assert _drain(connector, gate, upload)[-1].deleted_count == 1
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_upload_times") == []
+        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_gid_identities") == []
     finally:
         connector.close()
 

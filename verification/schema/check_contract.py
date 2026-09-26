@@ -380,6 +380,7 @@ class GalleryObservationIdentityContract:
     write_obligation: str
     reuse_obligation: str
     qualification_obligation: str
+    upload_time_obligation: str
 
 
 @dataclass(frozen=True)
@@ -1808,7 +1809,7 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
         "selected_catalog_physical_relations_before": 190,
         "selected_catalog_physical_relations_after": 54,
         "catalog_physical_table_count_before": 306,
-        "catalog_physical_table_count_after": 184,
+        "catalog_physical_table_count_after": 186,
         "catalog_relations_added_after_recomposition": (
             "title_search_posting",
             "gallery_observation_completion_marker",
@@ -1824,11 +1825,13 @@ def _validate_capacity_plan(contract: Contract) -> list[str]:
             "source_collection_created_at",
             "source_collection_observation",
             "source_collection_consumption",
+            "gallery_observation_upload_time",
+            "catalog_publication_upload_time",
         ),
         "operational_physical_table_count_before": 75,
         "operational_physical_table_count_after": 73,
         "total_physical_table_count_before": 381,
-        "total_physical_table_count_after": 257,
+        "total_physical_table_count_after": 259,
         "mariadb_measurement_version": "10.11.11",
         "affected_catalog_relations": affected_catalog,
         "capacity_neutral_catalog_authority_substitutions": (
@@ -2428,6 +2431,7 @@ def validate_contract(contract: Contract) -> ValidationReport:
 
     if contract.scope == "catalog_data_plane":
         errors.extend(_validate_gallery_identity_chain_bcnf(relation_by_name))
+        errors.extend(_validate_upload_time_authority(contract))
 
     for relation in contract.relations:
         errors.extend(
@@ -3533,7 +3537,7 @@ _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
         "source_gallery_name_gid",
         ("source_gallery_name",),
     ),
-    "GALLERY_UPLOAD_TIME": ("gallery_upload_time", ("gid",)),
+    "GALLERY_GID_IDENTITY": ("gallery_gid_identity", ("gid",)),
 }
 
 
@@ -3963,6 +3967,7 @@ def _validate_retention_target(
                 "search_posting",
                 "catalog_publication_storage",
                 "catalog_publication_download_time",
+                "catalog_publication_upload_time",
                 "prepared_page",
                 "prepared_thumbnail",
                 "catalog_page",
@@ -4130,6 +4135,7 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "gallery_observation_identity_contract.write_obligation",
         "gallery_observation_identity_contract.reuse_obligation",
         "gallery_observation_identity_contract.qualification_obligation",
+        "gallery_observation_identity_contract.upload_time_obligation",
         "gallery_observation_page_contract.collision_obligation",
         "gallery_observation_page_contract.materialization_rule",
         "gallery_observation_page_contract.seal_obligation",
@@ -5170,6 +5176,7 @@ def _validate_publication_atomic_contract(
         "language_sha256",
         "modified_at",
         "download_time",
+        "upload_time",
     }
     if catalog_publication is None or set(catalog_publication.attributes) != (
         expected_publication_attributes
@@ -5878,6 +5885,22 @@ def _validate_gallery_observation_identity_contract(
         )
     ):
         errors.append(f"{prefix} qualification obligations are incomplete")
+    if not all(
+        term in contract.upload_time_obligation
+        for term in (
+            "canonical METADATA",
+            "(gallery_id, observation_id)",
+            "independently of GID",
+            "metadata-local row must reference that scalar",
+            "exact-compare retries",
+            "same 128-observation keyset page",
+            "without another metadata traversal or per-observation timestamp query",
+            "GO_OBSERVATION_FACTS",
+        )
+    ):
+        errors.append(
+            f"{prefix} upload-time authority/audit obligations are incomplete"
+        )
     relation = relations.get(contract.relation)
     if relation is None:
         errors.append(f"{prefix} references an unknown relation")
@@ -8890,7 +8913,7 @@ def _validate_analysis_impacted_key_contract(
                         "analysis_run_descriptor",
                         ("analysis_id",),
                     ),
-                    (("gid",), "gallery_upload_time", ("gid",)),
+                    (("gid",), "gallery_gid_identity", ("gid",)),
                 }
             ):
                 errors.append(
@@ -9488,6 +9511,116 @@ def _validate_relation(relation: Relation) -> tuple[list[str], RelationReport]:
 _GALLERY_IDENTITY_CHAIN_GALLERY_ATTRIBUTES = frozenset(
     {"gallery_id", "owner_gallery_id", "winner_gallery_id", "witness_gallery_id"}
 )
+
+
+def _validate_upload_time_authority(contract: Contract) -> list[str]:
+    """Reject global upload-time authority independently of local BCNF claims."""
+
+    errors: list[str] = []
+    relations = {relation.name: relation for relation in contract.relations}
+    scalar_specs = {
+        "gallery_gid_identity": (("gid",), None),
+        "gallery_observation_upload_time": (
+            ("gallery_id", "observation_id"),
+            "gallery_observation_allocation",
+        ),
+        "catalog_publication_upload_time": (
+            ("catalog_occurrence_sha256",),
+            "catalog_publication_occurrence_identity",
+        ),
+    }
+    for name, (key, parent) in scalar_specs.items():
+        relation = relations.get(name)
+        values = () if parent is None else ("upload_time",)
+        expected_fds = (
+            ()
+            if parent is None
+            else (FunctionalDependency(frozenset(key), frozenset(values)),)
+        )
+        expected_fks = () if parent is None else (ForeignKey(key, parent, key),)
+        if (
+            relation is None
+            or relation.kind != "source_of_truth"
+            or relation.attributes != key + values
+            or relation.declared_keys != (frozenset(key),)
+            or relation.functional_dependencies != expected_fds
+            or relation.foreign_keys != expected_fks
+            or relation.materialization is not None
+        ):
+            errors.append(
+                f"upload-time authority relation {name!r} must retain its exact observation/occurrence key"
+            )
+    if "gallery_upload_time" in relations:
+        errors.append("global GID-to-upload-time authority is forbidden")
+
+    metadata_local = relations.get("gallery_observation_metadata_local")
+    upload_fk = ForeignKey(
+        ("gallery_id", "observation_id"),
+        "gallery_observation_upload_time",
+        ("gallery_id", "observation_id"),
+    )
+    if metadata_local is None or upload_fk not in metadata_local.foreign_keys:
+        errors.append(
+            "metadata local authority must require the complete observation upload-time key"
+        )
+    projections = {
+        "gallery_observation_metadata": (
+            "gallery_observation_metadata_projection",
+            (
+                "gallery_observation_metadata_local",
+                "gallery_source_name_access",
+                "source_gallery_name_gid",
+                "gallery_observation_upload_time",
+            ),
+        ),
+        "catalog_publication": (
+            "catalog_publication_projection",
+            (
+                "catalog_publication_storage",
+                "catalog_publication_occurrence_identity",
+                "catalog_publication_download_time",
+                "catalog_publication_upload_time",
+                "gallery_source_name_access",
+                "source_gallery_name_gid",
+                "publication_identity",
+            ),
+        ),
+    }
+    for name, (pattern, sources) in projections.items():
+        relation = relations.get(name)
+        materialization = None if relation is None else relation.materialization
+        if (
+            materialization is None
+            or materialization.get("storage") != "logical_view"
+            or materialization.get("view_pattern") != pattern
+            or tuple(materialization.get("derived_from", ())) != sources
+        ):
+            errors.append(
+                f"upload-time projection {name!r} must use its exact observation/occurrence authority"
+            )
+
+    # Check closure, rather than only individual FDs: a false authority may be
+    # hidden behind a basename/GID/publication-key transitive dependency.
+    identity_attributes = frozenset(
+        {"gallery_id", "source_gallery_name", "gid", "publication_key"}
+    )
+    for subject in (*contract.relations, *contract.decompositions):
+        attributes = (
+            frozenset(subject.attributes)
+            if isinstance(subject, Relation)
+            else subject.universal_attributes
+        )
+        identity = attributes & identity_attributes
+        if (
+            "upload_time" in attributes
+            and identity
+            and "upload_time"
+            in attribute_closure(identity, subject.functional_dependencies)
+        ):
+            errors.append(
+                f"{subject.name!r} falsely derives upload_time from global gallery/GID/publication identity"
+            )
+    return errors
 
 
 def _validate_gallery_identity_chain_bcnf(
@@ -12569,6 +12702,7 @@ def _parse_gallery_observation_identity_contract(
         write_obligation=_string(value, "write_obligation", context),
         reuse_obligation=_string(value, "reuse_obligation", context),
         qualification_obligation=_string(value, "qualification_obligation", context),
+        upload_time_obligation=_string(value, "upload_time_obligation", context),
     )
 
 

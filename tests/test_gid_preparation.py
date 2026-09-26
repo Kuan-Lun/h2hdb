@@ -85,9 +85,7 @@ def _issue(tmp_path: Path, stage: bytes) -> Iterator[_GidIssue]:
 
 
 def _change_normalized_gid(connector: SQLConnector) -> None:
-    connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (2, 0)"
-    )
+    connector.execute("INSERT INTO catalog_gallery_gid_identities (gid) VALUES (2)")
     connector.execute(
         "UPDATE catalog_source_gallery_name_gids SET gid = 2 WHERE gid = 1"
     )

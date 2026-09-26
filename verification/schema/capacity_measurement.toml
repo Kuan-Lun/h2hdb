@@ -14,9 +14,9 @@ benchmark_insert_batch_size = 5000
 benchmark_insertion_order = "full_churn_fill_delete_different_domain_refill_five_then_sixth_append_v2"
 measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
 soft_limit_bytes = 400000000
-capacity_plan_sha256 = "198ffa62af511d6bfa04bdb0895f7f6d9fa9ee9d692e13f12bd91c0bf1f2e21e"
-catalog_physical_manifest_sha256 = "04ab85130a42fc579419206dafa4b6b5a6938c213a8bfc7e3e0b75598559731c"
-operational_physical_manifest_sha256 = "40c66d571e10f80804500a78717cbfab56f10f7d1b1940e210b884311f8f77d8"
+capacity_plan_sha256 = "90440b0372eda836f6d5538115ae01c95ff5f680ff79d245f162b0d621826437"
+catalog_physical_manifest_sha256 = "84101e6ef0452395e8a76fb37e229c0b5b24d66c7e428706e56178a6b6b72907"
+operational_physical_manifest_sha256 = "d81fc42671f508b14892ba3c02cc3b0bd48e3bd0d43fdd131bf1adf516b23b35"
 
 [registry_measurement]
 relation = "analysis_policy"

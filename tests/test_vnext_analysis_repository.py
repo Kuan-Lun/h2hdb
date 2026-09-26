@@ -971,11 +971,11 @@ def _seed_preparation_facts(
         (gallery_id,),
     )[0]
     if not connector.fetch_one(
-        "SELECT 1 FROM catalog_gallery_upload_times WHERE gid = %s", (metadata.gid,)
+        "SELECT 1 FROM catalog_gallery_gid_identities WHERE gid = %s", (metadata.gid,)
     ):
         connector.execute(
-            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-            (metadata.gid, metadata.upload_time),
+            "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+            (metadata.gid,),
         )
     if not connector.fetch_one(
         "SELECT 1 FROM catalog_source_gallery_name_gids WHERE source_gallery_name = %s",
@@ -995,6 +995,11 @@ def _seed_preparation_facts(
             "(gallery_id, source_gallery_name) VALUES (%s, %s)",
             (gallery_id, source_gallery_name),
         )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_upload_times "
+        "(gallery_id, observation_id, upload_time) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, metadata.upload_time),
+    )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_metadata_locals "
         "(gallery_id, observation_id, download_time, modified_time) "
@@ -5084,8 +5089,8 @@ def _seed_minimal_gid_metadata(
     gid = 20_000 + gallery_id
     source_name = f"batch-gallery-{gallery_id}".encode("ascii")
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
-        (gid, 1),
+        "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
+        (gid,),
     )
     connector.execute(
         "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
@@ -5096,6 +5101,11 @@ def _seed_minimal_gid_metadata(
         "INSERT INTO catalog_gallery_source_name_accesses "
         "(gallery_id, source_gallery_name) VALUES (%s, %s)",
         (gallery_id, source_name),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_upload_times "
+        "(gallery_id, observation_id, upload_time) VALUES (%s, %s, 1)",
+        (gallery_id, observation_id),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_metadata_locals "

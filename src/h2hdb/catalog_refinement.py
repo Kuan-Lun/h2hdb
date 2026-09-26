@@ -3626,6 +3626,9 @@ def _validate_catalog_occurrence_storage(
         LEFT JOIN catalog_publication_download_times AS downloaded
           ON downloaded.catalog_occurrence_sha256 =
              occurrence.catalog_occurrence_sha256
+        LEFT JOIN catalog_publication_upload_times AS uploaded
+          ON uploaded.catalog_occurrence_sha256 =
+             occurrence.catalog_occurrence_sha256
         LEFT JOIN catalog_gallery_source_name_accesses AS access
           ON access.gallery_id = stored.gallery_id
         LEFT JOIN catalog_source_gallery_name_gids AS name_gid
@@ -3636,6 +3639,7 @@ def _validate_catalog_occurrence_storage(
           AND (
             stored.catalog_occurrence_sha256 IS NULL
             OR downloaded.catalog_occurrence_sha256 IS NULL
+            OR uploaded.catalog_occurrence_sha256 IS NULL
             OR derived.publication_key IS NULL
             OR derived.publication_key <> occurrence.publication_key
           )
@@ -3645,7 +3649,7 @@ def _validate_catalog_occurrence_storage(
     )
     if mismatch:
         raise CatalogSemanticValidationError(
-            "active catalog occurrence identity/storage/download-time is not congruent"
+            "active catalog occurrence identity/storage/timestamps are not congruent"
         )
 
 
@@ -4903,8 +4907,11 @@ def _validate_tag_browse_orders(
                 "AND publication.publication_key = ordered.publication_key "
                 "LEFT JOIN catalog_publication_identities AS identity "
                 "ON identity.publication_key = ordered.publication_key "
-                "LEFT JOIN catalog_gallery_upload_times AS uploaded "
-                "ON uploaded.gid = identity.gid "
+                "LEFT JOIN catalog_publication_occurrence_identities AS occurrence "
+                "ON occurrence.revision = ordered.revision "
+                "AND occurrence.publication_key = ordered.publication_key "
+                "LEFT JOIN catalog_publication_upload_times AS uploaded "
+                "ON uploaded.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
                 "LEFT JOIN catalog_publication_titles AS title "
                 "ON title.revision = ordered.revision "
                 "AND title.publication_key = ordered.publication_key "
@@ -6940,21 +6947,43 @@ def check_source_qualification_v1(connector: SQLConnector) -> None:
     """Reconstruct every retained qualification from its exact canonical byte tree."""
 
     retirement = _validated_open_observation_retirement(connector)
+    observations = connector.primary_key_table_reference("catalog_gallery_observations")
     after_gallery = after_observation = 0
     while True:
+        # Separate disjoint PK ranges avoid rescanning an ever-growing prefix.
+        # Each range contributes at most 128 candidates before the final merge.
         rows = connector.fetch_all(
-            "SELECT gallery_id, observation_id FROM catalog_gallery_observations "
-            "WHERE gallery_id > %s OR (gallery_id = %s AND observation_id > %s) "
-            "ORDER BY gallery_id, observation_id LIMIT 128",
-            (after_gallery, after_gallery, after_observation),
+            "SELECT observed.gallery_id, observed.observation_id, uploaded.upload_time "
+            "FROM ("
+            "SELECT gallery_id, observation_id FROM ("
+            f"SELECT gallery_id, observation_id FROM {observations} "
+            "WHERE gallery_id = %s AND observation_id > %s "
+            "ORDER BY observation_id LIMIT 128) AS same_gallery "
+            "UNION ALL SELECT gallery_id, observation_id FROM ("
+            f"SELECT gallery_id, observation_id FROM {observations} "
+            "WHERE gallery_id > %s ORDER BY gallery_id, observation_id LIMIT 128"
+            ") AS later_galleries) AS observed "
+            "LEFT JOIN catalog_gallery_observation_upload_times AS uploaded "
+            "ON uploaded.gallery_id = observed.gallery_id "
+            "AND uploaded.observation_id = observed.observation_id "
+            "ORDER BY observed.gallery_id, observed.observation_id LIMIT 128",
+            (after_gallery, after_observation, after_gallery),
         )
         if not rows:
             return
-        for gallery_id, observation_id in rows:
+        for gallery_id, observation_id, upload_time in rows:
             try:
                 receipt = identity.validate_gallery_observation_metadata_parts(
                     iter_metadata_chunks(connector, gallery_id, observation_id)
                 )
+                upload_retired = retirement is not None and retirement.covers(
+                    13, 5, (gallery_id, observation_id)
+                )
+                expected_upload = None if upload_retired else receipt.upload_time
+                if upload_time != expected_upload:
+                    raise CatalogSemanticValidationError(
+                        "source observation upload time differs from canonical metadata"
+                    )
                 retired_columns = frozenset(
                     column
                     for index, (_table, column) in enumerate(
@@ -6986,7 +7015,7 @@ def check_source_qualification_v1(connector: SQLConnector) -> None:
                 raise CatalogSemanticValidationError(
                     f"{error}: gallery_id={gallery_id}, observation_id={observation_id}"
                 ) from error
-        after_gallery, after_observation = rows[-1]
+        after_gallery, after_observation = rows[-1][:2]
 
 
 def check_canonical_reference_domains_v1(connector: SQLConnector) -> None:
@@ -7609,7 +7638,7 @@ def _observation_retirement_cursor(
             "OPEN observation cleanup cursor is malformed"
         )
     relation = int.from_bytes(cursor[1:3], "big")
-    if relation >= {8: 5, 12: 1, 13: 8}[phase_order]:
+    if relation >= {8: 5, 12: 1, 13: 9}[phase_order]:
         raise CatalogSemanticValidationError(
             "OPEN observation cleanup cursor relation is invalid"
         )
@@ -7744,7 +7773,7 @@ def _require_deleted_observation_file_prefix(
             )
 
 
-def _require_deleted_observation_qualification_prefix(
+def _require_deleted_observation_metadata_prefix(
     connector: SQLConnector,
     retirement: _OpenObservationRetirement,
 ) -> None:
@@ -7752,7 +7781,16 @@ def _require_deleted_observation_qualification_prefix(
 
     if retirement.phase_order < 13:
         return
-    for index, (table, _column) in enumerate(_OBSERVATION_QUALIFICATION_RETIREMENT):
+    retired_children = (
+        *(
+            (index, table)
+            for index, (table, _column) in enumerate(
+                _OBSERVATION_QUALIFICATION_RETIREMENT
+            )
+        ),
+        (5, "catalog_gallery_observation_upload_times"),
+    )
+    for index, table in retired_children:
         covered = sorted(
             root for root in retirement.roots if retirement.covers(13, index, root)
         )
@@ -7769,7 +7807,7 @@ def _require_deleted_observation_qualification_prefix(
             if rows:
                 raise CatalogSemanticValidationError(
                     "source qualification differs from canonical metadata: "
-                    "retired qualification facts reappeared; "
+                    "retired metadata facts reappeared; "
                     f"gallery_id={rows[0][0]}, observation_id={rows[0][1]}"
                 )
 
@@ -7876,7 +7914,7 @@ def _validated_open_observation_retirement(
     )
     retirement = _OpenObservationRetirement(frozen_roots, phase_order, relation, values)
     _require_deleted_observation_file_prefix(connector, retirement)
-    _require_deleted_observation_qualification_prefix(connector, retirement)
+    _require_deleted_observation_metadata_prefix(connector, retirement)
     return retirement
 
 

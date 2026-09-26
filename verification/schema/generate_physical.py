@@ -110,6 +110,10 @@ def runtime_obligation_records(
             ],
         ),
         (
+            "gallery_observation_identity_contract.upload_time_obligation",
+            catalog["gallery_observation_identity_contract"]["upload_time_obligation"],
+        ),
+        (
             "gallery_observation_identity_contract.write_obligation",
             catalog["gallery_observation_identity_contract"]["write_obligation"],
         ),
@@ -613,7 +617,8 @@ TABLE_NAMES = {
     "gallery_observation_page_key_bounds": "catalog_gallery_observation_page_key_bounds",
     "gallery_observation_page_child": "catalog_gallery_observation_page_children",
     "gallery_observation_tree_root": "catalog_gallery_observation_tree_roots",
-    "gallery_upload_time": "catalog_gallery_upload_times",
+    "gallery_gid_identity": "catalog_gallery_gid_identities",
+    "gallery_observation_upload_time": "catalog_gallery_observation_upload_times",
     "source_gallery_name_gid": "catalog_source_gallery_name_gids",
     "gallery_source_name_access": "catalog_gallery_source_name_accesses",
     "gallery_observation_metadata_local": "catalog_gallery_observation_metadata_locals",
@@ -763,6 +768,7 @@ TABLE_NAMES = {
     "title_sort": "catalog_title_sorts",
     "catalog_publication_storage": "catalog_publication_storage",
     "catalog_publication_download_time": "catalog_publication_download_times",
+    "catalog_publication_upload_time": "catalog_publication_upload_times",
     "catalog_publication_occurrence_identity": "catalog_publication_occurrence_identities",
     "catalog_publication": "catalog_publications",
     "catalog_publication_order": "catalog_publication_order",
