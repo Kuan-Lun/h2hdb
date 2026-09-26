@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from itertools import product
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -36,7 +36,7 @@ def probe() -> Iterator[ModuleType]:
         sys.modules.pop(name, None)
 
 
-@pytest.mark.parametrize("files", [0, 32769, True, -1])
+@pytest.mark.parametrize("files", [0, 2_097_153, True, -1])
 def test_fixture_rejects_unbounded_or_non_integer_sizes(
     probe: ModuleType, files: int
 ) -> None:
@@ -56,9 +56,116 @@ def test_regimes_keep_independent_metadata_and_multiplicity_cardinalities(
     assert multiplicities[257] == 32
     assert sum(multiplicities.values()) == 32768 - 32 * 256
     assert probe.stream_sizes(metadata)["anchors"] == 32768
-    assert probe.stream_sizes(metadata)["derived_hash_occurrences"] == 32768 - 32
+    assert probe.stream_sizes(metadata)["derived_hash_occurrences"] == 32768
     assert probe.seek_budget("anchors", metadata) == 1064
-    assert probe.seek_budget("derived_hash_occurrences", metadata) == 1320
+    assert probe.seek_budget("derived_hash_occurrences", metadata) == 1064
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"galleries": 0},
+        {"galleries": True},
+        {"galleries": 131073},
+        {"observations": 0},
+        {"observations": 65},
+        {"observations": True},
+        {"shared_names": 1},
+    ],
+)
+def test_shape_dimensions_are_independently_bounded(
+    probe: ModuleType, changes: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError):
+        probe.Shape(129, **changes)
+    assert probe.Shape(2_097_152, galleries=8192, observations=2, shared_names=True)
+
+
+def test_shared_names_isolate_join_fanout_without_changing_hash_cardinality(
+    probe: ModuleType,
+) -> None:
+    unique = probe.file_facts(probe.Shape(32768, galleries=128))
+    shared = probe.file_facts(probe.Shape(32768, galleries=128, shared_names=True))
+    assert len({fact.key for fact in unique}) == 32768
+    assert len({fact.key for fact in shared}) == 128
+    assert set(Counter(fact.key for fact in shared).values()) == {256}
+    assert [fact.digest for fact in unique] == [fact.digest for fact in shared]
+    assert probe.stream_sizes(unique) == probe.stream_sizes(shared)
+    assert probe.seek_budget("derived_hash_occurrences", unique) == 1064
+    assert probe.seek_budget("derived_hash_occurrences", shared) == 1064
+
+
+@pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
+def test_changed_gallery_history_and_shared_names_seed_exact_real_authorities(
+    probe: ModuleType, regime: str
+) -> None:
+    facts = probe.file_facts(
+        probe.Shape(257, regime, galleries=17, observations=3, shared_names=True)
+    )
+    expected = probe.expected_stream_rows(facts)
+    streams = probe.fixture_streams(facts)
+    assert {kind: list(rows) for kind, rows in streams.items()} == expected
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+        assert connector.fetch_all(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_allocations "
+            "ORDER BY gallery_id, observation_id"
+        ) == sorted({(fact.gallery, fact.observation) for fact in facts})
+        for _ in range(3):
+            captured, measured = probe.capture_validator(connector, facts)
+            assert measured["fixed_select_calls"]["metadata_file_identity"] == 1
+            assert sum(
+                query.returned_rows for query in captured["derived_hash_occurrences"]
+            ) == len(facts)
+            ordered_content = [
+                row
+                for row in expected["derived_hash_occurrences"]
+                if row[3] != probe.identity.file_key(b"galleryinfo.txt")
+            ]
+            for query in captured["derived_hash_occurrences"]:
+                sql, parameters = probe.joined_content_baseline(
+                    query.sql, query.parameters
+                )
+                cursor = query.parameters[-5:-1]
+                assert (
+                    connector.fetch_all(sql, parameters)
+                    == [row for row in ordered_content if row > cursor][:128]
+                )
+
+
+@pytest.mark.parametrize("lookup_calls", (0, 2))
+def test_fixed_cost_oracle_rejects_missing_or_repeated_metadata_lookup(
+    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, lookup_calls: int
+) -> None:
+    facts = probe.file_facts(probe.Shape(129))
+    original = probe.role.check_role_derivation_v1
+
+    def degraded(connector: Any) -> None:
+        lookup = connector.fetch_one
+
+        def repeat(sql: str, parameters: tuple[Any, ...] = ()) -> tuple[Any, ...]:
+            if probe.fixed_query_kind(sql) != "metadata_file_identity":
+                return cast(tuple[Any, ...], lookup(sql, parameters))
+            result: tuple[Any, ...] = ()
+            for _ in range(lookup_calls):
+                result = lookup(sql, parameters)
+            return result
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(connector, "fetch_one", repeat)
+            original(connector)
+
+    monkeypatch.setattr(probe.role, "check_role_derivation_v1", degraded)
+    with probe.databases("sqlite", 1) as connections:
+        connector = next(connections)
+        probe.seed_fixture(connector, facts)
+        with pytest.raises(
+            RuntimeError,
+            match="fixed role query count mismatch: metadata_file_identity",
+        ):
+            probe.capture_validator(connector, facts)
 
 
 @pytest.mark.parametrize("files, calls", [(127, 14), (128, 14), (129, 21)])
@@ -71,11 +178,12 @@ def test_actual_role_validator_has_seven_streams_and_terminal_empty_page(
         probe.seed_fixture(connector, facts)
         captured, measured = probe.capture_validator(connector, facts)
     assert measured["stream_select_calls"] == calls
-    assert measured["select_calls"] == calls + 8
-    assert measured["fixed_select_calls_total"] == 8
+    assert measured["select_calls"] == calls + 9
+    assert measured["fixed_select_calls_total"] == 9
     assert measured["fixed_select_calls"] == {
         **dict.fromkeys(probe.REGISTRY_QUERIES, 1),
         "observation_cleanup_authority": 1,
+        "metadata_file_identity": 1,
     }
     assert set(captured) == set(probe.STREAMS)
     for queries in captured.values():
@@ -113,7 +221,7 @@ def test_real_validator_accepts_duplicate_groups_and_metadata_filter(
         assert expected["derived_hash_occurrences"] == 8224
         assert expected["stored_hash_occurrences"] == 32
     else:
-        assert expected["derived_hash_occurrences"] == 97
+        assert expected["derived_hash_occurrences"] == 129
 
 
 @pytest.mark.parametrize("files", (127, 128, 129))
@@ -131,9 +239,9 @@ def test_production_boundary_pages_match_fixture_facts_in_repeated_cycles(
             assert measured["stream_select_calls"] == sum(
                 (size + 127) // 128 + 1 for size in expected.values()
             )
-            assert measured["fixed_select_calls_total"] == 8
+            assert measured["fixed_select_calls_total"] == 9
             assert measured["fixed_select_calls"]["observation_cleanup_authority"] == 1
-            assert measured["select_calls"] == measured["stream_select_calls"] + 8
+            assert measured["select_calls"] == measured["stream_select_calls"] + 9
             for queries in captured.values():
                 assert queries[-1].returned_rows == 0
                 for query in queries:
@@ -219,14 +327,9 @@ def test_sqlite_production_seek_cost_and_removed_tuple_negative_control(
         for _cycle in range(3):
             captured, _ = probe.capture_validator(connector, facts)
             for kind, queries in captured.items():
-                metadata = (
-                    sum(fact.name == b"galleryinfo.txt" for fact in facts)
-                    if kind == "derived_hash_occurrences"
-                    else 0
-                )
                 # An independently declared generous VM budget for bounded
                 # row work and point joins, not an elapsed-time threshold.
-                budget = 128 * (128 + metadata + 1) + 256
+                budget = 128 * (128 + 1) + 256
                 rejected = False
                 for index in set(probe.sample_positions(queries).values()):
                     query = queries[index]
@@ -433,8 +536,12 @@ def test_binary_condition_with_raw_quote_keeps_counts_and_original_evidence(
 @pytest.mark.skipif(
     not hasattr(signal, "SIGALRM"), reason="manual CLI requires POSIX cooperative alarm"
 )
+@pytest.mark.parametrize("timeout_seconds", (900, 1801, 3600))
 def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: int,
 ) -> None:
     output = tmp_path / "report.json"
     closed = []
@@ -468,6 +575,8 @@ def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
             "127",
             "--regimes",
             "distinct",
+            "--timeout-seconds",
+            str(timeout_seconds),
             "--output",
             str(output),
         ],
@@ -477,3 +586,36 @@ def test_case_failure_keeps_partial_report_and_closes_fixture_owner(
     assert closed == [True]
     assert json.loads(output.read_text())["status"] == "incomplete"
     assert json.loads(output.read_text())["error"]["type"] == "ValueError"
+    assert (
+        json.loads(output.read_text())["configured_timeout_seconds"] == timeout_seconds
+    )
+
+
+@pytest.mark.parametrize("timeout_seconds", (0, 3601))
+def test_cli_rejects_unbounded_execution_envelope_before_database_or_report(
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: int,
+) -> None:
+    output = tmp_path / "must-not-exist.json"
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("invalid CLI started a database fixture")
+
+    monkeypatch.setattr(probe, "databases", forbidden)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "role-probe",
+            "--timeout-seconds",
+            str(timeout_seconds),
+            "--output",
+            str(output),
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        probe.main()
+    assert error.value.code == 2
+    assert not output.exists()

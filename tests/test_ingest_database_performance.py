@@ -17,8 +17,9 @@ import subprocess
 import sys
 import time
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -61,6 +62,94 @@ def _turn(acceptance: ModuleType, *, calls: int = 1) -> dict[str, Any]:
         "cleanup": "DONE",
         "measurements": measurements,
     }
+
+
+def _audit(acceptance: ModuleType, *, seconds: float = 1.0) -> dict[str, Any]:
+    observer = acceptance.AcceptanceObserver()
+    observer.phase = "ready_audit"
+    observer.record_sql_operation("sql", 0.001, "SELECT 1", 1)
+    return {
+        "state": "READY",
+        "wall_seconds": seconds,
+        "measurements": observer.report(),
+    }
+
+
+@pytest.mark.parametrize("files", [1, 127, 128, 129, 66048])
+def test_full_audit_cost_has_an_independent_fixed_boundary(
+    acceptance: ModuleType, files: int
+) -> None:
+    # The arithmetic oracle is deliberately independent of production constants.
+    ceiling = 60.0 + files / 500
+    for elapsed, expected in (
+        (ceiling - 0.001, "satisfied"),
+        (ceiling, "satisfied"),
+        (ceiling + 0.001, "violated"),
+    ):
+        verdict = acceptance.assess_ready_audit(
+            _audit(acceptance, seconds=elapsed), retained_galleries=1, pages=files - 1
+        )
+        assert verdict["status"] == expected
+        assert verdict["checks"][0]["upper_bound"] == ceiling
+        assert verdict["dimensions"]["retained_source_files"] == files
+        assert verdict["attribution"]["status"] == "complete"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unfinished",
+        "negative",
+        "nan",
+        "missing",
+        "scope",
+        "sql_wall",
+        "truncated",
+        "empty_sql",
+    ],
+)
+def test_incomplete_audit_cannot_be_accepted(
+    acceptance: ModuleType, fault: str
+) -> None:
+    audit = _audit(acceptance)
+    if fault == "unfinished":
+        audit["state"] = "BUILDING"
+    elif fault == "negative":
+        audit["wall_seconds"] = -1.0
+    elif fault == "nan":
+        audit["wall_seconds"] = float("nan")
+    elif fault == "missing":
+        del audit["wall_seconds"]
+    elif fault == "scope":
+        audit["measurements"]["queries"][0]["pipeline"] = "source"
+    elif fault == "sql_wall":
+        audit["wall_seconds"] = 0.0001
+    elif fault == "truncated":
+        audit["measurements"]["query_details_truncated"] = True
+    else:
+        observer = acceptance.AcceptanceObserver()
+        observer.phase = "ready_audit"
+        observer.record_sql_operation("connection", 0.001, "connect", 0)
+        audit["measurements"] = observer.report()
+    with pytest.raises(ValueError):
+        acceptance.assess_ready_audit(audit, retained_galleries=1, pages=1)
+
+
+def test_audit_violation_is_independent_and_cannot_hide_behind_pipeline_success(
+    acceptance: ModuleType,
+) -> None:
+    case: dict[str, Any] = {
+        "kind": "append",
+        "galleries": 1,
+        "batch": 1,
+        "turns": [{"selected": 1, "added": 1, "acceptance": {"status": "satisfied"}}],
+        "audit_acceptance": {"status": "violated"},
+    }
+    assert acceptance.acceptance_status([case], scope="pipeline") == "satisfied"
+    assert acceptance.acceptance_status([case], scope="ready_audit") == "violated"
+    assert acceptance.acceptance_status([case]) == "violated"
+    del case["audit_acceptance"]
+    assert acceptance.acceptance_status([case]) == "incomplete"
 
 
 @pytest.mark.parametrize("pages", [0, 1, 63, 64, 65, 127, 128, 129, 255, 256, 257, 512])
@@ -170,6 +259,7 @@ def test_missing_turn_or_retirement_acceptance_is_incomplete(
         "kind": "append",
         "galleries": 2,
         "batch": 1,
+        "audit_acceptance": passed,
         "turns": [
             {"selected": 1, "added": 1, "acceptance": passed},
             {"selected": 2, "added": 1},
@@ -180,8 +270,8 @@ def test_missing_turn_or_retirement_acceptance_is_incomplete(
         "kind": "replacement",
         "replacement_cycles": 1,
         "turns": [
-            {"cycle": 0, "acceptance": passed},
-            {"cycle": 1, "acceptance": passed},
+            {"cycle": 0, "acceptance": passed, "audit_acceptance": passed},
+            {"cycle": 1, "acceptance": passed, "audit_acceptance": passed},
         ],
     }
     assert acceptance.acceptance_status([replacement]) == "incomplete"
@@ -194,12 +284,14 @@ def test_missing_turn_or_retirement_acceptance_is_incomplete(
 @pytest.mark.parametrize(
     ("status", "exit_code"), [("satisfied", 0), ("violated", 1), ("incomplete", 2)]
 )
+@pytest.mark.parametrize("failing_scope", ["pipeline", "ready_audit"])
 def test_cli_never_converts_violation_or_incomplete_to_success(
     acceptance: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     status: str,
     exit_code: int,
+    failing_scope: str,
 ) -> None:
     output = tmp_path / "report.json"
     monkeypatch.setattr(
@@ -215,15 +307,28 @@ def test_cli_never_converts_violation_or_incomplete_to_success(
         lambda *_args, **_kwargs: {
             "galleries": 1,
             "batch": 1,
+            "ready_audit": _audit(acceptance),
             "turns": [_turn(acceptance)],
         },
     )
     monkeypatch.setattr(
-        acceptance, "assess_turn", lambda *_args, **_kwargs: {"status": status}
+        acceptance,
+        "assess_turn",
+        lambda *_args, **_kwargs: {
+            "status": status if failing_scope == "pipeline" else "satisfied"
+        },
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "assess_ready_audit",
+        lambda *_args, **_kwargs: {
+            "status": status if failing_scope == "ready_audit" else "satisfied"
+        },
     )
     assert acceptance.main() == exit_code
     report = json.loads(output.read_text())
     assert report["acceptance"]["status"] == status
+    assert report["acceptance"][failing_scope + "_status"] == status
 
 
 def test_cli_requires_mariadb_opt_in(
@@ -274,6 +379,7 @@ def test_report_io_failure_is_incomplete_and_preserves_last_atomic_output(
         lambda *_args, **_kwargs: {
             "galleries": 1,
             "batch": 1,
+            "ready_audit": _audit(acceptance),
             "turns": [_turn(acceptance)],
         },
     )
@@ -320,7 +426,12 @@ def test_destination_changed_to_directory_is_execution_failure(
         output.unlink()
         output.mkdir()
         (output / "concurrent-owner").write_text("preserve")
-        return {"galleries": 1, "batch": 1, "turns": [_turn(acceptance)]}
+        return {
+            "galleries": 1,
+            "batch": 1,
+            "ready_audit": _audit(acceptance),
+            "turns": [_turn(acceptance)],
+        }
 
     monkeypatch.setattr(acceptance.batch_probe, "run_case", changed_destination)
     assert acceptance.main() == 2
@@ -534,23 +645,46 @@ def test_real_metadata_only_replacement_retires_exact_facts(
     for turn in result["turns"]:
         assert turn["cleanup"] == "DONE"
         assert turn["full_ready_audit"] == "passed"
+        assert turn["audit_acceptance"]["status"] == "satisfied"
+        assert turn["audit_acceptance"]["dimensions"]["retained_source_files"] == 1
         assert turn["next_claim"] == "passed"
     retired = result["turns"][1]["retirement_acceptance"]["checks"]
     assert [row["retired_rows"] for row in retired] == [1, 4, 1]
 
 
 @pytest.mark.deep
-def test_real_replacement_detects_current_scalar_cleanup_cost(
+@pytest.mark.parametrize("scalar_cleanup", [False, True])
+def test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost(
     acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    scalar_cleanup: bool,
 ) -> None:
+    if scalar_cleanup:
+        # Select the existing correct scalar implementation for the three
+        # measured phases. Their facts/oracle remain exact, while real SQL work
+        # deliberately loses batching; no fabricated call counts are supplied.
+        cleanup = acceptance.cleanup
+        plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.GALLERY_OBSERVATION]
+        for phase in acceptance.GO_FILE_MULTIPLICITY:
+            monkeypatch.setitem(
+                plan.phases,
+                phase,
+                tuple(
+                    replace(spec, batch_exact_primary_keys=False)
+                    for spec in plan.phases[phase]
+                ),
+            )
     result = acceptance.run_replacement("sqlite", 64, 3)
     assert len(result["turns"]) == 4
     for turn in result["turns"]:
         assert turn["cleanup"] == "DONE"
         assert turn["full_ready_audit"] == "passed"
+        assert turn["audit_acceptance"]["dimensions"]["retained_source_files"] == 65
         assert turn["next_claim"] == "passed"
         if turn["cycle"]:
-            assert turn["retirement_acceptance"]["status"] == "violated"
+            assert turn["retirement_acceptance"]["status"] == (
+                "violated" if scalar_cleanup else "satisfied"
+            )
             assert all(
                 row["retired_rows"] == row["expected_retired_rows"]
                 for row in turn["retirement_acceptance"]["checks"]
@@ -589,3 +723,50 @@ def test_real_redundant_read_mutant_preserves_oracle_but_fails_fixed_cost(
     assert result["full_ready_audit"] == "passed"
     assert result["turns"][0]["next_claim"] == "passed"
     assert acceptance.assess_turn(result["turns"][0], pages=1)["status"] == "violated"
+
+
+@pytest.mark.deep
+def test_real_full_audit_delay_mutant_preserves_ready_but_fails_cost(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An injected clock advance models an extra minute spent in the actual
+    # audit without sleeping in a correctness test. Every real validator still
+    # executes; the test must not substitute a fake READY result or SQL ledger.
+    original = acceptance.batch_probe.full_check
+    clock_offset = 0.0
+    original_clock = time.perf_counter
+
+    def delayed_check(config: Any) -> Any:
+        nonlocal clock_offset
+        result = original(config)
+        clock_offset += 61.0
+        return result
+
+    monkeypatch.setattr(acceptance.batch_probe, "full_check", delayed_check)
+    monkeypatch.setattr(
+        acceptance.batch_probe,
+        "time",
+        SimpleNamespace(perf_counter=lambda: original_clock() + clock_offset),
+    )
+    result = acceptance.batch_probe.run_case(
+        "sqlite",
+        1,
+        1,
+        1,
+        query_limit=None,
+        observer_factory=acceptance.AcceptanceObserver,
+        check_next_claim=True,
+    )
+    assert result["full_ready_audit"] == "passed"
+    assert result["ready_audit"]["measurements"]["sql_calls"] > 0
+    assert set(result["turns"][0]["phases"]) == set(acceptance.PHASE_CEILINGS)
+    assert all(
+        row["pipeline"] != "ready_audit"
+        for row in result["turns"][0]["measurements"]["queries"]
+    )
+    verdict = acceptance.assess_ready_audit(
+        result["ready_audit"], retained_galleries=1, pages=1
+    )
+    assert verdict["status"] == "violated"
+    assert verdict["attribution"]["status"] == "complete"

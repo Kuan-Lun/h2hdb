@@ -2232,40 +2232,42 @@ def _insert_retained_file_family(
     name_bytes: bytes,
     file_no: int,
     file_sha256: bytes,
+    gallery_id: int = 1,
+    observation_id: int = 1,
 ) -> bytes:
     file_key = vnext_identity.file_key(name_bytes)
     connector.execute(
         "INSERT INTO catalog_file_name_identities (file_key, name_bytes) "
-        "VALUES (%s, %s)",
+        "VALUES (%s, %s) ON CONFLICT(file_key) DO NOTHING",
         (file_key, name_bytes),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_anchors "
-        "(gallery_id, observation_id, file_key) VALUES (1, 1, %s)",
-        (file_key,),
+        "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, file_key),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_file_nos "
         "(gallery_id, observation_id, file_key, file_no) "
-        "VALUES (1, 1, %s, %s)",
-        (file_key, file_no),
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, observation_id, file_key, file_no),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_file_sha256s "
         "(gallery_id, observation_id, file_key, file_sha256) "
-        "VALUES (1, 1, %s, %s)",
-        (file_key, file_sha256),
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, observation_id, file_key, file_sha256),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_artifact_role "
         "(gallery_id, observation_id, file_key, artifact_role) "
-        "VALUES (1, 1, %s, %s)",
-        (file_key, b"page"),
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, observation_id, file_key, b"page"),
     )
     connector.execute(
         "INSERT INTO catalog_gallery_observation_file_seals "
-        "(gallery_id, observation_id, file_key) VALUES (1, 1, %s)",
-        (file_key,),
+        "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, file_key),
     )
     return file_key
 
@@ -2453,6 +2455,188 @@ def test_role_derivation_pages_every_file_family_and_uses_range_seeks(
                 in query
             ):
                 assert "IX_GALLERY_FILE_HASH_READY" in plan_text
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("observations", (127, 128, 129, 257))
+def test_role_derivation_advances_across_metadata_only_pages(
+    tmp_path: Path, observations: int
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "metadata-only-pages.sqlite3")
+    recorder = _ReadRecorder(connector)
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        with connector.transaction():
+            for number in range(observations):
+                _insert_retained_file_family(
+                    connector,
+                    name_bytes=b"galleryinfo.txt",
+                    file_no=0,
+                    file_sha256=b"m" * 32,
+                    gallery_id=number // 3 + 1,
+                    observation_id=number % 3 + 1,
+                )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with connector.read_transaction():
+            catalog_refinement.check_role_derivation_v1(cast(Any, recorder))
+
+        raw_pages = [
+            row_count
+            for query, _data, row_count in recorder.reads
+            if "FROM catalog_gallery_observation_file_file_sha256s AS file_sha" in query
+        ]
+        assert sum(raw_pages) == observations
+        assert len(raw_pages) == (observations + 127) // 128 + 1
+        assert raw_pages[-1] == 0
+        assert max(raw_pages) <= 128
+        metadata_lookups = [
+            (data, row_count)
+            for query, data, row_count in recorder.reads
+            if "FROM catalog_file_name_identities WHERE name_bytes = %s" in query
+        ]
+        assert metadata_lookups == [((b"galleryinfo.txt",), 1)]
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("metadata_position", (127, 128))
+def test_role_derivation_preserves_hash_multiplicity_across_metadata_boundary(
+    tmp_path: Path, metadata_position: int
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "metadata-boundary.sqlite3")
+    try:
+        metadata_key = vnext_identity.file_key(b"galleryinfo.txt")
+        names = [f"{number:04}.png".encode() for number in range(1024)]
+        before = [
+            name for name in names if vnext_identity.file_key(name) < metadata_key
+        ]
+        after = [name for name in names if vnext_identity.file_key(name) > metadata_key]
+        selected = before[:metadata_position] + after[: 129 - metadata_position]
+        assert len(selected) == 129
+        ordered = sorted((*selected, b"galleryinfo.txt"), key=vnext_identity.file_key)
+        assert ordered[metadata_position] == b"galleryinfo.txt"
+        file_sha256 = b"s" * 32
+        connector.execute("PRAGMA foreign_keys = OFF")
+        with connector.transaction():
+            for file_no, name_bytes in enumerate(ordered):
+                _insert_retained_file_family(
+                    connector,
+                    name_bytes=name_bytes,
+                    file_no=file_no,
+                    file_sha256=file_sha256,
+                )
+            for gallery_id, observation_id in ((1, 2), (2, 1)):
+                for file_no, name_bytes in enumerate(
+                    (b"galleryinfo.txt", b"GalleryInfo.txt")
+                ):
+                    _insert_retained_file_family(
+                        connector,
+                        name_bytes=name_bytes,
+                        file_no=file_no,
+                        file_sha256=file_sha256,
+                        gallery_id=gallery_id,
+                        observation_id=observation_id,
+                    )
+            for gallery_id, observation_id, occurrence_count in (
+                (1, 1, 129),
+                (1, 2, 1),
+                (2, 1, 1),
+            ):
+                connector.execute(
+                    "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+                    "(gallery_id, observation_id, file_sha256, occurrence_count) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (gallery_id, observation_id, file_sha256, occurrence_count),
+                )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with connector.read_transaction():
+            catalog_refinement.check_role_derivation_v1(connector)
+        connector.execute(
+            "UPDATE catalog_gallery_observation_file_hash_occurrences "
+            "SET occurrence_count = 130 WHERE gallery_id = 1 AND observation_id = 1"
+        )
+        with (
+            connector.read_transaction(),
+            pytest.raises(
+                catalog_refinement.CatalogSemanticValidationError,
+                match="file-hash occurrences differ from exact CONTENT roles",
+            ),
+        ):
+            catalog_refinement.check_role_derivation_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("include_metadata", (False, True))
+def test_role_derivation_excludes_only_the_exact_metadata_name(
+    tmp_path: Path, include_metadata: bool
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "exact-metadata-name.sqlite3")
+    try:
+        content_names = (b"GalleryInfo.txt", b"galleryinfo.txt ", b"\xff.png")
+        names = content_names + ((b"galleryinfo.txt",) if include_metadata else ())
+        connector.execute("PRAGMA foreign_keys = OFF")
+        with connector.transaction():
+            for file_no, name_bytes in enumerate(names):
+                _insert_retained_file_family(
+                    connector,
+                    name_bytes=name_bytes,
+                    file_no=file_no,
+                    file_sha256=b"f" * 32,
+                )
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+                "(gallery_id, observation_id, file_sha256, occurrence_count) "
+                "VALUES (1, 1, %s, %s)",
+                (b"f" * 32, len(content_names)),
+            )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with connector.read_transaction():
+            catalog_refinement.check_role_derivation_v1(connector)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("name_bytes", "message"),
+    (
+        (b"different.png", "invalid immutable facts"),
+        (b"\x00", "invalid file-name identity"),
+    ),
+)
+def test_role_derivation_validates_name_preimages_before_counting(
+    tmp_path: Path, name_bytes: bytes, message: str
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "invalid-file-name.sqlite3")
+    recorder = _ReadRecorder(connector)
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        _insert_retained_file_family(
+            connector,
+            name_bytes=b"galleryinfo.txt",
+            file_no=0,
+            file_sha256=b"m" * 32,
+        )
+        connector.execute(
+            "UPDATE catalog_file_name_identities SET name_bytes = %s", (name_bytes,)
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        with (
+            connector.read_transaction(),
+            pytest.raises(
+                catalog_refinement.CatalogSemanticValidationError, match=message
+            ),
+        ):
+            catalog_refinement.check_role_derivation_v1(cast(Any, recorder))
+        assert not any(
+            "FROM catalog_gallery_observation_file_file_sha256s AS file_sha" in query
+            for query in recorder.queries
+        )
     finally:
         connector.close()
 

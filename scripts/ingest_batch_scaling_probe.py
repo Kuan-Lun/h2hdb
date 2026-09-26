@@ -43,6 +43,7 @@ from h2hdb import (  # noqa: E402 - checkout public facades.
     VNextCatalogFacade,
     VNextIngestFacade,
 )
+from h2hdb.sql_performance import measure_sql  # noqa: E402 - audit observation.
 from h2hdb.vnext_identity import effective_content_digest  # noqa: E402 - codec oracle.
 
 
@@ -110,6 +111,49 @@ def verify_catalog(
         ):
             raise AssertionError("catalog count or artifact count differs")
         return sha256(json.dumps(sorted(actual.items())).encode()).hexdigest()
+
+
+def measure_ready_audit(
+    config: CoreConfig,
+    *,
+    observer_factory: Callable[[], probe.Observer] | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Observe a complete production check separately from incremental work.
+
+    The observer receives every completed SQL event, including nested runtime
+    audit scopes. No validator or schema check is replaced by the probe.
+    """
+    observer = (
+        probe.Observer(query_budget=32768)
+        if observer_factory is None
+        else observer_factory()
+    )
+    observer.phase = "ready_audit"
+    if progress is not None:
+        progress({"event": "phase_started", "phase": "ready_audit"})
+    started = time.perf_counter()
+    with measure_sql(observer, observe_nested=True):
+        result = full_check(config)
+    seconds = time.perf_counter() - started
+    if result.state != "READY":
+        raise AssertionError("full READY audit failed")
+    measurements = observer.report(query_limit=None)
+    if progress is not None:
+        progress(
+            {
+                "event": "phase_finished",
+                "phase": "ready_audit",
+                "seconds": seconds,
+                "sql_calls": measurements["sql_calls"],
+                "sql_seconds": measurements["sql_seconds"],
+            }
+        )
+    return {
+        "state": result.state,
+        "wall_seconds": seconds,
+        "measurements": measurements,
+    }
 
 
 def run_case(
@@ -280,10 +324,9 @@ def run_case(
                         "sql_seconds": measurements["sql_seconds"],
                     }
                 )
-        started = time.perf_counter()
-        if full_check(config).state != "READY":
-            raise AssertionError("final full READY audit failed")
-        audit_seconds = time.perf_counter() - started
+        audit = measure_ready_audit(
+            config, observer_factory=observer_factory, progress=progress
+        )
         return {
             "backend": backend,
             "galleries": galleries,
@@ -291,7 +334,7 @@ def run_case(
             "pages": pages,
             "artifacts": artifacts,
             "turns": turns,
-            "audit_seconds": audit_seconds,
+            "ready_audit": audit,
             "full_ready_audit": "passed",
             "oracle": verify_catalog(config, galleries, pages, artifacts=artifacts),
         }
