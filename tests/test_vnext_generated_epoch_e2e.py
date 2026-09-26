@@ -58,7 +58,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_TYPE = 'BASE TABLE'
-            """) == (257,)
+        """) == (259,)
         mariadb_foreign_keys = connector.fetch_all(
             """
             SELECT CONSTRAINT_NAME, COLUMN_NAME,
@@ -111,7 +111,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         FROM sqlite_master
         WHERE type = 'table'
           AND name NOT LIKE 'sqlite_%'
-    """) == (257,)
+    """) == (259,)
     sqlite_foreign_keys = {
         (str(row[2]), str(row[3]), str(row[4]))
         for row in connector.fetch_all(
@@ -217,7 +217,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
     bootstrap_seeds = cast(Sequence[object], backends[backend]["bootstrap_seeds"])
-    assert len(bootstrap_seeds) == 6_356
+    assert len(bootstrap_seeds) == 6_357
 
 
 def test_default_generated_epoch_end_to_end_on_sqlite(

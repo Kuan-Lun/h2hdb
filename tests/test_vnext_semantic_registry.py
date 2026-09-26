@@ -138,6 +138,9 @@ def test_source_qualification_validator_and_writers_cover_the_exact_authority() 
     )
     assert binding.mutation_relations == frozenset(
         {
+            "gallery_gid_identity",
+            "gallery_observation_upload_time",
+            "gallery_observation_metadata_local",
             "gallery_observation_validation_policy",
             "gallery_observation_validation_disposition",
             "gallery_observation_validation_reason",
@@ -146,6 +149,7 @@ def test_source_qualification_validator_and_writers_cover_the_exact_authority() 
     )
     assert binding.authority_relations == binding.mutation_relations | {
         "gallery_observation",
+        "gallery_observation_metadata",
         "gallery_observation_tree_root",
         "source_build_gallery",
     }

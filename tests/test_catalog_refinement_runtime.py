@@ -134,6 +134,9 @@ class _ReadRecorder:
     def queries(self) -> list[str]:
         return [query for query, _data, _row_count in self.reads]
 
+    def primary_key_table_reference(self, relation: str) -> str:
+        return self.connector.primary_key_table_reference(relation)
+
     def fetch_all(
         self, query: str, data: tuple[Any, ...] = ()
     ) -> list[tuple[Any, ...]]:

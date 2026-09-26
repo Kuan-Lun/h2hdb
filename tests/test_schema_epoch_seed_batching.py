@@ -64,8 +64,9 @@ def test_generated_bootstrap_contract_uses_40_bounded_batches(
 
     batches = _recorded_batches(seeds)
 
-    # Schema 8 adds one target, five phases and 256 sweep roots for collections.
-    assert len(seeds) == 6_356
+    # Schema 9 adds the publication-upload-time cleanup phase within the same
+    # fixed batch budget; the existing GID target is replaced, not duplicated.
+    assert len(seeds) == 6_357
     assert len(batches) == 40
     assert max(len(parameters) for _sql, parameters in batches) == (
         _SCHEMA_SEED_BATCH_ROWS

@@ -13,11 +13,13 @@ from h2hdb.vnext_publication_family import (
     CatalogPublicationDownloadTimeFamily,
     CatalogPublicationFamily,
     CatalogPublicationTitleFamily,
+    CatalogPublicationUploadTimeFamily,
     PublicationFamilyCollisionError,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_download_time_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
+    ensure_catalog_publication_upload_time_family,
     load_catalog_contributor_family,
     load_catalog_publication_download_time_family,
     load_catalog_publication_family,
@@ -122,6 +124,11 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
         publication_key=publication.publication_key,
         download_time=10,
     )
+    upload_time = CatalogPublicationUploadTimeFamily(
+        revision=publication.revision,
+        publication_key=publication.publication_key,
+        upload_time=9,
+    )
     try:
         connector.execute("PRAGMA foreign_keys = OFF")
         with connector.transaction():
@@ -147,6 +154,10 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
             assert ensure_catalog_publication_download_time_family(
                 connector, download_time
             ) == (download_time, True)
+            assert connector.fetch_all("SELECT * FROM catalog_publications") == []
+            assert ensure_catalog_publication_upload_time_family(
+                connector, upload_time
+            ) == (upload_time, True)
             assert ensure_catalog_publication_title_family(connector, title) == (
                 title,
                 False,
@@ -155,7 +166,8 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
 
         assert connector.fetch_all(
             "SELECT revision, publication_key, gallery_id, summary_sha256, "
-            "language_sha256, modified_at, download_time FROM catalog_publications"
+            "language_sha256, modified_at, download_time, upload_time "
+            "FROM catalog_publications"
         ) == [
             (
                 publication.revision,
@@ -165,6 +177,7 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 publication.language_sha256,
                 publication.modified_at,
                 download_time.download_time,
+                upload_time.upload_time,
             )
         ]
         assert connector.fetch_all(
@@ -187,6 +200,9 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
             assert ensure_catalog_publication_download_time_family(
                 connector, download_time
             ) == (download_time, False)
+            assert ensure_catalog_publication_upload_time_family(
+                connector, upload_time
+            ) == (upload_time, False)
             assert ensure_catalog_publication_title_family(connector, title) == (
                 title,
                 False,
