@@ -439,6 +439,10 @@ def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
     events = _database_events(caplog)
     summary = next(item for item in events if item["event"] == "completed")
     streams = {item["phase"]: item for item in summary["phase_totals"]}
+    metadata_lookup = streams.pop("role_scan.metadata_identity")
+    assert metadata_lookup["calls"] == 1
+    assert metadata_lookup["exclusive_sql_calls"] == 1
+    assert metadata_lookup["exclusive_read_rows"] == 0
     expected = {
         "role_scan.file_family",
         "role_scan.file_file_nos",
@@ -463,6 +467,11 @@ def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
     else:
         require_coverage()
     pages = [item for item in events if item["event"] == "phase"]
+    metadata_pages = [
+        item for item in pages if item["phase"] == "role_scan.metadata_identity"
+    ]
+    assert len(metadata_pages) == 1
+    assert metadata_pages[0]["labels"] == {"page_limit": 1, "returned_rows": 0}
     # Both generators interleave while comparing their results. Closing every
     # SQL page span before yield prevents one stream becoming another's child.
     assert all(item["parent_id"] == 0 for item in pages)

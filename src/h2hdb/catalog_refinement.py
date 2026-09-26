@@ -7408,7 +7408,25 @@ def _validate_file_family_totality(connector: SQLConnector) -> None:
 def _iter_derived_file_hash_occurrences(
     connector: SQLConnector,
 ) -> Iterator[tuple[int, int, bytes, int]]:
-    """Derive CONTENT hash multiplicities with a constant-memory keyset scan."""
+    """Derive CONTENT counts after file-family validation in the same snapshot."""
+
+    # The preceding totality check proves that every SHA fact has an anchor,
+    # seal and collision-checked exact name identity. Resolve the sole METADATA
+    # name once through its unique byte key; a computed digest alone would not
+    # establish the stored preimage. Scanning only the covering SHA index then
+    # prevents a low-cardinality name join from driving repeated corpus scans.
+    with database_phase("role_scan.metadata_identity", page_limit=1) as measurement:
+        metadata_row = connector.fetch_one(
+            "SELECT file_key FROM catalog_file_name_identities "
+            "WHERE name_bytes = %s LIMIT 1",
+            (identity.METADATA_FILE_NAME,),
+        )
+        measurement.describe(returned_rows=int(bool(metadata_row)))
+    metadata_file_key = (
+        _as_bytes(metadata_row[0], field="metadata file-name identity")
+        if metadata_row
+        else None
+    )
 
     after_gallery_id = 0
     after_observation_id = 0
@@ -7427,14 +7445,7 @@ def _iter_derived_file_hash_occurrences(
                 SELECT file_sha.gallery_id, file_sha.observation_id,
                        file_sha.file_sha256, file_sha.file_key
                 FROM catalog_gallery_observation_file_file_sha256s AS file_sha
-                JOIN catalog_gallery_observation_file_seals AS sealed
-                  ON sealed.gallery_id = file_sha.gallery_id
-                 AND sealed.observation_id = file_sha.observation_id
-                 AND sealed.file_key = file_sha.file_key
-                JOIN catalog_file_name_identities AS name
-                  ON name.file_key = file_sha.file_key
-                WHERE name.name_bytes <> %s
-                  AND (file_sha.gallery_id > %s
+                WHERE (file_sha.gallery_id > %s
                     OR (file_sha.gallery_id = %s AND file_sha.observation_id > %s)
                     OR (file_sha.gallery_id = %s AND file_sha.observation_id = %s
                         AND file_sha.file_sha256 > %s)
@@ -7447,7 +7458,6 @@ def _iter_derived_file_hash_occurrences(
                 LIMIT %s
                 """,
                 (
-                    b"galleryinfo.txt",
                     after_gallery_id,
                     after_gallery_id,
                     after_observation_id,
@@ -7477,16 +7487,20 @@ def _iter_derived_file_hash_occurrences(
             )
             file_sha256 = _as_bytes(row[2], field="derived hash occurrence file_sha256")
             file_key = _as_bytes(row[3], field="derived hash occurrence file_key")
+            # Advance across every raw fact before filtering, so pages that
+            # contain only METADATA cannot stall or prematurely end the scan.
+            after_gallery_id = gallery_id
+            after_observation_id = observation_id
+            after_file_sha256 = file_sha256
+            after_file_key = file_key
+            if file_key == metadata_file_key:
+                continue
             key = (gallery_id, observation_id, file_sha256)
             if current_key is not None and key != current_key:
                 yield (*current_key, current_count)
                 current_count = 0
             current_key = key
             current_count += 1
-            after_gallery_id = gallery_id
-            after_observation_id = observation_id
-            after_file_sha256 = file_sha256
-            after_file_key = file_key
     if current_key is not None:
         yield (*current_key, current_count)
 
