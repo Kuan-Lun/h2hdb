@@ -119,29 +119,27 @@ schema-v9 public contract; mixed schema versions are unsupported.
 
 ## Previously upgraded deployments
 
-An exact schema-8 database requires the
-[one-time schema-8-to-9 conversion](../README.md#schema-8-to-9) with all consumers
-stopped. The tool preserves observations, published times, operational state,
-and matching CBZ/artwork bytes; no database reset or artifact rebuild is required.
-It binds resumable structural checkpoints and the successful full audit to the
-exact source/target contracts. A committed audit is reused on retry; an interrupted
-uncommitted audit must run again. Source collection recovery and runtime audit
-scheduling remain supported.
+Already-converted schema-9 deployments need no further conversion, database
+reset, CBZ/artwork regeneration, or library journal upgrade. Source collection
+recovery and runtime audit scheduling remain supported. Validate every
+application's Core dependency range and integration checks before updating its
+image; a newer Core version does not override a consumer's declared upper bound.
 
-The schema-7-to-8 converter, its Docker bundle builder, and its private audit
-writer remain retired. Validate every application's Core dependency range and
-integration checks before updating its image. A newer Core version does not
-override a consumer's declared upper bound.
+The schema-8-to-9 converter, Docker bundle builder, and isolated schema-8 cleanup
+worker have been retired from the current checkout. An exact schema-8 database
+or an interrupted conversion from that tool must use the historical Core
+**0.43.0** checkout at commit `70ca4a35d02a50e7d6f8fd294fccb0829321eaf4`, with its
+matching wheel and environment. Its README documents the one-time conversion
+and the required isolated Core 0.42.2 cleanup worker. Keep consumers stopped
+until the historical tool finishes its full audit and activates schema-9
+`READY`; its committed audit checkpoint is reused on retry.
 
-An installation still on schema 7, or with an interrupted offline conversion,
-must use the historical Core 0.41.2 checkout at commit
-`64683c502caf108e8ed518e5c040cacaa91e7551` with its matching environment or
-previously generated Docker bundle. See the [historical conversion guidance](../README.md#previously-upgraded-databases-and-historical-conversion).
-Do not mix that converter with the current Core wheel. Stop all clients, retain
-verified database/library backups, and resume only after the historical tool
-completes its full audit and activates schema-8 `READY`, then use the current
-schema-8-to-9 tool. Schema 6 first requires the Core 0.40.0 conversion. No current
-runtime entry point admits older schemas.
+The schema-7-to-8 tools also remain retired. Schema 7 uses the historical Core
+0.41.2 checkout at commit `64683c502caf108e8ed518e5c040cacaa91e7551` to reach
+schema 8; schema 6 first needs the Core 0.40.0 converter. See the
+[historical conversion guidance](../README.md#completed-and-historical-conversions).
+Do not mix historical tools with current wheel versions. No current runtime
+entry point admits older schemas.
 
 Schema 5 and earlier have no supported in-place converter. Preserve their
 database/library pair and original sources, then build a separate new database

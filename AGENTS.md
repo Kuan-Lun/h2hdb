@@ -440,24 +440,18 @@ Schema變更依序進行：
   check成功且fresh generation/token重驗後才能更新完整稽核時間。Caller
   不得傳入成功旗標作為依據。首次source catch-up提示只能延後一次排程，
   不得更改last audit事實；正常結束只在工作與所有資源清理成功後記錄。
-- 已完成的schema7至8離線轉換工具、Docker bundle builder與專用audit writer
-  已自目前checkout移除，不保留shim或runtime fallback。尚未轉換的exact schema7
-  或該工具留下的中斷狀態，須使用Core0.41.2歷史checkout與匹配環境；schema6
-  須先用Core0.40.0歷史工具轉至schema7。Exact schema8使用本checkout的
-  `upgrade-observation-upload-time-schema.py`離線轉至schema9，保留既有資料
-  與CBZ/artwork，不需清庫。Previous、foreign與離線轉換中的marker仍不由
-  runtime接納；不得加入schema8 runtime shim。
+- 已完成的schema7至8與schema8至9離線轉換工具、Docker bundle builders、
+  專用audit writer與隔離schema8 cleanup worker已自目前checkout移除，不保留
+  shim或runtime fallback。Exact schema8或其歷史工具留下的中斷狀態，須使用
+  Core0.43.0歷史checkout（70ca4a35d02a50e7d6f8fd294fccb0829321eaf4）及匹配
+  wheel與環境，依該checkout的README執行。Schema7先用Core0.41.2歷史工具
+  轉至schema8；schema6先用Core0.40.0歷史工具轉至schema7。已轉換schema9
+  不需再遷移、清庫、重建CBZ/artwork或更改library journal。Previous、foreign
+  與離線轉換中的marker仍不由runtime接納。
 - Upload time由每個observation的composite identity與每個publication
   occurrence分別擁有，GID只保存identity，不決定時間。既有publication時間
   不受未發布的新observation更正影響。PUBLICATION child在同一transaction
   exact-write storage與upload time，時間scalar單獨存在不代表publication完成。
-- Schema8至9離線轉換只使用明確提供的Core0.42.2 wheel處理既有affected
-  OPEN cleanup cycle，不建立新cycle；舊runtime在隔離process執行，不得混入
-  新runtime。正常資料copy使用bounded pages；SQLite修改FK所需的單表重建
-  是離線長transaction例外。完整audit亦在離線transaction內暫存target marker，
-  成功後原子寫入baseline及AUDITED checkpoint，再獨立切換READY；失敗不得
-  宣稱audit完成，已提交AUDITED的重試不得重跑完整audit。這些例外不改變
-  runtime的bounded transaction要求。
 - 每個 production SQL relation identifier都必須由 `physical.toml`、
   `operational_physical.toml`或唯一 epoch-control relation接納。Formal BCNF通過
   不代表可以發布第二套未 manifest的 SQL schema。

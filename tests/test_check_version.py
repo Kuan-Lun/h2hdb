@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -69,3 +71,52 @@ def test_index_candidate_uses_merge_task_ref_before_merge_head_exists(
         ("rev-parse", "--verify", "task/example^{commit}"),
         ("write-tree",),
     ]
+
+
+@pytest.mark.parametrize(
+    "removed_path",
+    (
+        "scripts/upgrade-observation-upload-time-schema.py",
+        "scripts/build-observation-upload-time-upgrade-bundle.py",
+        "scripts/finish-schema8-cleanup.py",
+    ),
+)
+@pytest.mark.parametrize("target_version", ("0.43.0", "0.43.1", "0.44.0"))
+def test_retired_offline_commands_require_a_breaking_release(
+    monkeypatch: pytest.MonkeyPatch, removed_path: str, target_version: str
+) -> None:
+    base = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    base["project"]["version"] = "0.43.0"
+    candidate = copy.deepcopy(base)
+    candidate["project"]["version"] = target_version
+    monkeypatch.setattr(sys, "argv", [str(CHECK_VERSION)])
+    monkeypatch.setattr(
+        policy, "_candidate", lambda _args: ("base", "candidate", "task")
+    )
+    monkeypatch.setattr(
+        policy, "_load_toml", lambda tree: base if tree == "base" else candidate
+    )
+
+    def git(*arguments: str) -> str:
+        if arguments[0] == "diff":
+            return removed_path
+        assert arguments == ("log", "--format=%B%x00", "task")
+        return "refactor(upgrade)!: retire completed offline conversion tooling"
+
+    audits: list[str] = []
+    monkeypatch.setattr(policy, "_git", git)
+    monkeypatch.setattr(
+        policy, "_validate_audit", lambda _tree, _doc, version: audits.append(version)
+    )
+    if target_version == "0.44.0":
+        assert policy.main() == 0
+        assert audits == [target_version]
+    else:
+        message = (
+            "release surface changed without a project version bump"
+            if target_version == "0.43.0"
+            else "expected project version 0.44.0"
+        )
+        with pytest.raises(ValueError, match=message):
+            policy.main()
+        assert not audits

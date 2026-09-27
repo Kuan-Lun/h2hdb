@@ -70,6 +70,10 @@ markers = [
 release-paths = [
     "LICENSE",
     "src/**",
+    # Public offline deployment commands retain release impact when retired.
+    "scripts/upgrade-*.py",
+    "scripts/build-*-upgrade-bundle.py",
+    "scripts/finish-schema*-cleanup.py",
     "verification/schema/catalog.toml",
     "verification/schema/operational.toml",
     "verification/schema/operational_physical.toml",
