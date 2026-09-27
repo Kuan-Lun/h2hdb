@@ -6,9 +6,9 @@ consume the epoch-3/schema-v9 catalog facade; ingest uses the
 transaction-owning ingest facade and downloader uses the queue facade. No
 sibling may query `catalog_*` or operational tables directly.
 
-The schema-9 cohort pairs Core 0.43.x with Ingest 0.29.x, OPDS 0.24.x,
-Komga 0.18.x, and downloader 0.23.x. Each consumer requires Core
-`>=0.43.0,<0.44.0`. Local validation of these candidates does not publish them;
+The current schema-9 cohort pairs Core 0.44.0 with Ingest 0.30.0, OPDS 0.24.1,
+Komga 0.18.1, and downloader 0.23.1. These consumer releases require Core
+`>=0.43.0,<0.45.0`. Local validation of these candidates does not publish them;
 use the matching built wheels or verify their availability before upgrading
 a shared deployment.
 
@@ -124,6 +124,10 @@ reset, CBZ/artwork regeneration, or library journal upgrade. Source collection
 recovery and runtime audit scheduling remain supported. Validate every
 application's Core dependency range and integration checks before updating its
 image; a newer Core version does not override a consumer's declared upper bound.
+The installed Core package version is part of the audit validator identity.
+Changing that version can require a full startup audit even when the schema and
+validator implementation are unchanged; removing the offline tools does not
+bypass that existing audit contract.
 
 The schema-8-to-9 converter, Docker bundle builder, and isolated schema-8 cleanup
 worker have been retired from the current checkout. An exact schema-8 database
