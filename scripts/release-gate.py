@@ -20,7 +20,7 @@ from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 1
-RELEASE_PROFILE = "h2hdb-release-v4"
+RELEASE_PROFILE = "h2hdb-release-v5"
 REQUIRED_CHECKS = (
     "exact-candidate-code-review",
     "ruff-lint",
@@ -35,7 +35,7 @@ REQUIRED_CHECKS = (
     "lean",
     "sqlite-merge-tests-parallel",
     "mariadb-10.11.11-smoke-single-worker",
-    "pytest-total-budget-300s",
+    "pytest-total-budget-600s",
     "tlc-small",
     "distribution-boundary",
 )

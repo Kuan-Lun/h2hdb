@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb"
-version = "0.43.0"
+version = "0.44.0"
 description = "Database, coordination, and revision catalog core for H2HDB"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
@@ -70,6 +70,10 @@ markers = [
 release-paths = [
     "LICENSE",
     "src/**",
+    # Public offline deployment commands retain release impact when retired.
+    "scripts/upgrade-*.py",
+    "scripts/build-*-upgrade-bundle.py",
+    "scripts/finish-schema*-cleanup.py",
     "verification/schema/catalog.toml",
     "verification/schema/operational.toml",
     "verification/schema/operational_physical.toml",

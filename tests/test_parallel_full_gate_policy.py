@@ -70,7 +70,6 @@ def test_live_mariadb_group_rejects_a_conflicting_existing_group() -> None:
 def test_deep_profile_has_the_exact_centralized_heavy_file_set() -> None:
     assert DEEP_TEST_FILES == {
         "test_storage_guest_powercut_harness.py",
-        "test_upgrade_observation_upload_time_schema.py",
         "test_operational_refinement_runtime.py",
         "test_vnext_schema_provider_generation.py",
         "test_vnext_bootstrap_fault_matrix.py",
@@ -448,6 +447,6 @@ def test_full_gate_pins_bounded_xdist_and_timing_policy() -> None:
     assert "--numprocesses={phase.worker_count}" in pytest_runner
     assert '"--dist=loadgroup"' in pytest_runner
     assert '"--max-worker-restart=0"' in pytest_runner
-    assert "DEFAULT_MERGE_BUDGET_SECONDS = 300.0" in pytest_runner
+    assert "DEFAULT_MERGE_BUDGET_SECONDS = 600.0" in pytest_runner
     assert 'local started_at="$SECONDS"' in full_gate
     assert '"$((SECONDS - started_at))"' in full_gate

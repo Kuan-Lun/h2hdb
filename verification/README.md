@@ -106,11 +106,15 @@ This runs formatting, type and Markdown checks; evidence metadata; schema and
 generated-artifact checks; Lean; the bounded pytest profile; small TLC profiles;
 and package distribution checks.
 
-The pytest portion shares a 300-second aggregate deadline across its ordinary
+The pytest portion shares a 600-second aggregate deadline across its ordinary
 non-MariaDB cases and a small, explicitly selected MariaDB smoke set, including
 owned pytest/xdist process cleanup. Docker daemon resource cleanup can finish
 separately and is outside this deadline.
 This deadline applies to the pytest portion, not the entire shell command.
+On a busy development machine, reduce the existing worker override, for example
+`H2HDB_PYTEST_WORKERS=4 ./scripts/check-full.sh`, and run repository gates
+sequentially. The larger aggregate budget allows lower concurrency; individual
+test assertions, resource limits, selectors, and process cleanup remain unchanged.
 The receipt does not cover the full deep matrices, all live-MariaDB cases, or
 deep TLC runs. Evidence metadata in this profile uses `--validate-only`; use
 plain `coverage` above to additionally reject declared production blockers.
