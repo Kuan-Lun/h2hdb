@@ -75,11 +75,22 @@ def test_release_receipt_requires_the_exact_profile_tree_and_checks() -> None:
     assert not gate._receipt_matches(
         document, tree="different-tree", version=Version("1.2.3")
     )
-    assert gate.RELEASE_PROFILE == "h2hdb-release-v4"
+    assert gate.RELEASE_PROFILE == "h2hdb-release-v5"
     assert "exact-candidate-code-review" in gate.REQUIRED_CHECKS
-    old_profile = dict(document, profile="h2hdb-release-v3")
+    for previous_profile in ("h2hdb-release-v3", "h2hdb-release-v4"):
+        old_profile = dict(document, profile=previous_profile)
+        assert not gate._receipt_matches(
+            old_profile, tree="tree-1", version=Version("1.2.3")
+        )
+    old_budget = dict(
+        document,
+        checks=[
+            "pytest-total-budget-300s" if check == "pytest-total-budget-600s" else check
+            for check in gate.REQUIRED_CHECKS
+        ],
+    )
     assert not gate._receipt_matches(
-        old_profile, tree="tree-1", version=Version("1.2.3")
+        old_budget, tree="tree-1", version=Version("1.2.3")
     )
 
 

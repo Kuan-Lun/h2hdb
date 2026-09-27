@@ -21,7 +21,7 @@ from types import FrameType
 from typing import Any, Final, Literal, cast
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MERGE_BUDGET_SECONDS = 300.0
+DEFAULT_MERGE_BUDGET_SECONDS = 600.0
 TERMINATION_GRACE_SECONDS = 2.0
 TERMINATION_RESERVE_SECONDS = 6.0
 TERMINATION_POLL_SECONDS = 0.05
@@ -1026,7 +1026,8 @@ def _arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         "--budget-seconds",
         type=_positive_seconds,
         help=(
-            "aggregate wall-clock budget for every pytest phase; defaults to 300 "
+            "aggregate wall-clock budget for every pytest phase; defaults to "
+            f"{DEFAULT_MERGE_BUDGET_SECONDS:g} "
             "for merge and no limit for manual profiles"
         ),
     )

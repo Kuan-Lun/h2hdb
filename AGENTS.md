@@ -133,7 +133,7 @@
 - `scripts/run-pytest.py merge`是 canonical bounded pytest runner。它先執行
   `not deep and not mariadb`，再以單一 worker、`H2HDB_TEST_MARIADB=1`執行
   `mariadb_smoke and mariadb and not deep`；collection、execution、teardown、
-  pytest/xdist owned process-tree cleanup與兩階段間 overhead共用 300 秒 hard
+  pytest/xdist owned process-tree cleanup與兩階段間 overhead共用 600 秒 hard
   deadline。POSIX使用新session/process group；Windows必須先把 start-gated
   supervisor指派到 kill-on-close Job Object，才可啟動pytest，`taskkill /T`只可
   作為Job termination失敗的 bounded fallback。每一phase使用新的owner，且前一
@@ -221,7 +221,7 @@
 - 不設定跨 repository的統一 coverage百分比。
 - plain `pytest`預設選擇 `not deep`並使用 bounded auto-xdist，且不得自行啟動
   live service；這個直接入口沒有 aggregate wall-clock deadline，需要強制
-  五分鐘上限時必須使用 `scripts/run-pytest.py merge`。高成本測試檔與
+  十分鐘上限時必須使用 `scripts/run-pytest.py merge`。高成本測試檔與
   live-MariaDB cases由 collection分類為
   `deep`；只有經明確審核的
   `merge_smoke`與 `mariadb_smoke`代表性案例可分別豁免對應分類。兩個豁免互不

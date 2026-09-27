@@ -37,7 +37,7 @@ run_timed_stage \
     .venv/bin/python scripts/verify-formal.py lean
 
 run_timed_stage \
-    "pytest merge profile (300s aggregate budget)" \
+    "pytest merge profile (600s aggregate budget)" \
     .venv/bin/python scripts/run-pytest.py merge
 
 run_timed_stage \

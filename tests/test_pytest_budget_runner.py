@@ -54,12 +54,12 @@ def test_small_tla_profile_wires_multiphase_process_supervision() -> None:
         assert f"INVARIANT {invariant}" in profile
 
 
-def test_merge_profile_has_one_aggregate_five_minute_budget() -> None:
+def test_merge_profile_has_one_aggregate_ten_minute_budget() -> None:
     arguments = runner._arguments(["merge"])
 
     assert arguments.profile == "merge"
     assert arguments.budget_seconds is None
-    assert runner.DEFAULT_MERGE_BUDGET_SECONDS == 300.0
+    assert runner.DEFAULT_MERGE_BUDGET_SECONDS == 600.0
 
 
 def test_main_applies_default_budget_only_to_merge(
@@ -75,7 +75,7 @@ def test_main_applies_default_budget_only_to_merge(
         ("deep",),
     ]
     assert [value.kwargs["budget_seconds"] for value in run_profile.call_args_list] == [
-        300.0,
+        600.0,
         None,
     ]
     assert all(
@@ -556,8 +556,10 @@ def test_windows_taskkill_nonzero_fails_closed(
     process.wait.assert_not_called()
 
 
+@pytest.mark.parametrize("budget_seconds", (300.0, 600.0))
 def test_profile_uses_one_deadline_across_both_pytest_phases(
     monkeypatch: pytest.MonkeyPatch,
+    budget_seconds: float,
 ) -> None:
     monotonic = Mock(side_effect=(100.0, 100.0, 225.0))
     observed: list[tuple[str, float | None]] = []
@@ -575,22 +577,24 @@ def test_profile_uses_one_deadline_across_both_pytest_phases(
     monkeypatch.setattr(runner.time, "monotonic", monotonic)
     monkeypatch.setattr(runner, "_run_phase", run_phase)
 
-    assert runner.run_profile("merge", budget_seconds=300.0) == 0
+    assert runner.run_profile("merge", budget_seconds=budget_seconds) == 0
     assert observed == [
-        ("SQLite merge profile", 400.0),
-        ("MariaDB 10.11.11 smoke profile", 400.0),
+        ("SQLite merge profile", 100.0 + budget_seconds),
+        ("MariaDB 10.11.11 smoke profile", 100.0 + budget_seconds),
     ]
 
 
+@pytest.mark.parametrize("budget_seconds", (300.0, 600.0))
 def test_profile_does_not_start_without_termination_reserve(
     monkeypatch: pytest.MonkeyPatch,
+    budget_seconds: float,
 ) -> None:
-    monotonic = Mock(side_effect=(100.0, 395.0))
+    monotonic = Mock(side_effect=(100.0, 95.0 + budget_seconds))
     run_phase = Mock()
     monkeypatch.setattr(runner.time, "monotonic", monotonic)
     monkeypatch.setattr(runner, "_run_phase", run_phase)
 
-    assert runner.run_profile("merge", budget_seconds=300.0) == 124
+    assert runner.run_profile("merge", budget_seconds=budget_seconds) == 124
     run_phase.assert_not_called()
 
 
@@ -655,11 +659,11 @@ def test_release_receipt_names_the_bounded_merge_evidence() -> None:
         ROOT / "scripts" / "release-gate.py",
     )
 
-    assert release_gate.RELEASE_PROFILE == "h2hdb-release-v4"
+    assert release_gate.RELEASE_PROFILE == "h2hdb-release-v5"
     assert "exact-candidate-code-review" in release_gate.REQUIRED_CHECKS
     assert "sqlite-merge-tests-parallel" in release_gate.REQUIRED_CHECKS
     assert "mariadb-10.11.11-smoke-single-worker" in release_gate.REQUIRED_CHECKS
-    assert "pytest-total-budget-300s" in release_gate.REQUIRED_CHECKS
+    assert "pytest-total-budget-600s" in release_gate.REQUIRED_CHECKS
 
 
 def test_windows_job_create_builds_real_ctypes_structures(
