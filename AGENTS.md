@@ -231,6 +231,35 @@
 - `skip` 或 `xfail` 必須有理由；`xfail` 原則上使用 `strict=True`。
 - 不得為通過檢查而全域放寬工具設定。
 
+## 跨套件影響與整合交付
+
+- 任務涉及 consumer 使用的公開介面、telemetry 格式、dependency metadata、
+  compatibility lane 或部署組合時，實作前必須盤點下游影響及驗收範圍。
+  已提供部署入口時，以實際 Compose、Dockerfile 與套件解析程式為準，包含
+  未啟用 profile 的 jobs 與共用 build stage 檢查的角色；不得只列 resident
+  services，也不得以固定 sibling 路徑或另一份手寫角色清單取代部署事實。
+- 盤點須列出候選 Core 版本、每個角色的 dependency range、公開 API／log
+  consumer，以及需要修改與驗證的 repository。若需要擴大授權範圍，應在
+  初期提出；不得先將單一 repository 完成當作整個部署任務完成。
+- 手動整合驗收必須以明確的 candidate wheels 在乾淨環境執行正常 dependency
+  resolution，驗證實際安裝版本、來源與套件 metadata。不得以 `--no-deps`、
+  忽略 upper bound、只比對版本字串或 import 成功取代此證據。既有離線
+  wheel smoke 仍可使用 development dependencies，但不代表跨套件解析通過。
+- `scripts/rebuild-multirepo-integration.sh` 接受明確的 source／wheel 輸入，
+  用於本機跨套件解析與 SQLite smoke；它不取代實際部署建置流程或完整發布
+  驗收。涉及 Compose 可部署性的交付另須沿用該部署的套件解析、image build
+  與隔離 integration runner，驗證相同 Core／role 組合及受影響的服務流程。
+  發布、activation、cleanup DONE 與下一次工作取得依任務影響分別驗證。
+- 未發布的 candidate wheels 可以用於隔離整合驗收，但必須揭露它們取代了
+  index releases；不能據此宣稱正式 index-backed Compose 已可部署。發布後
+  須另驗證 index 上實際選出的完整套件組合。只能從實際查證的索引或發布
+  紀錄判定發布狀態，不能從「代理未執行發布」推論「版本尚未發布」。
+- Repository gate、code review、跨套件解析、隔離流程驗收與 production
+  部署是不同證據。完成回報須列明各自版本／artifact、結果及未執行項目；
+  任一必要項目失敗或缺少證據時，不得宣稱整體可部署。這些手動驗收不新增
+  競爭的 merge gate；live account、network 與 production probe 仍不得進入
+  hooks、一般 pytest 或自動 merge gate，發布與部署仍須逐次明確授權。
+
 ## 完成回報
 
 最終回覆必須包含：
