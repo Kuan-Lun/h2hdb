@@ -49,6 +49,7 @@ from .vnext_analysis_decision_batch import (
     ensure_file_decision_materialization_page,
     load_file_decision_shadow_layers,
     load_file_decision_tombstone_layers,
+    load_resolved_file_decision_page,
     require_file_decision_page_keys,
 )
 from .vnext_analysis_decision_reader import iter_resolved_file_decisions
@@ -508,6 +509,13 @@ class _RunAuthority:
     policy: _Policy
     baseline_analysis_id: bytes | None
     overlay_depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparationRunAuthority(_RunAuthority):
+    """Layout read with preparation authority, valid only in that transaction."""
+
+    ancestry: tuple[bytes, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -3868,7 +3876,7 @@ def _issued_gallery_memberships(
 
 def _prepare_gallery(
     work: VNextUnitOfWork,
-    run: _RunAuthority,
+    run: _PreparationRunAuthority,
     gallery_id: int,
     preparation_authority: AnalysisPreparationAuthority,
 ) -> AnalysisGalleryPreparation:
@@ -4026,7 +4034,7 @@ class _EffectiveContentSpool:
 
 def _prepare_effective_content_plan(
     work: VNextUnitOfWork,
-    authority: _RunAuthority,
+    authority: _PreparationRunAuthority,
     gallery_id: int,
     observation_id: int,
 ) -> CanonicalValueUploadPlan | None:
@@ -4053,7 +4061,7 @@ def _prepare_effective_content_plan(
 
 def _iter_effective_content_digests(
     work: VNextUnitOfWork,
-    authority: _RunAuthority,
+    authority: _PreparationRunAuthority,
     gallery_id: int,
     observation_id: int,
 ) -> Iterator[bytes]:
@@ -4116,7 +4124,7 @@ def _iter_effective_content_digests(
         # dictionary survives a page or an independent preparation stage.
         decisions = _resolved_decisions_for_page(
             work,
-            authority.analysis_id,
+            authority.ancestry,
             tuple(
                 require_digest32(row[0], field="effective file_sha256") for row in rows
             ),
@@ -4141,50 +4149,41 @@ def _iter_effective_content_digests(
 
 def _resolved_decisions_for_page(
     work: VNextUnitOfWork,
-    analysis_id: bytes,
+    ancestry: tuple[bytes, ...],
     digests: tuple[bytes, ...],
 ) -> dict[bytes, _Decision]:
-    """Validate an exact bounded decision set without dropping source rows.
+    """Read one exact page against this transaction's freshly loaded layout.
 
-    Each result is 16 + 32 + 3 * 8 = 72 logical bytes. The 128 accepted rows
-    plus one rejection sentinel bound fetched logical payload to 9,288 bytes,
-    independent of gallery/corpus size. Python/driver allocations and protocol
-    encoding overhead are measured separately from this logical payload bound.
+    The source can repeat a digest, so deduplicate only after enforcing its
+    128-row cap. Physical work is at most 17 * 128 complete-key coordinates;
+    returned payload is at most 129 rows of 16 + 32 + 5 * 8 logical bytes.
+    The extra row is a rejection sentinel, not an accepted result.
     """
 
     if not 1 <= len(digests) <= _MAX_BATCH_ROWS:
         raise AnalysisCorruptionError("effective decision lookup exceeds its row cap")
-    expected = {
-        require_digest32(digest, field="decision page digest") for digest in digests
-    }
-    placeholders = ", ".join("%s" for _digest in expected)
-    rows = work.connector.fetch_all(
-        "SELECT analysis_id, file_sha256, occurrence_count, artist_count, "
-        "maximum_gallery_artist_count "
-        "FROM catalog_analysis_file_hash_decision_resolved "
-        f"WHERE analysis_id = %s AND file_sha256 IN ({placeholders}) LIMIT %s",
-        (analysis_id, *sorted(expected), _MAX_BATCH_ROWS + 1),
-    )
-    if len(rows) != len(expected):
-        raise AnalysisCorruptionError(
-            "sealed file-decision component omitted or duplicated a CONTENT hash"
+    expected = tuple(
+        sorted(
+            {
+                require_digest32(digest, field="decision page digest")
+                for digest in digests
+            }
         )
-    decisions: dict[bytes, _Decision] = {}
-    for row in rows:
-        if len(row) != 5 or row[0] != analysis_id:
-            raise AnalysisCorruptionError(
-                "effective decision page contains a foreign row"
-            )
-        digest = require_digest32(row[1], field="effective decision page digest")
-        if digest not in expected or digest in decisions:
-            raise AnalysisCorruptionError(
-                "effective decision page contains a foreign or duplicate digest"
-            )
-        decision = _decision_from_row(row[2:], field="effective decision page")
-        if decision is None:
-            raise AnalysisCorruptionError("effective decision page omitted a decision")
-        decisions[digest] = decision
-    return decisions
+    )
+    try:
+        families = load_resolved_file_decision_page(
+            work.connector, ancestry=ancestry, digests=expected
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    return {
+        digest: _Decision(
+            family.occurrence_count,
+            family.artist_count,
+            family.maximum_gallery_artist_count,
+        )
+        for digest, family in families.items()
+    }
 
 
 class _PartReader:
@@ -7681,7 +7680,7 @@ def _load_preparation_authority(
     receipt: AnalysisPreparationAuthority,
     *,
     allow_complete: bool = False,
-) -> _RunAuthority:
+) -> _PreparationRunAuthority:
     if receipt._capability is not _PREPARATION_TOKEN:
         raise TypeError("preparation authority is not repository-issued")
     try:
@@ -7736,18 +7735,19 @@ def _load_preparation_authority(
         if not baseline_row
         else require_uuid16(baseline_row[0], field="preparation baseline")
     )
-    _persisted_baseline, _anchor, depth, _ancestry = _load_layout(
+    _persisted_baseline, _anchor, depth, ancestry = _load_layout(
         work,
         receipt.analysis_id,
     )
     if depth > _MAX_OVERLAY_DEPTH:
         raise AnalysisCorruptionError("preparation overlay depth exceeds 16")
-    return _RunAuthority(
+    return _PreparationRunAuthority(
         receipt.analysis_id,
         receipt.build_id,
         _load_policy(work, receipt.policy_id),
         baseline,
         depth,
+        ancestry,
     )
 
 

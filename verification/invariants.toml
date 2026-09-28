@@ -3458,8 +3458,8 @@ id = "runtime.production.analysis-bounded-preparation"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "Gallery preparation reads source records through hard-capped keyset pages, validates one bounded exact decision map per page, and writes selected digests to a temporary disk spool. Count and both codecs consume the same ordered records; each replay checks count and checksum, and subsequent preparations reload durable authority."
-assumptions = ["The connector enforces the surrounding read snapshot; temporary files are local preparation inputs and never replace durable database authority."]
+claim = "Gallery preparation reads source records through hard-capped keyset pages, resolves one exact decision map using a physical primary-key grid of at most 17 layers by 128 distinct digests, and writes selected digests to a temporary disk spool. The single SQL query validates all shadow members, tombstones and scalar domains across every requested layer before selecting the nearest live decision. Ancestry is freshly read in the same preparation transaction and never cached between preparations. Count and both codecs consume the same ordered records; each replay checks count and checksum."
+assumptions = ["The connector enforces the surrounding read snapshot; temporary files are local preparation inputs and never replace durable database authority. The 88-byte row and 11352-byte rejection-sentinel page bounds describe logical representation only; separately fixed SQL-call, returned-row, SQLite VM and MariaDB Handler budgets are validated by executable tests, not by the row-size theorem."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_prepare_gallery"
@@ -3472,6 +3472,13 @@ symbol = "_prepare_effective_content_plan"
 [[evidence.location]]
 path = "src/h2hdb/vnext_analysis_repository.py"
 symbol = "_iter_effective_content_digests"
+
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_repository.py"
+symbol = "_load_preparation_authority"
+[[evidence.location]]
+path = "src/h2hdb/vnext_analysis_decision_batch.py"
+symbol = "load_resolved_file_decision_page"
 
 [[evidence]]
 id = "fault.production.analysis-bounded-preparation"
@@ -3502,6 +3509,25 @@ symbol = "test_effective_spool_rejects_disk_corruption"
 path = "tests/test_vnext_analysis_bounded_preparation.py"
 symbol = "test_effective_spool_interruption_discards_prefix_and_restarts_from_authority"
 
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_hidden_incomplete_families_fail_closed"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_absent_tombstoned_or_conflicting_decisions_are_rejected"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_hidden_invalid_scalars_are_not_masked_by_nearer_shadows"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_invalid_or_over_capacity_inputs_issue_no_query"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_unrelated_history_cannot_consume_product_budget_and_mutant_is_rejected"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_bounded_preparation.py"
+symbol = "test_public_preparation_reloads_layout_and_ownership_between_snapshots"
+
 [[evidence]]
 id = "integration.production.analysis-bounded-preparation"
 layer = "integration"
@@ -3515,6 +3541,13 @@ symbol = "test_sqlite_batched_preparation_survives_lost_local_result_and_reopen"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_bounded_preparation.py"
 symbol = "test_live_mariadb_bounded_preparation_matches_reference"
+
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_sqlite_exact_resolution_stays_within_fixed_product_budget"
+[[evidence.location]]
+path = "tests/test_vnext_analysis_decision_resolution.py"
+symbol = "test_local_mariadb_maximum_product_and_hidden_corruption"
 
 [[evidence]]
 id = "lean.operational.mariadb-lease-pool"

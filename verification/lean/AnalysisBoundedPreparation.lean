@@ -121,10 +121,12 @@ theorem source_page_logical_bytes_bounded
     (bounded : rows ≤ 128) :
     rows * 40 ≤ 5120 := by omega
 
+/-- Owner UUID, digest, action, three counts and all-layer validation flag.
+    This represents the row shape, not an SQL execution or Handler-read budget. -/
 theorem decision_page_with_rejection_sentinel_logical_bytes_bounded
     (rows : Nat)
     (bounded : rows ≤ 129) :
-    rows * 72 ≤ 9288 := by omega
+    rows * 88 ≤ 11352 := by omega
 
 /-- Qualification selects whole observations before any global file analysis.
     The original gallery list remains available as complete source membership. -/
