@@ -89,6 +89,122 @@ def _requested_layer_grid(
     )
 
 
+def load_resolved_file_decision_page(
+    connector: SQLConnector,
+    *,
+    ancestry: Sequence[bytes],
+    digests: Sequence[bytes],
+) -> dict[bytes, AnalysisFileHashDecisionShadowFamily]:
+    """Resolve one exact live page using at most 17 * 128 physical coordinates.
+
+    ``ancestry`` is the nearest-first layout freshly loaded by the caller in
+    this same transaction. Every coordinate probes all five shadow members and
+    the tombstone by the complete primary key. Window selection transfers only
+    one row per requested digest, while the partition flag still rejects a
+    damaged older family hidden by a newer shadow or tombstone. No fact or
+    layout is retained after this call.
+    """
+
+    _require_analysis_layers(ancestry)
+    layers = tuple(ancestry)
+    keys = require_file_decision_page_keys(digests)
+    if not layers or not keys:
+        raise ValueError("resolved file-decision page requires layers and keys")
+    anchor, occurrence, artist, maximum, _seal = _SHADOW_TABLES
+    layer_selects = " UNION ALL ".join(
+        f"SELECT {connector.binary_parameter_expression(16)}, {depth}"
+        for depth in range(len(layers))
+    )
+    key_selects = " UNION ALL ".join(
+        f"SELECT {connector.binary_parameter_expression(32)}" for _key in keys
+    )
+    joins = " ".join(
+        f"LEFT JOIN {connector.primary_key_table_reference(table)} "
+        f"ON {table}.analysis_id = g.analysis_id "
+        f"AND {table}.file_sha256 = h.file_sha256"
+        for table in (*_SHADOW_TABLES, _TOMBSTONE)
+    )
+    absent_members = " + ".join(
+        f"({table}.analysis_id IS NULL)" for table in _SHADOW_TABLES
+    )
+    invalid_scalars = " OR ".join(
+        f"{table}.{field} IS NULL OR "
+        f"{table}.{field} NOT BETWEEN {minimum} AND 9223372036854775807 OR "
+        f"{table}.{field} <> CAST({table}.{field} AS SIGNED INTEGER)"
+        for table, field, minimum in (
+            (occurrence, "occurrence_count", 1),
+            (artist, "artist_count", 0),
+            (maximum, "maximum_gallery_artist_count", 0),
+        )
+    )
+    # SUM preserves a bounded count of every invalid layer. MariaDB returns
+    # DECIMAL for SUM of integers; the signed cast keeps the result an exact
+    # connector integer (0..17), matching the flag's strict domain check below.
+    rows = connector.fetch_all(
+        f"WITH requested_layers(analysis_id, depth) AS ({layer_selects}), "
+        f"requested_hashes(file_sha256) AS ({key_selects}), "
+        "families AS (SELECT g.analysis_id, h.file_sha256, g.depth, "
+        f"{occurrence}.occurrence_count, {artist}.artist_count, "
+        f"{maximum}.maximum_gallery_artist_count, "
+        f"CASE WHEN {anchor}.analysis_id IS NOT NULL THEN 1 "
+        f"WHEN {_TOMBSTONE}.analysis_id IS NOT NULL THEN 2 ELSE 0 END AS action, "
+        f"CASE WHEN ({absent_members}) NOT IN (0, 5) "
+        f"OR ({anchor}.analysis_id IS NOT NULL AND "
+        f"({_TOMBSTONE}.analysis_id IS NOT NULL OR {invalid_scalars})) "
+        "THEN 1 ELSE 0 END AS invalid_family "
+        "FROM requested_layers AS g CROSS JOIN requested_hashes AS h "
+        + joins
+        + "), ranked AS (SELECT analysis_id, file_sha256, action, "
+        "occurrence_count, artist_count, maximum_gallery_artist_count, "
+        "CAST(SUM(invalid_family) OVER (PARTITION BY file_sha256) "
+        "AS SIGNED INTEGER) AS invalid_layer, "
+        "ROW_NUMBER() OVER (PARTITION BY file_sha256 ORDER BY "
+        "CASE WHEN action = 0 THEN 1 ELSE 0 END, depth) AS rank_no FROM families) "
+        "SELECT analysis_id, file_sha256, action, occurrence_count, artist_count, "
+        "maximum_gallery_artist_count, invalid_layer FROM ranked "
+        "WHERE rank_no = 1 ORDER BY file_sha256 LIMIT %s",
+        (*layers, *keys, len(keys) + 1),
+    )
+    if len(rows) != len(keys):
+        raise AnalysisFamilyCollisionError(
+            "resolved file-decision page disagrees with its requested keys"
+        )
+    result: dict[bytes, AnalysisFileHashDecisionShadowFamily] = {}
+    for row in rows:
+        if len(row) != 7:
+            raise AnalysisFamilyCollisionError(
+                "resolved file-decision page returned an invalid row"
+            )
+        owner, digest = _require_layer_result_key(
+            row[0], row[1], analyses=layers, keys=keys
+        )
+        if digest in result:
+            raise AnalysisFamilyCollisionError(
+                "resolved file-decision page returned a duplicate key"
+            )
+        if type(row[6]) is not int or row[6] != 0:
+            raise AnalysisFamilyPartialError(
+                "resolved file-decision page contains a partial or conflicting layer"
+            )
+        if type(row[2]) is not int or row[2] != 1:
+            raise AnalysisFamilyCollisionError(
+                "sealed file-decision component omitted a CONTENT hash"
+            )
+        try:
+            result[digest] = AnalysisFileHashDecisionShadowFamily(
+                owner,
+                digest,
+                require_positive_int63(row[3], field="resolved occurrence count"),
+                row[4],
+                row[5],
+            )
+        except (TypeError, ValueError) as error:
+            raise AnalysisFamilyCollisionError(
+                "resolved file-decision page contains invalid facts"
+            ) from error
+    return result
+
+
 def load_file_decision_shadow_layers(
     connector: SQLConnector,
     *,

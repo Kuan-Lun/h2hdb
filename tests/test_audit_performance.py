@@ -108,7 +108,7 @@ def test_full_ready_audit_reports_every_real_validator_and_sql(
     )
     assert terminal["connection_calls"] == 2
     assert terminal["transaction_calls"] == 2
-    assert terminal["query_top"]
+    assert terminal["query_attribution"]["top"]
 
 
 def test_initialize_distinguishes_activation_from_ready_marker_replay(

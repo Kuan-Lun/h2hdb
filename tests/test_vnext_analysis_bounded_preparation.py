@@ -26,22 +26,26 @@ from h2hdb import vnext_analysis_repository as analysis
 from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_analysis_decision_batch import load_resolved_file_decision_page
 from h2hdb.vnext_canonical_value_repository import CanonicalValueUploadPlan
-from h2hdb.vnext_domains import DomainValidationError
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _authority() -> analysis._RunAuthority:
-    return analysis._RunAuthority(
+def _authority() -> analysis._PreparationRunAuthority:
+    return analysis._PreparationRunAuthority(
         b"a" * 16,
         b"b" * 16,
         analysis._Policy(1, 1, 1, 3, 1, 1),
         None,
         0,
+        (b"a" * 16,),
     )
 
 
 class _PagedConnector:
+    binary_parameter_expression = SQLConnector.binary_parameter_expression
+    primary_key_table_reference = SQLConnector.primary_key_table_reference
+
     def __init__(self, count: int) -> None:
         # Repeated hashes straddle page boundaries, and one hash is excluded.
         self.rows = sorted((bytes((index % 3,)) * 32, index) for index in range(count))
@@ -50,14 +54,14 @@ class _PagedConnector:
         self.requested: list[tuple[bytes, ...]] = []
 
     def fetch_all(self, sql: str, parameters: tuple[Any, ...]) -> list[tuple[Any, ...]]:
-        if "catalog_analysis_file_hash_decision_resolved" in sql:
+        if "WITH requested_layers" in sql:
             self.decision_calls += 1
             assert parameters[0] == _authority().analysis_id
             requested = parameters[1:-1]
             assert len(requested) <= 128 and len(set(requested)) == len(requested)
             self.requested.append(requested)
             return [
-                (parameters[0], digest, 5, 4 if digest == bytes(32) else 0, 1)
+                (parameters[0], digest, 1, 5, 4 if digest == bytes(32) else 0, 1, 0)
                 for digest in reversed(requested)
             ]
         assert "catalog_gallery_observation_file_seals" in sql
@@ -116,11 +120,11 @@ def test_batched_preparation_matches_independent_codec_with_one_source_scan(
     "rows",
     [
         [],
-        [(b"a" * 16, b"x" * 32, 1, 0, 0)],
-        [(b"a" * 16, b"x" * 32, 1, 0, 0)] * 2,
-        [(b"a" * 16, b"x" * 32, 1, 0, 0), (b"z" * 16, b"y" * 32, 1, 0, 0)],
-        [(b"a" * 16, b"x" * 32, 1, 0, 0), (b"a" * 16, b"z" * 32, 1, 0, 0)],
-        [(b"a" * 16, b"x" * 32, 1, 0, 0), (b"a" * 16, b"y" * 32)],
+        [(b"a" * 16, b"x" * 32, 1, 1, 0, 0, 0)],
+        [(b"a" * 16, b"x" * 32, 1, 1, 0, 0, 0)] * 2,
+        [(b"a" * 16, b"x" * 32, 1, 1, 0, 0, 0), (b"z" * 16, b"y" * 32, 1, 1, 0, 0, 0)],
+        [(b"a" * 16, b"x" * 32, 1, 1, 0, 0, 0), (b"a" * 16, b"z" * 32, 1, 1, 0, 0, 0)],
+        [(b"a" * 16, b"x" * 32, 1, 1, 0, 0, 0), (b"a" * 16, b"y" * 32)],
     ],
     ids=[
         "missing-all",
@@ -138,7 +142,7 @@ def test_decision_batch_rejects_inexact_authority(rows: list[tuple[Any, ...]]) -
         pytest.raises(analysis.AnalysisCorruptionError),
     ):
         analysis._resolved_decisions_for_page(
-            _work(connector), _authority().analysis_id, (b"x" * 32, b"y" * 32)
+            _work(connector), _authority().ancestry, (b"x" * 32, b"y" * 32)
         )
 
 
@@ -147,7 +151,7 @@ def test_decision_batch_rejects_unbounded_request_without_sql(count: int) -> Non
     connector = _PagedConnector(0)
     with pytest.raises(analysis.AnalysisCorruptionError, match="row cap"):
         analysis._resolved_decisions_for_page(
-            _work(connector), _authority().analysis_id, (b"x" * 32,) * count
+            _work(connector), _authority().ancestry, (b"x" * 32,) * count
         )
     assert connector.decision_calls == 0
 
@@ -156,12 +160,12 @@ def test_decision_batch_rejects_invalid_count_domain() -> None:
     connector = _PagedConnector(0)
     with (
         patch.object(
-            connector, "fetch_all", return_value=[(b"a" * 16, b"x" * 32, 0, 0, 0)]
+            connector, "fetch_all", return_value=[(b"a" * 16, b"x" * 32, 1, 0, 0, 0, 0)]
         ),
-        pytest.raises(DomainValidationError),
+        pytest.raises(analysis.AnalysisCorruptionError, match="invalid facts"),
     ):
         analysis._resolved_decisions_for_page(
-            _work(connector), _authority().analysis_id, (b"x" * 32,)
+            _work(connector), _authority().ancestry, (b"x" * 32,)
         )
 
 
@@ -302,8 +306,13 @@ def _assert_backend_preparation(
     first: bytes,
     second: bytes,
 ) -> bytes:
-    authority = analysis._RunAuthority(
-        analysis_id, build_id, analysis._Policy(1, 1, 1000, 1000, 1, 1), None, 0
+    authority = analysis._PreparationRunAuthority(
+        analysis_id,
+        build_id,
+        analysis._Policy(1, 1, 1000, 1000, 1, 1),
+        None,
+        0,
+        (analysis_id,),
     )
     expected = (first,) * 129 + (second,) * 128
     with (
@@ -318,12 +327,12 @@ def _assert_backend_preparation(
         with plan:
             assert plan.value_sha256 == _independent_digest(expected)
             assert not any(
-                "catalog_analysis_file_hash_decision_resolved" in call.args[0]
+                "WITH requested_layers" in call.args[0]
                 for call in fetched_one.call_args_list
             ), "decision preparation performed a per-file scalar lookup"
             assert (
                 sum(
-                    "catalog_analysis_file_hash_decision_resolved" in call.args[0]
+                    "WITH requested_layers" in call.args[0]
                     for call in fetched.call_args_list
                 )
                 == 3
@@ -355,7 +364,7 @@ def _assert_backend_reloads_decisions_after_preparation(
             (analysis_id, first),
         )
     try:
-        with pytest.raises(analysis.AnalysisCorruptionError, match="omitted"):
+        with pytest.raises(analysis.AnalysisCorruptionError, match="partial"):
             _assert_backend_preparation(
                 connector, backend, analysis_id, build_id, first, second
             )
@@ -452,3 +461,98 @@ def test_live_mariadb_bounded_preparation_matches_reference(
         )
     finally:
         connector.close()
+
+
+def test_public_preparation_reloads_layout_and_ownership_between_snapshots(
+    tmp_path: Path,
+) -> None:
+    """An old receipt/plan never substitutes for fresh layout or working state."""
+
+    with open_generated_sqlite_database(tmp_path / "fresh-layout.sqlite3") as connector:
+        assert isinstance(connector, SQLiteConnector)
+        gate, turn = _authorities(connector)
+        with connector.transaction():
+            _scope, build, first, second = _seed_initial_snapshot(connector)
+            _add_preparation_source(connector, first, second)
+        run = _begin(
+            connector, gate, turn, build_id=build, analysis_id=b"a" * 16, now=30
+        )
+        _run_file_slice(
+            connector, gate, turn, run.analysis_id, max_rows=128, start_now=100
+        )
+        with connector.transaction():
+            receipt = analysis.AnalysisRepository.issue_preparation_authority(
+                _work(connector),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                now=600,
+            )
+
+        def prepare() -> analysis.AnalysisGalleryPreparation:
+            return analysis.AnalysisRepository.prepare_gallery(
+                connector, backend="sqlite", authority=receipt, gallery_id=1
+            )
+
+        with (
+            patch.object(
+                analysis, "_load_layout", wraps=analysis._load_layout
+            ) as layout,
+            patch.object(
+                analysis,
+                "load_resolved_file_decision_page",
+                wraps=load_resolved_file_decision_page,
+            ) as decisions,
+        ):
+            prepared = prepare()
+            prepared.close()
+            assert layout.call_count == 1
+            assert decisions.call_count == 3
+            assert all(
+                call.kwargs["ancestry"] == (run.analysis_id,)
+                for call in decisions.call_args_list
+            )
+
+        with connector.transaction():
+            connector.execute(
+                "DELETE FROM catalog_analysis_state_ancestry WHERE analysis_id = %s",
+                (run.analysis_id,),
+            )
+        with (
+            patch.object(
+                analysis,
+                "load_resolved_file_decision_page",
+                side_effect=AssertionError("stale layout reached the decision reader"),
+            ),
+            pytest.raises(analysis.AnalysisCorruptionError, match="ancestry"),
+        ):
+            prepare()
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_analysis_state_ancestry "
+                "(analysis_id, ancestor_depth, ancestor_analysis_id) VALUES (%s, 0, %s)",
+                (run.analysis_id, run.analysis_id),
+            )
+            assigned_at = connector.fetch_one(
+                "SELECT assigned_at FROM operational_source_working_builds WHERE slot = 1"
+            )[0]
+            connector.execute("DELETE FROM operational_source_working_builds")
+        with (
+            patch.object(
+                analysis,
+                "load_resolved_file_decision_page",
+                side_effect=AssertionError(
+                    "lost ownership reached the decision reader"
+                ),
+            ),
+            pytest.raises(analysis.AnalysisNotReadyError, match="working slot"),
+        ):
+            prepare()
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO operational_source_working_builds (slot, build_id, assigned_at) "
+                "VALUES (1, %s, %s)",
+                (build, assigned_at),
+            )
+        # Restoring exact durable authority permits the same immutable receipt.
+        prepare().close()

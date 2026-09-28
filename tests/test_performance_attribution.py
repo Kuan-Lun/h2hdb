@@ -20,7 +20,6 @@ from h2hdb.ingest_performance import IngestPerformance
 from h2hdb.sql_performance import (
     instrument_connector,
     measure_sql,
-    query_totals_snapshot,
 )
 from h2hdb.sqlite_connector import SQLiteConnector
 
@@ -68,8 +67,8 @@ def test_real_sqlite_late_cumulative_cost_survives_capacity_and_cycles(
 
     Warm-up families each cost one second. A later family costs only 0.25s per
     call, but its three 1000-call cycles dominate cumulative time. Thus it never
-    enters the five slowest-call heap. The production recorder is an intentional
-    degraded control once its first 64 identities have been admitted.
+    enters the five slowest-call heap. The bounded production recorder must
+    nevertheless retain its identity with a valid duration interval.
     """
 
     now = [0.0]
@@ -149,23 +148,10 @@ def test_real_sqlite_late_cumulative_cost_survives_capacity_and_cycles(
     assert _LATE_FINGERPRINT not in {
         row["fingerprint"] for row in stage.slowest.snapshot()
     }
-    if prefix_families >= 64:
-        assert _LATE_FINGERPRINT not in stage.queries
-        assert stage.queries["other"].seconds >= 750.0
-        assert (
-            attribution.assess_attribution(
-                {
-                    "sql_calls": stage.counters.sql_calls,
-                    "sql_seconds": stage.counters.sql_seconds,
-                    "returned_rows": stage.counters.read_rows,
-                    "query_top": query_totals_snapshot(stage.queries),
-                    "query_overflow": {"seconds": stage.queries["other"].seconds},
-                }
-            )["status"]
-            == "incomplete"
-        )
-    else:
-        assert stage.queries[_LATE_FINGERPRINT].seconds == 750.0
+    retained = stage.queries.entries[_LATE_FINGERPRINT]
+    assert retained.observed.seconds <= 750.0 <= retained.upper
+    assert retained.observed.calls == 3000
+    assert stage.queries.top()[0][0] == _LATE_FINGERPRINT
     performance.close()
 
 

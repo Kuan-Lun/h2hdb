@@ -27,13 +27,12 @@ from .sql_performance import (
     QUERY_FINGERPRINT_ALGORITHM,
     SQLCounters,
     SQLMeasurement,
-    SQLQueryStatistics,
+    SQLQuerySummary,
     SQLSlowQueries,
     SQLTransactionStatistics,
     execution_owner,
     measure_sql,
     query_fingerprint,
-    query_totals_snapshot,
     read_clock,
 )
 
@@ -41,7 +40,6 @@ type DiagnosticValue = str | int | float | bool | None
 type _Status = Literal["completed", "failed", "interrupted"]
 _PHASE_LIMIT = 256
 _PHASE_TOTAL_LIMIT = 64
-_QUERY_LIMIT = 64
 _DEPTH_LIMIT = 64
 _LABEL_LIMIT = 32
 _HEARTBEAT_LIMIT = 64
@@ -71,7 +69,7 @@ def _fields(values: dict[str, DiagnosticValue]) -> dict[str, DiagnosticValue]:
 @dataclass
 class _Statistics:
     counters: SQLCounters = field(default_factory=SQLCounters)
-    queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
+    queries: SQLQuerySummary = field(default_factory=SQLQuerySummary)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
     transactions: SQLTransactionStatistics = field(
         default_factory=SQLTransactionStatistics
@@ -92,16 +90,7 @@ class _Statistics:
                 self.counters.sql_seconds += elapsed
                 self.counters.read_rows += rows
                 self.slowest.record(fingerprint, elapsed, rows)
-                if fingerprint is not None:
-                    if (
-                        fingerprint not in self.queries
-                        and len(self.queries) >= _QUERY_LIMIT
-                    ):
-                        fingerprint = "other"
-                    statistics = self.queries.get(fingerprint)
-                    if statistics is None:
-                        statistics = self.queries[fingerprint] = SQLQueryStatistics()
-                    statistics.record(elapsed, rows)
+                self.queries.record(fingerprint, elapsed, rows)
             case "connection":
                 self.counters.connection_calls += 1
                 self.counters.connection_seconds += elapsed
@@ -113,13 +102,7 @@ class _Statistics:
     def snapshot(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self.counters)
         result["query_slowest"] = self.slowest.snapshot()
-        result["query_top"] = query_totals_snapshot(self.queries)
-        overflow = self.queries.get("other", SQLQueryStatistics())
-        result["query_overflow"] = {
-            "calls": overflow.calls,
-            "seconds": overflow.seconds,
-            "returned_rows": overflow.read_rows,
-        }
+        result["query_attribution"] = self.queries.snapshot()
         result["transaction_breakdown"] = self.transactions.snapshot()
         return result
 
@@ -246,7 +229,7 @@ class _Operation:
     def _envelope(self, event: str) -> dict[str, Any]:
         self.sequence += 1
         return {
-            "schema": 1,
+            "schema": 2,
             "event": event,
             "backend": self.owner.backend,
             "operation": self.name,
@@ -254,8 +237,8 @@ class _Operation:
             "sequence": self.sequence,
             "sql_calls_unit": "completed_connector_method_calls",
             "read_rows_unit": "returned_rows_not_examined_rows",
-            "query_top_scope": "first_64_fingerprints_plus_other",
             "query_fingerprint_algorithm": QUERY_FINGERPRINT_ALGORITHM,
+            "query_attribution_scope": "inclusive_scope",
             "query_slowest_scope": "five_slowest_completed_calls",
         }
 
@@ -350,8 +333,7 @@ class _Operation:
                             "exclusive_sql_seconds",
                             "exclusive_read_rows",
                             "query_slowest",
-                            "query_top",
-                            "query_overflow",
+                            "query_attribution",
                             "transaction_breakdown",
                         )
                     }

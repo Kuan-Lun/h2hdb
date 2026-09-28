@@ -163,15 +163,39 @@ The terminal `source_step` INFO record reports admitted files and galleries,
 discovered/staged galleries, deferred/waiting counts, and completed inventory
 observation. Its correlation ID matches the source preparation and stage summary.
 
-INFO also reports cumulative time for the first 64 SQL query families and an
-explicit overflow total. Pure placeholder `IN` lists share one family regardless
-of their parameter count; quoted text, expressions and subqueries remain distinct.
-The `query_fingerprint_algorithm` label identifies this diagnostic normalization;
-execution SQL and parameters are unchanged. This can expose thousands of
-individually fast calls; it is not a complete ranking of every query shape.
-Transaction timings distinguish
+INFO query attribution retains at most 64 families by cumulative duration upper
+bound, including late expensive families. Database JSON diagnostics use schema 2
+and `query_attribution`; ingest text uses the same explicit bounds. Scope totals
+and the five slowest individual calls remain exact. Each retained family reports
+`observed_calls`, `observed_returned_rows`, `observed_max_seconds`, duration
+`seconds_lower`/`seconds_upper`, and `complete`. Observations are lower bounds
+unless `complete=true`; they are never estimated counts. The missing-key bound
+limits each unretained family's duration, not the sum of missing work. Retained
+lower seconds, replacement counts and unfingerprinted totals expose incomplete
+attribution. Bounded merges can widen intervals, so this is not a complete exact
+ranking. Ingest stage SQL totals remain exclusive; separately labeled nested
+SQL totals include every descendant even when detailed nested records are omitted.
+
+Pure placeholder `IN` lists share one family regardless of parameter count;
+quoted text, expressions and subqueries remain distinct. The
+`query_fingerprint_algorithm` label identifies this diagnostic normalization;
+execution SQL and parameters are unchanged. Transaction timings distinguish
 `begin`, `begin_read`, `commit` and `rollback`, including failed calls. They measure
 client elapsed time, not database lock waits or filesystem flush time separately.
+
+Historical schema-1 database JSONL can be normalized offline without changing a
+database or overwriting the original log:
+
+```sh
+.venv/bin/python scripts/normalize-database-performance-log.py old.jsonl new.jsonl
+```
+
+The output path must be new. Complete raw JSON records or normal
+`database_performance` log lines are accepted; HTML fragments must first be
+reconstructed. This conversion preserves exact totals and displayed families,
+marks unidentified duration explicitly, and cannot recover `other` or undisplayed
+identities. It does not convert ingest's human-readable text or add a runtime
+compatibility reader. A failed conversion may leave a partial output file.
 
 Publication INFO summaries also attribute artifact input audits, source copying
 and revalidation, rendering, output verification and storage protection. Each
@@ -298,8 +322,9 @@ timestamp-valid stale bytecode from being attributed to newly edited source.
 Worker startup and report-storage failures return `2`; a failed final write
 cannot turn missing evidence into a measured cost violation.
 SQL attribution uses the development observer's complete bounded fingerprint
-set, rather than the runtime logger's first-64 aggregate. Overflow, omitted events
-or truncated details invalidate attribution. A late, frequently repeated query
+set. Runtime duration intervals are useful diagnostics but do not satisfy this
+exact attribution contract. Observer overflow, omitted events or truncated
+details invalidate attribution. A late, frequently repeated query
 must remain identifiable even if no individual call is slow. Returned rows and
 client SQL time still do not establish server rows examined or physical disk traffic.
 
