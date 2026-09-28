@@ -36,6 +36,35 @@ def _load_runner() -> ModuleType:
 runner = _load_runner()
 
 
+def test_ingest_log_scan_includes_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    acceptance = runner.Acceptance.__new__(runner.Acceptance)
+    acceptance.project = "h2hdb-acceptance-log-stream-test"
+    acceptance.prepared = SimpleNamespace(compose_path=tmp_path / "compose.json")
+    acceptance.commands = runner.Commands(
+        context="test-context", output=tmp_path / "output", seconds=120
+    )
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command[-6:] == [
+            "logs",
+            "--no-color",
+            "--timestamps",
+            "--since",
+            "2026-09-28T00:00:00Z",
+            "h2hdb-ingest",
+        ]
+        return subprocess.CompletedProcess(
+            command, 0, "normal log\n", "[ERROR] consumer failed\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert acceptance.logs("2026-09-28T00:00:00Z") == (
+        "normal log\n[ERROR] consumer failed\n"
+    )
+
+
 def _observer_package(tmp_path: Path, *, complete: bool = True) -> Path:
     root = tmp_path / "mounted-acceptance"
     package = root / "deployment_acceptance"

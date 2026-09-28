@@ -231,7 +231,12 @@ class Acceptance:
         return self.prepared
 
     def compose(
-        self, arguments: Sequence[str], *, check: bool = True, timeout: float = 60
+        self,
+        arguments: Sequence[str],
+        *,
+        check: bool = True,
+        timeout: float = 60,
+        combine_output: bool = False,
     ) -> str:
         return self.commands.compose(
             self.project,
@@ -239,6 +244,7 @@ class Acceptance:
             arguments,
             check=check,
             timeout=timeout,
+            combine_output=combine_output,
         )
 
     def helper(self, arguments: Sequence[str], *, check: bool = True) -> str:
@@ -349,7 +355,15 @@ class Acceptance:
 
     def logs(self, since: str) -> str:
         return self.compose(
-            ["logs", "--no-color", "--timestamps", "--since", since, SERVICES["ingest"]]
+            [
+                "logs",
+                "--no-color",
+                "--timestamps",
+                "--since",
+                since,
+                SERVICES["ingest"],
+            ],
+            combine_output=True,
         )
 
     def probe_events(self) -> list[dict[str, Any]]:

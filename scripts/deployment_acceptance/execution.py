@@ -61,12 +61,16 @@ class Commands:
         check: bool = True,
         cleanup: bool = False,
         timeout: float = 60,
+        combine_output: bool = False,
     ) -> str:
         """Journal every attempted call, including timeout, signal and launch error.
 
         Normal calls reserve 45 seconds for cleanup. If that reserve is exhausted,
         cleanup still attempts each owned resource with at most one second per
         command; it never silently reports an unverified empty tree.
+
+        Return stdout for machine-readable callers. Diagnostic log readers can
+        explicitly request both streams; the journal always retains both.
         """
         if timeout <= 0:
             raise ValueError("Command timeout must be positive")
@@ -110,7 +114,7 @@ class Commands:
             raise RuntimeError(
                 f"Command exited {completed.returncode}; see {path}: {text[-2500:]}"
             )
-        return text
+        return text if combine_output else completed.stdout
 
     def compose(
         self,
@@ -246,6 +250,7 @@ class Commands:
                     ["logs", "--no-color", "--timestamps", "--tail", "200", *consumers],
                     cleanup=True,
                     timeout=5,
+                    combine_output=True,
                 )
                 log_path = self.output / "cleanup-consumers.log"
                 log_path.write_text(logs, encoding="utf-8")
