@@ -301,13 +301,14 @@ def verify_diagnostic_counters(
     for query in report["queries"]:
         if query["category"] == "sql":
             actual[query["fingerprint"]] += query["calls"]
-    report["unmapped_aggregate_fingerprints"] = []
-    for query in event.get("query_top", ()):
-        if query["fingerprint"] == "other":
-            report["unmapped_aggregate_fingerprints"].append(query)
-            continue
-        if actual[query["fingerprint"]] != query["calls"]:
-            raise RuntimeError("production SQL fingerprint count is incorrect")
+    attribution = event["query_attribution"]
+    report["query_attribution"] = attribution
+    for query in attribution["top"]:
+        count = actual[query["fingerprint"]]
+        if query["observed_calls"] > count or (
+            query["complete"] and query["observed_calls"] != count
+        ):
+            raise RuntimeError("production SQL fingerprint count bound is incorrect")
     report["diagnostic_counter_check"] = "passed"
 
 

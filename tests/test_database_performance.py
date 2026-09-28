@@ -92,19 +92,21 @@ def test_nested_sql_conservation_and_known_delay_attribution(
         == slow["exclusive_seconds"]
         == 2.0
     )
-    assert terminal["query_top"][0] == {
+    assert terminal["query_attribution"]["top"][0] == {
         "fingerprint": sha256(b"SELECT %s").hexdigest()[:16],
-        "calls": 1,
-        "seconds": 2.0,
-        "max_seconds": 2.0,
-        "returned_rows": 1,
+        "observed_calls": 1,
+        "seconds_lower": 2.0,
+        "seconds_upper": 2.0,
+        "observed_max_seconds": 2.0,
+        "observed_returned_rows": 1,
+        "complete": True,
     }
     assert "private-value" not in caplog.text
     assert "SELECT" not in caplog.text
 
 
 @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
-def test_additive_diagnostics_preserve_schema_one_field_meaning(
+def test_schema_two_preserves_exact_scope_counters(
     level: int,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -138,7 +140,7 @@ def test_additive_diagnostics_preserve_schema_one_field_meaning(
                 assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
     terminal = _records(caplog)[-1]
     previous_fields = {
-        "schema": 1,
+        "schema": 2,
         "event": "completed",
         "backend": "sqlite",
         "operation": "audit",
@@ -160,15 +162,6 @@ def test_additive_diagnostics_preserve_schema_one_field_meaning(
         "phase_count": 1,
         "omitted_phase_records": 0,
         "omitted_depth": 0,
-        "query_top": [
-            {
-                "fingerprint": sha256(query.encode()).hexdigest()[:16],
-                "calls": 3,
-                "seconds": 6.0,
-                "max_seconds": 2.0,
-                "returned_rows": 9,
-            }
-        ],
     }
     assert {key: terminal[key] for key in previous_fields} == previous_fields
     previous_phase_fields = {
@@ -233,10 +226,15 @@ def test_query_capacity_and_repeated_cycles_keep_exact_total_counts(
                 for index in range(queries):
                     connection.fetch_one(f"SELECT %s AS q_{index}", ("private",))
         statistics = span._inclusive
-        assert len(statistics.queries) == min(queries, 64) + int(queries > 64)
-        assert sum(item.calls for item in statistics.queries.values()) == queries * 3
-        if queries > 64:
-            assert statistics.queries["other"].calls == (queries - 64) * 3
+        assert len(statistics.queries) == min(queries, 64)
+        assert statistics.counters.sql_calls == queries * 3
+        if queries <= 64:
+            assert (
+                sum(item.observed.calls for item in statistics.queries.entries.values())
+                == queries * 3
+            )
+        else:
+            assert statistics.queries.replacements > 0
     assert _records(caplog)[-1]["sql_calls"] == queries * 3
     assert "private" not in caplog.text
 
@@ -647,7 +645,7 @@ def test_info_heartbeat_identifies_blocked_sql_before_completion(
         assert terminal["sql_calls"] == 1
         assert terminal["sql_seconds"] == 12.0
         assert terminal["pending_call"] is None
-        assert terminal["query_top"][0]["calls"] == 1
+        assert terminal["query_attribution"]["top"][0]["observed_calls"] == 1
         assert terminal["query_slowest"][0]["seconds"] == 12.0
         assert terminal["phase_top"][0]["sql_seconds"] == 12.0
         assert reporting_threads and all(
@@ -695,8 +693,8 @@ def test_slow_queries_after_fingerprint_capacity_remain_identifiable(
             sha256(b"SELECT %s AS q_64").hexdigest()[:16]
         ] * 2
     assert terminal["sql_calls"] == terminal["read_rows"] == queries * 3
-    assert terminal["query_top"]
-    assert terminal["query_overflow"]["calls"] == max(0, queries - 64) * 3
+    assert terminal["query_attribution"]["top"]
+    assert terminal["query_attribution"]["retained_families"] == min(queries, 64)
 
 
 @pytest.mark.parametrize("keys", [63, 64, 65, 130])
@@ -758,21 +756,19 @@ def test_placeholder_arity_does_not_hide_cumulative_sql_from_info(
     terminal = _records(caplog)[-1]
     expected = {
         "fingerprint": sha256(b"SELECT %s IN (%s)").hexdigest()[:16],
-        "calls": 387,
-        "seconds": 193.5,
-        "returned_rows": 387,
-        "max_seconds": 0.5,
+        "observed_calls": 387,
+        "seconds_lower": 193.5,
+        "seconds_upper": 193.5,
+        "observed_returned_rows": 387,
+        "observed_max_seconds": 0.5,
+        "complete": True,
     }
     assert terminal["query_fingerprint_algorithm"] == "sha256-in-placeholder-list-v1"
-    assert terminal["query_top"] == [expected]
-    assert terminal["phase_top"][0]["query_top"] == [expected]
+    assert terminal["query_attribution"]["top"] == [expected]
+    assert terminal["phase_top"][0]["query_attribution"]["top"] == [expected]
     assert terminal["sql_calls"] == terminal["read_rows"] == 387
     assert terminal["sql_seconds"] == 193.5
-    assert terminal["query_overflow"] == {
-        "calls": 0,
-        "seconds": 0.0,
-        "returned_rows": 0,
-    }
+    assert terminal["query_attribution"]["missing_key_seconds_upper"] == 0
     assert "private-value" not in caplog.text
     assert "SELECT" not in caplog.text
 

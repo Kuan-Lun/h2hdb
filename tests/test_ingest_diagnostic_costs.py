@@ -16,7 +16,7 @@ from h2hdb.sql_performance import SQLTransactionStatistics, instrument_connector
 from h2hdb.sqlite_connector import SQLiteConnector
 
 
-def test_info_aggregates_short_queries_across_steps_and_reports_overflow(
+def test_info_aggregates_short_queries_across_steps_and_reports_bounds(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     logger = logging.getLogger("diagnostic-costs.ingest")
@@ -34,7 +34,7 @@ def test_info_aggregates_short_queries_across_steps_and_reports_overflow(
                 step.record_sql_operation("sql", 0.0, f"SELECT private_{index}", 0)
             step.record_sql_operation("transaction", 0.25, "begin", 0)
             step.record_sql_operation("transaction", 2.0, "commit", 0)
-            assert len(step.queries) <= 65
+            assert len(step.queries) <= 64
     performance.close()
     message = next(
         record.getMessage()
@@ -42,8 +42,11 @@ def test_info_aggregates_short_queries_across_steps_and_reports_overflow(
         if "reporting closed" in record.getMessage()
     )
     key = sha256(repeated.encode()).hexdigest()[:16]
-    assert f"{key}(calls=300,seconds=3.000000" in message
-    assert "cumulative SQL overflow other(calls=" in message
+    assert (
+        f"{key}(observed_calls=300,seconds_lower=3.000000,seconds_upper=3.000000"
+        in message
+    )
+    assert "missing_key_seconds_upper=0.000000" in message
     assert "transaction operations begin(calls=3,seconds=0.750000" in message
     assert "commit(calls=3,seconds=6.000000,max_seconds=2.000000)" in message
     assert "transaction operations by phase issue:" in message
@@ -108,7 +111,7 @@ def test_real_transaction_error_and_nested_boundaries_are_conserved(
     assert (
         sum(row["seconds"] for row in phase["exclusive_transaction_breakdown"]) == 2.0
     )
-    assert terminal["query_top"]
+    assert terminal["query_attribution"]["top"]
     assert "secret failure" not in caplog.text
 
 
@@ -207,8 +210,8 @@ def test_info_nested_preparation_preserves_cumulative_sql_and_transaction_detail
         message for message in messages if "preparation in progress:" in message
     ]
     assert len(progress_messages) == 2
-    assert f"{key}(calls=100,seconds=1.000000" in progress_messages[0]
-    assert f"{key}(calls=200,seconds=2.000000" in progress_messages[1]
+    assert f"{key}(observed_calls=100,seconds_lower=1.000000" in progress_messages[0]
+    assert f"{key}(observed_calls=200,seconds_lower=2.000000" in progress_messages[1]
     event = (
         "finished"
         if failure is None
@@ -220,10 +223,11 @@ def test_info_nested_preparation_preserves_cumulative_sql_and_transaction_detail
         message for message in messages if f"preparation {event}:" in message
     )
     assert (
-        f"{key}(calls=200,seconds=2.000000,returned_rows=200,max_seconds=0.010000)"
+        f"{key}(observed_calls=200,seconds_lower=2.000000,seconds_upper=2.000000,"
+        "observed_returned_rows=200,observed_max_seconds=0.010000,complete=1)"
         in terminal
     )
-    assert "cumulative SQL overflow other(calls=7,seconds=0.000000" in terminal
+    assert "replacements=7,missing_key_seconds_upper=0.000000" in terminal
     assert (
         "transaction operations begin_read(calls=2,seconds=0.500000,max_seconds=0.250000)"
         in terminal
@@ -237,5 +241,10 @@ def test_info_nested_preparation_preserves_cumulative_sql_and_transaction_detail
         parent_terminal = next(
             message for message in messages if "stage finished:" in message
         )
-        assert key not in parent_terminal
+        exclusive, nested = parent_terminal.split(
+            "; nested SQL (inclusive descendants):", 1
+        )
+        assert key not in exclusive
+        assert key in nested
+        assert "270 completed SQL connector calls" in nested
         assert "0 completed SQL connector calls" in parent_terminal

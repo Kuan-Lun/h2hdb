@@ -100,39 +100,196 @@ class SQLQueryStatistics:
         )
 
 
-def accumulate_query(
-    queries: dict[str, SQLQueryStatistics],
-    fingerprint: str,
-    statistics: SQLQueryStatistics,
-    *,
-    limit: int = 64,
-) -> None:
-    """Exact first-admitted fingerprints plus an explicit, conserved overflow.
-
-    This is not an all-fingerprint heavy-hitter algorithm. In particular, the
-    overflow is emitted even when it would not rank among the displayed top five.
-    Merging a bounded child cannot recover identities already in its overflow.
-    """
-    if fingerprint not in queries and len(queries) >= limit:
-        fingerprint = "other"
-    queries.setdefault(fingerprint, SQLQueryStatistics()).add(statistics)
+QUERY_ATTRIBUTION_ALGORITHM = "bounded-duration-upper-lower-v1"
+QUERY_ATTRIBUTION_CAPACITY = 64
 
 
-def query_totals_snapshot(
-    queries: dict[str, SQLQueryStatistics],
-) -> list[dict[str, str | int | float]]:
-    return [
-        {
-            "fingerprint": key,
-            "calls": item.calls,
-            "seconds": item.seconds,
-            "max_seconds": item.max_seconds,
-            "returned_rows": item.read_rows,
+@dataclass
+class _QueryEstimate:
+    observed: SQLQueryStatistics = field(default_factory=SQLQueryStatistics)
+    error_seconds: float = 0.0
+    complete: bool = True
+
+    @property
+    def upper(self) -> float:
+        return self.observed.seconds + self.error_seconds
+
+    def snapshot(self, fingerprint: str) -> dict[str, str | int | float | bool]:
+        return {
+            "fingerprint": fingerprint,
+            "observed_calls": self.observed.calls,
+            "seconds_lower": self.observed.seconds,
+            "seconds_upper": self.upper,
+            "observed_returned_rows": self.observed.read_rows,
+            "observed_max_seconds": self.observed.max_seconds,
+            "complete": self.complete,
         }
-        for key, item in sorted(
-            queries.items(), key=lambda pair: pair[1].seconds, reverse=True
+
+    def text(self, fingerprint: str) -> str:
+        return (
+            f"{fingerprint}(observed_calls={self.observed.calls},"
+            f"seconds_lower={self.observed.seconds:.6f},seconds_upper={self.upper:.6f},"
+            f"observed_returned_rows={self.observed.read_rows},"
+            f"observed_max_seconds={self.observed.max_seconds:.6f},"
+            f"complete={int(self.complete)})"
+        )
+
+
+class SQLQuerySummary:
+    """Duration heavy hitters with deterministic bounds, never estimated counts.
+
+    Retained statistics are actual observations since admission (lower bounds).
+    On replacement, the minimum retained upper bound bounds all earlier time of
+    the incoming key. The evicted upper bound also bounds every untracked key.
+    Updates use an indexed heap: O(log capacity), with no stale heap entries.
+
+    A merge adds per-key intervals, using the missing-key upper bound for absent
+    identities, then retains the largest upper bounds. It can widen intervals;
+    it cannot invent observed calls/rows or narrow an unsupported bound. Whole
+    scope counters remain separate and exact. Floating-point rounding applies.
+    """
+
+    def __init__(self, capacity: int = QUERY_ATTRIBUTION_CAPACITY) -> None:
+        if capacity < 1:
+            raise ValueError("query summary capacity must be positive")
+        self.capacity = capacity
+        self.entries: dict[str, _QueryEstimate] = {}
+        self._heap: list[str] = []
+        self._positions: dict[str, int] = {}
+        self.missing_seconds_upper = 0.0
+        self.replacements = 0
+        self.unfingerprinted = SQLQueryStatistics()
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def __bool__(self) -> bool:
+        return bool(self.entries or self.unfingerprinted.calls)
+
+    def _less(self, left: int, right: int) -> bool:
+        left_key, right_key = self._heap[left], self._heap[right]
+        return (self.entries[left_key].upper, left_key) < (
+            self.entries[right_key].upper,
+            right_key,
+        )
+
+    def _swap(self, left: int, right: int) -> None:
+        self._heap[left], self._heap[right] = self._heap[right], self._heap[left]
+        self._positions[self._heap[left]] = left
+        self._positions[self._heap[right]] = right
+
+    def _down(self, index: int) -> None:
+        while (child := index * 2 + 1) < len(self._heap):
+            if child + 1 < len(self._heap) and self._less(child + 1, child):
+                child += 1
+            if not self._less(child, index):
+                break
+            self._swap(index, child)
+            index = child
+
+    def record(self, fingerprint: str | None, elapsed: float, rows: int) -> None:
+        if fingerprint is None:
+            self.unfingerprinted.record(elapsed, rows)
+            return
+        entry = self.entries.get(fingerprint)
+        if entry is not None:
+            entry.observed.record(elapsed, rows)
+            self._down(self._positions[fingerprint])
+            return
+        error = self.missing_seconds_upper
+        complete = self.replacements == 0
+        if len(self.entries) == self.capacity:
+            evicted = self._heap[0]
+            error = self.entries.pop(evicted).upper
+            del self._positions[evicted]
+            self.missing_seconds_upper = error
+            self.replacements += 1
+            complete = False
+            index = 0
+            self._heap[0] = fingerprint
+        else:
+            index = len(self._heap)
+            self._heap.append(fingerprint)
+        entry = _QueryEstimate(error_seconds=error, complete=complete)
+        entry.observed.record(elapsed, rows)
+        self.entries[fingerprint] = entry
+        self._positions[fingerprint] = index
+        if index == 0:
+            self._down(index)
+        else:
+            while index and self._less(index, (index - 1) // 2):
+                parent = (index - 1) // 2
+                self._swap(index, parent)
+                index = parent
+
+    def add(self, other: SQLQuerySummary) -> None:
+        """Merge completed, disjoint scopes in bounded O(capacity log capacity)."""
+        self.unfingerprinted.add(other.unfingerprinted)
+        if not other.entries:
+            return
+        combined: dict[str, _QueryEstimate] = {}
+        for key in self.entries.keys() | other.entries.keys():
+            left, right = self.entries.get(key), other.entries.get(key)
+            observed = SQLQueryStatistics()
+            if left is not None:
+                observed.add(left.observed)
+            if right is not None:
+                observed.add(right.observed)
+            combined[key] = _QueryEstimate(
+                observed,
+                (left.error_seconds if left else self.missing_seconds_upper)
+                + (right.error_seconds if right else other.missing_seconds_upper),
+                (left.complete if left else self.replacements == 0)
+                and (right.complete if right else other.replacements == 0),
+            )
+        ordered = sorted(
+            combined, key=lambda key: (combined[key].upper, key), reverse=True
+        )
+        dropped = ordered[self.capacity :]
+        self.missing_seconds_upper += other.missing_seconds_upper
+        if dropped:
+            self.missing_seconds_upper = max(
+                self.missing_seconds_upper, combined[dropped[0]].upper
+            )
+        self.replacements += other.replacements + len(dropped)
+        self.entries = {key: combined[key] for key in ordered[: self.capacity]}
+        self._heap = list(self.entries)
+        self._positions = {key: index for index, key in enumerate(self._heap)}
+        for index in reversed(range(len(self._heap) // 2)):
+            self._down(index)
+
+    def top(self) -> list[tuple[str, _QueryEstimate]]:
+        return sorted(
+            self.entries.items(),
+            key=lambda pair: (pair[1].upper, pair[0]),
+            reverse=True,
         )[:5]
-    ]
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "algorithm": QUERY_ATTRIBUTION_ALGORITHM,
+            "capacity": self.capacity,
+            "retained_families": len(self.entries),
+            "replacements": self.replacements,
+            "unfingerprinted_calls": self.unfingerprinted.calls,
+            "unfingerprinted_seconds": self.unfingerprinted.seconds,
+            "unfingerprinted_returned_rows": self.unfingerprinted.read_rows,
+            "missing_key_seconds_upper": self.missing_seconds_upper,
+            "retained_seconds_lower": sum(
+                item.observed.seconds for item in self.entries.values()
+            ),
+            "top": [item.snapshot(key) for key, item in self.top()],
+        }
+
+    def text(self) -> str:
+        return (
+            f"algorithm={QUERY_ATTRIBUTION_ALGORITHM},capacity={self.capacity},"
+            f"retained_families={len(self.entries)},replacements={self.replacements},"
+            f"missing_key_seconds_upper={self.missing_seconds_upper:.6f},"
+            f"unfingerprinted_calls={self.unfingerprinted.calls},"
+            f"unfingerprinted_seconds={self.unfingerprinted.seconds:.6f};"
+            + ";".join(item.text(key) for key, item in self.top())
+        )
 
 
 @dataclass

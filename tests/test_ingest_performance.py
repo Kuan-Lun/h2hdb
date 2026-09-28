@@ -89,7 +89,7 @@ def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
     assert "commit_seconds=" not in text
     assert "private_value" not in text
     assert "secret-one" not in text
-    assert "query_top=" not in text
+    assert "query_attribution=" not in text
     assert all(record.levelno == logging.INFO for record in caplog.records)
 
 
@@ -127,17 +127,14 @@ def test_debug_query_statistics_are_bounded_and_redacted(
                 connector.fetch_one(
                     f"SELECT %s AS field_{position}", ("secret-payload",)
                 )
+        assert len(sample.queries) == 64
+        assert sample.counters.sql_calls == sample.counters.read_rows == 100
+        assert sample.queries.replacements == 36
         assert (
-            len(sample.queries) == 65
-        )  # 64 query fingerprints plus one overflow bucket.
-        assert sum(statistics.calls for statistics in sample.queries.values()) == 100
-        assert (
-            sum(statistics.read_rows for statistics in sample.queries.values()) == 100
+            sum(item.observed.calls for item in sample.queries.entries.values()) == 64
         )
-        assert sample.queries["other"].calls == 36
-        assert sample.queries["other"].read_rows == 36
     performance.close()
-    assert "query_top=" in caplog.text
+    assert "query_attribution=" in caplog.text
     assert "secret-payload" not in caplog.text
     assert "SELECT" not in caplog.text
     assert "event=completed" in caplog.text
@@ -163,13 +160,13 @@ def test_debug_query_top_distinguishes_repeated_work_from_one_slow_call(
         record.message for record in caplog.records if record.levelno == logging.DEBUG
     )
     assert "operation=PREPARE_SNAPSHOT generation=51 phase=prepare" in message
-    top = message.split(" query_top=", 1)[1].split(";")
+    top = message.split(" query_attribution=", 1)[1].split(";")[1:]
     assert len(top) == 5
     assert top[:2] == [
-        f"{repeated_fingerprint}(calls=2,seconds=5.000000,"
-        "returned_rows=130,max_seconds=3.000000)",
-        f"{slow_fingerprint}(calls=1,seconds=4.000000,"
-        "returned_rows=1,max_seconds=4.000000)",
+        f"{repeated_fingerprint}(observed_calls=2,seconds_lower=5.000000,seconds_upper=5.000000,"
+        "observed_returned_rows=130,observed_max_seconds=3.000000,complete=1)",
+        f"{slow_fingerprint}(observed_calls=1,seconds_lower=4.000000,seconds_upper=4.000000,"
+        "observed_returned_rows=1,observed_max_seconds=4.000000,complete=1)",
     ]
     assert "private" not in caplog.text
     assert "SELECT" not in caplog.text
@@ -182,7 +179,7 @@ def test_info_collects_cumulative_query_statistics(
     performance = IngestPerformance(performance_log, backend="mariadb")
     with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 51) as sample:
         sample.record_sql_operation("sql", 2.0, "SELECT private_payload", 128)
-        assert sum(item.calls for item in sample.queries.values()) == 1
+        assert sum(item.observed.calls for item in sample.queries.entries.values()) == 1
         assert len(sample.slowest.snapshot()) == 1
         assert sample.counters.read_rows == 128
     performance.close()
@@ -202,20 +199,25 @@ def test_info_groups_placeholder_arities_across_steps_and_preserves_totals(
                         ("private-value",) * (count + 1),
                     ) == (1,)
             assert len(sample.queries) == 1
-            assert sum(item.calls for item in sample.queries.values()) == 129
+            assert (
+                sum(item.observed.calls for item in sample.queries.entries.values())
+                == 129
+            )
     stage = performance._stage
     assert stage is not None
     assert len(stage.queries) == 1
-    assert next(iter(stage.queries.values())).calls == 387
+    assert next(iter(stage.queries.entries.values())).observed.calls == 387
     performance.close()
     info = "\n".join(
         record.message for record in caplog.records if record.levelno == logging.INFO
     )
-    assert "first 64 query families per step/stage plus other" in info
+    assert "observed counts/rows are lower bounds" in info
     assert "fingerprints sha256-in-placeholder-list-v1" in info
     assert "387 completed SQL connector calls; 387 rows returned" in info
-    assert sha256(b"SELECT %s IN (%s)").hexdigest()[:16] + "(calls=387," in info
-    assert "cumulative SQL overflow other(calls=0,seconds=0.000000," in info
+    assert (
+        sha256(b"SELECT %s IN (%s)").hexdigest()[:16] + "(observed_calls=387," in info
+    )
+    assert "missing_key_seconds_upper=0.000000" in info
     assert "private-value" not in info
     assert "SELECT" not in info
 
@@ -232,9 +234,9 @@ def test_info_slowest_queries_do_not_disappear_after_64_fingerprints(
                 sample.record_sql_operation("sql", seconds, f"SELECT {index}", 1)
                 clock.now += seconds
         sample.terminal = True
-        assert len(sample.queries) == 65
-        assert sum(item.calls for item in sample.queries.values()) == 390
-        assert sample.queries["other"].calls == 198
+        assert len(sample.queries) == 64
+        assert sample.counters.sql_calls == 390
+        assert sample.queries.replacements > 0
         assert len(sample.slowest._entries) == 5
     info = "\n".join(
         record.message for record in caplog.records if record.levelno == logging.INFO
@@ -688,7 +690,7 @@ def test_info_explains_slow_connections_and_debug_preserves_all_stage_measuremen
     )
     assert "processed_rows=4 replayed_calls=1" in terminal
     assert "sql_calls=1 sql_seconds=120.000000 read_rows=128" in terminal
-    assert "query_top=" in next(
+    assert "query_attribution=" in next(
         message for message in technical if "event=completed " in message
     )
     assert "secret" not in caplog.text

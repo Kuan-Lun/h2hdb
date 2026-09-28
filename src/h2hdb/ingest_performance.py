@@ -27,10 +27,9 @@ from .ingest_work_performance import WorkCosts, collect_ingest_work
 from .sql_performance import (
     QUERY_FINGERPRINT_ALGORITHM,
     SQLCounters,
-    SQLQueryStatistics,
+    SQLQuerySummary,
     SQLSlowQueries,
     SQLTransactionStatistics,
-    accumulate_query,
     execution_owner,
     measure_sql,
     query_fingerprint,
@@ -38,32 +37,45 @@ from .sql_performance import (
 )
 
 _REPORT_INTERVAL_SECONDS = 60.0
-_QUERY_LIMIT = 64
 _NESTED_RECORD_LIMIT = 64
 _PHASE_LIMIT = 128
 
 
 def _sql_cost_details(
-    queries: dict[str, SQLQueryStatistics],
+    queries: SQLQuerySummary,
     transactions: SQLTransactionStatistics,
 ) -> str:
     """One bounded INFO representation for stages, preparation and isolated calls."""
 
     details = ""
     if queries:
-        top = sorted(queries.items(), key=lambda item: item[1].seconds, reverse=True)[
-            :5
-        ]
         details += (
-            f"; cumulative SQL (first {_QUERY_LIMIT} query families per step/stage plus other; "
-            f"fingerprints {QUERY_FINGERPRINT_ALGORITHM}): "
-            + ";".join(item.text(key) for key, item in top)
+            "; cumulative SQL attribution (observed counts/rows are lower bounds; "
+            f"fingerprints {QUERY_FINGERPRINT_ALGORITHM}): " + queries.text()
         )
-        overflow = queries.get("other", SQLQueryStatistics())
-        details += "; cumulative SQL overflow " + overflow.text("other")
     if transactions.operations:
         details += "; transaction operations " + transactions.text()
     return details
+
+
+def _nested_sql_details(
+    counters: SQLCounters, queries: SQLQuerySummary, slowest: SQLSlowQueries
+) -> str:
+    return (
+        f"{counters.sql_calls} completed SQL connector calls; "
+        f"{counters.read_rows} rows returned; "
+        + workload(
+            elapsed=None,
+            sql_seconds=counters.sql_seconds,
+            connection_seconds=counters.connection_seconds,
+            transaction_seconds=counters.transaction_seconds,
+            includes_reused_results=False,
+        )
+        + "; nested query attribution "
+        + queries.text()
+        + "; nested slowest SQL calls "
+        + slowest.text()
+    )
 
 
 @dataclass(frozen=True)
@@ -88,7 +100,10 @@ class PerformanceStep:
     active: bool = True
     counters: SQLCounters = field(default_factory=SQLCounters)
     work_costs: WorkCosts = field(default_factory=WorkCosts)
-    queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
+    queries: SQLQuerySummary = field(default_factory=SQLQuerySummary)
+    nested_counters: SQLCounters = field(default_factory=SQLCounters)
+    nested_queries: SQLQuerySummary = field(default_factory=SQLQuerySummary)
+    nested_slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
     transactions: SQLTransactionStatistics = field(
         default_factory=SQLTransactionStatistics
@@ -126,13 +141,7 @@ class PerformanceStep:
                 counters.read_rows += rows
                 key = query_fingerprint(query)
                 self.slowest.record(key, elapsed, rows)
-                if key is not None:
-                    if key not in self.queries and len(self.queries) >= _QUERY_LIMIT:
-                        key = "other"
-                    statistics = self.queries.get(key)
-                    if statistics is None:
-                        statistics = self.queries[key] = SQLQueryStatistics()
-                    statistics.record(elapsed, rows)
+                self.queries.record(key, elapsed, rows)
             case "connection":
                 counters.connection_calls += 1
                 counters.connection_seconds += elapsed
@@ -292,7 +301,10 @@ class _Stage:
     phases: dict[str, float] = field(default_factory=dict)
     phase_counters: dict[str, SQLCounters] = field(default_factory=dict)
     slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
-    queries: dict[str, SQLQueryStatistics] = field(default_factory=dict)
+    queries: SQLQuerySummary = field(default_factory=SQLQuerySummary)
+    nested_counters: SQLCounters = field(default_factory=SQLCounters)
+    nested_queries: SQLQuerySummary = field(default_factory=SQLQuerySummary)
+    nested_slowest: SQLSlowQueries = field(default_factory=SQLSlowQueries)
     transactions: SQLTransactionStatistics = field(
         default_factory=SQLTransactionStatistics
     )
@@ -386,6 +398,12 @@ class IngestPerformance:
             try:
                 records = self._complete(sample, now, failure=failure)
                 if sample.parent is not None:
+                    sample.parent.nested_counters.add(sample.counters)
+                    sample.parent.nested_counters.add(sample.nested_counters)
+                    sample.parent.nested_queries.add(sample.queries)
+                    sample.parent.nested_queries.add(sample.nested_queries)
+                    sample.parent.nested_slowest.add(sample.slowest)
+                    sample.parent.nested_slowest.add(sample.nested_slowest)
                     sample.parent.nested_seconds += sample.elapsed(now)
                     sample.parent.nested_calls += 1 + sample.nested_calls
                     sample.parent.unannounced_nested_work |= (
@@ -423,6 +441,13 @@ class IngestPerformance:
             f"query_fingerprint_algorithm={QUERY_FINGERPRINT_ALGORITHM} "
             f"{sample.counters.text()}"
         )
+        message += " sql_scope=exclusive"
+        if sample.nested_calls:
+            message += " nested_sql_scope=inclusive_descendants " + " ".join(
+                "nested_" + part for part in sample.nested_counters.text().split()
+            )
+            message += " nested_query_attribution=" + sample.nested_queries.text()
+            message += " nested_query_slowest=" + sample.nested_slowest.text()
         if sample.correlation_id is not None:
             message += f" correlation_id={sample.correlation_id}"
         if sample.slowest.snapshot():
@@ -431,12 +456,7 @@ class IngestPerformance:
         if sample.work_costs.operations:
             message += " local_work=" + sample.work_costs.text()
         if self.debug and sample.queries:
-            top = sorted(
-                sample.queries.items(), key=lambda item: item[1].seconds, reverse=True
-            )[:5]
-            message += " query_top=" + ";".join(
-                statistics.text(key) for key, statistics in top
-            )
+            message += " query_attribution=" + sample.queries.text()
         info_message = None
         if (
             scope == "concurrent"
@@ -470,7 +490,15 @@ class IngestPerformance:
                 )
             )
             if sample.nested_calls:
-                info_message += f"; nested work {duration(sample.nested_seconds)}"
+                info_message += (
+                    f"; nested work {duration(sample.nested_seconds)}; "
+                    "nested SQL (inclusive descendants): "
+                    + _nested_sql_details(
+                        sample.nested_counters,
+                        sample.nested_queries,
+                        sample.nested_slowest,
+                    )
+                )
             if sample.omitted_records:
                 info_message += "; some nested diagnostic details omitted"
             info_message += _sql_cost_details(sample.queries, sample.transactions)
@@ -543,8 +571,10 @@ class IngestPerformance:
             stage.work_costs.add(sample.work_costs)
             stage.slowest.add(sample.slowest)
             stage.transactions.add(sample.transactions)
-            for fingerprint, statistics in sample.queries.items():
-                accumulate_query(stage.queries, fingerprint, statistics)
+            stage.queries.add(sample.queries)
+            stage.nested_counters.add(sample.nested_counters)
+            stage.nested_queries.add(sample.nested_queries)
+            stage.nested_slowest.add(sample.nested_slowest)
             stage.finished = now
             phase = sample.phase
             if phase not in stage.phases and len(stage.phases) >= _PHASE_LIMIT:
@@ -587,8 +617,13 @@ class IngestPerformance:
             f"other_seconds={max(0.0, call_seconds - stage.counters.seconds):.6f} "
             f"calls={stage.calls} processed_rows={stage.processed_rows} "
             f"replayed_calls={stage.replayed} {stage.counters.text()}"
-            f" query_fingerprint_algorithm={QUERY_FINGERPRINT_ALGORITHM}"
+            f" sql_scope=exclusive query_fingerprint_algorithm={QUERY_FINGERPRINT_ALGORITHM}"
         )
+        message += " nested_sql_scope=inclusive_descendants " + " ".join(
+            "nested_" + part for part in stage.nested_counters.text().split()
+        )
+        message += " nested_query_attribution=" + stage.nested_queries.text()
+        message += " nested_query_slowest=" + stage.nested_slowest.text()
         message += " " + " ".join(
             f"{phase}_seconds={seconds:.6f}"
             for phase, seconds in sorted(stage.phases.items())
@@ -624,7 +659,17 @@ class IngestPerformance:
             )
             if stage.slowest.snapshot():
                 info_message += "; slowest SQL calls " + stage.slowest.text()
+            info_message += "; SQL scope: exclusive"
             info_message += _sql_cost_details(stage.queries, stage.transactions)
+            if stage.nested_counters.sql_calls:
+                info_message += (
+                    "; nested SQL (inclusive descendants): "
+                    + _nested_sql_details(
+                        stage.nested_counters,
+                        stage.nested_queries,
+                        stage.nested_slowest,
+                    )
+                )
             if stage.work_costs.operations:
                 info_message += (
                     "; local work (inclusive/exclusive wall, logical bytes; overlaps SQL): "

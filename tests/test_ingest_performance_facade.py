@@ -117,7 +117,7 @@ def test_performance_uses_application_handler_and_preserves_default_info(
         for record in records
     )
     assert all("ingest_db_performance" not in record.getMessage() for record in records)
-    assert all("query_top=" not in record.getMessage() for record in records)
+    assert all("query_attribution=" not in record.getMessage() for record in records)
 
 
 def test_empty_recovery_probe_finishes_before_uninstrumented_work(

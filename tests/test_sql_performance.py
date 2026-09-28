@@ -15,9 +15,8 @@ import pytest
 
 from h2hdb import sql_performance
 from h2hdb.sql_performance import (
-    SQLQueryStatistics,
+    SQLQuerySummary,
     SQLSlowQueries,
-    accumulate_query,
     instrument_connector,
     measure_sql,
     query_fingerprint,
@@ -285,23 +284,21 @@ def test_in_arity_capacity_cycles_reject_raw_hash_counterexample(arities: int) -
 
     def collect(
         fingerprint: Callable[[str], str | None],
-    ) -> dict[str, SQLQueryStatistics]:
-        queries: dict[str, SQLQueryStatistics] = {}
+    ) -> SQLQuerySummary:
+        queries = SQLQuerySummary()
         for _cycle in range(3):
             for count in range(1, arities + 1):
                 placeholders = ", ".join(["%s"] * count)
                 key = fingerprint(f"SELECT %s IN ({placeholders})")
                 assert key is not None
-                statistics = SQLQueryStatistics()
-                statistics.record(0.5, 1)
-                accumulate_query(queries, key, statistics)
+                queries.record(key, 0.5, 1)
                 assert len(queries) <= 65
         return queries
 
-    def verify(queries: dict[str, SQLQueryStatistics]) -> None:
+    def verify(queries: SQLQuerySummary) -> None:
         assert len(queries) == 1
-        assert "other" not in queries
-        counts = next(iter(queries.values()))
+        assert queries.replacements == 0
+        counts = next(iter(queries.entries.values())).observed
         assert counts.calls == counts.read_rows == arities * 3
         assert counts.seconds == arities * 1.5
         assert counts.max_seconds == 0.5
