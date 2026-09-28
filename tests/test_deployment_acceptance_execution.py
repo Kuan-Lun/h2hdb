@@ -36,6 +36,68 @@ execution = _load_module()
 PROJECT = "h2hdb-acceptance-execution-test"
 
 
+def test_json_stdout_is_not_contaminated_by_stderr_warning(tmp_path: Path) -> None:
+    runner = execution.Commands(
+        context="test-context", output=tmp_path / "output", seconds=120
+    )
+    stdout = '{"packages": {"h2hdb": "0.45.0"}}\n'
+    stderr = "WARNING: image platform differs from host platform\n"
+    result = runner.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.write({stdout!r}); sys.stderr.write({stderr!r})",
+        ]
+    )
+    assert result == stdout
+    assert json.loads(result) == {"packages": {"h2hdb": "0.45.0"}}
+    record = json.loads((runner.output / "commands.jsonl").read_text())
+    assert record["returncode"] == 0
+    assert (runner.output / record["output"]).read_text() == stdout + stderr
+
+
+def test_diagnostic_reader_can_explicitly_include_stderr(tmp_path: Path) -> None:
+    runner = execution.Commands(
+        context="test-context", output=tmp_path / "output", seconds=120
+    )
+    stdout, stderr = "normal log\n", "[ERROR] consumer shutdown failed\n"
+    assert (
+        runner.run(
+            [
+                sys.executable,
+                "-c",
+                f"import sys; sys.stdout.write({stdout!r}); sys.stderr.write({stderr!r})",
+            ],
+            combine_output=True,
+        )
+        == stdout + stderr
+    )
+
+
+@pytest.mark.parametrize("check", [True, False])
+def test_failed_command_preserves_both_diagnostic_streams(
+    tmp_path: Path, check: bool
+) -> None:
+    runner = execution.Commands(
+        context="test-context", output=tmp_path / "output", seconds=120
+    )
+    stdout, stderr = "partial result\n", "fatal diagnostic\n"
+    command = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.stdout.write({stdout!r}); sys.stderr.write({stderr!r}); sys.exit(7)",
+    ]
+    if check:
+        with pytest.raises(RuntimeError, match="Command exited 7") as caught:
+            runner.run(command)
+        assert stdout in str(caught.value) and stderr in str(caught.value)
+    else:
+        assert runner.run(command, check=False) == stdout
+    record = json.loads((runner.output / "commands.jsonl").read_text())
+    assert record["returncode"] == 7
+    assert (runner.output / record["output"]).read_text() == stdout + stderr
+
+
 def test_timeout_keeps_partial_output_and_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -139,6 +201,7 @@ class FakeDocker:
                         command, 1, output="stop incomplete"
                     )
             if "logs" in command:
+                assert options["combine_output"] is True
                 assert list(command[-7:]) == [
                     "logs",
                     "--no-color",
