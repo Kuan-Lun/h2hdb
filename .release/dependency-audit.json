@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-27T06:16:12+00:00",
+  "checked_at": "2026-09-28T09:28:23+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.44.0",
+  "project_version": "0.45.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -59,7 +59,7 @@
     {
       "declared": "hypothesis>=6.165.10,<7.0.0",
       "group": "optional:dev",
-      "latest": "6.168.2",
+      "latest": "6.168.3",
       "latest_satisfies": true,
       "name": "hypothesis",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all build, runtime, optional, development and Node direct dependency candidates. The sole newly discovered candidate since the prior reviewed audit is Hypothesis 6.168.2. Its official changelog was checked but still listed 6.168.1; as supplemental evidence, compared checksum-verified official PyPI sdists for 6.168.1 and 6.168.2: constants cache writes become atomic and tzdata lower bounds change only for unused zoneinfo/all extras on Windows/Emscripten. Installed 6.168.2 locally and passed all 64 schema codec and property tests. Other registry candidates and all existing dependency bounds are unchanged from the previous reviewed release. Runtime dependencies and schema 9 remain unchanged; this release retires completed offline deployment commands. The bounded release gate is separate evidence.",
+    "note": "Reviewed every build, runtime, optional/development and Node direct candidate, including current upper bounds. Hypothesis 6.168.3 is the sole newer candidate since the reviewed 0.44.0 receipt. Official release notes (https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.3 and https://hypothesis.readthedocs.io/en/latest/changelog.html) describe removal of quadratic pytest-statistics summarization for very large example counts. Installed 6.168.3 in the local development environment and passed 61 schema artifact codec tests plus 3 schema property tests with pytest -n 0. All other registry candidates and dependency constraints are unchanged; every candidate remains within declared bounds and supports Python 3.14. No dependency manifest changes or runtime dependency upgrades are needed. This release changes diagnostic log protocol to schema 2 and bounded file-decision reads; database schema 9 is unchanged. The exact-tree bounded release gate is separate evidence.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
