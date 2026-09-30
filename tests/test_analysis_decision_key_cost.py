@@ -12,7 +12,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -88,6 +88,82 @@ def test_all_rejected_memberships_still_advance_raw_bounded_pages(
     assert case["candidate"]["occurrences"] == 0
     assert case["candidate"]["calls"] == 3
     assert case["unique_keys"] == 1
+
+
+@pytest.mark.parametrize("galleries", [126, 127, 128])
+def test_candidate_timing_includes_one_complete_delivery_and_owned_cleanup(
+    probe: ModuleType, galleries: int
+) -> None:
+    elapsed = 0.0
+    delivery_calls = 0
+    cleanup_calls = 0
+    original_build = probe.build_analysis_hash_key_plan
+    original_page = AnalysisHashKeyPlan.source_page
+    original_close = AnalysisHashKeyPlan.close
+    original_handlers = probe.handler_counts
+    original_old = probe.measure_old
+
+    def build(*args: Any, **kwargs: Any) -> AnalysisHashKeyPlan:
+        nonlocal elapsed
+        result = original_build(*args, **kwargs)
+        elapsed += 5
+        return cast(AnalysisHashKeyPlan, result)
+
+    def page(
+        plan: AnalysisHashKeyPlan, *, after: bytes | None, limit: int
+    ) -> tuple[bytes, ...]:
+        nonlocal elapsed, delivery_calls
+        elapsed += 2
+        delivery_calls += 1
+        return original_page(plan, after=after, limit=limit)
+
+    def close(plan: AnalysisHashKeyPlan) -> None:
+        nonlocal elapsed, cleanup_calls
+        elapsed += 3
+        cleanup_calls += 1
+        original_close(plan)
+
+    def handlers(connector: SQLConnector) -> dict[str, int]:
+        nonlocal elapsed
+        elapsed += 7
+        return cast(dict[str, int], original_handlers(connector))
+
+    def old(connector: SQLConnector, oracle: tuple[bytes, ...]) -> Any:
+        nonlocal elapsed
+        result = original_old(connector, oracle)
+        elapsed += 13
+        return result
+
+    with probe.databases("sqlite", 1) as connections:
+        connector = cast(SQLConnector, next(connections))
+        original_fetch = connector.fetch_all
+
+        def fetch(sql: str, parameters: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+            nonlocal elapsed
+            if sql.startswith("EXPLAIN"):
+                elapsed += 11
+            return original_fetch(sql, parameters)
+
+        with (
+            patch.object(probe, "time", SimpleNamespace(perf_counter=lambda: elapsed)),
+            patch.object(probe, "build_analysis_hash_key_plan", build),
+            patch.object(AnalysisHashKeyPlan, "source_page", page),
+            patch.object(AnalysisHashKeyPlan, "close", close),
+            patch.object(probe, "handler_counts", handlers),
+            patch.object(probe, "measure_old", old),
+            patch.object(connector, "fetch_all", fetch),
+        ):
+            case = probe.measure_case(connector, "sqlite", probe.Shape(galleries, 1))
+
+    # One changed key plus every gallery key, followed by one empty-tail call.
+    calls_per_delivery = (galleries + 1 + 127) // 128 + 1
+    assert delivery_calls == 3 * calls_per_delivery
+    assert cleanup_calls == 1
+    assert case["candidate_preparation_seconds"] == 5
+    assert case["candidate_first_delivery_seconds"] == 2 * calls_per_delivery
+    assert case["candidate_cleanup_seconds"] == 3
+    assert case["candidate_seconds"] == 5 + 2 * calls_per_delivery + 3
+    assert case["old_union_seconds"] == 13
 
 
 def test_old_production_query_and_full_scan_mutant_fail_fixed_vm_budget(
