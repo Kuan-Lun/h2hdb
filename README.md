@@ -337,6 +337,36 @@ a completion-time claim. Qualification remains non-CBZ work even though it
 decodes images. Keep exclusive wall time separate from overlapping SQL, I/O and
 worker measurements, and report unmeasured stages explicitly.
 
+The dev-only `scripts/source_catchup_cost_model.py` consumes a measured ledger
+exported by an explicitly supplied Ingest checkout's `probe-source-backlog.py
+--ledger-output NEW_FILE`. It constructs each admission transition from fixed
+inventory, batch size, initial retained galleries and pages per gallery, then
+compares independently measured work against one inventory pass per round,
+one new PAGE byte pass, no retained PAGE rereads and one decode per newly
+admitted page. These are fixed engineering references, not a proof of the
+optimal implementation. SQL counts and history depth stay diagnostic; an unknown
+depth is not inferred from the round number. Cumulative inventory work is K*N,
+not an O(N) whole-catch-up claim. A satisfied prefix does not establish arbitrary
+scale or a complete import; `--require-complete` rejects unfinished catch-up.
+
+```bash
+.venv/bin/python scripts/source_catchup_cost_model.py \
+  --input /tmp/source-ledger.json --output /tmp/source-assessment.json
+```
+
+For hardware calibration without production data or existing containers,
+`scripts/build-source-performance-bundle.py` accepts explicit baseline/candidate
+Ingest checkouts and wheels, a Core wheel and a common probe checkout. It checks
+the exact runtime source bytes and exports a standalone Docker build context.
+The exported `sh run.sh NEW_RESULT_DIRECTORY` always builds its image before
+creating a fresh, network-disabled container. No database credentials, gallery
+mount, Docker socket or pytest are used. Both arms resolve dependencies normally
+in separate environments; wheel hashes, installed sources and common dependency
+versions must match the declared inputs. Alternating runs use identical synthetic
+JPEG/PNG/GIF/WEBP fixtures and report samples, not a NAS SLA verdict. This
+calibration does not replace Compose resolution and isolated workflow acceptance;
+candidate wheels also do not prove an index-backed deployment is available.
+
 Changed-file-hash analysis traverses the sealed changed-gallery set and its
 accepted current/baseline hash occurrences once per local preparation. It sorts
 and deduplicates them in a disk plan outside write transactions, then commits
@@ -348,6 +378,21 @@ handler counters and query plans. Its source-call totals cover changed-gallery
 member and occurrence reads, excluding the earlier change-detection stage and
 later commits. These query fixtures do not perform a full READY audit or measure
 whole-ingest throughput.
+
+For depth-zero duplicate-page decisions (initial analysis or compaction), Core
+also prepares the decision hash keys once in a disposable disk plan. It streams
+accepted current-source occurrences and sealed changed hashes, deduplicates and
+sorts outside write transactions, then serves authenticated pages of at most
+128 keys. Each source query combines at most 16 independent primary-key ranges
+with a total return limit of 128 rows. Previously, every page repeated a
+source-wide join and DISTINCT sort;
+limiting returned rows did not limit that database work. Overlay decisions keep
+their changed-hash primary-key seek. The page binding includes its stage,
+analysis/source authority and exact checkpoint; commits and response-loss replay
+revalidate those facts. Restart rebuilds the disposable plan at the durable
+cursor. The three source aggregates that compute decision values and the later
+independent validation remain separate work, so reducing key selection alone
+does not establish a complete analysis or full-library wall-time target.
 
 `VNextIngestFacade.prepare_source()` accepts `max_new_galleries=None` to admit
 all complete galleries before global analysis and publication. This changes

@@ -55,9 +55,9 @@ from h2hdb.vnext_analysis_family import (
 )
 from h2hdb.vnext_analysis_repository import (
     ANALYSIS_COMPONENTS,
-    AnalysisChangedHashPage,
     AnalysisCorruptionError,
     AnalysisFileDecisionValidationPage,
+    AnalysisHashKeyPage,
     AnalysisNotReadyError,
     AnalysisRepository,
 )
@@ -1481,6 +1481,7 @@ def _run_stage(
                 in {
                     AnalysisRepository.validate_file_hash_decision_batch,
                     AnalysisRepository.process_changed_file_hash_batch,
+                    AnalysisRepository.process_file_hash_decision_batch,
                 }
                 else {}
             )
@@ -2354,6 +2355,7 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                     in {
                         AnalysisRepository.validate_file_hash_decision_batch,
                         AnalysisRepository.process_changed_file_hash_batch,
+                        AnalysisRepository.process_file_hash_decision_batch,
                     }
                     else {}
                 )
@@ -3861,7 +3863,7 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
             analysis_id=run.analysis_id,
         ) as prepare:
             page = prepare(b"too-large", 129, 43)
-            assert isinstance(page, AnalysisChangedHashPage)
+            assert isinstance(page, AnalysisHashKeyPage)
             with connector.transaction():
                 clamped = AnalysisRepository.process_changed_file_hash_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),

@@ -826,8 +826,28 @@ def test_elapsed_format_preserves_readable_units(
     assert duration(seconds) == expected
 
 
-def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+@pytest.mark.parametrize(
+    "stage,operation,description",
+    [
+        (
+            "validate_file_hash_decision",
+            "prepare_file_decision_validation",
+            "preparing file hash validation data",
+        ),
+        (
+            "file_hash_decision",
+            "prepare_file_decision_keys",
+            "preparing duplicate-page decision keys",
+        ),
+    ],
+)
+def test_local_preparation_reports_live_boundaries_and_inclusive_stage_cost(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    stage: str,
+    operation: str,
+    description: str,
 ) -> None:
     from h2hdb.ingest_performance import prepare_ingest_operation
 
@@ -835,16 +855,9 @@ def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
     performance = IngestPerformance(
         performance_log, backend="sqlite", clock=clock, level=logging.DEBUG
     )
-    with performance.step(
-        "analysis", "prepare", "validate_file_hash_decision", 9
-    ) as outer:
-        with prepare_ingest_operation(
-            operation="prepare_file_decision_validation", generation=9
-        ) as progress:
-            assert (
-                "preparation started: preparing file hash validation data"
-                in caplog.text
-            )
+    with performance.step("analysis", "prepare", stage, 9) as outer:
+        with prepare_ingest_operation(operation=operation, generation=9) as progress:
+            assert f"preparation started: {description}" in caplog.text
             with instrument_connector(
                 SQLiteConnector(str(tmp_path / "progress.db"))
             ) as connector:
@@ -855,10 +868,7 @@ def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
             assert "preparation in progress" not in caplog.text
             clock.now = 60
             progress(2)
-            assert (
-                "preparation in progress: preparing file hash validation data"
-                in caplog.text
-            )
+            assert f"preparation in progress: {description}" in caplog.text
             assert "read 2 galleries; elapsed 1m 00s" in caplog.text
             clock.now = 61
             progress(2)
@@ -872,7 +882,7 @@ def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
     plan = next(
         line for line in raw if "event=completed " in line and "scope=nested" in line
     )
-    assert "operation=prepare_file_decision_validation" in plan
+    assert f"operation={operation}" in plan
     assert "elapsed_seconds=70.000000 call_seconds=70.000000" in plan
     assert "sql_calls=1 " in plan
     parent = next(
@@ -887,12 +897,16 @@ def test_local_validation_preparation_reports_live_boundaries_and_separate_cost(
         "event=stage_terminal" in line and "prepare_seconds=2.000000" in line
         for line in raw
     )
+    terminal = next(line for line in raw if "event=stage_terminal" in line)
+    assert f"operation={stage}" in terminal
+    assert "wall_seconds=72.000000" in terminal
+    assert "nested_sql_calls=1 " in terminal
+    assert "nested_sql_scope=inclusive_descendants" in terminal
     human = [
         record.message for record in caplog.records if record.levelno == logging.INFO
     ]
     assert any(
-        "preparation finished: preparing file hash validation data" in line
-        and "elapsed 1m 10s" in line
+        f"preparation finished: {description}" in line and "elapsed 1m 10s" in line
         for line in human
     )
     assert all("sql_calls=" not in line and "SELECT 1" not in line for line in human)

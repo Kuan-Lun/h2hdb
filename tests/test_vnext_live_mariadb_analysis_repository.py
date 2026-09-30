@@ -16,6 +16,7 @@ from vnext_analysis_validation_fixtures import analysis_source_pages
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.vnext_analysis_hash_keys import AnalysisHashKeyPage
 from h2hdb.vnext_analysis_repository import AnalysisRepository
 from h2hdb.vnext_domains import INT63_MAX, DomainValidationError
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
@@ -133,6 +134,7 @@ def _run_stage_to_completion(
                 in {
                     AnalysisRepository.validate_file_hash_decision_batch,
                     AnalysisRepository.process_changed_file_hash_batch,
+                    AnalysisRepository.process_file_hash_decision_batch,
                 }
                 else {}
             )
@@ -253,43 +255,54 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
             )[0]
         assert type(raw_sum) is Decimal and raw_sum == Decimal(3)
 
-        with connector.transaction():
-            committed = AnalysisRepository.process_file_hash_decision_batch(
-                _work(connector),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=run.analysis_id,
-                batch_key=b"maria-decision-page",
-                max_rows=128,
-                now=300,
-            )
-        assert committed.next_state == "OPEN" and committed.row_count == 2
+        with analysis_source_pages(
+            connector,
+            backend="mariadb",
+            gate=gate,
+            turn=turn,
+            analysis_id=run.analysis_id,
+        ) as prepare:
+            preparation = prepare(b"maria-decision-page", 128, 300)
+            assert isinstance(preparation, AnalysisHashKeyPage)
+            with connector.transaction():
+                committed = AnalysisRepository.process_file_hash_decision_batch(
+                    _work(connector),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"maria-decision-page",
+                    preparation=preparation,
+                    max_rows=128,
+                    now=300,
+                )
+            assert committed.next_state == "OPEN" and committed.row_count == 2
 
-        with connector.read_transaction():
-            receipt_count = connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
-                "WHERE analysis_id = %s AND stage = %s",
-                (run.analysis_id, b"file_hash_decision"),
-            )
-        with connector.transaction():
-            replay = AnalysisRepository.process_file_hash_decision_batch(
-                _work(connector),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=run.analysis_id,
-                batch_key=b"maria-decision-page",
-                max_rows=1,
-                now=301,
-            )
-        assert replay.replayed and replay.row_count == committed.row_count
-        assert replay.next_cursor == committed.next_cursor
-        with connector.read_transaction():
-            post_replay_receipt_count = connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
-                "WHERE analysis_id = %s AND stage = %s",
-                (run.analysis_id, b"file_hash_decision"),
-            )
-        assert post_replay_receipt_count == receipt_count
+            with connector.read_transaction():
+                receipt_count = connector.fetch_one(
+                    "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
+                    "WHERE analysis_id = %s AND stage = %s",
+                    (run.analysis_id, b"file_hash_decision"),
+                )
+            with connector.transaction():
+                replay = AnalysisRepository.process_file_hash_decision_batch(
+                    _work(connector),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"maria-decision-page",
+                    preparation=preparation,
+                    max_rows=1,
+                    now=301,
+                )
+            assert replay.replayed and replay.row_count == committed.row_count
+            assert replay.next_cursor == committed.next_cursor
+            with connector.read_transaction():
+                post_replay_receipt_count = connector.fetch_one(
+                    "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
+                    "WHERE analysis_id = %s AND stage = %s",
+                    (run.analysis_id, b"file_hash_decision"),
+                )
+            assert post_replay_receipt_count == receipt_count
 
         decision_results = _run_stage_to_completion(
             connector,
@@ -395,18 +408,28 @@ def test_live_mariadb_file_decision_overflow_is_zero_write(
         assert raw_sum == Decimal(INT63_MAX + 1)
 
         before = _file_decision_snapshot(connector, run.analysis_id)
-        with pytest.raises(
-            DomainValidationError,
-            match=rf"decision occurrence_count must be in 1\.\.{INT63_MAX}",
-        ):
-            with connector.transaction():
-                AnalysisRepository.process_file_hash_decision_batch(
-                    _work(connector),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=run.analysis_id,
-                    batch_key=b"maria-overflow-page",
-                    max_rows=128,
-                    now=300,
-                )
+        with analysis_source_pages(
+            connector,
+            backend="mariadb",
+            gate=gate,
+            turn=turn,
+            analysis_id=run.analysis_id,
+        ) as prepare:
+            preparation = prepare(b"maria-overflow-page", 128, 300)
+            assert isinstance(preparation, AnalysisHashKeyPage)
+            with pytest.raises(
+                DomainValidationError,
+                match=rf"decision occurrence_count must be in 1\.\.{INT63_MAX}",
+            ):
+                with connector.transaction():
+                    AnalysisRepository.process_file_hash_decision_batch(
+                        _work(connector),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"maria-overflow-page",
+                        preparation=preparation,
+                        max_rows=128,
+                        now=300,
+                    )
         assert _file_decision_snapshot(connector, run.analysis_id) == before

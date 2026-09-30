@@ -23,8 +23,8 @@ __all__ = [
     "AnalysisCorruptionError",
     "AnalysisGalleryPreparation",
     "AnalysisGidPreparation",
-    "AnalysisChangedHashPage",
-    "AnalysisChangedHashPlan",
+    "AnalysisHashKeyPage",
+    "AnalysisHashKeyPlan",
     "AnalysisFileDecisionValidationPlan",
     "AnalysisFileDecisionValidationPage",
     "AnalysisNotReadyError",
@@ -68,6 +68,11 @@ from .vnext_analysis_family import (
     load_analysis_state_component_families,
     load_analysis_state_component_family,
 )
+from .vnext_analysis_hash_keys import (
+    AnalysisHashKeyPage,
+    AnalysisHashKeyPlan,
+    build_analysis_hash_key_plan,
+)
 from .vnext_analysis_overlay_family import (
     AnalysisContentOwnerCandidateShadowFamily,
     AnalysisContentOwnerShadowFamily,
@@ -94,11 +99,6 @@ from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
     load_and_validate_single_page_canonical_values,
-)
-from .vnext_changed_hash_plan import (
-    AnalysisChangedHashPage,
-    AnalysisChangedHashPlan,
-    build_changed_hash_plan,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -1568,13 +1568,15 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
-        preparation: AnalysisChangedHashPage,
+        preparation: AnalysisHashKeyPage,
         now: int,
     ) -> AnalysisBatchResult:
         """Materialize one authenticated changed-source page, without a source scan."""
-        if not isinstance(preparation, AnalysisChangedHashPage):
+        if not isinstance(preparation, AnalysisHashKeyPage):
             raise TypeError("changed hashes require a repository-issued page")
         preparation.verify()
+        if preparation.stage != _AnalysisStage.CHANGED_FILE_HASH:
+            raise AnalysisNotReadyError("changed-hash page belongs to another stage")
         authority, checkpoint, replay = _prepare_batch(
             work,
             gate_lease=gate_lease,
@@ -1595,7 +1597,7 @@ class AnalysisRepository:
             _require_changed_hash_replay(work, authority, replay, preparation)
             return replay
         assert checkpoint is not None
-        _require_changed_hash_checkpoint(
+        _require_hash_key_checkpoint(
             preparation,
             batch_key=batch_key,
             generation=checkpoint.generation,
@@ -1640,6 +1642,7 @@ class AnalysisRepository:
         analysis_id: bytes,
         batch_key: bytes,
         max_rows: int,
+        preparation: AnalysisHashKeyPage | None,
         now: int,
     ) -> AnalysisBatchResult:
         authority, checkpoint, replay = _prepare_batch(
@@ -1652,45 +1655,85 @@ class AnalysisRepository:
             max_rows=max_rows,
             now=now,
         )
-        if replay is not None:
-            _validate_batch_replay(work, authority, replay)
-            return replay
-        assert checkpoint is not None
         _require_stage_complete(
             work, authority.analysis_id, _AnalysisStage.CHANGED_FILE_HASH
         )
+        if authority.overlay_depth == 0:
+            if not isinstance(preparation, AnalysisHashKeyPage):
+                raise AnalysisNotReadyError("depth-zero decisions require a key page")
+            preparation.verify()
+            if preparation.stage != _AnalysisStage.FILE_HASH_DECISION:
+                raise AnalysisNotReadyError(
+                    "decision key page belongs to another stage"
+                )
+            _validate_authority_receipt(work, authority, preparation.authority)
+            binding = _decision_hash_input_binding(
+                work, authority, preparation.authority
+            )
+            if binding != preparation.input_binding:
+                raise AnalysisNotReadyError(
+                    "decision key immutable source binding changed"
+                )
+            assert replay is not None or checkpoint is not None
+            if replay is None:
+                assert checkpoint is not None
+                coordinates = (
+                    checkpoint.generation,
+                    checkpoint.cursor,
+                    checkpoint.processed_count,
+                    checkpoint.page_limit,
+                )
+            else:
+                coordinates = (
+                    replay.start_generation,
+                    replay.start_cursor,
+                    replay.start_processed_count,
+                    replay.page_limit,
+                )
+            _require_hash_key_checkpoint(
+                preparation,
+                batch_key=batch_key,
+                generation=coordinates[0],
+                cursor=coordinates[1],
+                processed_count=coordinates[2],
+                page_limit=coordinates[3],
+            )
+        elif preparation is not None:
+            raise AnalysisNotReadyError(
+                "overlay decisions do not accept a source key plan"
+            )
+        if replay is not None:
+            _validate_batch_replay(work, authority, replay, decision_keys=preparation)
+            return replay
+        assert checkpoint is not None
         last, _live_count = _decode_cursor(
             _CURSOR_DIGEST,
             checkpoint.cursor,
             live=False,
         )
-        rows = _decision_work_rows(
-            work,
-            authority,
-            after=last,
-            limit=checkpoint.page_limit + 1,
-        )
-        selected = rows[: checkpoint.page_limit]
-        _materialize_decision_page(
-            work,
-            authority,
-            tuple(
+        if preparation is None:
+            selected = tuple(
                 require_digest32(row[0], field="decision file_sha256")
-                for row in selected
-            ),
-        )
-        next_key = (
-            last
-            if not selected
-            else require_digest32(selected[-1][0], field="decision file cursor")
-        )
+                for row in _decision_work_rows(
+                    work, authority, after=last, limit=checkpoint.page_limit
+                )
+            )
+        else:
+            selected = preparation.keys
+            if not selected and checkpoint.processed_count != preparation.source_count:
+                raise AnalysisCorruptionError(
+                    "decision key count differs from its source plan"
+                )
+        _materialize_decision_page(work, authority, selected)
         return _commit_batch(
             work,
             authority=authority,
             stage=_AnalysisStage.FILE_HASH_DECISION,
             batch_key=batch_key,
             checkpoint=checkpoint,
-            cursor=_encode_cursor(_CURSOR_DIGEST, next_key),
+            cursor=_encode_cursor(
+                _CURSOR_DIGEST, last if not selected else selected[-1]
+            ),
             row_count=len(selected),
             terminal=not selected,
             now=now,
@@ -1890,7 +1933,8 @@ class AnalysisRepository:
         preparations: Sequence[_GalleryPreparation | None],
         now: int,
         file_decision_validation: AnalysisFileDecisionValidationPage | None = None,
-        changed_hashes: AnalysisChangedHashPage | None = None,
+        changed_hashes: AnalysisHashKeyPage | None = None,
+        decision_keys: AnalysisHashKeyPage | None = None,
     ) -> AnalysisBatchResult:
         """Commit exactly one previously issued stage page or replay it."""
 
@@ -1919,7 +1963,14 @@ class AnalysisRepository:
         ):
             raise AnalysisNotReadyError("changed-hash page supplied to another stage")
 
+        if (
+            decision_keys is not None
+            and issue.stage != _AnalysisStage.FILE_HASH_DECISION
+        ):
+            raise AnalysisNotReadyError("decision key page supplied to another stage")
+
         if issue.replayed_result is not None and issue.stage not in {
+            _AnalysisStage.FILE_HASH_DECISION,
             _AnalysisStage.VALIDATE_FILE_HASH,
             _AnalysisStage.CHANGED_FILE_HASH,
         }:
@@ -1959,7 +2010,7 @@ class AnalysisRepository:
                 )
             case _AnalysisStage.FILE_HASH_DECISION:
                 result = AnalysisRepository.process_file_hash_decision_batch(
-                    work, **common
+                    work, preparation=decision_keys, **common
                 )
             case _AnalysisStage.VALIDATE_FILE_HASH:
                 if file_decision_validation is None:
@@ -2046,7 +2097,7 @@ class AnalysisRepository:
         backend: str,
         authority: AnalysisPreparationAuthority,
         progress: Callable[[int], None] | None = None,
-    ) -> AnalysisChangedHashPlan:
+    ) -> AnalysisHashKeyPlan:
         """Read changed current/baseline occurrences once in short transactions.
 
         Sealed source facts and the completed changed-gallery checkpoint are
@@ -2073,7 +2124,7 @@ class AnalysisRepository:
             if progress is not None:
                 progress(galleries_read)
 
-        plan = build_changed_hash_plan(
+        plan = build_analysis_hash_key_plan(
             authority,
             binding,
             _iter_changed_source_hashes(
@@ -2084,6 +2135,7 @@ class AnalysisRepository:
                 source_progress,
             ),
             progress=sort_progress,
+            stage=b"changed_file_hash",
         )
         try:
             with connector.read_transaction():
@@ -2102,18 +2154,75 @@ class AnalysisRepository:
             raise
 
     @staticmethod
-    def prepare_changed_hash_page(
+    def prepare_decision_hash_plan(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        authority: AnalysisPreparationAuthority,
+        progress: Callable[[int], None] | None = None,
+    ) -> AnalysisHashKeyPlan | None:
+        """Sort depth-zero source keys once; overlays seek their durable delta.
+
+        Both a first analysis and a compacted analysis have depth zero, even
+        when compaction retains a baseline for delta comparisons. Read only
+        selected observations, with raw membership and occurrence keyset pages;
+        no hash page repeats a source-wide DISTINCT inside its write transaction.
+        """
+        if not isinstance(authority, AnalysisPreparationAuthority):
+            raise TypeError("authority must be AnalysisPreparationAuthority")
+        authority.__post_init__()
+        with connector.read_transaction():
+            work = VNextUnitOfWork(connector, backend=backend)
+            run = _load_preparation_authority(work, authority)
+            if run.overlay_depth != 0:
+                return None
+            binding = _decision_hash_input_binding(work, run, authority)
+        galleries_read = 0
+
+        def source_progress(count: int) -> None:
+            nonlocal galleries_read
+            galleries_read = count
+            if progress is not None:
+                progress(count)
+
+        def sort_progress() -> None:
+            if progress is not None:
+                progress(galleries_read)
+
+        plan = build_analysis_hash_key_plan(
+            authority,
+            binding,
+            _iter_decision_source_hashes(
+                connector, run.analysis_id, run.build_id, source_progress
+            ),
+            stage=_AnalysisStage.FILE_HASH_DECISION,
+            progress=sort_progress,
+        )
+        try:
+            with connector.read_transaction():
+                current = _load_preparation_authority(work, authority)
+                if _decision_hash_input_binding(work, current, authority) != binding:
+                    raise AnalysisNotReadyError(
+                        "decision key input changed during preparation"
+                    )
+            return plan
+        except BaseException:
+            plan.close()
+            raise
+
+    @staticmethod
+    def prepare_hash_key_page(
         *,
         issue: AnalysisStageIssue,
-        plan: AnalysisChangedHashPlan,
-    ) -> AnalysisChangedHashPage:
+        plan: AnalysisHashKeyPlan,
+    ) -> AnalysisHashKeyPage:
         if not isinstance(issue, AnalysisStageIssue):
             raise TypeError("issue must be AnalysisStageIssue")
         issue.__post_init__()
-        if issue.stage != _AnalysisStage.CHANGED_FILE_HASH:
-            raise AnalysisNotReadyError("changed-hash preparation has another stage")
-        if not isinstance(plan, AnalysisChangedHashPlan):
-            raise TypeError("plan must be AnalysisChangedHashPlan")
+        if not isinstance(plan, AnalysisHashKeyPlan):
+            raise TypeError("plan must be AnalysisHashKeyPlan")
+        if issue.stage != plan.stage:
+            raise AnalysisNotReadyError("hash-key preparation has another stage")
         plan._require_open()
         if issue.preparation_authority != plan.authority:
             raise AnalysisNotReadyError("changed-hash issue has another authority")
@@ -6208,6 +6317,7 @@ def _validate_batch_replay(
     replay: AnalysisBatchResult,
     *,
     preparations: Sequence[_GalleryPreparation | None] = (),
+    decision_keys: AnalysisHashKeyPage | None = None,
 ) -> None:
     """Rederive one committed page with its stored bound before replaying it."""
 
@@ -6215,14 +6325,21 @@ def _validate_batch_replay(
         raise AnalysisCorruptionError("analysis replay lost its durable authority")
     kind, live = _stage_cursor_spec(replay.stage)
     last, live_count = _decode_cursor(kind, replay.start_cursor, live=live)
-    rows = _replay_page_rows(
-        work,
-        authority,
-        stage=replay.stage,
-        after=last,
-        limit=replay.page_limit + 1,
-    )
-    selected = rows[: replay.page_limit]
+    if decision_keys is None:
+        rows = _replay_page_rows(
+            work,
+            authority,
+            stage=replay.stage,
+            after=last,
+            limit=replay.page_limit + 1,
+        )
+        selected = rows[: replay.page_limit]
+    else:
+        selected = [(key,) for key in decision_keys.keys]
+        if not selected and replay.next_processed_count != decision_keys.source_count:
+            raise AnalysisCorruptionError(
+                "decision replay count differs from its source plan"
+            )
     _require_replay_keyed_page_exact(
         work,
         authority.analysis_id,
@@ -8954,6 +9071,233 @@ def _changed_hash_input_binding(
     return digest.digest(), baseline_build
 
 
+def _decision_hash_input_binding(
+    work: VNextUnitOfWork,
+    run: _RunAuthority,
+    receipt: AnalysisPreparationAuthority,
+) -> bytes:
+    if run.overlay_depth != 0:
+        raise AnalysisNotReadyError("decision key plan requires depth-zero authority")
+    _require_preparation_source_manifest(work, run, receipt)
+    checkpoint = work.connector.fetch_one(
+        f"SELECT generation, `cursor`, processed_count, state, updated_at FROM {_CHECKPOINT_TABLE} "
+        "WHERE analysis_id = %s AND stage = %s",
+        (run.analysis_id, _AnalysisStage.CHANGED_FILE_HASH),
+    )
+    if len(checkpoint) != 5 or checkpoint[3] != _CHECKPOINT_COMPLETE:
+        raise AnalysisNotReadyError("changed-hash input is not complete")
+    cursor = require_bounded_bytes(
+        checkpoint[1], field="changed-hash input cursor", maximum=2048
+    )
+    _decode_cursor(_CURSOR_DIGEST, cursor, live=False)
+    digest = sha256(b"h2hdb-decision-key-input-v1\0" + receipt.input_manifest_sha256)
+    digest.update(len(cursor).to_bytes(8, "big") + cursor)
+    for value in (checkpoint[0], checkpoint[2], checkpoint[4]):
+        digest.update(
+            require_int63(value, field="decision key input coordinate").to_bytes(
+                8, "big"
+            )
+        )
+    baseline = run.baseline_analysis_id
+    digest.update(b"\0" if baseline is None else b"\1" + baseline)
+    return digest.digest()
+
+
+def _iter_decision_source_hashes(
+    connector: SQLConnector,
+    analysis_id: bytes,
+    build_id: bytes,
+    progress: Callable[[int], None] | None = None,
+) -> Iterator[bytes]:
+    """Visit current membership once, including bounded pages of rejected rows."""
+    after_hash: bytes | None = None
+    while True:
+        predicate = "" if after_hash is None else "AND file_sha256 > %s "
+        with connector.read_transaction():
+            hashes = connector.fetch_all(
+                "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
+                "WHERE analysis_id = %s " + predicate + "ORDER BY file_sha256 LIMIT %s",
+                (
+                    analysis_id,
+                    *(() if after_hash is None else (after_hash,)),
+                    _MAX_BATCH_ROWS,
+                ),
+            )
+        if len(hashes) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError("decision changed hashes exceed their cap")
+        for (raw_hash,) in hashes:
+            key = require_digest32(raw_hash, field="decision changed hash")
+            if after_hash is not None and key <= after_hash:
+                raise AnalysisCorruptionError("decision changed hashes are not ordered")
+            after_hash = key
+            yield key
+        if progress is not None:
+            progress(0)
+        if len(hashes) < _MAX_BATCH_ROWS:
+            break
+    after_gallery = 0
+    galleries_read = 0
+    while True:
+        with connector.read_transaction():
+            rows = connector.fetch_all(
+                "SELECT catalog_source_build_galleries.gallery_id, catalog_source_build_galleries.observation_id, qualification.accepted "
+                "FROM "
+                + connector.primary_key_table_reference(
+                    "catalog_source_build_galleries"
+                )
+                + " "
+                "LEFT JOIN catalog_gallery_observation_validation_dispositions AS qualification "
+                "ON qualification.gallery_id = catalog_source_build_galleries.gallery_id "
+                "AND qualification.observation_id = catalog_source_build_galleries.observation_id "
+                "WHERE catalog_source_build_galleries.build_id = %s AND catalog_source_build_galleries.gallery_id > %s "
+                "ORDER BY catalog_source_build_galleries.gallery_id LIMIT %s",
+                (build_id, after_gallery, _MAX_BATCH_ROWS),
+            )
+        if len(rows) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError("decision source membership exceeds its cap")
+        selected: list[tuple[int, int]] = []
+        for gallery, observation, accepted in rows:
+            gallery_id = require_positive_int63(
+                gallery, field="decision source gallery"
+            )
+            observation_id = require_positive_int63(
+                observation, field="decision source observation"
+            )
+            if gallery_id <= after_gallery:
+                raise AnalysisCorruptionError(
+                    "decision source membership is not ordered"
+                )
+            if accepted not in (0, 1):
+                raise AnalysisCorruptionError(
+                    "decision source qualification is absent or invalid"
+                )
+            after_gallery = gallery_id
+            if accepted == 1:
+                selected.append((gallery_id, observation_id))
+        galleries_read += len(rows)
+        if progress is not None:
+            progress(galleries_read)
+        for start in range(0, len(selected), 16):
+            yield from _iter_observation_hash_group(
+                connector,
+                selected[start : start + 16],
+                lambda: progress(galleries_read) if progress is not None else None,
+            )
+        if len(rows) < _MAX_BATCH_ROWS:
+            return
+
+
+def _iter_observation_hash_group(
+    connector: SQLConnector,
+    observations: Sequence[tuple[int, int]],
+    progress: Callable[[], None],
+) -> Iterator[bytes]:
+    """Batch at most 16 independent PK seeks without a global source sort.
+
+    Every live branch receives floor(128 / branch_count) rows, so one SQL
+    result contains at most 128 rows regardless of per-observation fanout.
+    Each branch advances its own hash cursor; exhausted branches leave the
+    next query and remaining branches get the newly available capacity.
+    """
+    if not 1 <= len(observations) <= 16 or len(set(observations)) != len(observations):
+        raise AnalysisCorruptionError(
+            "decision observation group is not bounded and unique"
+        )
+    active: dict[int, bytes | None] = dict.fromkeys(range(len(observations)))
+    while active:
+        limit = _MAX_BATCH_ROWS // len(active)
+        branches: list[str] = []
+        parameters: list[Any] = []
+        for slot, after in active.items():
+            gallery, observation = observations[slot]
+            branches.append(
+                "SELECT %s AS source_slot, file_sha256 FROM ("
+                "SELECT file_sha256 FROM catalog_gallery_observation_file_hash_occurrences "
+                "WHERE gallery_id = %s AND observation_id = %s "
+                + ("" if after is None else "AND file_sha256 > %s ")
+                + "ORDER BY file_sha256 LIMIT %s) AS source_keys_"
+                + str(slot)
+            )
+            parameters.extend(
+                (
+                    slot,
+                    gallery,
+                    observation,
+                    *(() if after is None else (after,)),
+                    limit,
+                )
+            )
+        with connector.read_transaction():
+            rows = connector.fetch_all(" UNION ALL ".join(branches), tuple(parameters))
+        progress()
+        if len(rows) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError(
+                "decision observation group exceeds its row cap"
+            )
+        found: dict[int, list[bytes]] = {slot: [] for slot in active}
+        for slot, raw_hash in rows:
+            exact_slot = require_int63(slot, field="decision source slot")
+            if exact_slot not in found:
+                raise AnalysisCorruptionError("decision source returned a foreign slot")
+            found[exact_slot].append(
+                require_digest32(raw_hash, field="decision source hash")
+            )
+        for slot, keys in found.items():
+            # UNION ALL need not preserve branch output order; only this
+            # bounded result is sorted locally. SQL's inner ORDER/LIMIT selected
+            # the next exact prefix of each immutable observation's PK range.
+            keys.sort()
+            after = active[slot]
+            if len(keys) > limit or any(
+                left >= right for left, right in zip(keys, keys[1:])
+            ):
+                raise AnalysisCorruptionError(
+                    "decision source branch is not a bounded unique page"
+                )
+            if keys and after is not None and keys[0] <= after:
+                raise AnalysisCorruptionError("decision source branch did not advance")
+            yield from keys
+            if len(keys) < limit:
+                del active[slot]
+            else:
+                active[slot] = keys[-1]
+
+
+def _iter_observation_hashes(
+    connector: SQLConnector,
+    gallery_id: int,
+    observation_id: int,
+    progress: Callable[[], None],
+) -> Iterator[bytes]:
+    after_hash: bytes | None = None
+    while True:
+        predicate = "" if after_hash is None else "AND file_sha256 > %s "
+        with connector.read_transaction():
+            hashes = connector.fetch_all(
+                "SELECT file_sha256 FROM catalog_gallery_observation_file_hash_occurrences "
+                "WHERE gallery_id = %s AND observation_id = %s "
+                + predicate
+                + "ORDER BY file_sha256 LIMIT %s",
+                (
+                    gallery_id,
+                    observation_id,
+                    *(() if after_hash is None else (after_hash,)),
+                    _MAX_BATCH_ROWS,
+                ),
+            )
+        progress()
+        if len(hashes) > _MAX_BATCH_ROWS:
+            raise AnalysisCorruptionError("source hashes exceed their cap")
+        for (raw_hash,) in hashes:
+            key = require_digest32(raw_hash, field="source hash")
+            if after_hash is not None and key <= after_hash:
+                raise AnalysisCorruptionError("source hashes are not ordered")
+            after_hash = key
+            yield key
+        if len(hashes) < _MAX_BATCH_ROWS:
+            return
+
+
 def _iter_changed_source_hashes(
     connector: SQLConnector,
     analysis_id: bytes,
@@ -9017,38 +9361,12 @@ def _iter_changed_source_hashes(
                 }
             )
             for observation_id in observations:
-                after_hash: bytes | None = None
-                while True:
-                    predicate = "" if after_hash is None else "AND file_sha256 > %s "
-                    with connector.read_transaction():
-                        hashes = connector.fetch_all(
-                            "SELECT file_sha256 FROM catalog_gallery_observation_file_hash_occurrences "
-                            "WHERE gallery_id = %s AND observation_id = %s "
-                            + predicate
-                            + "ORDER BY file_sha256 LIMIT %s",
-                            (
-                                gallery_id,
-                                observation_id,
-                                *(() if after_hash is None else (after_hash,)),
-                                _MAX_BATCH_ROWS,
-                            ),
-                        )
-                    if progress is not None:
-                        progress(galleries_read)
-                    if len(hashes) > _MAX_BATCH_ROWS:
-                        raise AnalysisCorruptionError(
-                            "changed-source hashes exceed their cap"
-                        )
-                    for (raw_hash,) in hashes:
-                        key = require_digest32(raw_hash, field="changed-source hash")
-                        if after_hash is not None and key <= after_hash:
-                            raise AnalysisCorruptionError(
-                                "changed-source hashes are not ordered"
-                            )
-                        after_hash = key
-                        yield key
-                    if len(hashes) < _MAX_BATCH_ROWS:
-                        break
+                yield from _iter_observation_hashes(
+                    connector,
+                    gallery_id,
+                    observation_id,
+                    lambda: progress(galleries_read) if progress is not None else None,
+                )
             galleries_read += 1
             if progress is not None:
                 progress(galleries_read)
@@ -9056,8 +9374,8 @@ def _iter_changed_source_hashes(
             return
 
 
-def _require_changed_hash_checkpoint(
-    page: AnalysisChangedHashPage,
+def _require_hash_key_checkpoint(
+    page: AnalysisHashKeyPage,
     *,
     batch_key: bytes,
     generation: int,
@@ -9079,10 +9397,10 @@ def _require_changed_hash_replay(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     replay: AnalysisBatchResult,
-    page: AnalysisChangedHashPage,
+    page: AnalysisHashKeyPage,
 ) -> None:
     try:
-        _require_changed_hash_checkpoint(
+        _require_hash_key_checkpoint(
             page,
             batch_key=replay.batch_key,
             generation=replay.start_generation,
@@ -9202,26 +9520,21 @@ def _decision_work_rows(
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
-    subqueries: list[tuple[str, tuple[Any, ...]]] = [
-        (
-            "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
-            "WHERE analysis_id = %s",
-            (authority.analysis_id,),
-        )
-    ]
     if authority.overlay_depth == 0:
-        subqueries.append(
-            (
-                "SELECT occurrence.file_sha256 AS file_sha256 "
-                "FROM " + _ACCEPTED_SOURCE_MEMBERS + " AS member "
-                "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
-                "ON occurrence.gallery_id = member.gallery_id "
-                "AND occurrence.observation_id = member.observation_id "
-                "WHERE member.build_id = %s",
-                (authority.build_id,),
-            )
+        raise AnalysisNotReadyError(
+            "depth-zero decision keys require their prepared plan"
         )
-    return _file_hash_union_page(work, subqueries, after=after, limit=limit)
+    return _file_hash_union_page(
+        work,
+        [
+            (
+                "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes WHERE analysis_id = %s",
+                (authority.analysis_id,),
+            )
+        ],
+        after=after,
+        limit=limit,
+    )
 
 
 def _materialize_decision_page(

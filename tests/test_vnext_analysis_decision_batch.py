@@ -22,6 +22,7 @@ from h2hdb.vnext_analysis_family import (
     AnalysisFamilyPartialError,
     ensure_analysis_exclusion_delta_family,
 )
+from h2hdb.vnext_analysis_hash_keys import AnalysisHashKeyPage
 from h2hdb.vnext_analysis_overlay_family import (
     AnalysisFileHashDecisionShadowFamily,
     ensure_analysis_file_hash_decision_shadow_family,
@@ -458,82 +459,92 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
                     )
             assert result.terminal
 
-    def process() -> Any:
-        return AnalysisRepository.process_file_hash_decision_batch(
-            work(),
-            gate_lease=gate,
-            ingest_turn=turn,
-            analysis_id=run.analysis_id,
-            batch_key=b"batch",
-            max_rows=128,
-            now=200,
-        )
+    with analysis_source_pages(
+        connector, backend=backend, gate=gate, turn=turn, analysis_id=run.analysis_id
+    ) as prepare:
+        decision_page = prepare(b"batch", 128, 200)
+        assert isinstance(decision_page, AnalysisHashKeyPage)
 
-    before = _file_decision_snapshot(cast(Any, connector), run.analysis_id)
-    execute = connector.execute
+        def process() -> Any:
+            return AnalysisRepository.process_file_hash_decision_batch(
+                work(),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"batch",
+                preparation=decision_page,
+                max_rows=128,
+                now=200,
+            )
 
-    def crash_after_seal(statement: str, parameters: Any = None) -> None:
-        execute(statement, parameters)
-        if statement.startswith(f"INSERT INTO {_SHADOWS[-1]} "):
-            raise RuntimeError("crash after sealed family before checkpoint")
+        before = _file_decision_snapshot(cast(Any, connector), run.analysis_id)
+        execute = connector.execute
 
-    with (
-        pytest.raises(RuntimeError, match="crash after"),
-        connector.transaction(),
-        patch.object(connector, "execute", side_effect=crash_after_seal),
-    ):
-        process()
-    assert _file_decision_snapshot(cast(Any, connector), run.analysis_id) == before
+        def crash_after_seal(statement: str, parameters: Any = None) -> None:
+            execute(statement, parameters)
+            if statement.startswith(f"INSERT INTO {_SHADOWS[-1]} "):
+                raise RuntimeError("crash after sealed family before checkpoint")
 
-    with (
-        connector.transaction(),
-        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
-    ):
-        committed = process()
-    aggregate_statements = [
-        call.args[0]
-        for call in fetched.call_args_list
-        if "SUM(occurrence.occurrence_count)" in call.args[0]
-        or "COUNT(DISTINCT artist.artist_tag_id)" in call.args[0]
-        or "MAX(per_gallery.artist_count)" in call.args[0]
-    ]
-    assert len(aggregate_statements) == 3
-    assert committed.row_count == 2
-    # Simulate a lost successful response: a new transaction only replays the
-    # receipt, with original source independently re-evaluated and no DML.
-    with (
-        connector.transaction(),
-        patch.object(
-            connector,
-            "execute",
-            side_effect=AssertionError("receipt replay mutated data"),
-        ),
-        patch.object(
-            connector,
-            "execute_affected",
-            side_effect=AssertionError("receipt replay advanced checkpoint"),
-        ),
-        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
-    ):
-        replay = process()
-    assert replay.replayed and replay.next_cursor == committed.next_cursor
-    assert (
-        sum(
-            "SUM(occurrence.occurrence_count)" in call.args[0]
+        with (
+            pytest.raises(RuntimeError, match="crash after"),
+            connector.transaction(),
+            patch.object(connector, "execute", side_effect=crash_after_seal),
+        ):
+            process()
+        assert _file_decision_snapshot(cast(Any, connector), run.analysis_id) == before
+
+        with (
+            connector.transaction(),
+            patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
+        ):
+            committed = process()
+        aggregate_statements = [
+            call.args[0]
             for call in fetched.call_args_list
+            if "SUM(occurrence.occurrence_count)" in call.args[0]
+            or "COUNT(DISTINCT artist.artist_tag_id)" in call.args[0]
+            or "MAX(per_gallery.artist_count)" in call.args[0]
+        ]
+        assert len(aggregate_statements) == 3
+        assert committed.row_count == 2
+        # Simulate a lost successful response: a new transaction only replays the
+        # receipt, with original source independently re-evaluated and no DML.
+        with (
+            connector.transaction(),
+            patch.object(
+                connector,
+                "execute",
+                side_effect=AssertionError("receipt replay mutated data"),
+            ),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("receipt replay advanced checkpoint"),
+            ),
+            patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched,
+        ):
+            replay = process()
+        assert replay.replayed and replay.next_cursor == committed.next_cursor
+        assert (
+            sum(
+                "SUM(occurrence.occurrence_count)" in call.args[0]
+                for call in fetched.call_args_list
+            )
+            == 1
         )
-        == 1
-    )
-    with connector.transaction():
-        AnalysisRepository.process_file_hash_decision_batch(
-            work(),
-            gate_lease=gate,
-            ingest_turn=turn,
-            analysis_id=run.analysis_id,
-            batch_key=b"terminal",
-            max_rows=128,
-            now=201,
-        )
+        terminal_page = prepare(b"terminal", 128, 201)
+        assert isinstance(terminal_page, AnalysisHashKeyPage)
+        with connector.transaction():
+            AnalysisRepository.process_file_hash_decision_batch(
+                work(),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"terminal",
+                preparation=terminal_page,
+                max_rows=128,
+                now=201,
+            )
     with (
         analysis_source_pages(
             connector,
