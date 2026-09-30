@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-28T09:28:23+00:00",
+  "checked_at": "2026-09-30T16:41:22+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.0",
+  "project_version": "0.45.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every build, runtime, optional/development and Node direct candidate, including current upper bounds. Hypothesis 6.168.3 is the sole newer candidate since the reviewed 0.44.0 receipt. Official release notes (https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.3 and https://hypothesis.readthedocs.io/en/latest/changelog.html) describe removal of quadratic pytest-statistics summarization for very large example counts. Installed 6.168.3 in the local development environment and passed 61 schema artifact codec tests plus 3 schema property tests with pytest -n 0. All other registry candidates and dependency constraints are unchanged; every candidate remains within declared bounds and supports Python 3.14. No dependency manifest changes or runtime dependency upgrades are needed. This release changes diagnostic log protocol to schema 2 and bounded file-decision reads; database schema 9 is unchanged. The exact-tree bounded release gate is separate evidence.",
+    "note": "Reviewed every build, runtime, development and Node direct dependency against the 0.45.0 receipt. Registry latest versions, upper-bound compatibility and Python 3.14 support are unchanged for every entry; no new upstream release or dependency-manifest edit needs validation. Existing reviewed release-note conclusions therefore remain applicable. Core 0.45.1 changes internal depth-zero decision-key preparation to a stage-bound authenticated disk plan; public facades, schema epoch3/version9, telemetry schema2 and dependency compatibility lane are unchanged. Candidate consumer resolution, both-backend regression, measured query work, code review and exact-tree release gate are separate evidence, not supplied by this dependency receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
