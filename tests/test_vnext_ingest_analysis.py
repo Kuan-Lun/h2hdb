@@ -239,7 +239,8 @@ def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
-    "stop_stage", [b"changed_file_hash", b"validate_file_hash_decision", None]
+    "stop_stage",
+    [b"changed_file_hash", b"file_hash_decision", b"validate_file_hash_decision", None],
 )
 def test_disk_work_is_closed_only_outside_issue_and_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_stage: bytes | None
@@ -259,13 +260,17 @@ def test_disk_work_is_closed_only_outside_issue_and_commit(
             assert phase in {"prepare", "handle_close"}, (
                 f"disk cleanup during serialized {phase}: {name}"
             )
-            closed.append(name)
+            closed.append(
+                resource.stage.decode()
+                if isinstance(resource, analysis_module.AnalysisHashKeyPlan)
+                else name
+            )
             original(resource)
 
         return close
 
     for name, resource_type in (
-        ("changed", analysis_module.AnalysisChangedHashPlan),
+        ("changed", analysis_module.AnalysisHashKeyPlan),
         ("validation", analysis_module.AnalysisFileDecisionValidationPlan),
         ("local", _LocalAnalysisWork),
     ):
@@ -292,8 +297,11 @@ def test_disk_work_is_closed_only_outside_issue_and_commit(
     finally:
         phase = "handle_close"
         prepared.close()
-    assert closed.count("changed") == 1
-    assert closed.count("validation") == (stop_stage != b"changed_file_hash")
+    assert closed.count("changed_file_hash") == 1
+    assert closed.count("file_hash_decision") == (stop_stage != b"changed_file_hash")
+    assert closed.count("validation") == (
+        stop_stage not in {b"changed_file_hash", b"file_hash_decision"}
+    )
     assert "local" in closed
     assert not prepared._machine.retired_work
     before = tuple(closed)

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from h2hdb import vnext_analysis_repository as analysis
-from h2hdb.vnext_changed_hash_plan import build_changed_hash_plan
+from h2hdb.vnext_analysis_hash_keys import build_analysis_hash_key_plan
 
 
 @pytest.fixture
@@ -74,7 +74,9 @@ def _issue(
 def test_sorted_unique_plan_pages_cross_capacity_and_repeat(count: int) -> None:
     keys = tuple(index.to_bytes(32, "big") for index in range(count))
     authority = _authority()
-    plan = build_changed_hash_plan(authority, b"i" * 32, (*reversed(keys), *keys))
+    plan = build_analysis_hash_key_plan(
+        authority, b"i" * 32, (*reversed(keys), *keys), stage=b"changed_file_hash"
+    )
     try:
         assert plan.row_count == count
         for _cycle in range(3):
@@ -88,7 +90,7 @@ def test_sorted_unique_plan_pages_cross_capacity_and_repeat(count: int) -> None:
                 found.extend(page)
                 after = page[-1]
             assert tuple(found) == keys
-        prepared = analysis.AnalysisRepository.prepare_changed_hash_page(
+        prepared = analysis.AnalysisRepository.prepare_hash_key_page(
             issue=_issue(authority), plan=plan
         )
         assert prepared.keys == keys[:128]
@@ -102,7 +104,9 @@ def test_sorted_unique_plan_pages_cross_capacity_and_repeat(count: int) -> None:
 
 @pytest.mark.parametrize("fault", ["count", "authority", "binding", "record", "append"])
 def test_changed_hash_plan_rejects_mutated_authority_and_payload(fault: str) -> None:
-    plan = build_changed_hash_plan(_authority(), b"i" * 32, (b"1" * 32, b"2" * 32))
+    plan = build_analysis_hash_key_plan(
+        _authority(), b"i" * 32, (b"1" * 32, b"2" * 32), stage=b"changed_file_hash"
+    )
     try:
         match fault:
             case "count":
@@ -137,15 +141,17 @@ def test_changed_hash_plan_rejects_mutated_authority_and_payload(fault: str) -> 
 def test_changed_hash_page_rejects_forged_membership_and_coordinates(
     field: str, value: Any
 ) -> None:
-    plan = build_changed_hash_plan(_authority(), b"i" * 32, (b"1" * 32,))
+    plan = build_analysis_hash_key_plan(
+        _authority(), b"i" * 32, (b"1" * 32,), stage=b"changed_file_hash"
+    )
     try:
-        page = analysis.AnalysisRepository.prepare_changed_hash_page(
+        page = analysis.AnalysisRepository.prepare_hash_key_page(
             issue=_issue(plan.authority), plan=plan
         )
         with pytest.raises(ValueError, match="changed|modified"):
             replace(page, **{field: value}).verify()
         with pytest.raises(RuntimeError, match="another authority"):
-            analysis.AnalysisRepository.prepare_changed_hash_page(
+            analysis.AnalysisRepository.prepare_hash_key_page(
                 issue=_issue(replace(plan.authority, generation=2)), plan=plan
             )
     finally:
@@ -248,12 +254,13 @@ def test_current_baseline_rejected_removed_added_and_duplicate_hash_semantics(
                 - {probe.key(5, 0)}
             )
         )
-        plan = build_changed_hash_plan(
+        plan = build_analysis_hash_key_plan(
             _authority(),
             b"i" * 32,
             analysis._iter_changed_source_hashes(
                 connector, probe.ANALYSIS, probe.CURRENT, probe.BASELINE
             ),
+            stage=b"changed_file_hash",
         )
         try:
             assert plan.source_page(after=None, limit=128) == expected
@@ -289,11 +296,11 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
         _seed_initial_snapshot,
     )
 
-    from h2hdb.vnext_changed_hash_plan import AnalysisChangedHashPlan
+    from h2hdb.vnext_analysis_hash_keys import AnalysisHashKeyPlan
     from h2hdb.vnext_transaction import VNextUnitOfWork
 
     connector = _generated_database(tmp_path / "changed-hash-authority.sqlite3")
-    plans: list[AnalysisChangedHashPlan] = []
+    plans: list[AnalysisHashKeyPlan] = []
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -320,9 +327,9 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
                 max_rows=128,
                 now=300,
             )
-        original = build_changed_hash_plan
+        original = build_analysis_hash_key_plan
 
-        def changed(*args: Any, **kwargs: Any) -> AnalysisChangedHashPlan:
+        def changed(*args: Any, **kwargs: Any) -> AnalysisHashKeyPlan:
             plan = original(*args, **kwargs)
             plans.append(plan)
             with connector.transaction():
@@ -335,7 +342,7 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
                     )
             return plan
 
-        monkeypatch.setattr(analysis, "build_changed_hash_plan", changed)
+        monkeypatch.setattr(analysis, "build_analysis_hash_key_plan", changed)
         with pytest.raises(
             analysis.AnalysisNotReadyError, match="working slot|input changed"
         ):

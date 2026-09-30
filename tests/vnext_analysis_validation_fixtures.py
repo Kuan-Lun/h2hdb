@@ -6,11 +6,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_analysis_repository import AnalysisRepository
-from h2hdb.vnext_changed_hash_plan import (
-    AnalysisChangedHashPage,
-    AnalysisChangedHashPlan,
+from h2hdb.vnext_analysis_hash_keys import (
+    AnalysisHashKeyPage,
+    AnalysisHashKeyPlan,
 )
+from h2hdb.vnext_analysis_repository import AnalysisRepository
 from h2hdb.vnext_file_decision_validation_plan import (
     AnalysisFileDecisionValidationPage,
     AnalysisFileDecisionValidationPlan,
@@ -30,16 +30,19 @@ def analysis_source_pages(
     analysis_id: bytes,
 ) -> Iterator[
     Callable[
-        [bytes, int, int], AnalysisFileDecisionValidationPage | AnalysisChangedHashPage
+        [bytes, int, int],
+        AnalysisFileDecisionValidationPage | AnalysisHashKeyPage | None,
     ]
 ]:
     plan: AnalysisFileDecisionValidationPlan | None = None
-    changed_plan: AnalysisChangedHashPlan | None = None
+    changed_plan: AnalysisHashKeyPlan | None = None
+    decision_plan: AnalysisHashKeyPlan | None = None
+    decision_checked = False
 
     def prepare(
         batch_key: bytes, max_rows: int, now: int
-    ) -> AnalysisFileDecisionValidationPage | AnalysisChangedHashPage:
-        nonlocal plan, changed_plan
+    ) -> AnalysisFileDecisionValidationPage | AnalysisHashKeyPage | None:
+        nonlocal plan, changed_plan, decision_plan, decision_checked
         with connector.transaction():
             issue = AnalysisRepository.issue_next_batch(
                 VNextUnitOfWork(connector, backend=backend),
@@ -55,8 +58,21 @@ def analysis_source_pages(
                 changed_plan = AnalysisRepository.prepare_changed_hash_plan(
                     connector, backend=backend, authority=issue.preparation_authority
                 )
-            return AnalysisRepository.prepare_changed_hash_page(
+            return AnalysisRepository.prepare_hash_key_page(
                 issue=issue, plan=changed_plan
+            )
+        if issue.stage == b"file_hash_decision":
+            if not decision_checked:
+                decision_plan = AnalysisRepository.prepare_decision_hash_plan(
+                    connector, backend=backend, authority=issue.preparation_authority
+                )
+                decision_checked = True
+            return (
+                None
+                if decision_plan is None
+                else AnalysisRepository.prepare_hash_key_page(
+                    issue=issue, plan=decision_plan
+                )
             )
         if plan is None:
             plan = AnalysisRepository.prepare_file_decision_validation_plan(
@@ -73,5 +89,9 @@ def analysis_source_pages(
             if plan is not None:
                 plan.close()
         finally:
-            if changed_plan is not None:
-                changed_plan.close()
+            try:
+                if changed_plan is not None:
+                    changed_plan.close()
+            finally:
+                if decision_plan is not None:
+                    decision_plan.close()

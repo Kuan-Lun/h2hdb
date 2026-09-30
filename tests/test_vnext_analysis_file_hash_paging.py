@@ -12,6 +12,7 @@ from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_analysis_repository import (
     _decision_work_rows,
     _file_hash_union_page,
+    _iter_decision_source_hashes,
     _Policy,
     _RunAuthority,
     _validation_actual_key_rows,
@@ -130,13 +131,6 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
         assert _decision_work_rows(work, authority, after=None, limit=129) == [
             (_digest(key),) for key in sorted(changed)
         ]
-        depth_zero = _RunAuthority(analysis, build, authority.policy, None, 0)
-        found = []
-        after = None
-        while rows := _decision_work_rows(work, depth_zero, after=after, limit=129):
-            found.extend(int.from_bytes(row[0], "big") for row in rows)
-            after = rows[-1][0]
-        assert found == sorted(source | changed)
 
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
             _validation_actual_key_rows(work, authority, after=_digest(700), limit=129)
@@ -146,6 +140,9 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
             sql.count("LIMIT %s") == 9
         )  # Six current inputs, two ancestors, and final page.
         assert parameters.count(_digest(700)) == 8
+    assert sorted(set(_iter_decision_source_hashes(connector, analysis, build))) == [
+        _digest(key) for key in sorted(source | changed)
+    ]
     # A fresh validation page must discover newly added orphan facts instead of
     # reusing an in-memory key cache from an earlier transaction.
     with connector.transaction():

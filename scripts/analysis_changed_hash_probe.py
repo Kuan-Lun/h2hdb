@@ -36,8 +36,8 @@ from h2hdb import vnext_analysis_repository as analysis  # noqa: E402 - checkout
 from h2hdb.mariadb_connector import MariaDBConnector  # noqa: E402 - checkout source.
 from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout source.
 from h2hdb.sqlite_connector import SQLiteConnector  # noqa: E402 - checkout source.
-from h2hdb.vnext_changed_hash_plan import (  # noqa: E402 - checkout source.
-    build_changed_hash_plan,
+from h2hdb.vnext_analysis_hash_keys import (  # noqa: E402 - checkout source.
+    build_analysis_hash_key_plan,
 )
 
 ANALYSIS = b"a" * 16
@@ -323,12 +323,13 @@ def measure_case(
     before = handler_counts(connector)
     started = time.perf_counter()
     with measure_reads(connector) as reads:
-        plan = build_changed_hash_plan(
+        plan = build_analysis_hash_key_plan(
             authority,
             b"i" * 32,
             analysis._iter_changed_source_hashes(
                 connector, ANALYSIS, CURRENT, BASELINE
             ),
+            stage=b"changed_file_hash",
         )
     seconds = time.perf_counter() - started
     try:

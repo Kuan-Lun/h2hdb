@@ -283,7 +283,11 @@ def run_stage(
                         f"{index}-{page}".encode(), 128, 100 + index * 200 + page
                     )
                 }
-                if stage == "process_changed_file_hash_batch"
+                if stage
+                in {
+                    "process_changed_file_hash_batch",
+                    "process_file_hash_decision_batch",
+                }
                 else {}
             )
             with connector.transaction():
