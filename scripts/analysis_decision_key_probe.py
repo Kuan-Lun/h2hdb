@@ -4,6 +4,12 @@ The retained production UNION is the negative control, not an alternate runtime.
 Costs are source rows, query calls, SQLite VM instructions, and MariaDB handler
 operations. No filesystem ingestion, READY audit, aggregate values, or NAS wall
 time is measured. No existing server or database can be supplied.
+
+Candidate wall time includes plan preparation, its first complete authenticated
+key delivery, and owned-plan cleanup. The old UNION includes one complete key
+delivery. Both exclude fixture setup, diagnostic handler queries and EXPLAIN;
+two additional candidate traversals check correctness without adding to timing.
+These finite local observations are not an end-to-end stage or NAS SLA estimate.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout source.
 from h2hdb.sql_performance import query_fingerprint  # noqa: E402 - checkout source.
 from h2hdb.sqlite_connector import SQLiteConnector  # noqa: E402 - checkout source.
 from h2hdb.vnext_analysis_hash_keys import (  # noqa: E402 - checkout source.
+    AnalysisHashKeyPlan,
     build_analysis_hash_key_plan,
 )
 
@@ -319,13 +326,27 @@ def measure_old(connector: SQLConnector, oracle: tuple[bytes, ...]) -> Reads:
     return reads
 
 
+def require_plan_delivery(plan: AnalysisHashKeyPlan, oracle: tuple[bytes, ...]) -> None:
+    """Consume every key page, including the empty tail, and compare its oracle."""
+    after = None
+    matched = 0
+    while True:
+        keys = plan.source_page(after=after, limit=128)
+        if keys != oracle[matched : matched + 128]:
+            raise RuntimeError("prepared keys differ from fixture oracle")
+        matched += len(keys)
+        if not keys:
+            break
+        after = keys[-1]
+
+
 def measure_case(connector: SQLConnector, backend: str, shape: Shape) -> dict[str, Any]:
     oracle = seed(connector, backend, shape)
     authority = analysis.AnalysisPreparationAuthority(
         ANALYSIS, BUILD, 1, 1, b"m" * 32, (), analysis._PREPARATION_TOKEN
     )
-    started = time.perf_counter()
     before = handler_counts(connector)
+    started = time.perf_counter()
     with measure_reads(connector, source=True) as reads:
         plan = build_analysis_hash_key_plan(
             authority,
@@ -334,81 +355,87 @@ def measure_case(connector: SQLConnector, backend: str, shape: Shape) -> dict[st
             stage=b"file_hash_decision",
         )
     prepared_seconds = time.perf_counter() - started
-    counters = {
-        key: value - before[key] for key, value in handler_counts(connector).items()
-    }
     try:
+        counters = {
+            key: value - before[key] for key, value in handler_counts(connector).items()
+        }
         require_source_budget(reads, shape)
         if backend == "mariadb":
             require_handler_budget(counters, shape)
+        unique_keys = plan.row_count
         with patch.object(
             connector,
             "fetch_all",
             side_effect=AssertionError("prepared traversal attempted SQL"),
         ):
-            for _cycle in range(3):
-                after = None
-                found: list[bytes] = []
-                while keys := plan.source_page(after=after, limit=128):
-                    found.extend(keys)
-                    after = keys[-1]
-                if tuple(found) != oracle:
-                    raise RuntimeError("prepared keys differ from fixture oracle")
-        before_old = handler_counts(connector)
-        started = time.perf_counter()
-        old = measure_old(connector, oracle)
-        old_seconds = time.perf_counter() - started
-        old_counters = {
-            key: value - before_old[key]
-            for key, value in handler_counts(connector).items()
-        }
-        for sample in (*reads.samples.values(), *old.samples.values()):
-            sample.plan = (
-                profile_mariadb(connector, sample)
-                if isinstance(connector, MariaDBConnector)
-                else connector.fetch_all(
-                    "EXPLAIN QUERY PLAN " + sample.sql, sample.parameters
-                )
-            )
-        sqlite_programs = []
-        if isinstance(connector, SQLiteConnector):
-            for name, sample in reads.samples.items():
-                instructions = len(
-                    connector.fetch_all("EXPLAIN " + sample.sql, sample.parameters)
-                )
-                ranges = max(1, sample.sql.count("AS source_slot"))
-                sqlite_programs.append(
-                    {
-                        "sample": name,
-                        "static_instructions": instructions,
-                        "branches": ranges,
-                    }
-                )
-        return {
-            "cost_contract": {
-                "sqlite_version": sqlite3.sqlite_version
-                if backend == "sqlite"
-                else None,
-                "sqlite_vm_coefficient": 100,
-                "sqlite_vm_budget_basis": "Predeclared conservative finite regression allowance per source row, branch range, membership and SQL call; covers VM loop/seek/coroutine setup plus <100/query sampling remainder. Not an ideal runtime, formal opcode upper-bound proof, or NAS wall-time guarantee.",
-                "sqlite_program_sizes": sqlite_programs,
-                "source_rows": "Each current membership and each accepted selected-observation occurrence exactly once; excludes unrelated history.",
-                "mariadb_handler_budget_basis": "One PK seek per branch plus membership qualification point lookups; Handler_read_next <= source occurrences + memberships + changed rows. Derived LIMIT branch and UNION delivery allowances each <= occurrence rows + one EOF per branch; no reverse scans.",
-            },
-            "shape": asdict(shape),
-            "unique_keys": plan.row_count,
-            "fixed_vm_budget": shape.vm_budget,
-            "candidate": asdict(reads),
-            "candidate_seconds": prepared_seconds,
-            "candidate_handlers": counters,
-            "old_union": asdict(old),
-            "old_union_seconds": old_seconds,
-            "old_union_handlers": old_counters,
-            "three_traversals_without_sql": True,
-            "old_after_fingerprint": query_fingerprint(old_query(digest(128))[0]),
-        }
+            started = time.perf_counter()
+            require_plan_delivery(plan, oracle)
+            delivery_seconds = time.perf_counter() - started
+            for _cycle in range(2):
+                require_plan_delivery(plan, oracle)
     finally:
+        started = time.perf_counter()
         plan.close()
+        cleanup_seconds = time.perf_counter() - started
+    before_old = handler_counts(connector)
+    started = time.perf_counter()
+    old = measure_old(connector, oracle)
+    old_seconds = time.perf_counter() - started
+    old_counters = {
+        key: value - before_old[key] for key, value in handler_counts(connector).items()
+    }
+    for sample in (*reads.samples.values(), *old.samples.values()):
+        sample.plan = (
+            profile_mariadb(connector, sample)
+            if isinstance(connector, MariaDBConnector)
+            else connector.fetch_all(
+                "EXPLAIN QUERY PLAN " + sample.sql, sample.parameters
+            )
+        )
+    sqlite_programs = []
+    if isinstance(connector, SQLiteConnector):
+        for name, sample in reads.samples.items():
+            instructions = len(
+                connector.fetch_all("EXPLAIN " + sample.sql, sample.parameters)
+            )
+            ranges = max(1, sample.sql.count("AS source_slot"))
+            sqlite_programs.append(
+                {
+                    "sample": name,
+                    "static_instructions": instructions,
+                    "branches": ranges,
+                }
+            )
+    return {
+        "cost_contract": {
+            "sqlite_version": sqlite3.sqlite_version if backend == "sqlite" else None,
+            "sqlite_vm_coefficient": 100,
+            "sqlite_vm_budget_basis": "Predeclared conservative finite regression allowance per source row, branch range, membership and SQL call; covers VM loop/seek/coroutine setup plus <100/query sampling remainder. Not an ideal runtime, formal opcode upper-bound proof, or NAS wall-time guarantee.",
+            "sqlite_program_sizes": sqlite_programs,
+            "source_rows": "Each current membership and each accepted selected-observation occurrence exactly once; excludes unrelated history.",
+            "mariadb_handler_budget_basis": "One PK seek per branch plus membership qualification point lookups; Handler_read_next <= source occurrences + memberships + changed rows. Derived LIMIT branch and UNION delivery allowances each <= occurrence rows + one EOF per branch; no reverse scans.",
+        },
+        "timing_scope": {
+            "candidate": "Plan preparation + first complete authenticated key delivery + owned-plan cleanup.",
+            "old_union": "One complete key delivery using repeated UNION queries.",
+            "excluded": "Fixture setup; handler diagnostic queries; EXPLAIN; two extra correctness traversals; later decision aggregates and validation.",
+            "interpretation": "Finite local fixture observation, not full-stage timing or a NAS SLA estimate.",
+        },
+        "shape": asdict(shape),
+        "unique_keys": unique_keys,
+        "fixed_vm_budget": shape.vm_budget,
+        "candidate": asdict(reads),
+        "candidate_seconds": prepared_seconds + delivery_seconds + cleanup_seconds,
+        "candidate_preparation_seconds": prepared_seconds,
+        "candidate_first_delivery_seconds": delivery_seconds,
+        "candidate_cleanup_seconds": cleanup_seconds,
+        "candidate_handlers": counters,
+        "old_union": asdict(old),
+        "old_union_seconds": old_seconds,
+        "old_union_handlers": old_counters,
+        "three_traversals_without_sql": True,
+        "old_after_fingerprint": query_fingerprint(old_query(digest(128))[0]),
+    }
 
 
 def main() -> None:
