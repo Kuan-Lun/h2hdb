@@ -143,6 +143,17 @@ and configuration; it resumes only a matching unfinished initialization.
 The ingest application manages its own startup and periodic audit schedule.
 After an unclean stop, a validator change, or a due audit, startup may require a
 full check. A quick restart result is not evidence of a new full audit.
+The validator identity includes the Core package version, so upgrading Core
+also requires a full check. An unfinished check is not recorded as successful.
+
+MariaDB runtimes reuse a bounded pool of physical sessions. If an idle session
+has disconnected when the driver creates its first buffered cursor, admission
+can discard it and open one fresh session before any initialization or business
+SQL is sent. Healthy admission uses the driver's existing connection check.
+The replacement is attempted only once; SQL, transaction and COMMIT failures
+are never replayed by the pool. This avoids treating a stale idle session as a
+failed ingest heartbeat while preserving recovery requirements for actual
+operation failures and previously interrupted audits.
 
 Logs go to the console by default. Set `logger.file` to save them to a file and
 `logger.level` to `"DEBUG"` for more detailed timing and query statistics. During

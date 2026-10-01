@@ -107,11 +107,12 @@ class MariaDBConnector(SQLConnector):
         self._discard_connection = False
         self._broken = False
         connection_params = self.params.model_dump(exclude={"read_only"})
-        self.connection = (
-            self._pool.acquire()
-            if self._pool is not None
-            else cast(MySQLConnectionAbstract, SQLConnect(**connection_params))
-        )
+        if self._pool is not None:
+            self.connection, self._cursor = self._pool.acquire()
+        else:
+            self.connection = cast(
+                MySQLConnectionAbstract, SQLConnect(**connection_params)
+            )
         self._in_transaction = False
         try:
             durability = self.fetch_one(INNODB_DURABILITY_QUERY)

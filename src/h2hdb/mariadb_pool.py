@@ -6,7 +6,9 @@ from threading import Condition, get_ident
 from time import monotonic
 from weakref import finalize
 
-from mysql.connector.abstracts import MySQLConnectionAbstract
+from mysql.connector import errorcode
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+from mysql.connector.errors import InterfaceError, OperationalError
 
 # Bounds apply to one RepositoryContext, including connections being opened or
 # closed. They do not depend on gallery/image counts or queue length.
@@ -78,9 +80,17 @@ class MariaDBConnectionPool:
                 "MariaDB pool cannot be used after fork; create a runtime"
             )
 
-    def acquire(self) -> MySQLConnectionAbstract:
+    def acquire(self) -> tuple[MySQLConnectionAbstract, MySQLCursorAbstract]:
+        """Admit a buffered cursor before exposing any session to caller SQL.
+
+        Cursor construction already performs the driver's non-reconnecting
+        health check. Only an unavailable idle transport can be replaced, once;
+        no SQL statement or transaction is replayed here.
+        """
+
         self._require_process()
         deadline = monotonic() + self._wait_seconds
+        connection: MySQLConnectionAbstract | None
         with self._condition:
             while True:
                 if self._closed:
@@ -88,9 +98,10 @@ class MariaDBConnectionPool:
                 if self._idle:
                     connection = self._idle.pop()
                     self._leased[id(connection)] = get_ident()
-                    return connection
+                    break
                 if self._total < self._capacity:
                     self._total += 1
+                    connection = None
                     break
                 remaining = deadline - monotonic()
                 if (
@@ -104,6 +115,14 @@ class MariaDBConnectionPool:
                     self._condition.wait(remaining)
                 finally:
                     self._waiters -= 1
+        reused = connection is not None
+        if connection is None:
+            connection = self._open_reserved()
+        return self._admit_cursor(connection, reused=reused)
+
+    def _open_reserved(self) -> MySQLConnectionAbstract:
+        """Open under an existing capacity reservation, outside the pool lock."""
+
         try:
             connection = self._opener()
         except BaseException:
@@ -117,6 +136,52 @@ class MariaDBConnectionPool:
                 return connection
         self._discard(connection)
         raise RuntimeError("MariaDB pool closed while opening a connection")
+
+    def _admit_cursor(
+        self, connection: MySQLConnectionAbstract, *, reused: bool
+    ) -> tuple[MySQLConnectionAbstract, MySQLCursorAbstract]:
+        try:
+            cursor = connection.cursor(buffered=True)
+        except BaseException as error:
+            if reused and _unavailable_transport(error):
+                replacement = self._replace_reserved(connection)
+                if replacement is not None:
+                    return self._admit_cursor(replacement, reused=False)
+            else:
+                self.release(connection, reusable=False)
+            raise
+        with self._condition:
+            if not self._closed:
+                return connection, cursor
+        try:
+            cursor.close()
+        finally:
+            self.release(connection, reusable=False)
+        raise RuntimeError("MariaDB pool closed while admitting a connection")
+
+    def _replace_reserved(
+        self, connection: MySQLConnectionAbstract
+    ) -> MySQLConnectionAbstract | None:
+        # Keep the original slot reserved across both the close and open. A
+        # waiting caller must not acquire it between those physical operations.
+        with self._condition:
+            del self._leased[id(connection)]
+        closed = False
+        try:
+            closed = _close_connection(connection)
+        finally:
+            with self._condition:
+                if not closed:
+                    self._quarantined.append(connection)
+                    self._condition.notify_all()
+        if not closed:
+            return None
+        with self._condition:
+            if self._closed:
+                self._total -= 1
+                self._condition.notify_all()
+                raise RuntimeError("MariaDB pool closed while replacing a connection")
+        return self._open_reserved()
 
     def release(self, connection: MySQLConnectionAbstract, *, reusable: bool) -> None:
         self._require_process()
@@ -153,3 +218,21 @@ class MariaDBConnectionPool:
         # Outstanding leases finish normally, then release discards them.
         for connection in idle:
             self._discard(connection)
+
+
+def _unavailable_transport(error: BaseException) -> bool:
+    if not isinstance(error, (InterfaceError, OperationalError)):
+        return False
+    if error.errno in {
+        errorcode.CR_SERVER_GONE_ERROR,
+        errorcode.CR_SERVER_LOST,
+        errorcode.CR_SERVER_LOST_EXTENDED,
+    }:
+        return True
+    # Connector/Python's C extension and pure-Python cursor factories both
+    # report a failed is_connected() without an errno (with/without a period).
+    # Restrict this exception to cursor admission, never a user SQL operation.
+    return error.errno == -1 and error.msg in {
+        "MySQL Connection not available.",
+        "MySQL Connection not available",
+    }

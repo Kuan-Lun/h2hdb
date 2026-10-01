@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import pytest
 from mysql.connector.abstracts import MySQLConnectionAbstract
-from mysql.connector.errors import IntegrityError, ProgrammingError
+from mysql.connector.errors import IntegrityError, OperationalError, ProgrammingError
 
 import h2hdb.mariadb_connector as mariadb_connector_module
 from h2hdb import CoreConfig
@@ -589,6 +589,79 @@ def test_failed_connector_initialization_releases_pool_capacity() -> None:
     assert first.closed
     with _pooled_connector(pool):
         pass
+    pool.close()
+
+
+def test_idle_cursor_replacement_precedes_initialization_and_business_sql() -> None:
+    class ExpiringConnection(_PooledRecordingConnection):
+        expired = False
+
+        def cursor(self, *, buffered: bool = False) -> _PacketRecordingCursor:
+            if self.expired:
+                raise OperationalError("MySQL Connection not available.")
+            return super().cursor(buffered=buffered)
+
+    old, fresh = ExpiringConnection(), _PooledRecordingConnection()
+    unopened = iter((old, fresh))
+    pool = MariaDBConnectionPool(
+        lambda: cast(MySQLConnectionAbstract, next(unopened)), capacity=1
+    )
+    with _pooled_connector(pool):
+        pass
+    old.expired = True
+    with _pooled_connector(pool) as connector:
+        with connector.transaction():
+            connector.execute(_INSERT_QUERY, (1, "once"))
+
+    assert old.closed and old.execute_calls == [(INNODB_DURABILITY_QUERY, ())]
+    assert fresh.execute_calls == [
+        (INNODB_DURABILITY_QUERY, ()),
+        (_INSERT_QUERY, (1, "once")),
+    ]
+    assert fresh.start_transaction_calls == fresh.commit_calls == 1
+    assert len(fresh.cursors) == 1 and fresh.cursors[0].closed
+    pool.close()
+
+
+@pytest.mark.parametrize(
+    "failed_query",
+    [INNODB_DURABILITY_QUERY, "SET SESSION TRANSACTION READ ONLY", "SELECT 42"],
+)
+def test_pooled_sql_failure_after_cursor_admission_is_never_replayed(
+    failed_query: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = _PooledRecordingConnection()
+    opens = 0
+
+    def opener() -> MySQLConnectionAbstract:
+        nonlocal opens
+        opens += 1
+        return cast(MySQLConnectionAbstract, connection)
+
+    pool = MariaDBConnectionPool(opener, capacity=1)
+    with _pooled_connector(pool):
+        pass
+    failure = OperationalError("MySQL Connection not available.")
+    failed_calls = 0
+    execute = _PacketRecordingCursor.execute
+
+    def execute_or_fail(
+        cursor: _PacketRecordingCursor, query: str, data: tuple[Any, ...] = ()
+    ) -> None:
+        nonlocal failed_calls
+        execute(cursor, query, data)
+        if query == failed_query:
+            failed_calls += 1
+            raise failure
+
+    monkeypatch.setattr(_PacketRecordingCursor, "execute", execute_or_fail)
+    with pytest.raises(OperationalError) as caught:
+        with _pooled_connector(pool, read_only=True) as connector:
+            connector.fetch_one("SELECT 42")
+    assert caught.value is failure
+    assert failed_calls == 1 and opens == 1
+    assert connection.closed and pool._total == 0
+    assert len(connection.cursors) == 2
     pool.close()
 
 
