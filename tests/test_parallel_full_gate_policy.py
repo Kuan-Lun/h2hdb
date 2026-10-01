@@ -91,6 +91,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_database_audit_schedule.py",
             "test_mariadb_full_clean_quick_and_interrupted_runtime_fencing",
         ),
+        # One server-ended idle session checks fenced heartbeat recovery and a
+        # clean quick restart without replaying business writes.
+        (
+            "test_mariadb_admission_recovery.py",
+            "test_server_killed_idle_heartbeat_session_preserves_clean_quick_restart",
+        ),
         # A two-hash production page checks FK-backed batch rollback, committed
         # receipt replay and independent validation without the large matrix.
         (
