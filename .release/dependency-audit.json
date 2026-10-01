@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-30T16:41:22+00:00",
+  "checked_at": "2026-10-01T07:16:02+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.1",
+  "project_version": "0.45.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every build, runtime, development and Node direct dependency against the 0.45.0 receipt. Registry latest versions, upper-bound compatibility and Python 3.14 support are unchanged for every entry; no new upstream release or dependency-manifest edit needs validation. Existing reviewed release-note conclusions therefore remain applicable. Core 0.45.1 changes internal depth-zero decision-key preparation to a stage-bound authenticated disk plan; public facades, schema epoch3/version9, telemetry schema2 and dependency compatibility lane are unchanged. Candidate consumer resolution, both-backend regression, measured query work, code review and exact-tree release gate are separate evidence, not supplied by this dependency receipt.",
+    "note": "Reviewed every direct build, runtime, optional development and Node registry candidate against the 0.45.1 receipt; all candidate versions are unchanged and satisfy existing bounds. Inspected mysql-connector-python 26.7.0 C-extension and pure-Python cursor admission implementations. Verified both drivers with local MariaDB 10.11.11 killed-idle-session recovery, public heartbeat clean restart, and non-replayed durable COMMIT response-loss regressions (9 live cases), plus 62 offline pool/connector cases. No dependency range changes are needed; Core 0.45.2 is covered by all four deployment consumer ranges >=0.43.0,<0.46.0.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
