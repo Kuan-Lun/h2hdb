@@ -120,6 +120,7 @@ def _publications(config: CoreConfig) -> tuple[CatalogPublication, ...]:
         return tuple(sorted(page.publications, key=lambda item: item.gid))
 
 
+@pytest.mark.mariadb_smoke
 def test_source_preparation_rejects_corrupt_published_gallery_identity_without_writes(
     db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

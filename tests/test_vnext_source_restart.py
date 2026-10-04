@@ -19,7 +19,12 @@ from test_vnext_source_batches import (
 )
 from test_vnext_source_marker import MarkerSource
 from test_vnext_source_reread import _InterruptedLibrary
-from vnext_fault_harness import open_connector
+from vnext_fault_harness import (
+    FaultInjector,
+    fault_injection,
+    open_connector,
+    snapshot_database,
+)
 from vnext_pipeline import (
     MemoryLibrary,
     MemorySource,
@@ -66,6 +71,43 @@ def test_resume_without_work_and_after_publication_requests_fresh_inventory(
         assert facade.prepare_source_resume(source, policy=policy) is None
         facade.complete_ingest(session)
     assert full_check(db_config).state == "READY"
+
+
+@pytest.mark.mariadb_smoke
+def test_resume_rejects_corrupt_gallery_identity_without_writes(
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from h2hdb.vnext_source_build_repository import SourceBuildConflictError
+
+    initialize_database(db_config)
+    source = MarkerSource((gallery(1001, pages=[]),))
+    with (
+        _source_batch_clock(db_config) as clock,
+        VNextIngestFacade(db_config, clock=clock) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        _source_batch(facade, session, policy, source, None)
+        assert facade.prepare_source_resume(source, policy=policy) is not None
+        with closing(open_connector(db_config)) as writer, writer.transaction():
+            gallery_id, stable_key = writer.fetch_one(
+                "SELECT gallery_id, gallery_key FROM catalog_gallery_identities"
+            )
+            corrupted = bytes([stable_key[0] ^ 0xFF]) + bytes(stable_key[1:])
+            writer.execute(
+                "UPDATE catalog_gallery_identities SET gallery_key = %s WHERE gallery_id = %s",
+                (corrupted, gallery_id),
+            )
+        before = snapshot_database(db_config)
+        observer = FaultInjector()
+        with fault_injection(monkeypatch, observer):
+            with pytest.raises(
+                SourceBuildConflictError, match="gallery identity"
+            ) as rejected:
+                facade.prepare_source_resume(source, policy=policy)
+        assert isinstance(rejected.value.__cause__, ValueError)
+        assert observer.mutations == 0
+        assert snapshot_database(db_config) == before
 
 
 @pytest.mark.parametrize(
