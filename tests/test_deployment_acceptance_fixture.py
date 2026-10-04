@@ -1,4 +1,4 @@
-"""Unit contracts plus an opt-in, real installed-consumer SQLite exercise.
+"""Unit contracts plus opt-in installed-consumer native backend exercises.
 
 Set H2HDB_ACCEPTANCE_PYTHON to an explicit interpreter containing the ingest
 integration packages. No sibling checkout discovery, private data or service is
@@ -19,6 +19,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+
+from h2hdb import CoreConfig
 
 _SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -366,7 +368,12 @@ def _integration_python() -> str:
     )
 
 
-def test_real_fixture_gallery_cbz_and_restart_oracle(tmp_path: Path) -> None:
+@pytest.mark.backend_external(
+    reason="Installed ingest child receives the fixture-owned native database through stdin."
+)
+def test_real_fixture_gallery_cbz_and_restart_oracle(
+    tmp_path: Path, db_config: CoreConfig
+) -> None:
     interpreter = _integration_python()
     program = r"""
 import importlib.util
@@ -377,7 +384,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
-from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb import CoreConfig
 from h2hdb_ingest import IngestConfig, IngestPathsConfig, ResidentConfig
 from h2hdb_ingest.runtime import build_runtime
 from h2hdb_ingest.scratch import DiskScratch
@@ -404,14 +411,15 @@ except ValueError:
     pass
 else:
     raise AssertionError("fixture overwrote an existing gallery")
-config = IngestConfig(core=CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(root / "catalog.sqlite3"))), paths=IngestPathsConfig(download_path=source, library_path=library, page_render_workers=1), resident=ResidentConfig(publication_batch_galleries=10, lease_seconds=30, heartbeat_seconds=5))
+config = IngestConfig(core=CoreConfig.model_validate_json(sys.stdin.read()), paths=IngestPathsConfig(download_path=source, library_path=library, page_render_workers=1), resident=ResidentConfig(publication_batch_galleries=10, lease_seconds=30, heartbeat_seconds=5))
 config_path = root / "ingest.json"
 config_path.write_text(config.model_dump_json(), encoding="utf-8")
 
 def inspect(runtime):
     return module.verify_catalog(runtime.catalog, source=source, library=library, manifest=module.read_manifest(source / module.MANIFEST_NAME))
 
-def run(initialize=False):
+def run(label, initialize=False):
+    print(f"acceptance phase {label}: start", file=sys.stderr, flush=True)
     with ExitStack() as resources:
         scratch = resources.enter_context(DiskScratch(library))
         with build_runtime(config, temporary_cleanup=scratch.cleanup_page,
@@ -424,42 +432,44 @@ def run(initialize=False):
                 assert runtime.resident.process_available(periodic_scan=True)
                 actual = {p.gid: (p.source_title, p.page_count) for p in runtime.catalog.discover_publications().publications}
                 if actual == expected:
-                    return inspect(runtime)
+                    report = inspect(runtime)
+                    print(f"acceptance phase {label}: verified", file=sys.stderr, flush=True)
+                    return report
             raise AssertionError(f"bounded source drain did not reach expected versions: {actual!r}, {expected!r}")
 
-first = run(initialize=True)
+first = run("fresh", initialize=True)
 assert first["verified_publications"] == 2 and first["verified_pages"] == 4
-restart = run()
+restart = run("unchanged restart")
 assert first["artifacts"] == restart["artifacts"], "unchanged restart rewrote a CBZ"
 module.generate(source, start_gid=1000003, count=1, pages=1)
-added = run()
+added = run("append")
 assert added["verified_publications"] == 3
 assert added["artifacts"][:2] == first["artifacts"]
 module.change(source, gid=1000001, generation=2, pages=3, marker="pending")
 assert (source / "1000001/0001.png").stat().st_mtime_ns > (source / "1000001/galleryinfo.txt").stat().st_mtime_ns
-pending = run()
+pending = run("pending marker")
 assert pending["artifacts"] == added["artifacts"], "pending producer replaced a completed gallery"
 module.change(source, gid=1000001, generation=2, marker="complete")
-completed = run()
+completed = run("completed marker")
 assert completed["verified_pages"] == 6
 assert completed["artifacts"][0]["sha256"] != first["artifacts"][0]["sha256"]
 module.change(source, gid=1000002, generation=2, pages=1, marker="missing")
 assert not (source / "1000002/0002.png").exists()
-missing = run()
+missing = run("missing marker")
 assert missing["artifacts"] == completed["artifacts"], "missing marker removed existing publication"
 module.change(source, gid=1000002, generation=2, marker="complete")
-restored = run()
+restored = run("restored marker")
 module.generate(source, start_gid=1000004, count=1, pages=1, marker="missing")
-missing_new = run()
+missing_new = run("new missing marker")
 assert missing_new["verified_publications"] == 3
 module.change(source, gid=1000004, generation=1, marker="complete")
-final = run()
+final = run("new completed marker")
 assert final["verified_publications"] == 4
 module.append_collection(source, count=2, start_gid=1000005, pages=2, profile="small", collection="growth-append-1")
-grouped = run()
+grouped = run("collection append")
 assert grouped["verified_publications"] == 6 and grouped["verified_pages"] == final["verified_pages"] + 4
 module.change(source, gid=1000005, generation=2)
-final = run()
+final = run("collection replacement")
 assert final["verified_publications"] == 6
 assert (source / "growth-append-1/1000005/galleryinfo.txt").is_file()
 report = module.verify(config=config_path, source=source, library=library, expected_manifest=source / module.MANIFEST_NAME, output=root / "verified.json")
@@ -509,24 +519,35 @@ except ValueError as error:
 else:
     raise AssertionError("independent oracle accepted a corrupted archive")
 assert not (root / "corrupt.json").exists()
-print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"], "oracle": "passed"}))
+print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"], "oracle": "passed", "database_backend": config.core.database.sql_type}))
 """
     result = subprocess.run(
         [interpreter, "-c", program, str(_SCRIPT), str(tmp_path)],
         capture_output=True,
         text=True,
+        input=db_config.model_dump_json(),
         check=False,
-        timeout=180,
+        # Eleven resident lifecycles include real startup audits, native SQL,
+        # image rendering and independent archive verification. This bounds a
+        # stalled correctness child on either engine; it is not a latency SLO.
+        # The former SQLite-only three-minute ceiling expired during valid
+        # MariaDB progress when other explicitly enabled deep tests ran.
+        timeout=600,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout.splitlines()[-1])["oracle"] == "passed"
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["oracle"] == "passed"
+    assert report["database_backend"] == db_config.database.sql_type
 
 
 @pytest.mark.parametrize(
     "short_side,preset", [(768, "canonical"), (256, "benchmark-low-cost")]
 )
+@pytest.mark.backend_external(
+    reason="Installed ingest child receives the fixture-owned native database through stdin."
+)
 def test_real_ingest_resizes_mixed_large_pages_against_independent_raster(
-    tmp_path: Path, short_side: int, preset: str
+    tmp_path: Path, short_side: int, preset: str, db_config: CoreConfig
 ) -> None:
     program = r"""
 import importlib.util
@@ -535,7 +556,7 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb import CoreConfig
 from h2hdb_ingest import IngestConfig, IngestPathsConfig, ResidentConfig
 from h2hdb_ingest.runtime import build_runtime
 from h2hdb_ingest.scratch import DiskScratch
@@ -551,7 +572,7 @@ for child in ("current/acquisitions", "current/artwork", ".h2hdb-coordination"):
 manifest = module.generate(source, count=2, start_gid=1000019, pages=3, profile="mixed")
 assert sum(p.width == 1024 for g in manifest.galleries for p in g.current.pages) == 2
 config = IngestConfig(
-    core=CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(root / "catalog.sqlite3"))),
+    core=CoreConfig.model_validate_json(sys.stdin.read()),
     paths=IngestPathsConfig(download_path=source, library_path=library,
         page_render_workers=1, max_image_short_side=short_side, render_policy={"preset": preset}),
     resident=ResidentConfig(publication_batch_galleries=10, lease_seconds=30, heartbeat_seconds=5),
@@ -589,7 +610,7 @@ assert saved["artifacts"] == report["artifacts"]
 print(json.dumps({"actual_galleries": 2, "actual_pages": 6,
     "large_source_pages": 2, "dimensions": dimensions,
     "maximum_rgb_rms": max(max(a["page_rgb_rms"]) for a in report["artifacts"]),
-    "oracle": "passed"}))
+    "oracle": "passed", "database_backend": config.core.database.sql_type}))
 """
     result = subprocess.run(
         [
@@ -603,8 +624,11 @@ print(json.dumps({"actual_galleries": 2, "actual_pages": 6,
         ],
         capture_output=True,
         text=True,
+        input=db_config.model_dump_json(),
         check=False,
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout.splitlines()[-1])["oracle"] == "passed"
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["oracle"] == "passed"
+    assert report["database_backend"] == db_config.database.sql_type

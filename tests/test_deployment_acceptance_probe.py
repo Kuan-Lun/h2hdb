@@ -14,6 +14,8 @@ from typing import Any
 
 import pytest
 
+from h2hdb import CoreConfig
+
 _ROOT = Path(__file__).resolve().parents[1]
 _DIRECTORY = _ROOT / "scripts" / "deployment_acceptance"
 _MODULE = "deployment_acceptance_probe_under_test"
@@ -54,7 +56,11 @@ def _events(directory: Path) -> list[dict[str, Any]]:
 
 
 def _run(
-    source: str, cwd: Path, environment: dict[str, str]
+    source: str,
+    cwd: Path,
+    environment: dict[str, str],
+    *,
+    config: CoreConfig | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-c", source],
@@ -62,6 +68,7 @@ def _run(
         env=environment,
         text=True,
         capture_output=True,
+        input=None if config is None else config.model_dump_json(),
         timeout=30,
         check=False,
     )
@@ -325,24 +332,34 @@ print('original behavior verified')
     assert all(event["pid"] > 0 and event["monotonic_ns"] > 0 for event in events)
 
 
+@pytest.mark.backend_external(
+    reason="Probe child receives fixture-owned native configuration and verifies observed engine SQL counters."
+)
 def test_real_core_admin_and_original_semantic_validators_still_detect_drift(
     tmp_path: Path,
+    db_config: CoreConfig,
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     result = _run(
         """
-import sqlite3
+import sys
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
-from h2hdb.config_loader import DatabaseConfig
-admin = VNextDatabaseAdminFacade(CoreConfig(database=DatabaseConfig(sql_type='sqlite', database='core.sqlite')))
+from h2hdb.repository import RepositoryContext
+config = CoreConfig.model_validate_json(sys.stdin.read())
+admin = VNextDatabaseAdminFacade(config)
 assert admin.initialize().state == 'READY'
 assert admin.check().state == 'READY'
 assert admin.check_readiness().state == 'READY'
-connection = sqlite3.connect('core.sqlite')
-connection.execute('CREATE TABLE foreign_relation (id INTEGER)')
-connection.commit()
-connection.close()
+context = RepositoryContext.from_config(config)
+connection = context.SQLConnector()
+connection.connect()
+try:
+    with connection.transaction():
+        connection.execute('CREATE TABLE foreign_relation (id INTEGER)')
+finally:
+    connection.close()
+    context.close()
 try:
     admin.check()
 except Exception:
@@ -352,10 +369,14 @@ else:
 """,
         tmp_path,
         _environment(evidence),
+        config=db_config,
     )
     assert result.returncode == 0, result.stderr
     assert "original drift validation rejected" in result.stdout
     counters = _events(evidence)[-1]["counters"]
+    assert any(
+        key.startswith(f"core.{db_config.database.sql_type}.sql.") for key in counters
+    )
     assert counters["core.admin.initialize"]["completed"] == 1
     assert counters["core.admin.check"]["completed"] == 1
     assert counters["core.admin.check"]["failed"] == 1
@@ -369,16 +390,21 @@ else:
     assert all(value["completed"] > 0 for value in validators.values())
 
 
+@pytest.mark.backend_external(
+    reason="Probe child receives fixture-owned native configuration and verifies observed engine SQL counters."
+)
 def test_real_startup_results_distinguish_full_from_zero_validator_quick(
     tmp_path: Path,
+    db_config: CoreConfig,
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     result = _run(
         """
+import sys
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
-from h2hdb.config_loader import DatabaseConfig
-admin = VNextDatabaseAdminFacade(CoreConfig(database=DatabaseConfig(sql_type='sqlite', database='private-core.sqlite')))
+config = CoreConfig.model_validate_json(sys.stdin.read())
+admin = VNextDatabaseAdminFacade(config)
 try:
     admin.initialize()
     first = admin.start_ingest_runtime(lease_duration_microseconds=60_000_000)
@@ -393,6 +419,7 @@ finally:
 """,
         tmp_path,
         _environment(evidence),
+        config=db_config,
     )
     assert result.returncode == 0, result.stderr
     events = _events(evidence)
@@ -432,42 +459,56 @@ finally:
         else:
             assert all(value == 0 for value in deltas.values())
     counters = events[-1]["counters"]
+    assert any(
+        key.startswith(f"core.{db_config.database.sql_type}.sql.") for key in counters
+    )
     assert counters["core.admin.start_ingest_runtime"]["calls"] == 2
     assert counters["core.admin.start_ingest_runtime"]["completed"] == 2
     assert counters["core.admin.check"]["calls"] == 1
 
 
-def test_core_sql_counts_real_sqlite_calls_outside_performance_context(
+@pytest.mark.backend_external(
+    reason="Probe child receives fixture-owned native configuration and verifies observed engine SQL counters."
+)
+def test_core_sql_counts_real_native_calls_outside_performance_context(
     tmp_path: Path,
+    db_config: CoreConfig,
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     result = _run(
         """
-from h2hdb.sqlite_connector import SQLiteConnector, SQLiteDuplicateKeyError
+import sys
+from h2hdb import CoreConfig
+from h2hdb.repository import RepositoryContext
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb import VNextIngestFacade
 import _h2hdb_acceptance_probe as probe
 
 # No measure_sql context or driver replacement: exercise the actual connector.
-connector = SQLiteConnector('logical-core.sqlite')
+config = CoreConfig.model_validate_json(sys.stdin.read())
+context = RepositoryContext.from_config(config)
+connector = context.SQLConnector()
 connector.connect()
 try:
-    assert connector.execute('CREATE TABLE private_sql_table (id INTEGER PRIMARY KEY, value TEXT)') is None
-    assert connector.execute('INSERT INTO private_sql_table VALUES (%s, %s)', (1, 'private-parameter')) is None
-    assert connector.execute_many('INSERT INTO private_sql_table VALUES (%s, %s)', [(2, 'two'), (3, 'three')]) is None
-    assert connector.execute_affected('UPDATE private_sql_table SET value = %s WHERE id = %s', ('changed', 2)) == 1
-    assert connector.fetch_one('SELECT value FROM private_sql_table WHERE id = %s', (1,)) == ('private-parameter',)
-    assert connector.fetch_one('SELECT value FROM private_sql_table WHERE id = %s', (4,)) == ()
-    assert connector.fetch_all('SELECT id, value FROM private_sql_table ORDER BY id') == [(1, 'private-parameter'), (2, 'changed'), (3, 'three')]
-    try:
-        connector.execute('INSERT INTO private_sql_table VALUES (%s, %s)', (1, 'duplicate-private-parameter'))
-    except SQLiteDuplicateKeyError:
-        pass
-    else:
-        raise AssertionError('original duplicate-key translation was suppressed')
+    with connector.transaction():
+        assert connector.execute('CREATE TABLE private_sql_table (id INTEGER PRIMARY KEY, value TEXT)') is None
+        assert connector.execute('INSERT INTO private_sql_table VALUES (%s, %s)', (1, 'private-parameter')) is None
+        assert connector.execute_many('INSERT INTO private_sql_table VALUES (%s, %s)', [(2, 'two'), (3, 'three')]) is None
+        assert connector.execute_affected('UPDATE private_sql_table SET value = %s WHERE id = %s', ('changed', 2)) == 1
+        assert connector.fetch_one('SELECT value FROM private_sql_table WHERE id = %s', (1,)) == ('private-parameter',)
+        assert connector.fetch_one('SELECT value FROM private_sql_table WHERE id = %s', (4,)) == ()
+        assert connector.fetch_all('SELECT id, value FROM private_sql_table ORDER BY id') == [(1, 'private-parameter'), (2, 'changed'), (3, 'three')]
+        try:
+            connector.execute('INSERT INTO private_sql_table VALUES (%s, %s)', (1, 'duplicate-private-parameter'))
+        except DatabaseDuplicateKeyError:
+            pass
+        else:
+            raise AssertionError('original duplicate-key translation was suppressed')
 finally:
     connector.close()
+    context.close()
 # Wrapper presence is evidence of capability, not a MariaDB execution claim.
 for method in ('execute', 'execute_affected', 'execute_many', 'fetch_one', 'fetch_all'):
     assert callable(getattr(MariaDBConnector, method).__wrapped__)
@@ -478,6 +519,7 @@ print('logical connector behavior verified')
 """,
         tmp_path,
         _environment(evidence),
+        config=db_config,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "logical connector behavior verified\n"
@@ -494,14 +536,21 @@ print('logical connector behavior verified')
         "fetch_one": (2, 2, 0),
         "fetch_all": (1, 1, 0),
     }
+    if db_config.database.sql_type == "mariadb":
+        # Native admission reads innodb_flush_log_at_trx_commit, and the first
+        # execute_many reads max_allowed_packet. The observer must include
+        # both real nested SQL calls as well as the two explicit point reads.
+        expected["fetch_one"] = (4, 4, 0)
     for method, values in expected.items():
-        counter = counters[f"core.sqlite.sql.{method}"]
+        counter = counters[f"core.{db_config.database.sql_type}.sql.{method}"]
         assert (counter["calls"], counter["completed"], counter["failed"]) == values
         assert counter["seconds"] >= 0
         assert counter["logical_bytes"] == 0
-    assert not any(key.startswith("core.mariadb.sql.") for key in counters)
+    other = "mariadb" if db_config.database.sql_type == "sqlite" else "sqlite"
+    assert not any(key.startswith(f"core.{other}.sql.") for key in counters)
     assert not any(
-        event["operation"].startswith("core.sqlite.sql.") for event in events
+        event["operation"].startswith(f"core.{db_config.database.sql_type}.sql.")
+        for event in events
     )
     assert len(events) < 10  # Cumulative counters, no event/fsync for each method.
     serialized = json.dumps(events)
