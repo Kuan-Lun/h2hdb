@@ -2563,6 +2563,9 @@ def test_spam_exclusion_flip_matches_a_fresh_ingest(pipeline: Pipeline) -> None:
 
 
 @pytest.mark.cleanup_acceptance
+@pytest.mark.backend_reference(
+    reason="Native compaction across depth sixteen is compared with an independent fresh SQLite ingest"
+)
 def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
     pipeline: Pipeline,
     tmp_path: Path,
@@ -2625,6 +2628,9 @@ def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
 
 
 @pytest.mark.cleanup_acceptance
+@pytest.mark.backend_reference(
+    reason="Native policy compaction is compared with an independent fresh SQLite ingest and exact resource bytes"
+)
 def test_policy_compaction_releases_only_the_retired_chain_and_preserves_bytes(
     db_config: CoreConfig,
     tmp_path: Path,
