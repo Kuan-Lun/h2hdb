@@ -366,6 +366,7 @@ def run_case(
         oracle = verify_catalog(config, galleries, pages, artifacts=artifacts)
         next_claim = finish_next_claim_probe(config, turns[-1])
         return {
+            "measurement_protocol": "consecutive-work-generations-v1",
             "backend": backend,
             "galleries": galleries,
             "batch": batch,
@@ -397,6 +398,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report: dict[str, Any] = {
+        "measurement_protocol": "consecutive-work-generations-v1",
         "status": "incomplete",
         "provenance": probe.source_provenance(),
         "experiment_sources_sha256": experiment_source_hashes(),

@@ -76,6 +76,7 @@ def assert_probe_claim_sequence(
     result: dict[str, Any], claims: list[int | None], config: CoreConfig
 ) -> None:
     """Reject extra empty turns or hidden maintenance between measured turns."""
+    assert result["measurement_protocol"] == "consecutive-work-generations-v1"
     turns = result["turns"]
     expected = list(range(1, len(turns) + 2))
     assert claims == expected

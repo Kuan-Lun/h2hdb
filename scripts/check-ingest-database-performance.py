@@ -594,6 +594,7 @@ def run_replacement(
             turns.append(turn)
         next_claim = batch_probe.finish_next_claim_probe(config, turns[-1])
         return {
+            "measurement_protocol": "consecutive-work-generations-v1",
             "kind": "replacement",
             "backend": backend,
             "pages": pages,
@@ -723,7 +724,8 @@ def main() -> int:
             "MariaDB starts a disposable 10.11.11 container; add --allow-mariadb"
         )
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "measurement_protocol": "consecutive-work-generations-v1",
         "status": "error",
         "acceptance": {"status": "incomplete"},
         "contract_version": CONTRACT_VERSION,

@@ -348,6 +348,8 @@ def test_cli_never_converts_violation_or_incomplete_to_success(
     )
     assert acceptance.main() == exit_code
     report = json.loads(output.read_text())
+    assert report["schema_version"] == 2
+    assert report["measurement_protocol"] == "consecutive-work-generations-v1"
     assert report["acceptance"]["status"] == status
     assert report["acceptance"][failing_scope + "_status"] == status
 

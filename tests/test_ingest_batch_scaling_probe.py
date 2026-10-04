@@ -155,6 +155,7 @@ def test_cli_preserves_failure_status_in_report(
     with pytest.raises(RuntimeError):
         probe.main()
     report = json.loads(output.read_text())
+    assert report["measurement_protocol"] == "consecutive-work-generations-v1"
     assert report["status"] == "failed"
     assert report["error"] == "RuntimeError"
     assert report["experiment_sources_sha256"] == {"fixture": "initial"}

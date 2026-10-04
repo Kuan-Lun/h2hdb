@@ -531,6 +531,7 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
         "measurement": "post_measurement_next_claim.claim",
     }
     return {
+        "measurement_protocol": "consecutive-work-generations-v1",
         "name": case.name,
         "final_full_ready_audit": final_audit,
         "final_full_ready_audit_scope": "after_final_cleanup_before_final_claim_probe",
@@ -635,6 +636,7 @@ def main() -> None:
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
+        "measurement_protocol": "consecutive-work-generations-v1",
         "status": "incomplete",
         "backend": args.backend,
         "source_sha256": provenance(args.output),

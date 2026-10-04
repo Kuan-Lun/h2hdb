@@ -312,6 +312,7 @@ def test_real_revision_claims_preserve_natural_generations_and_compaction(
         "info",
     )
     expected = list(range(1, revisions + 2))
+    assert result["measurement_protocol"] == "consecutive-work-generations-v1"
     assert claims == expected
     records = result["revisions"]
     assert [record["ingest_generation"] for record in records] == expected[:-1]
