@@ -394,6 +394,7 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
             point=point,
             workflow=lambda: _short_lease_turn(db_config, source, library),
             capture_every_transaction=True,
+            targeting="ordinal_only",
         )
         assert injector.fired is not None, point
         if point.kind == "before_mutation":
