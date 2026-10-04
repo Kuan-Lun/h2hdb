@@ -1864,35 +1864,36 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
             )
             set_foreign_key_checks(connector, enabled=False)
             try:
-                connector.execute(
-                    "UPDATE operational_cleanup_cycle_roots SET cleanup_id = %s "
-                    "WHERE cleanup_id = %s",
-                    (rebound_cleanup_id, current_cleanup_id),
-                )
-                connector.execute(
-                    "UPDATE operational_cleanup_checkpoints "
-                    "SET cleanup_id = %s, chain_sha256 = %s "
-                    "WHERE cleanup_id = %s",
-                    (
-                        rebound_cleanup_id,
-                        cleanup_module._initial_chain(rebound_cleanup_id, phase),
-                        current_cleanup_id,
-                    ),
-                )
-                connector.execute(
-                    "UPDATE operational_cleanup_jobs "
-                    "SET cleanup_id = %s, target_key = %s, "
-                    "frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
-                    (
-                        rebound_cleanup_id,
-                        target_key,
-                        cleanup_module._frozen_root_set_sha256(
+                with connector.transaction():
+                    connector.execute(
+                        "UPDATE operational_cleanup_cycle_roots SET cleanup_id = %s "
+                        "WHERE cleanup_id = %s",
+                        (rebound_cleanup_id, current_cleanup_id),
+                    )
+                    connector.execute(
+                        "UPDATE operational_cleanup_checkpoints "
+                        "SET cleanup_id = %s, chain_sha256 = %s "
+                        "WHERE cleanup_id = %s",
+                        (
                             rebound_cleanup_id,
-                            roots,
+                            cleanup_module._initial_chain(rebound_cleanup_id, phase),
+                            current_cleanup_id,
                         ),
-                        current_cleanup_id,
-                    ),
-                )
+                    )
+                    connector.execute(
+                        "UPDATE operational_cleanup_jobs "
+                        "SET cleanup_id = %s, target_key = %s, "
+                        "frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
+                        (
+                            rebound_cleanup_id,
+                            target_key,
+                            cleanup_module._frozen_root_set_sha256(
+                                rebound_cleanup_id,
+                                roots,
+                            ),
+                            current_cleanup_id,
+                        ),
+                    )
             finally:
                 set_foreign_key_checks(connector, enabled=True)
             return rebound_cleanup_id
@@ -1902,9 +1903,12 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
             shard_no=1,
         )
         try:
-            with pytest.raises(
-                CatalogSemanticValidationError,
-                match="slot does not match its frozen prefix floor",
+            with (
+                connector.read_transaction(),
+                pytest.raises(
+                    CatalogSemanticValidationError,
+                    match="slot does not match its frozen prefix floor",
+                ),
             ):
                 catalog_refinement_module.check_publication_atomicity_v1(connector)
         finally:
@@ -1915,19 +1919,24 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
         assert restored_cleanup_id == generation_cycle.cleanup_id
         assert full_check(db_config).state == "READY"
 
-        connector.execute(
-            "DELETE FROM catalog_publication_generation_successors "
-            "WHERE successor_generation = 1"
-        )
-        with pytest.raises(
-            CatalogSemanticValidationError,
-            match="successor chain is gapped",
+        with connector.transaction():
+            connector.execute(
+                "DELETE FROM catalog_publication_generation_successors "
+                "WHERE successor_generation = 1"
+            )
+        with (
+            connector.read_transaction(),
+            pytest.raises(
+                CatalogSemanticValidationError,
+                match="successor chain is gapped",
+            ),
         ):
             catalog_refinement_module.check_publication_atomicity_v1(connector)
-        connector.execute(
-            "INSERT INTO catalog_publication_generation_successors "
-            "(successor_generation, predecessor_generation) VALUES (1, 0)"
-        )
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_publication_generation_successors "
+                "(successor_generation, predecessor_generation) VALUES (1, 0)"
+            )
         with connector.transaction():
             result = VNextCleanupRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
@@ -1964,10 +1973,13 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                             pg_reads.append((query, len(rows)))
                         return rows
 
-                    with patch.object(
-                        connector,
-                        "fetch_all",
-                        side_effect=record_pg_read,
+                    with (
+                        connector.read_transaction(),
+                        patch.object(
+                            connector,
+                            "fetch_all",
+                            side_effect=record_pg_read,
+                        ),
                     ):
                         catalog_refinement_module.check_publication_atomicity_v1(
                             connector
@@ -1977,21 +1989,26 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                     assert pg_reads[0][1] <= 256
                     checked_query_bound = True
                 if phase == "PG_ROOT" and not has_cursor and not checked_root_forgery:
-                    connector.execute(
-                        "DELETE FROM catalog_publication_generation_nodes "
-                        "WHERE generation = 0"
-                    )
-                    with pytest.raises(
-                        CatalogSemanticValidationError,
-                        match="generation nodes differ",
+                    with connector.transaction():
+                        connector.execute(
+                            "DELETE FROM catalog_publication_generation_nodes "
+                            "WHERE generation = 0"
+                        )
+                    with (
+                        connector.read_transaction(),
+                        pytest.raises(
+                            CatalogSemanticValidationError,
+                            match="generation nodes differ",
+                        ),
                     ):
                         catalog_refinement_module.check_publication_atomicity_v1(
                             connector
                         )
-                    connector.execute(
-                        "INSERT INTO catalog_publication_generation_nodes "
-                        "(generation) VALUES (0)"
-                    )
+                    with connector.transaction():
+                        connector.execute(
+                            "INSERT INTO catalog_publication_generation_nodes "
+                            "(generation) VALUES (0)"
+                        )
                     checked_root_forgery = True
             if result.cycle_complete:
                 break
