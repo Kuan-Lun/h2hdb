@@ -89,27 +89,45 @@ def _rows(config: CoreConfig, table: str, limit: int = 2) -> list[tuple[Any, ...
         connector.close()
 
 
-def _apply(
-    config: CoreConfig, corruption: Corruption, rows: list[tuple[Any, ...]]
-) -> bool:
+@dataclass(frozen=True)
+class CorruptionMutation:
+    corruption: Corruption
+    names: tuple[str, ...]
+    first: tuple[Any, ...]
+    replacement: Any
+
+
+@dataclass(frozen=True)
+class TableSample:
+    names: tuple[str, ...]
+    rows: tuple[tuple[Any, ...], ...]
+
+
+def _plan_corruption(
+    corruption: Corruption, sample: TableSample
+) -> CorruptionMutation | None:
+    """Reject only non-mutations provable from immutable native source rows."""
+    index = sample.names.index(corruption.column.name)
+    first = sample.rows[0]
+    value = first[index]
+    if not value:
+        return None
+    if corruption.kind == "flip":
+        replacement = bytes([value[0] ^ 0xFF]) + bytes(value[1:])
+    else:
+        if len(sample.rows) < 2 or sample.rows[1][index] == value:
+            return None
+        replacement = sample.rows[1][index]
+    return CorruptionMutation(corruption, sample.names, first, replacement)
+
+
+def _apply(config: CoreConfig, mutation: CorruptionMutation) -> bool:
     """Commit one corruption on ``config``; return False when not applicable."""
 
     connector = open_connector(config)
     try:
-        names = _column_names(
-            connector, config.database.sql_type, corruption.column.table
-        )
-        index = names.index(corruption.column.name)
-        first = rows[0]
-        value = first[index]
-        if not value:
-            return False
-        if corruption.kind == "flip":
-            replacement = bytes([value[0] ^ 0xFF]) + bytes(value[1:])
-        else:
-            if len(rows) < 2 or rows[1][index] == value:
-                return False
-            replacement = rows[1][index]
+        corruption = mutation.corruption
+        names, first = mutation.names, mutation.first
         where = " AND ".join(
             f"`{name}` IS NULL" if cell is None else f"`{name}` = %s"
             for name, cell in zip(names, first, strict=True)
@@ -121,7 +139,7 @@ def _apply(
             affected = connector.execute_affected(
                 f"UPDATE `{corruption.column.table}` SET `{corruption.column.name}` = %s "
                 f"WHERE {where}",
-                (replacement, *bound),
+                (mutation.replacement, *bound),
             )
             if affected != 1:
                 connector.rollback()
@@ -144,6 +162,20 @@ def _apply(
         return True
     finally:
         connector.close()
+
+
+def _apply_sampled_corruption(
+    snapshot: ReusableDatabaseSnapshot,
+    corruption: Corruption,
+    sample: TableSample,
+) -> bool:
+    mutation = _plan_corruption(corruption, sample)
+    if mutation is None:
+        # Preserve immediate schema-drift refusal; only the full data copy is
+        # unnecessary for a candidate proven not to inject a mutation.
+        snapshot.require_target_schema()
+        return False
+    return _apply(snapshot.restore(), mutation)
 
 
 def _typed(error: BaseException) -> bool:
@@ -237,7 +269,7 @@ def _consumer_outcome(
 class PreparedCorpus:
     corpus: Corpus
     snapshot: ReusableDatabaseSnapshot
-    rows: dict[str, list[tuple[Any, ...]]]
+    samples: dict[str, TableSample]
     reference: dict[str, Any]
     original_digest: object
     adapter_digest: bytes
@@ -313,8 +345,8 @@ def _matrix(
         completed = False
         try:
             for column in columns:
-                rows = prepared.rows[column.table]
-                if not rows:
+                sample = prepared.samples[column.table]
+                if not sample.rows:
                     continue
                 for kind in ("flip", "swap"):
                     ordinal += 1
@@ -323,10 +355,12 @@ def _matrix(
                     corruption = Corruption(column, kind)
                     current_label = corruption.label
                     selected += 1
-                    copy_config = prepared.snapshot.restore()
-                    if not _apply(copy_config, corruption, rows):
+                    if not _apply_sampled_corruption(
+                        prepared.snapshot, corruption, sample
+                    ):
                         outcomes["not-applicable"] += 1
                         continue
+                    copy_config = prepared.snapshot.target
                     if corpus.mid_flight:
                         outcome = _resume_outcome(
                             corpus, copy_config, prepared.reference
@@ -344,6 +378,7 @@ def _matrix(
                         "consumer-inert",
                     }:
                         detail.append(f"{corpus.name} {corruption.label} -> {outcome}")
+            prepared.snapshot.require_target_schema()
             prepared.assert_unchanged()
             completed = True
         except Exception as error:
@@ -372,14 +407,15 @@ def _matrix(
     return outcomes, detail
 
 
-def _present_rows(
-    config: CoreConfig, tables: set[str]
-) -> dict[str, list[tuple[Any, ...]]]:
+def _present_rows(config: CoreConfig, tables: set[str]) -> dict[str, TableSample]:
     connector = open_connector(config)
     try:
         with connector.read_transaction():
             return {
-                table: inspect_all(connector, f"SELECT * FROM {table} LIMIT 2")
+                table: TableSample(
+                    tuple(_column_names(connector, config.database.sql_type, table)),
+                    tuple(inspect_all(connector, f"SELECT * FROM {table} LIMIT 2")),
+                )
                 for table in tables
             }
     finally:

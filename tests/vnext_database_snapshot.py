@@ -152,11 +152,15 @@ class ReusableDatabaseSnapshot:
             raise AssertionError("native snapshot changed schema")
         self.tables = tuple(table for table, _, _ in database_digest(source))
 
-    def restore(self) -> CoreConfig:
+    def require_target_schema(self) -> None:
+        """Reject schema drift even when a data-only replay needs no copy."""
         self.factory.close_connections(self.source)
         self.factory.close_connections(self.target)
         if _schema_signature(self.target) != self.schema:
             raise ValueError("reusable data snapshot cannot restore schema drift")
+
+    def restore(self) -> CoreConfig:
+        self.require_target_schema()
         if self.source.database.sql_type == "sqlite":
             with (
                 closing(sqlite3.connect(self.source.database.database)) as reader,
