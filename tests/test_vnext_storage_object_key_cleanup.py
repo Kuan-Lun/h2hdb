@@ -3,9 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
     CleanupCycle,
@@ -19,7 +25,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _exclusive(connector: SQLiteConnector) -> GateLease:
+def _exclusive(connector: SQLConnector) -> GateLease:
     with (
         connector.transaction(),
         patch(
@@ -28,14 +34,14 @@ def _exclusive(connector: SQLiteConnector) -> GateLease:
         ),
     ):
         return MaintenanceGateRepository.claim_exclusive(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=1,
             lease_duration=100_000,
         )
 
 
 def _drain(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     cycle: CleanupCycle,
     *,
@@ -45,7 +51,7 @@ def _drain(
     for batches in range(1, 128):
         with connector.transaction():
             result = VNextCleanupRepository.advance(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 command=CleanupBatchCommand(batches.to_bytes(32, "big"), generation),
@@ -59,9 +65,12 @@ def _drain(
 
 
 def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "storage-key-gc.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "storage-key-gc.sqlite3"))
+    )
     try:
         orphan = bytes((23,)) + b"o" * 31
         retained = bytes((23,)) + b"r" * 31
@@ -77,7 +86,7 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
             "VALUES (%s, 0, %s)",
             [(orphan, b"orphan"), (retained, b"retained")],
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "INSERT INTO catalog_prepared_artifacts "
@@ -94,12 +103,12 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
                 ),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
 
         gate = _exclusive(connector)
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.STORAGE_OBJECT_KEY,
                 shard_no=23,
@@ -111,7 +120,8 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
 
         assert batches >= 2
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_storage_object_key_identities "
                 "WHERE storage_object_key_sha256 = %s",
                 (orphan,),
@@ -119,14 +129,16 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_storage_object_key_segments "
                 "WHERE storage_object_key_sha256 = %s",
                 (orphan,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_storage_object_key_identities "
             "WHERE storage_object_key_sha256 = %s",
             (retained,),
@@ -136,12 +148,15 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
 
 
 def test_gallery_observation_cleanup_deletes_adapter_role_before_file_anchor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "gallery-role-gc.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "gallery-role-gc.sqlite3"))
+    )
     try:
         file_key = b"f" * 32
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "INSERT INTO catalog_gallery_observation_allocations "
@@ -176,12 +191,12 @@ def test_gallery_observation_cleanup_deletes_adapter_role_before_file_anchor(
                 (file_key,),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
 
         gate = _exclusive(connector)
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.GALLERY_OBSERVATION,
                 shard_no=29,
@@ -198,6 +213,6 @@ def test_gallery_observation_cleanup_deletes_adapter_role_before_file_anchor(
             "catalog_gallery_observation_file_artifact_role",
             "catalog_gallery_observation_file_anchors",
         ):
-            assert connector.fetch_one(f"SELECT 1 FROM {table} LIMIT 1") == ()
+            assert inspect_one(connector, f"SELECT 1 FROM {table} LIMIT 1") == ()
     finally:
         connector.close()

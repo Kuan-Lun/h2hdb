@@ -25,6 +25,10 @@ pytestmark = [
     pytest.mark.deep,
     pytest.mark.mariadb,
     pytest.mark.mariadb_server_crash,
+    pytest.mark.backend_specific(
+        backend="mariadb",
+        reason="Native MariaDB server SIGKILL and named-volume crash recovery; SQLite has no separate database server.",
+    ),
 ]
 
 _MARIADB_IMAGE = "mariadb:10.11.11"

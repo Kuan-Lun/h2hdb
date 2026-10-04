@@ -5,17 +5,26 @@ from unittest.mock import patch
 
 import pytest
 from vnext_canonical_value_fixtures import seed_canonical_value
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_foreign_key_integrity,
+    atomic_fixture,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
+from h2hdb import CoreConfig
 from h2hdb import vnext_artifact_release_repository as release_repository
 from h2hdb import vnext_identity as identity
-from h2hdb.config_loader import CoreConfig, DatabaseConfig
 from h2hdb.domain import (
     CatalogResourceKind,
     StorageObjectKey,
     VNextLibraryActivationCursor,
 )
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_artifact_release_repository import (
     ArtifactReleaseAcknowledgement,
     ArtifactReleaseCommitReceipt,
@@ -41,11 +50,11 @@ _POLICY_COMPONENT = b"p" * 32
 _POLICY_FINGERPRINT = b"f" * 32
 
 
-def _database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
-def _exclusive(connector: SQLiteConnector) -> GateLease:
+def _exclusive(connector: SQLConnector) -> GateLease:
     with (
         connector.transaction(),
         patch(
@@ -54,34 +63,35 @@ def _exclusive(connector: SQLiteConnector) -> GateLease:
         ),
     ):
         return MaintenanceGateRepository.claim_exclusive(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=1,
             lease_duration=100_000,
         )
 
 
 def _fixture_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     statements: list[tuple[str, tuple[object, ...]]],
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         for sql, parameters in statements:
             connector.execute(sql, parameters)
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 def _seed_candidate(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     reserved_revision: int,
 ) -> None:
     policy_rows: list[tuple[str, tuple[object, ...]]] = []
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT artifact_policy_id FROM catalog_artifact_policies "
-        "WHERE artifact_policy_id = 1"
+        "WHERE artifact_policy_id = 1",
     ):
         policy_rows.extend(
             [
@@ -116,7 +126,7 @@ def _seed_candidate(
 
 
 def _seed_resource(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gid: int,
     candidate_id: bytes,
@@ -148,7 +158,8 @@ def _seed_resource(
         publication_key,
     )
     statements: list[tuple[str, tuple[object, ...]]] = []
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT publication_key FROM catalog_publication_occurrence_identities "
         "WHERE revision = %s AND publication_key = %s",
         (reserved_revision, publication_key),
@@ -237,7 +248,7 @@ def _seed_resource(
 
 
 def _issue(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     *,
     cursor: bytes = b"",
@@ -246,7 +257,7 @@ def _issue(
 ) -> ArtifactReleasePage:
     with connector.transaction():
         return ArtifactReleaseRepository.issue_page(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cursor=cursor,
             page_limit=page_limit,
@@ -255,14 +266,14 @@ def _issue(
 
 
 def _commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     acknowledgement: ArtifactReleaseAcknowledgement,
     *,
     now: int,
 ) -> ArtifactReleaseCommitReceipt:
     with connector.transaction():
         return ArtifactReleaseRepository.commit_page(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             acknowledgement=acknowledgement,
             now=now,
         )
@@ -274,7 +285,7 @@ class _MonotoneAdapter:
     def __init__(
         self,
         *,
-        connector: SQLiteConnector | None = None,
+        connector: SQLConnector | None = None,
         acknowledge: bool = True,
     ) -> None:
         self.connector = connector
@@ -306,7 +317,7 @@ class _MonotoneAdapter:
 
 
 class _LoseFirstResponseAdapter(_MonotoneAdapter):
-    def __init__(self, *, connector: SQLiteConnector) -> None:
+    def __init__(self, *, connector: SQLConnector) -> None:
         super().__init__(connector=connector)
         self._lose_response = True
 
@@ -346,7 +357,8 @@ def _drain_facade_to_done(
     raise AssertionError("orphan artifact release and cleanup did not converge")
 
 
-def _seed_policy_canonical_value(connector: SQLiteConnector) -> None:
+@atomic_fixture
+def _seed_policy_canonical_value(connector: SQLConnector) -> None:
     seed_canonical_value(
         connector,
         value_sha256=_POLICY_COMPONENT,
@@ -359,10 +371,11 @@ def _seed_policy_canonical_value(connector: SQLiteConnector) -> None:
 
 
 def test_public_facade_releases_orphan_then_reaches_cleanup_fixed_point(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "facade-artifact-release.sqlite3"
-    connector = _database(database_path)
+    connector = _database(database_factory.config(str(database_path)))
     try:
         candidate_id = b"a" * 16
         _seed_policy_canonical_value(connector)
@@ -378,12 +391,7 @@ def test_public_facade_releases_orphan_then_reaches_cleanup_fixed_point(
         )
         adapter = _MonotoneAdapter(connector=connector)
         facade = VNextIngestFacade(
-            CoreConfig(
-                database=DatabaseConfig(
-                    sql_type="sqlite",
-                    database=str(database_path),
-                )
-            ),
+            database_factory.config(str(database_path)),
             clock=iter(range(10, 10_000)).__next__,
         )
 
@@ -403,23 +411,25 @@ def test_public_facade_releases_orphan_then_reaches_cleanup_fixed_point(
         assert adapter.tombstones == {token}
         assert len(adapter.calls) == 1
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT candidate_id FROM catalog_publication_candidates "
                 "WHERE candidate_id = %s",
                 (candidate_id,),
             )
             == ()
         )
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_public_facade_replays_release_after_tombstone_response_loss(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "facade-artifact-release-response-loss.sqlite3"
-    connector = _database(database_path)
+    connector = _database(database_factory.config(str(database_path)))
     try:
         candidate_id = b"a" * 16
         _seed_policy_canonical_value(connector)
@@ -435,12 +445,7 @@ def test_public_facade_replays_release_after_tombstone_response_loss(
         )
         adapter = _LoseFirstResponseAdapter(connector=connector)
         facade = VNextIngestFacade(
-            CoreConfig(
-                database=DatabaseConfig(
-                    sql_type="sqlite",
-                    database=str(database_path),
-                )
-            ),
+            database_factory.config(str(database_path)),
             clock=iter(range(10, 10_000)).__next__,
         )
 
@@ -451,7 +456,8 @@ def test_public_facade_replays_release_after_tombstone_response_loss(
                     artifact_release_adapters={adapter.adapter_id: adapter},
                 )
             assert adapter.tombstones == {token}
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT state FROM catalog_prepared_artifacts WHERE candidate_id = %s",
                 (candidate_id,),
             ) == ("PENDING",)
@@ -466,22 +472,26 @@ def test_public_facade_replays_release_after_tombstone_response_loss(
         assert adapter.calls[0] == adapter.calls[1]
         assert adapter.tombstones == {token}
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT candidate_id FROM catalog_publication_candidates "
                 "WHERE candidate_id = %s",
                 (candidate_id,),
             )
             == ()
         )
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_multi_resource_response_loss_and_commit_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "artifact-release.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "artifact-release.sqlite3"))
+    )
     try:
         candidate_id = b"a" * 16
         revision = 1
@@ -529,7 +539,7 @@ def test_multi_resource_response_loss_and_commit_replay(
         adapter = _MonotoneAdapter(connector=connector)
         first_ack = ArtifactReleaseRepository.release_page(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             page=first,
             adapters={adapter.adapter_id: adapter},
             now=4,
@@ -550,7 +560,7 @@ def test_multi_resource_response_loss_and_commit_replay(
 
         second_ack = ArtifactReleaseRepository.release_page(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             page=second,
             adapters={adapter.adapter_id: adapter},
             now=7,
@@ -570,7 +580,8 @@ def test_multi_resource_response_loss_and_commit_replay(
             replayed = _commit(connector, second_ack, now=9)
         assert replayed.replayed
         execute_affected.assert_not_called()
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT resource_kind, state FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s ORDER BY publication_key, resource_kind",
             (candidate_id,),
@@ -590,8 +601,14 @@ def test_multi_resource_response_loss_and_commit_replay(
         connector.close()
 
 
-def test_cursor_requires_a_committed_predecessor(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "artifact-release-cursor-authority.sqlite3")
+def test_cursor_requires_a_committed_predecessor(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "artifact-release-cursor-authority.sqlite3")
+        )
+    )
     try:
         candidate_id = b"a" * 16
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
@@ -615,7 +632,7 @@ def test_cursor_requires_a_committed_predecessor(tmp_path: Path) -> None:
         adapter = _MonotoneAdapter()
         acknowledgement = ArtifactReleaseRepository.release_page(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             page=page,
             adapters={adapter.adapter_id: adapter},
             now=4,
@@ -628,9 +645,12 @@ def test_cursor_requires_a_committed_predecessor(tmp_path: Path) -> None:
 
 
 def test_same_publication_resources_commit_in_typed_lock_order(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "artifact-release-lock-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "artifact-release-lock-order.sqlite3"))
+    )
     try:
         candidate_id = b"a" * 16
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
@@ -656,7 +676,7 @@ def test_same_publication_resources_commit_in_typed_lock_order(
         adapter = _MonotoneAdapter()
         acknowledgement = ArtifactReleaseRepository.release_page(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             page=page,
             adapters={adapter.adapter_id: adapter},
             now=3,
@@ -666,8 +686,12 @@ def test_same_publication_resources_commit_in_typed_lock_order(
         connector.close()
 
 
-def test_active_candidate_blocks_external_release(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "artifact-release-active.sqlite3")
+def test_active_candidate_blocks_external_release(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "artifact-release-active.sqlite3"))
+    )
     try:
         candidate_id = b"a" * 16
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
@@ -691,7 +715,7 @@ def test_active_candidate_blocks_external_release(tmp_path: Path) -> None:
         with pytest.raises(ArtifactReleaseUnavailableError):
             ArtifactReleaseRepository.release_page(
                 connector,
-                backend="sqlite",
+                backend=connector_backend(connector),
                 page=page,
                 adapters={adapter.adapter_id: adapter},
                 now=3,
@@ -702,9 +726,12 @@ def test_active_candidate_blocks_external_release(tmp_path: Path) -> None:
 
 
 def test_durably_committed_candidate_is_never_issued_or_released(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "artifact-release-published.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "artifact-release-published.sqlite3"))
+    )
     try:
         candidate_id = b"a" * 16
         _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
@@ -740,7 +767,7 @@ def test_durably_committed_candidate_is_never_issued_or_released(
         with pytest.raises(ArtifactReleaseUnavailableError):
             ArtifactReleaseRepository.release_page(
                 connector,
-                backend="sqlite",
+                backend=connector_backend(connector),
                 page=issued_before_commit,
                 adapters={adapter.adapter_id: adapter},
                 now=3,
@@ -754,10 +781,15 @@ def test_durably_committed_candidate_is_never_issued_or_released(
 
 @pytest.mark.parametrize("corruption", ("token", "segment", "blob"))
 def test_corrupt_resource_authority_fails_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _database(tmp_path / f"artifact-release-{corruption}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"artifact-release-{corruption}.sqlite3")
+        )
+    )
     try:
         candidate_id = b"a" * 16
         publication = identity.publication_key(1)
@@ -771,7 +803,7 @@ def test_corrupt_resource_authority_fails_closed(
             storage_object_sha256=b"a" * 32,
             state="PENDING",
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             match corruption:
                 case "token":
@@ -793,7 +825,7 @@ def test_corrupt_resource_authority_fails_closed(
                         (candidate_id, publication),
                     )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         gate = _exclusive(connector)
         with pytest.raises(ArtifactReleaseConflictError):
             _issue(connector, gate, now=2)
@@ -801,8 +833,12 @@ def test_corrupt_resource_authority_fails_closed(
         connector.close()
 
 
-def test_forged_page_and_noncanonical_cursor_fail_closed(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "artifact-release-forgery.sqlite3")
+def test_forged_page_and_noncanonical_cursor_fail_closed(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "artifact-release-forgery.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         with pytest.raises(TypeError, match="repository-issued"):

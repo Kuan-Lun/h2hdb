@@ -1,23 +1,29 @@
 from __future__ import annotations
 
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    trace_statements,
+)
 
 from h2hdb import (
     CoreConfig,
-    DatabaseConfig,
     StorageInstanceBinding,
     VNextDatabaseAdminFacade,
 )
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.operational_refinement import _manifest_sha256
-from h2hdb.schema_epoch import SQLiteSchemaEpochCatalog
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.schema_epoch import MariaDBSchemaEpochCatalog, SQLiteSchemaEpochCatalog
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_storage_instance_repository import (
     StorageInstanceBindingMismatchError,
     StorageInstanceBindingUnavailableError,
@@ -29,9 +35,14 @@ _FIRST_UUID = bytes.fromhex("00112233445546778899aabbccddeeff")
 _SECOND_UUID = bytes.fromhex("102132435465487798a9bacbdcedfe0f")
 
 
-def _database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    SQLiteSchemaEpochCatalog().create_control_table(connector)
+def _database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    catalog = (
+        SQLiteSchemaEpochCatalog()
+        if connector_backend(connector) == "sqlite"
+        else MariaDBSchemaEpochCatalog()
+    )
+    catalog.create_control_table(connector)
     connector.execute(
         "INSERT INTO h2hdb_schema_epoch "
         "(singleton_id, epoch, schema_version, state, manifest_sha256, "
@@ -41,7 +52,7 @@ def _database(path: Path) -> SQLiteConnector:
             ARTIFACT["epoch"],
             ARTIFACT["schema_version"],
             "READY",
-            _manifest_sha256("sqlite"),
+            _manifest_sha256(connector_backend(connector)),
             0,
             0,
         ),
@@ -49,14 +60,14 @@ def _database(path: Path) -> SQLiteConnector:
     return connector
 
 
-def _bind(connector: SQLiteConnector, value: bytes) -> StorageInstanceBinding:
+def _bind(connector: SQLConnector, value: bytes) -> StorageInstanceBinding:
     with connector.transaction():
         return VNextStorageInstanceRepository.bind(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             storage_instance_uuid=value,
             expected_epoch=int(ARTIFACT["epoch"]),
             expected_schema_version=int(ARTIFACT["schema_version"]),
-            expected_manifest_sha256=_manifest_sha256("sqlite"),
+            expected_manifest_sha256=_manifest_sha256(connector_backend(connector)),
         )
 
 
@@ -69,55 +80,56 @@ def _mutation_statements(statements: list[str]) -> tuple[str, ...]:
     )
 
 
-def test_first_bind_and_exact_replay_preserve_one_uuid(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "binding.sqlite3")
+def test_first_bind_and_exact_replay_preserve_one_uuid(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(database_factory.config(str(tmp_path / "binding.sqlite3")))
     try:
         assert _bind(connector, _FIRST_UUID) == StorageInstanceBinding(_FIRST_UUID)
         statements: list[str] = []
-        connector.connection.set_trace_callback(statements.append)
-        try:
+        with trace_statements(connector, statements):
             assert _bind(connector, _FIRST_UUID) == StorageInstanceBinding(_FIRST_UUID)
-        finally:
-            connector.connection.set_trace_callback(None)
 
         assert _mutation_statements(statements) == ()
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT singleton_id, storage_instance_uuid "
-            "FROM operational_storage_instance_bindings"
+            "FROM operational_storage_instance_bindings",
         ) == [(1, _FIRST_UUID)]
     finally:
         connector.close()
 
 
-def test_mismatch_is_zero_write(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "mismatch.sqlite3")
+def test_mismatch_is_zero_write(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(database_factory.config(str(tmp_path / "mismatch.sqlite3")))
     try:
         _bind(connector, _FIRST_UUID)
         statements: list[str] = []
-        connector.connection.set_trace_callback(statements.append)
-        try:
+        with trace_statements(connector, statements):
             with pytest.raises(
                 StorageInstanceBindingMismatchError,
                 match="different storage instance",
             ):
                 _bind(connector, _SECOND_UUID)
-        finally:
-            connector.connection.set_trace_callback(None)
 
         assert _mutation_statements(statements) == ()
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT storage_instance_uuid "
-            "FROM operational_storage_instance_bindings WHERE singleton_id = 1"
+            "FROM operational_storage_instance_bindings WHERE singleton_id = 1",
         ) == (_FIRST_UUID,)
     finally:
         connector.close()
 
 
 def test_insert_fault_rolls_back_and_retry_converges(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "fault.sqlite3")
+    connector = _database(database_factory.config(str(tmp_path / "fault.sqlite3")))
     original_execute = connector.execute
     injected = False
 
@@ -140,8 +152,9 @@ def test_insert_fault_rolls_back_and_retry_converges(
         assert str(caught.value.__cause__) == "injected response loss"
         monkeypatch.setattr(connector, "execute", original_execute)
         assert (
-            connector.fetch_all(
-                "SELECT storage_instance_uuid FROM operational_storage_instance_bindings"
+            inspect_all(
+                connector,
+                "SELECT storage_instance_uuid FROM operational_storage_instance_bindings",
             )
             == []
         )
@@ -151,10 +164,11 @@ def test_insert_fault_rolls_back_and_retry_converges(
 
 
 def test_committed_bind_with_lost_response_replays_through_fresh_connector(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "committed-response-loss.sqlite3"
-    connector = _database(path)
+    connector = _database(database_factory.config(str(path)))
     try:
         with pytest.raises(RuntimeError, match="response was lost"):
             _bind(connector, _FIRST_UUID)
@@ -162,28 +176,27 @@ def test_committed_bind_with_lost_response_replays_through_fresh_connector(
     finally:
         connector.close()
 
-    fresh = SQLiteConnector(str(path))
+    fresh = database_connector(database_factory.config(str(path)))
     fresh.connect()
     try:
         statements: list[str] = []
-        fresh.connection.set_trace_callback(statements.append)
-        try:
+        with trace_statements(fresh, statements):
             assert _bind(fresh, _FIRST_UUID) == StorageInstanceBinding(_FIRST_UUID)
-        finally:
-            fresh.connection.set_trace_callback(None)
         assert _mutation_statements(statements) == ()
     finally:
         fresh.close()
 
 
-def test_facade_rejects_manifest_drift_without_binding(tmp_path: Path) -> None:
+def test_facade_rejects_manifest_drift_without_binding(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
     path = tmp_path / "manifest-drift.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config(str(path))
     facade = VNextDatabaseAdminFacade(config)
     facade.initialize()
-    with sqlite3.connect(path) as connection:
+    with database_connector(config) as connection:
         connection.execute(
-            "UPDATE h2hdb_schema_epoch SET manifest_sha256 = ? WHERE singleton_id = 1",
+            "UPDATE h2hdb_schema_epoch SET manifest_sha256 = %s WHERE singleton_id = 1",
             (b"x" * 32,),
         )
         connection.commit()
@@ -191,17 +204,18 @@ def test_facade_rejects_manifest_drift_without_binding(tmp_path: Path) -> None:
     with pytest.raises(StorageInstanceBindingUnavailableError, match="exact READY"):
         facade.bind_storage_instance(_FIRST_UUID)
 
-    with sqlite3.connect(path) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_storage_instance_bindings"
-        ).fetchone() == (0,)
+    with database_connector(config) as connection:
+        assert inspect_one(
+            connection, "SELECT COUNT(*) FROM operational_storage_instance_bindings"
+        ) == (0,)
 
 
 def test_facade_rejects_uninitialized_database_with_typed_error(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "uninitialized.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config(str(path))
 
     with pytest.raises(
         StorageInstanceBindingUnavailableError,
@@ -209,23 +223,24 @@ def test_facade_rejects_uninitialized_database_with_typed_error(
     ):
         VNextDatabaseAdminFacade(config).bind_storage_instance(_FIRST_UUID)
 
-    with sqlite3.connect(path) as connection:
-        assert (
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-            == []
+    with database_connector(config) as connection:
+        catalog = (
+            SQLiteSchemaEpochCatalog()
+            if connector_backend(connection) == "sqlite"
+            else MariaDBSchemaEpochCatalog()
         )
+        assert catalog.list_objects(connection) == frozenset()
 
 
 def test_facade_rejects_blocked_provider_before_opening_database(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import h2hdb.vnext_schema_provider as provider_module
 
     path = tmp_path / "provider-blocked.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config(str(path))
 
     def blocked_provider(_backend: str) -> object:
         raise RuntimeError("generated provider is blocked")
@@ -240,18 +255,29 @@ def test_facade_rejects_blocked_provider_before_opening_database(
         match="schema provider is unavailable",
     ):
         VNextDatabaseAdminFacade(config).bind_storage_instance(_FIRST_UUID)
-    assert not path.exists()
+    with database_connector(config) as connection:
+        catalog = (
+            SQLiteSchemaEpochCatalog()
+            if connector_backend(connection) == "sqlite"
+            else MariaDBSchemaEpochCatalog()
+        )
+        assert catalog.list_objects(connection) == frozenset()
 
 
 @pytest.mark.parametrize("value", (b"", bytes(15), bytes(16), bytes(17)))
-def test_binding_rejects_invalid_or_nil_uuid(tmp_path: Path, value: bytes) -> None:
-    connector = _database(tmp_path / f"invalid-{len(value)}.sqlite3")
+def test_binding_rejects_invalid_or_nil_uuid(
+    database_factory: DatabaseFactory, tmp_path: Path, value: bytes
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / f"invalid-{len(value)}.sqlite3"))
+    )
     try:
         with pytest.raises(ValueError, match="storage instance UUID"):
             _bind(connector, value)
         assert (
-            connector.fetch_all(
-                "SELECT storage_instance_uuid FROM operational_storage_instance_bindings"
+            inspect_all(
+                connector,
+                "SELECT storage_instance_uuid FROM operational_storage_instance_bindings",
             )
             == []
         )
@@ -261,13 +287,13 @@ def test_binding_rejects_invalid_or_nil_uuid(tmp_path: Path, value: bytes) -> No
 
 @pytest.mark.mariadb_smoke
 def test_live_mariadb_fresh_facades_serialize_competing_first_bind(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
+    VNextDatabaseAdminFacade(db_config).initialize()
     barrier = Barrier(2)
 
     def propose(value: bytes) -> bytes | StorageInstanceBindingMismatchError:
-        facade = VNextDatabaseAdminFacade(mariadb_config)
+        facade = VNextDatabaseAdminFacade(db_config)
         barrier.wait(timeout=10)
         try:
             return facade.bind_storage_instance(value).storage_instance_uuid
@@ -292,9 +318,9 @@ def test_live_mariadb_fresh_facades_serialize_competing_first_bind(
     assert len(winners) == len(mismatches) == 1
     assert winners[0] in {_FIRST_UUID, _SECOND_UUID}
     assert (
-        VNextDatabaseAdminFacade(mariadb_config)
+        VNextDatabaseAdminFacade(db_config)
         .bind_storage_instance(winners[0])
         .storage_instance_uuid
         == winners[0]
     )
-    VNextDatabaseAdminFacade(mariadb_config).check()
+    VNextDatabaseAdminFacade(db_config).check()
