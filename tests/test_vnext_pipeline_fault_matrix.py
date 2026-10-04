@@ -12,21 +12,27 @@ database:
   same turn to completion, the full production READY audit passes, and the
   public catalog and the reader-visible library equal the fault-free result.
 
-SQLite runs the complete matrix; the live MariaDB variant runs a deterministic
-sample of the same points on a fresh database per point.
+Both native backends run the complete matrix from isolated prefix snapshots.
+A separate real-clock case also samples later revisions after expired leases.
 """
 
 from __future__ import annotations
 
 import copy
-import shutil
+import pickle
 import time
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
-from pathlib import Path
+from hashlib import sha256
 from typing import Any
 
 import pytest
+from vnext_database_snapshot import (
+    ReusableDatabaseSnapshot,
+    clone_database,
+    database_digest,
+)
 from vnext_fault_harness import (
     MAINTENANCE_GATE_TABLES,
     FaultInjector,
@@ -52,10 +58,10 @@ from vnext_pipeline import (
     stored_objects,
     takeover_clock,
 )
+from vnext_test_database import DatabaseFactory
 
 from h2hdb import (
     CoreConfig,
-    DatabaseConfig,
     VNextDownloadQueueFacade,
     VNextIngestFacade,
 )
@@ -113,7 +119,8 @@ class Scenario:
         for _ in range(self.prefix_turns):
             _turn(config, source, library, clock=Clock())
         if self.deletion_request:
-            VNextDownloadQueueFacade(config, clock=Clock()).request_deletion(1001)
+            with closing(VNextDownloadQueueFacade(config, clock=Clock())) as queue:
+                queue.request_deletion(1001)
         if self.mutate is not None:
             self.mutate(source)
         return source, library
@@ -161,41 +168,61 @@ def _reference(
     )
 
 
-def _sqlite_config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+class _Baseline:
+    """Restore the same immutable prefix before every complete fault replay.
 
+    SQLite's native backup remains inexpensive. MariaDB reuses one owned
+    target's DDL, rejecting schema drift before restoring every table. Public
+    facades are still reopened for each fault and its restart; only fixture
+    allocation changes, never mutation ordinals or the rollback/READY oracles.
+    """
 
-class _SQLiteBaseline:
-    """Prefix state on disk, copied for every fault point."""
-
-    def __init__(self, tmp_path: Path, scenario: Scenario) -> None:
-        self.root = tmp_path
-        self.baseline = tmp_path / "baseline.sqlite3"
-        self.scenario = scenario
-        self.source, self.library = scenario.build_prefix(_sqlite_config(self.baseline))
+    def __init__(self, databases: DatabaseFactory, scenario: Scenario) -> None:
+        self.databases = databases
+        self.baseline = databases.config("fault-baseline")
+        self.source, self.library = scenario.build_prefix(self.baseline)
         self._copies = 0
+        self._names: dict[str, str] = {}
+        self._reusable = (
+            ReusableDatabaseSnapshot(
+                databases, self.baseline, databases.config("fault-replay")
+            )
+            if databases.backend == "mariadb"
+            else None
+        )
+        self._original_database = database_digest(self.baseline)
+        self._original_adapters = self._adapter_digest()
+
+    def _adapter_digest(self) -> bytes:
+        # These memory adapters are trusted fixture objects, never external
+        # pickles. Preservation assumes SHA-256 collision resistance, while
+        # each fault's rollback oracle still compares exact database rows.
+        return sha256(pickle.dumps((self.source, self.library))).digest()
+
+    def assert_preserved(self) -> None:
+        assert database_digest(self.baseline) == self._original_database
+        assert self._adapter_digest() == self._original_adapters
 
     def fresh_copy(self) -> tuple[CoreConfig, MemorySource, MemoryLibrary]:
-        self._copies += 1
-        path = self.root / f"point-{self._copies}.sqlite3"
-        shutil.copyfile(self.baseline, path)
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = Path(str(self.baseline) + suffix)
-            if sidecar.exists():
-                shutil.copyfile(sidecar, Path(str(path) + suffix))
+        if self._reusable is None:
+            self._copies += 1
+            name = f"point-{self._copies}"
+            config = self.databases.config(name)
+            self._names[config.database.database] = name
+            clone_database(self.baseline, config)
+        else:
+            config = self._reusable.restore()
         source = copy.deepcopy(self.source)
         library = copy.deepcopy(self.library)
         library.source = source
-        return _sqlite_config(path), source, library
+        return config, source, library
 
     def discard(self, config: CoreConfig) -> None:
-        path = Path(config.database.database)
-        for candidate in (
-            path,
-            *(Path(str(path) + s) for s in ("-wal", "-shm", "-journal")),
-        ):
-            if candidate.exists():
-                candidate.unlink()
+        if self._reusable is None:
+            self.databases.release(self._names.pop(config.database.database))
+        else:
+            assert config is self._reusable.target
+            self.databases.close_connections(config)
 
 
 def _run_point(
@@ -245,13 +272,13 @@ def _points_for_bucket(
 @pytest.mark.parametrize("scenario_name", sorted(SCENARIOS))
 @pytest.mark.parametrize("bucket", range(BUCKETS))
 def test_sqlite_every_transaction_shape_rolls_back_exactly_and_replays_to_the_same_catalog(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
     scenario_name: str,
     bucket: int,
 ) -> None:
     scenario = SCENARIOS[scenario_name]
-    baseline = _SQLiteBaseline(tmp_path, scenario)
+    baseline = _Baseline(database_factory, scenario)
 
     # Fault-free reference and the exact transaction record of the target turn.
     config, source, library = baseline.fresh_copy()
@@ -289,6 +316,7 @@ def test_sqlite_every_transaction_shape_rolls_back_exactly_and_replays_to_the_sa
     }
     assert {shape for _kind, shape in covered} == expected_shapes
     assert {kind for kind, _shape in covered} == {"before_mutation", "after_commit"}
+    baseline.assert_preserved()
 
 
 # Live MariaDB turns take several times longer than SQLite ones; the lease
@@ -329,7 +357,7 @@ def _sample_points(points: Sequence[FaultPoint], count: int) -> list[FaultPoint]
 
 
 def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Six sampled mutation ordinals (statement faults and lost commit
@@ -338,10 +366,10 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
     revision proves exact rollback (row locks, CAS and rollback on InnoDB) and
     converges after an expired-lease takeover on the real clock."""
 
-    initialize_database(mariadb_config)
+    initialize_database(db_config)
     source = MemorySource(_fresh_corpus())
     library = MemoryLibrary(source)
-    _turn(mariadb_config, source, library, clock=Clock())
+    _turn(db_config, source, library, clock=Clock())
 
     def revise(index: int) -> None:
         source.put(
@@ -350,7 +378,7 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
 
     revise(0)
     dry_run = count_mutations(
-        monkeypatch, lambda: _turn(mariadb_config, source, library, clock=Clock())
+        monkeypatch, lambda: _turn(db_config, source, library, clock=Clock())
     )
     points = fault_points(dry_run)
     assert len(transaction_shapes(dry_run)) >= 20
@@ -362,22 +390,22 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
         # real production transaction of the same turn.
         injector, pre_transaction = run_fault_point(
             monkeypatch,
-            config=mariadb_config,
+            config=db_config,
             point=point,
-            workflow=lambda: _short_lease_turn(mariadb_config, source, library),
+            workflow=lambda: _short_lease_turn(db_config, source, library),
             capture_every_transaction=True,
         )
         assert injector.fired is not None, point
         if point.kind == "before_mutation":
             assert_exact_rollback(
-                mariadb_config,
+                db_config,
                 pre_transaction,
                 compensation_tables=MAINTENANCE_GATE_TABLES,
             )
         time.sleep(SHORT_LEASE_MICROSECONDS / 1_000_000 + 0.5)
-        _turn(mariadb_config, source, library, clock=Clock())
-        assert full_check(mariadb_config).state == "READY", point
-        assert catalog_view(mariadb_config)["publication_count"] == len(
-            source.galleries
-        ), point
+        _turn(db_config, source, library, clock=Clock())
+        assert full_check(db_config).state == "READY", point
+        assert catalog_view(db_config)["publication_count"] == len(source.galleries), (
+            point
+        )
         assert library.staging == {}, point
