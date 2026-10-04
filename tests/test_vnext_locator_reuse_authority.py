@@ -19,8 +19,10 @@ from test_vnext_source_build_runtime_repository import (
     _upload,
     _working_build_id,
 )
+from vnext_test_database import DatabaseFactory, connector_backend, inspect_one
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueRepository,
@@ -45,7 +47,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 @dataclass
 class _Scenario:
     probe: ModuleType
-    connector: SQLiteConnector
+    connector: SQLConnector
     gate: GateLease
     turn: IngestTurn
     batch: DiscoveryBatch
@@ -55,7 +57,9 @@ class _Scenario:
     def claim(self) -> None:
         with self.connector.transaction():
             CanonicalValueRepository.allocate(
-                VNextUnitOfWork(self.connector, backend="sqlite"),
+                VNextUnitOfWork(
+                    self.connector, backend=connector_backend(self.connector)
+                ),
                 gate_lease=self.gate,
                 ingest_turn=self.turn,
                 plan=self.upload,
@@ -66,7 +70,7 @@ class _Scenario:
         self, *, turn: IngestTurn | None = None
     ) -> ResolvedDiscoveryLocator | None:
         result = self.probe.reuse_discovery_locator(
-            VNextUnitOfWork(self.connector, backend="sqlite"),
+            VNextUnitOfWork(self.connector, backend=connector_backend(self.connector)),
             gate_lease=self.gate,
             ingest_turn=self.turn if turn is None else turn,
             batch=self.batch,
@@ -84,7 +88,8 @@ class _Scenario:
 
     def has_claim(self) -> bool:
         return bool(
-            self.connector.fetch_one(
+            inspect_one(
+                self.connector,
                 "SELECT generation FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
                 (self.turn.generation, self.upload.value_sha256),
@@ -114,9 +119,9 @@ def probe() -> ModuleType:
 
 @contextmanager
 def _open_scenario(
-    tmp_path: Path, probe: ModuleType, locator: tuple[str, ...]
+    config: CoreConfig, probe: ModuleType, locator: tuple[str, ...]
 ) -> Iterator[_Scenario]:
-    connector = _generated_database(tmp_path / "locator-reuse.sqlite3")
+    connector = _generated_database(config)
     locators = (locator,)
     try:
         summary = _frozen_fixture_summary(
@@ -129,17 +134,18 @@ def _open_scenario(
             connector, command=_snapshot_command((), summary)
         )
         with SourceDiscoveryPlan.from_locators(locators) as plan:
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
+            with connector.read_transaction():
+                issued = SourceBuildRepository.issue_discovery_batch(
                     connector, build_id=_working_build_id(connector), plan=plan
-                ),
-                plan=plan,
-            )
+                )
+            batch = SourceBuildRepository.prepare_discovery_batch(issued, plan=plan)
             with plan.prepare_locator_upload(batch.locators[0]) as original:
                 _upload(connector, gate, turn, original, now=30)
                 with connector.transaction():
                     initial = SourceBuildRepository.resolve_discovery_locator(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         batch=batch,
@@ -158,8 +164,12 @@ def _open_scenario(
 
 
 @pytest.fixture
-def scenario(tmp_path: Path, probe: ModuleType) -> Iterator[_Scenario]:
-    with _open_scenario(tmp_path, probe, ("collection", "gallery")) as result:
+def scenario(
+    database_factory: DatabaseFactory, probe: ModuleType
+) -> Iterator[_Scenario]:
+    with _open_scenario(
+        database_factory.config("reuse"), probe, ("collection", "gallery")
+    ) as result:
         yield result
 
 
@@ -175,11 +185,11 @@ def _locator_with_payload_size(size: int) -> tuple[str, ...]:
 
 @pytest.mark.parametrize("payload_size", [32767, 32768, 32769])
 def test_single_page_capacity_boundary_and_repeated_reuse_preserve_authority(
-    tmp_path: Path, probe: ModuleType, payload_size: int
+    database_factory: DatabaseFactory, probe: ModuleType, payload_size: int
 ) -> None:
     original_resolve = SourceBuildRepository.resolve_discovery_locator
     locator = _locator_with_payload_size(payload_size)
-    with _open_scenario(tmp_path, probe, locator) as scenario:
+    with _open_scenario(database_factory.config("reuse"), probe, locator) as scenario:
         assert scenario.upload.byte_count == payload_size
         for _ in range(3):
             scenario.claim()
@@ -200,7 +210,10 @@ def test_single_page_capacity_boundary_and_repeated_reuse_preserve_authority(
                 )
                 with scenario.connector.transaction():
                     reused = original_resolve(
-                        VNextUnitOfWork(scenario.connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            scenario.connector,
+                            backend=connector_backend(scenario.connector),
+                        ),
                         gate_lease=scenario.gate,
                         ingest_turn=scenario.turn,
                         batch=scenario.batch,
@@ -212,10 +225,11 @@ def test_single_page_capacity_boundary_and_repeated_reuse_preserve_authority(
             assert reused.gallery_id == scenario.initial.gallery_id
             assert reused.gallery_key == scenario.initial.gallery_key
             assert not scenario.has_claim()
-            assert scenario.connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_gallery_identities"
+            assert inspect_one(
+                scenario.connector, "SELECT COUNT(*) FROM catalog_gallery_identities"
             ) == (1,)
-            assert scenario.connector.fetch_one(
+            assert inspect_one(
+                scenario.connector,
                 "SELECT COUNT(*) FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
                 (scenario.upload.value_sha256,),
@@ -295,10 +309,11 @@ def test_reuse_consumes_existing_claim_atomically_and_replays_response_loss(
     assert first == committed == replay
     assert replay.replayed
     assert replay.gallery_id == scenario.initial.gallery_id
-    assert scenario.connector.fetch_one(
-        "SELECT COUNT(*) FROM catalog_gallery_identities"
+    assert inspect_one(
+        scenario.connector, "SELECT COUNT(*) FROM catalog_gallery_identities"
     ) == (1,)
-    assert scenario.connector.fetch_one(
+    assert inspect_one(
+        scenario.connector,
         "SELECT COUNT(*) FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (scenario.upload.value_sha256,),

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_one,
+)
 
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_transaction import (
@@ -25,13 +29,16 @@ def test_lock_keys_are_typed_length_framed_and_orderable() -> None:
         encode_lock_key(True)
 
 
-def test_lock_order_rejects_rank_and_same_rank_inversions(tmp_path: Path) -> None:
-    connector = SQLiteConnector(database=str(tmp_path / "locks.sqlite3"))
+def test_lock_order_rejects_rank_and_same_rank_inversions(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = database_connector(database_factory.config())
     with connector:
         connector.execute("CREATE TABLE authority (id INTEGER PRIMARY KEY)")
-        connector.execute("INSERT INTO authority VALUES (%s)", (1,))
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            connector.execute("INSERT INTO authority VALUES (%s)", (1,))
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             assert work.lock_row(
                 LockRank.INGEST_FENCE,
                 encode_lock_key(1),
@@ -53,7 +60,7 @@ def test_lock_order_rejects_rank_and_same_rank_inversions(tmp_path: Path) -> Non
                 )
 
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             work.lock_row(
                 LockRank.HEAD,
                 encode_lock_key("b"),
@@ -69,32 +76,35 @@ def test_lock_order_rejects_rank_and_same_rank_inversions(tmp_path: Path) -> Non
                 )
 
 
-def test_compare_and_swap_is_exact_and_transactional(tmp_path: Path) -> None:
-    connector = SQLiteConnector(database=str(tmp_path / "cas.sqlite3"))
+def test_compare_and_swap_is_exact_and_transactional(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = database_connector(database_factory.config())
     with connector:
         connector.execute(
-            "CREATE TABLE allocator (stream TEXT PRIMARY KEY, next_id INTEGER)"
+            "CREATE TABLE allocator (stream VARCHAR(32) PRIMARY KEY, next_id INTEGER)"
         )
-        connector.execute("INSERT INTO allocator VALUES (%s, %s)", ("GALLERY", 1))
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            connector.execute("INSERT INTO allocator VALUES (%s, %s)", ("GALLERY", 1))
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             work.compare_and_swap(
                 "UPDATE allocator SET next_id = %s WHERE stream = %s AND next_id = %s",
                 (2, "GALLERY", 1),
                 authority="gallery allocator",
             )
-        assert connector.fetch_one("SELECT next_id FROM allocator") == (2,)
+        assert inspect_one(connector, "SELECT next_id FROM allocator") == (2,)
 
         with pytest.raises(StaleWriteError):
             with connector.transaction():
-                work = VNextUnitOfWork(connector, backend="sqlite")
+                work = VNextUnitOfWork(connector, backend=connector_backend(connector))
                 work.compare_and_swap(
                     "UPDATE allocator SET next_id = %s "
                     "WHERE stream = %s AND next_id = %s",
                     (3, "GALLERY", 1),
                     authority="gallery allocator",
                 )
-        assert connector.fetch_one("SELECT next_id FROM allocator") == (2,)
+        assert inspect_one(connector, "SELECT next_id FROM allocator") == (2,)
 
 
 def test_mariadb_lock_query_is_emitted_with_for_update() -> None:
