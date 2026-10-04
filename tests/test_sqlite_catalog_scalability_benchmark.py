@@ -9,11 +9,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.backend_specific(
-    backend="sqlite",
-    reason="This CLI exports a standalone SQLite file and receipt; its native catalog seed/read contract is separately exercised on MariaDB by the shared integration fixtures",
-)
-
 _ROOT = Path(__file__).resolve().parents[1]
 _BENCHMARK = _ROOT / "benchmarks" / "sqlite_catalog_scalability.py"
 _SMOKE_PUBLICATION_COUNT = 165
@@ -41,6 +36,10 @@ def _run_benchmark(
     )
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This export CLI owns a standalone SQLite file and exact file-bound receipt; portable catalog bundle semantics and call budgets are paired separately.",
+)
 def test_sqlite_catalog_scalability_smoke_profile(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     receipt_path = tmp_path / "receipt.json"
@@ -73,28 +72,6 @@ def test_sqlite_catalog_scalability_smoke_profile(tmp_path: Path) -> None:
     assert receipt["expected"]["search"]["cursor_page_gids"]
     assert all(receipt["expected"]["facets"].values())
 
-    first = receipt["timing"]["catalog_bundle_first_after_build"]
-    warm = receipt["timing"]["catalog_bundle_warm"]
-    cursor = receipt["timing"]["catalog_bundle_cursor_page"]
-    reference = receipt["timing"]["catalog_separate_facade_reference"]
-    memory = receipt["timing"]["catalog_bundle_memory_probe"]
-    assert first["result_sha256"] == warm["result_sha256"]
-    assert first["result_sha256"] == reference["result_sha256"]
-    assert first["result_sha256"] == memory["result_sha256"]
-    assert first["connection_count"] == 1
-    assert first["read_transaction_count"] == 2
-    assert first["logical_query_count"] <= 64
-    assert sum(first["query_class_counts"].values()) == first["logical_query_count"]
-    assert (
-        sum(shape["count"] for shape in first["query_shapes"])
-        == first["logical_query_count"]
-    )
-    assert cursor["returned_publication_count"] > 0
-    assert reference["connection_count"] == 4
-    assert reference["read_transaction_count"] == 8
-    assert memory["python_traced_peak_bytes"] > 0
-    assert memory["result_json_bytes"] > 0
-
     assert receipt["source_provenance"]["project_version"] == receipt["core_version"]
     assert len(receipt["source_provenance"]["source_manifest_sha256"]) == 64
     assert len(receipt["fixture_contract_sha256"]) == 64
@@ -124,6 +101,10 @@ def test_sqlite_catalog_scalability_smoke_profile(tmp_path: Path) -> None:
     assert catalog_revision == (1,)
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This export CLI owns a standalone SQLite file and exact file-bound receipt; portable catalog bundle semantics and call budgets are paired separately.",
+)
 def test_sqlite_catalog_scalability_rejects_existing_targets(
     tmp_path: Path,
 ) -> None:
@@ -139,6 +120,10 @@ def test_sqlite_catalog_scalability_rejects_existing_targets(
     assert not receipt_path.exists()
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This export CLI owns a standalone SQLite file and exact file-bound receipt; portable catalog bundle semantics and call budgets are paired separately.",
+)
 def test_sqlite_catalog_scalability_does_not_create_target_parents(
     tmp_path: Path,
 ) -> None:
