@@ -19,6 +19,7 @@ from vnext_pipeline import (
     run_analysis,
     run_publication,
 )
+from vnext_test_database import inspect_one
 
 from h2hdb import CoreConfig, VNextIngestFacade
 from h2hdb.schema_epoch import SchemaEpochValidationError
@@ -62,7 +63,8 @@ def test_collection_ready_checks_reject_descriptor_policy_and_consumption_gaps(
         assert full_check(db_config).state == "READY"
         with closing(open_connector(db_config)) as connector:
             with connector.read_transaction():
-                collection_id = connector.fetch_one(
+                collection_id = inspect_one(
+                    connector,
                     "SELECT collection_id FROM catalog_source_collection_consumptions WHERE build_id = %s",
                     (receipt.build_id,),
                 )[0]
@@ -128,8 +130,9 @@ def test_collection_staging_rejects_missing_and_dual_owners(
                 local = facade.prepare_source_step(prepared, issued)
                 facade.commit_source_step(session, local)
                 with connector.read_transaction():
-                    row = connector.fetch_one(
-                        "SELECT staging_id FROM operational_gallery_staging_collections LIMIT 1"
+                    row = inspect_one(
+                        connector,
+                        "SELECT staging_id FROM operational_gallery_staging_collections LIMIT 1",
                     )
                 if row:
                     break
@@ -161,7 +164,7 @@ def test_collection_staging_rejects_missing_and_dual_owners(
 
 
 def test_cleanup_proof_is_once_per_validation_and_rejects_repeated_audit_mutant(
-    sqlite_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from test_source_collection_cleanup import (
         _advance,
@@ -174,19 +177,19 @@ def test_cleanup_proof_is_once_per_validation_and_rejects_repeated_audit_mutant(
     from h2hdb.source_collection_refinement import _CleanupAudit
     from h2hdb.vnext_cleanup_repository import CleanupTargetKind
 
-    _one_gallery(sqlite_config)
+    _one_gallery(db_config)
     with (
-        _source_batch_clock(sqlite_config) as clock,
-        closing(open_connector(sqlite_config)) as connector,
+        _source_batch_clock(db_config) as clock,
+        closing(open_connector(db_config)) as connector,
     ):
         now = clock() + 10**10
-        gate = _exclusive(connector, sqlite_config, now)
-        collection = connector.fetch_one(
-            "SELECT collection_id FROM catalog_source_collections"
+        gate = _exclusive(connector, db_config, now)
+        collection = inspect_one(
+            connector, "SELECT collection_id FROM catalog_source_collections"
         )[0]
         cycle = _begin(
             connector,
-            sqlite_config,
+            db_config,
             gate,
             CleanupTargetKind.SOURCE_COLLECTION,
             collection[0],
@@ -195,9 +198,10 @@ def test_cleanup_proof_is_once_per_validation_and_rejects_repeated_audit_mutant(
         generation = 1
         for step in range(64):
             result = _advance(
-                connector, sqlite_config, gate, cycle, generation, now=now + step + 2
+                connector, db_config, gate, cycle, generation, now=now + step + 2
             )
-            current = connector.fetch_one(
+            current = inspect_one(
+                connector,
                 "SELECT phase FROM operational_cleanup_checkpoints WHERE cleanup_id = %s AND state = 'OPEN'",
                 (cycle.cleanup_id,),
             )

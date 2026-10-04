@@ -8,7 +8,6 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
@@ -20,6 +19,7 @@ from vnext_pipeline import (
     ingest_policy,
     initialize_database,
 )
+from vnext_test_database import DatabaseFactory, set_foreign_key_checks
 
 import h2hdb.vnext_cleanup_repository as cleanup
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
@@ -380,7 +380,7 @@ def test_idle_cleanup_and_claim_identify_slow_empty_candidate_at_info(
 @pytest.mark.parametrize("file_count", [127, 128, 129])
 @pytest.mark.parametrize("remove_derived_scope", [False, True])
 def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     file_count: int,
@@ -395,10 +395,10 @@ def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
     from h2hdb import catalog_refinement
     from h2hdb.database_performance import DatabaseSpan, database_phase
 
-    connector = _generated_catalog_database(tmp_path / "role-measurements.sqlite3")
+    connector = _generated_catalog_database(database_factory.config())
     performance = DatabasePerformance(
         logging.getLogger("h2hdb.database_performance"),
-        backend="sqlite",
+        backend=database_factory.backend,
         level=logging.DEBUG,
     )
     if remove_derived_scope:
@@ -414,7 +414,7 @@ def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
 
         monkeypatch.setattr(catalog_refinement, "database_phase", remove_scope)
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         for ordinal in range(file_count):
             _insert_retained_file_family(
                 connector,
@@ -428,7 +428,7 @@ def test_role_stream_diagnostics_cover_page_boundaries_and_empty_tail(
             "VALUES (1, 1, %s, %s)",
             (b"f" * 32, file_count),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         with caplog.at_level(logging.DEBUG, logger="h2hdb.database_performance"):
             with performance.operation("role_probe"):
                 catalog_refinement.check_role_derivation_v1(

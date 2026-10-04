@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import ExitStack
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -11,8 +12,10 @@ from typing import BinaryIO
 import pytest
 import test_catalog_plan_preparation_performance as canonical_fixture
 import test_catalog_refinement_runtime as catalog_fixture
+from vnext_test_database import DatabaseFactory, trace_statements
 
 from h2hdb import catalog_refinement, vnext_identity
+from h2hdb.sqlite_connector import SQLiteConnector
 
 ROOT = Path(__file__).resolve().parents[1]
 DOMAIN = b"tag_value_utf8_v1"
@@ -221,7 +224,7 @@ def test_lean_cost_execution_matches_runtime_and_independent_recency_oracle(
         )
     # The CLI's per-miss cost of 3 is symbolic, including failed and multileaf
     # events. Only the separate successful single-leaf SQL test identifies these
-    # units with physical statements; this trace does not extend that premise.
+    # units with native connector SQL calls; this trace does not extend that premise.
     # Compile once for all three independent scenarios to respect the merge
     # profile's shared deadline; each scenario still starts with an empty cache.
     completed = subprocess.run(
@@ -404,8 +407,11 @@ def test_domain_and_snapshot_scope_cannot_reuse_an_unrelated_validation() -> Non
     assert first.open(event.key.to_bytes(32, "big"), b"source_title_utf8_v1") is None
 
 
-def test_real_sql_single_leaf_cost_tracks_threshold_misses(tmp_path: Path) -> None:
-    connector = catalog_fixture._generated_catalog_database(tmp_path / "cost.sqlite3")
+def test_real_sql_single_leaf_cost_tracks_threshold_misses(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = catalog_fixture._generated_catalog_database(database_factory.config())
+    tracing = ExitStack()
     try:
         with connector.transaction():
             payloads = tuple(
@@ -417,13 +423,20 @@ def test_real_sql_single_leaf_cost_tracks_threshold_misses(tmp_path: Path) -> No
             )
         connector.begin_read()
         queries: list[str] = []
-        connector.connection.set_trace_callback(queries.append)
+        tracing.enter_context(trace_statements(connector, queries))
+        # Connector SQL calls are portable. SQLite additionally retains its
+        # original native statement trace oracle, not a simulated MariaDB VM.
+        physical: list[str] = []
+        if isinstance(connector, SQLiteConnector):
+            connector.connection.set_trace_callback(physical.append)
+            tracing.callback(connector.connection.set_trace_callback, None)
         for working_set in WORKING_SETS:
             cache = catalog_refinement._CanonicalValidationCache()
             misses = 0
             for _lap in range(LAPS):
                 for key in range(working_set):
                     queries.clear()
+                    physical.clear()
                     spool, count = catalog_refinement._validated_canonical_spool(
                         connector,
                         digests[key],
@@ -436,6 +449,8 @@ def test_real_sql_single_leaf_cost_tracks_threshold_misses(tmp_path: Path) -> No
                     assert count == len(payloads[key])
                     expected_miss = _lap == 0
                     assert len(queries) == (3 if expected_miss else 0)
+                    if isinstance(connector, SQLiteConnector):
+                        assert len(physical) == len(queries)
                     assert all(
                         query.lstrip().startswith(("SELECT", "WITH"))
                         for query in queries
@@ -443,15 +458,16 @@ def test_real_sql_single_leaf_cost_tracks_threshold_misses(tmp_path: Path) -> No
                     misses += expected_miss
             assert misses == working_set
     finally:
-        connector.connection.set_trace_callback(None)
+        tracing.close()
         connector.rollback()
         connector.close()
 
 
 def test_real_sql_failure_and_multileaf_bypass_are_separate_cost_regimes(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = catalog_fixture._generated_catalog_database(tmp_path / "shapes.sqlite3")
+    connector = catalog_fixture._generated_catalog_database(database_factory.config())
+    tracing = ExitStack()
     try:
         payload = b"z" * (MAX_VALUE_BYTES + 1)
         with connector.transaction():
@@ -464,10 +480,17 @@ def test_real_sql_failure_and_multileaf_bypass_are_separate_cost_regimes(
         connector.begin_read()
         cache = catalog_refinement._CanonicalValidationCache()
         queries: list[str] = []
-        connector.connection.set_trace_callback(queries.append)
+        tracing.enter_context(trace_statements(connector, queries))
+        # Connector SQL calls are portable. SQLite additionally retains its
+        # original native statement trace oracle, not a simulated MariaDB VM.
+        physical: list[str] = []
+        if isinstance(connector, SQLiteConnector):
+            connector.connection.set_trace_callback(physical.append)
+            tracing.callback(connector.connection.set_trace_callback, None)
         costs: list[int] = []
         for _lap in range(LAPS):
             queries.clear()
+            physical.clear()
             spool, count = catalog_refinement._validated_canonical_spool(
                 connector,
                 digest,
@@ -481,11 +504,14 @@ def test_real_sql_failure_and_multileaf_bypass_are_separate_cost_regimes(
             assert cache._byte_count == 0
             assert not cache._values
             costs.append(len(queries))
+            if isinstance(connector, SQLiteConnector):
+                assert len(physical) == len(queries)
         assert costs[0] > 3
         assert costs == [costs[0]] * LAPS
 
         for _lap in range(LAPS):
             queries.clear()
+            physical.clear()
             with pytest.raises(
                 catalog_refinement.CatalogSemanticValidationError,
                 match="wrong domain",
@@ -498,9 +524,11 @@ def test_real_sql_failure_and_multileaf_bypass_are_separate_cost_regimes(
                     cache=cache,
                 )
             assert len(queries) == 3
+            if isinstance(connector, SQLiteConnector):
+                assert len(physical) == len(queries)
             assert not cache._values
     finally:
-        connector.connection.set_trace_callback(None)
+        tracing.close()
         connector.rollback()
         connector.close()
 

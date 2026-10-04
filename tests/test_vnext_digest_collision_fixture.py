@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -23,6 +22,7 @@ import pytest
 from test_vnext_hash_cache_repository import _authorities, _database, _put, _ready_build
 from vnext_fault_harness import (
     EPOCH_CONTROL_TABLE,
+    backend_of,
     physical_tables,
     snapshot_database,
     snapshot_difference,
@@ -35,6 +35,7 @@ from vnext_pipeline import (
     initialize_database,
     run_ingest_turn,
 )
+from vnext_test_database import DatabaseFactory
 
 import h2hdb.domain as domain_module
 import h2hdb.vnext_artifact_presentation as presentation_module
@@ -43,7 +44,7 @@ import h2hdb.vnext_gallery_staging_repository as staging_module
 import h2hdb.vnext_hash_cache_repository as hash_cache_module
 import h2hdb.vnext_identity as identity_module
 import h2hdb.vnext_source_observation_spool as spool_module
-from h2hdb import CoreConfig, DatabaseConfig, VNextIngestFacade
+from h2hdb import CoreConfig, VNextIngestFacade
 from h2hdb.vnext_canonical_value_family import load_sealed_value_identity
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
@@ -127,25 +128,21 @@ def test_collision_fixture_identifies_exactly_the_two_markers(
     assert marked.digest() == hashlib.sha256(b"x" + MARKER_A + b"y").digest()
 
 
-def _config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-
-
-_DATA_TABLES = tuple(
-    table for table in physical_tables("sqlite") if table != EPOCH_CONTROL_TABLE
-)
-
-
-def _snapshot(path: Path) -> dict[str, tuple[tuple[Any, ...], ...]]:
-    return snapshot_database(_config(path), tables=_DATA_TABLES)
+def _snapshot(config: CoreConfig) -> dict[str, tuple[tuple[Any, ...], ...]]:
+    tables = tuple(
+        table
+        for table in physical_tables(backend_of(config))
+        if table != EPOCH_CONTROL_TABLE
+    )
+    return snapshot_database(config, tables=tables)
 
 
 def test_canonical_value_upload_fails_closed_on_a_digest_collision(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     colliding_digest: None,
 ) -> None:
-    path = tmp_path / "canonical-collision.sqlite3"
-    connector = _database(path)
+    config = database_factory.config()
+    connector = _database(config)
     plan_a = CanonicalValueUploadPlan.from_parts(
         "tag_value_utf8_v1", (b"tag-", MARKER_A, b"-value")
     )
@@ -158,17 +155,20 @@ def test_canonical_value_upload_fails_closed_on_a_digest_collision(
         gate, turn = _authorities(connector)
         _ready_build(connector, gate, turn)
         _put(connector, gate, turn, plan_a, start=40)
-        sealed = load_sealed_value_identity(connector, value_sha256=plan_a.value_sha256)
+        with connector.read_transaction():
+            sealed = load_sealed_value_identity(
+                connector, value_sha256=plan_a.value_sha256
+            )
         assert sealed is not None
-        before = _snapshot(path)
+        before = _snapshot(config)
         with pytest.raises(CanonicalValueCollisionError):
             _put(connector, gate, turn, plan_b, start=50)
-        assert snapshot_difference(before, _snapshot(path)) == {}
+        assert snapshot_difference(before, _snapshot(config)) == {}
         # Streaming the sealed identity back returns exactly payload A.
         parts: list[bytes] = []
         with connector.read_transaction():
             receipt = CanonicalValueRepository.stream_and_validate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=config.database.sql_type),
                 value_sha256=plan_a.value_sha256,
                 consume_provisional=parts.append,
             )
@@ -181,11 +181,11 @@ def test_canonical_value_upload_fails_closed_on_a_digest_collision(
 
 
 def test_file_name_identity_fails_closed_on_a_file_key_collision(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     colliding_digest: None,
 ) -> None:
-    path = tmp_path / "file-name-collision.sqlite3"
-    connector = _database(path)
+    config = database_factory.config()
+    connector = _database(config)
     try:
         name_a = MARKER_A + b".png"
         name_b = MARKER_B + b".png"
@@ -195,25 +195,26 @@ def test_file_name_identity_fails_closed_on_a_file_key_collision(
         second = FileNameIdentity(key, name_b, identity_module.file_role(name_b))
         with connector.transaction():
             ensure_file_name_identities(connector, identities=(first,))
-        before = _snapshot(path)
+        before = _snapshot(config)
         with pytest.raises(CatalogIdentityCollisionError):
             with connector.transaction():
                 ensure_file_name_identities(connector, identities=(second,))
-        assert snapshot_difference(before, _snapshot(path)) == {}
+        assert snapshot_difference(before, _snapshot(config)) == {}
         with pytest.raises(CatalogIdentityCollisionError):
-            ensure_file_name_identities(connector, identities=(first, second))
+            with connector.transaction():
+                ensure_file_name_identities(connector, identities=(first, second))
     finally:
         connector.close()
 
 
 def test_gallery_observation_page_fails_closed_on_a_page_digest_collision(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     colliding_digest: None,
 ) -> None:
     """Two galleries whose FILE pages differ only in the colliding marker share
     a page digest; staging the second gallery must refuse to alias the page."""
 
-    config = _config(tmp_path / "page-collision.sqlite3")
+    config = database_factory.config()
     initialize_database(config)
     source = MemorySource(
         [
@@ -243,7 +244,7 @@ def test_gallery_observation_page_fails_closed_on_a_page_digest_collision(
 
 
 def test_file_content_identity_is_digest_plus_size_by_explicit_assumption(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     colliding_digest: None,
 ) -> None:
     """Content blobs retain no preimage: a colliding digest with a different
@@ -251,8 +252,8 @@ def test_file_content_identity_is_digest_plus_size_by_explicit_assumption(
     documented SHA-256 collision-resistance assumption of the file content
     identity; everything else in this module compares preimages."""
 
-    path = tmp_path / "hash-cache-collision.sqlite3"
-    connector = _database(path)
+    config = database_factory.config()
+    connector = _database(config)
     source_plan = CanonicalValueUploadPlan.from_parts(
         "filesystem_source_identity_v1", (b"source-id-v1\0", b"/gallery/file.jpg")
     )
@@ -279,7 +280,7 @@ def test_file_content_identity_is_digest_plus_size_by_explicit_assumption(
         assert file_longer.file_sha256 != file_a.file_sha256
         with connector.transaction():
             VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=config.database.sql_type),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=source_plan,
@@ -294,11 +295,11 @@ def test_file_content_identity_is_digest_plus_size_by_explicit_assumption(
         forged_same_digest = type(file_a)(
             file_a.file_sha256, forged.size_bytes, file_a._constructor_token
         )
-        before = _snapshot(path)
+        before = _snapshot(config)
         with pytest.raises(FileHashCacheConflictError, match="byte count"):
             with connector.transaction():
                 VNextHashCacheRepository.handoff(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=config.database.sql_type),
                     gate_lease=gate,
                     ingest_turn=turn,
                     source_plan=other_source,
@@ -308,11 +309,11 @@ def test_file_content_identity_is_digest_plus_size_by_explicit_assumption(
                     cached_at=201,
                     now=202,
                 )
-        assert snapshot_difference(before, _snapshot(path)) == {}
+        assert snapshot_difference(before, _snapshot(config)) == {}
         # Equal size and colliding digest are indistinguishable by design.
         with connector.transaction():
             hit = VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=config.database.sql_type),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=other_source,

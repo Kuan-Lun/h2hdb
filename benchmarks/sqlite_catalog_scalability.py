@@ -20,6 +20,7 @@ import subprocess
 import time
 import tomllib
 import tracemalloc
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -129,8 +130,9 @@ def _allocate_fixture_revisions(
     connector: SQLConnector,
     *,
     allocated_at: int,
+    backend: str,
 ) -> None:
-    work = VNextUnitOfWork(connector, backend="sqlite")
+    work = VNextUnitOfWork(connector, backend=backend)
     allocator_table = "operational_revision_allocators"
     allocated = {
         stream: VNextAllocatorRepository.allocate_revision(
@@ -257,11 +259,16 @@ class _CountingReadOnlySQLiteConnector(SQLiteConnector):
 class _ManifestBoundWriter:
     """Allow benchmark INSERTs only into exact generated manifest columns."""
 
-    def __init__(self) -> None:
-        provider = GeneratedVNextSchemaProvider("sqlite")
+    def __init__(self, backend: str) -> None:
+        if backend == "sqlite":
+            provider = GeneratedVNextSchemaProvider("sqlite")
+        elif backend == "mariadb":
+            provider = GeneratedVNextSchemaProvider("mariadb")
+        else:
+            raise ValueError(f"Unsupported fixture backend: {backend}")
         relations = provider.generated_definition_data.get("relations")
         if not isinstance(relations, tuple):
-            raise RuntimeError("generated SQLite manifest relations are unavailable")
+            raise RuntimeError("generated backend manifest relations are unavailable")
         columns_by_table: dict[str, frozenset[str]] = {}
         for relation in relations:
             if not isinstance(relation, dict) or relation.get("kind") != "table":
@@ -269,7 +276,7 @@ class _ManifestBoundWriter:
             table = relation.get("table")
             columns = relation.get("columns")
             if not isinstance(table, str) or not isinstance(columns, tuple):
-                raise RuntimeError("generated SQLite relation metadata is malformed")
+                raise RuntimeError("generated backend relation metadata is malformed")
             physical_columns: set[str] = set()
             for column in columns:
                 if (
@@ -278,7 +285,7 @@ class _ManifestBoundWriter:
                     or not isinstance(column[1], str)
                 ):
                     raise RuntimeError(
-                        f"generated SQLite columns for {table!r} are malformed"
+                        f"generated backend columns for {table!r} are malformed"
                     )
                 physical_columns.add(column[1])
             columns_by_table[table] = frozenset(physical_columns)
@@ -303,9 +310,9 @@ class _ManifestBoundWriter:
             )
         self.used_tables.add(table)
         placeholders = ", ".join("%s" for _ in columns)
-        column_sql = ", ".join(columns)
+        column_sql = ", ".join(f"`{column}`" for column in columns)
         connector.execute(
-            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+            f"INSERT INTO `{table}` ({column_sql}) VALUES ({placeholders})",
             values,
         )
 
@@ -1307,13 +1314,22 @@ def _seed_facets(
     )
 
 
-def _seed_fixture(
-    database_path: Path,
+def seed_catalog_fixture(
+    config: CoreConfig,
     *,
     publication_count: int,
     seed: int,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
-    writer = _ManifestBoundWriter()
+    """Seed an initialized empty database using its native generated schema.
+
+    This dev-only seed supports both backends; callers must subsequently run the
+    full public READY audit. It does not manufacture a SQLite benchmark receipt.
+    """
+    if type(publication_count) is not int or publication_count < 1:
+        raise ValueError("publication_count must be positive")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be an unsigned 64-bit integer")
+    writer = _ManifestBoundWriter(config.database.sql_type)
     committed_at = _BASE_TIMESTAMP + seed % 1_000_000
     full_language_counts = dict.fromkeys(_LANGUAGES, 0)
     full_subject_counts = dict.fromkeys(_SUBJECTS, 0)
@@ -1328,10 +1344,15 @@ def _seed_fixture(
         subject: [] for subject in _SUBJECTS
     }
 
-    with SQLiteConnector(str(database_path)) as connector, connector.transaction():
+    with (
+        closing(RepositoryContext.from_config(config)) as context,
+        context.SQLConnector() as connector,
+        connector.transaction(),
+    ):
         _allocate_fixture_revisions(
             connector,
             allocated_at=committed_at,
+            backend=config.database.sql_type,
         )
         policy = _seed_catalog_policies(
             connector,
@@ -1824,8 +1845,8 @@ def run_scalability_benchmark(
         raise RuntimeError("fresh benchmark database did not transition to READY")
 
     seed_started = time.perf_counter_ns()
-    expected, manifest_tables = _seed_fixture(
-        database_path,
+    expected, manifest_tables = seed_catalog_fixture(
+        _config(database_path),
         publication_count=publication_count,
         seed=seed,
     )
