@@ -56,6 +56,7 @@ from vnext_pipeline import (
     Clock,
     MemoryLibrary,
     MemorySource,
+    SessionOwner,
     catalog_view,
     claim_session,
     drain_maintenance,
@@ -332,8 +333,8 @@ def test_sqlite_every_transaction_shape_rolls_back_exactly_and_replays_to_the_sa
     baseline.assert_preserved()
 
 
-# Live MariaDB turns take several times longer than SQLite ones; the lease
-# must outlive the interrupted turn and expire before the takeover.
+# The legitimate client renews this fixed lease at public boundaries, then
+# stops immediately at the injected fault before a real-clock takeover.
 SHORT_LEASE_MICROSECONDS = 45_000_000
 
 
@@ -344,10 +345,12 @@ def _short_lease_turn(
     interrupted authority over (a future clock would poison later real-time
     turns on the same database)."""
 
-    facade = VNextIngestFacade(config, clock=Clock())
+    clock = Clock()
+    facade = VNextIngestFacade(config, clock=clock)
     try:
         session = claim_session(facade, lease=SHORT_LEASE_MICROSECONDS)
-        run_ingest_turn(facade, source=source, library=library, session=session)
+        owner = SessionOwner(facade, session, SHORT_LEASE_MICROSECONDS, clock)
+        run_ingest_turn(facade, source=source, library=library, session=owner)
         drain_maintenance(facade)
     finally:
         facade.close()
@@ -377,7 +380,9 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
     responses) spread over the transaction shapes of one incremental revision,
     each injected into a later revision on live MariaDB.  Each interrupted
     revision proves exact rollback (row locks, CAS and rollback on InnoDB) and
-    converges after an expired-lease takeover on the real clock."""
+    converges after an expired-lease takeover on the real clock. Both dry and
+    fault turns use public renewal; later ordinals can land in a renewal
+    transaction. Only the full matrix above claims exact shape coverage."""
 
     initialize_database(db_config)
     source = MemorySource(_fresh_corpus())
@@ -391,7 +396,7 @@ def test_live_mariadb_sampled_faults_roll_back_exactly_and_converge(
 
     revise(0)
     dry_run = count_mutations(
-        monkeypatch, lambda: _turn(db_config, source, library, clock=Clock())
+        monkeypatch, lambda: _short_lease_turn(db_config, source, library)
     )
     points = fault_points(dry_run)
     assert len(transaction_shapes(dry_run)) >= 20

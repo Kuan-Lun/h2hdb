@@ -842,6 +842,10 @@ def test_fault_owner_heartbeats_past_original_lease_then_rejects_expired_session
         assert owner.current.gate_lease_expires_at > original.gate_lease_expires_at
         assert owner.current.ingest_lease_expires_at > original.ingest_lease_expires_at
         assert owner.current.ingest_generation == original.ingest_generation
+        before = snapshot_database(pipeline.config)
+        with VNextIngestFacade(pipeline.config, clock=owner.clock) as contender:
+            assert contender.try_claim_ingest(True, owner.lease_duration) is None
+        assert snapshot_database(pipeline.config) == before
 
     expired = _abandon_turn_with_short_lease(
         pipeline, "publication.commit:FINALIZE", before_fault=delay_with_heartbeats
