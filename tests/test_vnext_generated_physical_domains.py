@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_manifest_database import constraint_violation
+from vnext_test_database import (
+    DatabaseFactory,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb._generated_vnext_schema import ARTIFACT
 
@@ -107,10 +113,13 @@ def test_every_generated_base_column_has_a_closed_sqlite_storage_domain() -> Non
     assert SCHEMA_ONLY_TABLES < manifest_tables
 
 
-def test_schema_only_relations_enforce_domains_without_a_production_writer() -> None:
+def test_schema_only_relations_enforce_domains_without_a_production_writer(
+    database_factory: DatabaseFactory,
+) -> None:
     """The three intentionally unpopulated relations still reject bad rows."""
 
-    connection = _sqlite_connection()
+    connection = open_generated_database(database_factory.config())
+    set_foreign_key_checks(connection, enabled=False)
     try:
         valid_rows: tuple[tuple[str, tuple[object, ...]], ...] = (
             (
@@ -121,22 +130,22 @@ def test_schema_only_relations_enforce_domains_without_a_production_writer() -> 
             ("operational_gallery_redownload_states", (1, 2, 3, 4)),
         )
         for table, row in valid_rows:
-            placeholders = ", ".join("?" for _value in row)
+            placeholders = ", ".join("%s" for _value in row)
             connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", row)
         connection.rollback()
 
         invalid_rows: tuple[tuple[str, tuple[object, ...]], ...] = (
             (
                 "catalog_gallery_observation_discovery_fingerprints",
-                (1, 1, "f" * 40),
+                (1, 1, b"f" * 41),
             ),
-            ("catalog_gallery_observation_raw_content", (1, 1, "r" * 32)),
+            ("catalog_gallery_observation_raw_content", (1, 1, b"r" * 33)),
             ("operational_gallery_redownload_states", (-1, 2, 3, 4)),
-            ("operational_gallery_redownload_states", (1, 2, 3, b"4")),
+            ("operational_gallery_redownload_states", (1, 2, 3, -1)),
         )
         for table, row in invalid_rows:
-            placeholders = ", ".join("?" for _value in row)
-            with pytest.raises(sqlite3.IntegrityError):
+            placeholders = ", ".join("%s" for _value in row)
+            with constraint_violation(connection):
                 connection.execute(
                     f"INSERT INTO {table} VALUES ({placeholders})",
                     row,
@@ -146,6 +155,30 @@ def test_schema_only_relations_enforce_domains_without_a_production_writer() -> 
         connection.close()
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite storage-class CHECKs reject non-BLOB values; MariaDB typed columns normalize binding types and portable stored-domain violations are tested separately",
+)
+def test_schema_only_relations_enforce_sqlite_binding_storage_classes() -> None:
+    connection = _sqlite_connection()
+    try:
+        for table, row in (
+            ("catalog_gallery_observation_discovery_fingerprints", (1, 1, "f" * 40)),
+            ("catalog_gallery_observation_raw_content", (1, 1, "r" * 32)),
+            ("operational_gallery_redownload_states", (1, 2, 3, b"4")),
+        ):
+            placeholders = ", ".join("?" for _ in row)
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", row)
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite dynamic TEXT affinity losslessly normalizes integer bindings; native MariaDB typed-column domain cases are paired separately",
+)
 def test_sqlite_text_affinity_preserves_the_declared_storage_domain() -> None:
     """Lossless SQLite affinity conversion stores TEXT, never a foreign class."""
 

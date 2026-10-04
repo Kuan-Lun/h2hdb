@@ -25,12 +25,15 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
+from mysql.connector.errors import InterfaceError, ProgrammingError
 from vnext_corpora import NEVER_AT_REST, NO_PRODUCTION_WRITER, build_corpora
 from vnext_fault_harness import EPOCH_CONTROL_TABLE, open_connector
+from vnext_test_database import DatabaseFactory, inspect_all, set_foreign_key_checks
 
-from h2hdb import CoreConfig, DatabaseConfig, VNextDatabaseAdminFacade
+from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_domains import (
     INT63_MAX,
@@ -88,7 +91,10 @@ def manifest_columns() -> list[Column]:
         with path.open("rb") as stream:
             document = tomllib.load(stream)
         for relation in document["relation"]:
-            if relation.get("status") != "implemented":
+            if (
+                relation.get("status") != "implemented"
+                or relation.get("kind", "table") != "table"
+            ):
                 continue
             checks = tuple(
                 str(check["sqlite_expression"]) for check in relation.get("check", [])
@@ -105,6 +111,13 @@ def manifest_columns() -> list[Column]:
                     )
                 )
     return columns
+
+
+def test_storage_fault_targets_exclude_derived_views_but_keep_their_members() -> None:
+    tables = {column.table for column in manifest_columns()}
+    assert "catalog_gallery_observation_page_key_bounds" not in tables
+    assert "catalog_gallery_observation_page_key_bounds_first_keys" in tables
+    assert "catalog_gallery_observation_page_key_bounds_last_keys" in tables
 
 
 _BOTH = frozenset({"sqlite", "mariadb"})
@@ -236,10 +249,6 @@ def candidates(column: Column) -> Iterator[Candidate]:
                 )
 
 
-def _sqlite_config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-
-
 _MATRIX_STORAGE_UUID = bytes.fromhex("00112233445546778899aabbccddeeff")
 
 
@@ -254,7 +263,7 @@ def _rows_by_table(config: CoreConfig, tables: set[str]) -> dict[str, tuple[Any,
         with connector.read_transaction():
             result: dict[str, tuple[Any, ...]] = {}
             for table in tables:
-                rows = connector.fetch_all(f"SELECT * FROM {table} LIMIT 1")
+                rows = inspect_all(connector, f"SELECT * FROM {table} LIMIT 1")
                 if rows:
                     result[table] = rows[0]
             return result
@@ -266,12 +275,13 @@ def _key_columns(connector: SQLConnector, backend: str, table: str) -> list[str]
     """The primary-key columns of ``table`` (every manifest relation has one)."""
 
     if backend == "sqlite":
-        rows = connector.fetch_all(f"PRAGMA table_info({table})")
+        rows = inspect_all(connector, f"PRAGMA table_info({table})")
         keyed = sorted((int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0)
         return [name for _position, name in keyed]
     return [
         str(row[0])
-        for row in connector.fetch_all(
+        for row in inspect_all(
+            connector,
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
             "AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
@@ -283,11 +293,12 @@ def _key_columns(connector: SQLConnector, backend: str, table: str) -> list[str]
 def _column_names(connector: SQLConnector, backend: str, table: str) -> list[str]:
     if backend == "sqlite":
         return [
-            str(row[1]) for row in connector.fetch_all(f"PRAGMA table_info({table})")
+            str(row[1]) for row in inspect_all(connector, f"PRAGMA table_info({table})")
         ]
     return [
         str(row[0])
-        for row in connector.fetch_all(
+        for row in inspect_all(
+            connector,
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
             "ORDER BY ORDINAL_POSITION",
@@ -299,7 +310,6 @@ def _column_names(connector: SQLConnector, backend: str, table: str) -> list[str
 _REJECTIONS: tuple[type[BaseException], ...] = (
     DatabaseDuplicateKeyError,
     sqlite3.IntegrityError,
-    sqlite3.OperationalError,
 )
 
 
@@ -315,7 +325,8 @@ def _key_predicate(
         if name in selected
     ]
     where = " AND ".join(
-        f"{name} IS NULL" if value is None else f"{name} = %s" for name, value in pairs
+        f"`{name}` IS NULL" if value is None else f"`{name}` = %s"
+        for name, value in pairs
     )
     return where, tuple(value for _name, value in pairs if value is not None)
 
@@ -336,7 +347,7 @@ def _apply_candidate(
     try:
         try:
             affected = connector.execute_affected(
-                f"UPDATE {table} SET {candidate.column.name} = %s WHERE {where}",
+                f"UPDATE `{table}` SET `{candidate.column.name}` = %s WHERE {where}",
                 (candidate.value, *bound),
             )
         except _REJECTIONS:
@@ -346,7 +357,12 @@ def _apply_candidate(
             # driver refuses before SQL, which is also fail-closed.
             return "rejected"
         except Exception as error:  # MariaDB driver errors are backend classes
-            if backend == "mariadb" and type(error).__module__.startswith("mysql."):
+            if (
+                backend == "mariadb"
+                and type(error).__module__.startswith("mysql.")
+                and getattr(error, "errno", None)
+                in {1048, 1062, 1264, 1292, 1364, 1366, 1406, 1451, 1452, 4025}
+            ):
                 return "rejected"
             raise
         if affected != 1:
@@ -354,6 +370,27 @@ def _apply_candidate(
         return "accepted"
     finally:
         connector.rollback()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        sqlite3.OperationalError("no such column: fixture_typo"),
+        ProgrammingError("invalid SQL syntax", errno=1064),
+        InterfaceError("server connection was lost", errno=2013),
+    ),
+)
+def test_storage_fault_oracle_does_not_count_execution_errors_as_domain_refusal(
+    failure: Exception,
+) -> None:
+    connector = Mock(spec=SQLConnector)
+    connector.execute_affected.side_effect = failure
+    column = Column("fixture", "value", "BLOB", "BINARY(32)", False, ())
+    candidate = Candidate(column, "width-short", b"x", _BOTH)
+    engine = "sqlite" if isinstance(failure, sqlite3.Error) else "mariadb"
+    with pytest.raises(type(failure)):
+        _apply_candidate(connector, engine, candidate, (b"a" * 32,), ["value"], [])
+    connector.rollback.assert_called_once_with()
 
 
 def _run_matrix(
@@ -383,8 +420,9 @@ def _run_matrix(
             continue
         connector = open_connector(config)
         try:
-            if backend == "sqlite":
-                connector.execute("PRAGMA foreign_keys = OFF")
+            # Isolate storage-domain validation from foreign-key membership on
+            # both engines, so unrelated FK rejection cannot mask a domain hole.
+            set_foreign_key_checks(connector, enabled=False)
             names_cache: dict[str, tuple[list[str], list[str]]] = {}
             for candidate in selected:
                 table = candidate.column.table
@@ -405,8 +443,8 @@ def _run_matrix(
                 # Rollback exactness: the sampled row is unchanged.
                 where, bound = _key_predicate(names, keys, before)
                 with connector.read_transaction():
-                    after = connector.fetch_all(
-                        f"SELECT * FROM {table} WHERE {where}", bound
+                    after = inspect_all(
+                        connector, f"SELECT * FROM {table} WHERE {where}", bound
                     )
                 assert after == [before], candidate.label
         finally:
@@ -428,18 +466,17 @@ def _leniency(candidate: Candidate) -> str | None:
     return None
 
 
-def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back(
+def test_every_manifest_column_rejects_every_invalid_class_and_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    corpora = build_corpora(
-        tmp_path,
-        lambda name: _sqlite_config(tmp_path / f"{name}.sqlite3"),
-    )
+    corpora = build_corpora(tmp_path, database_factory.config)
     configs = [corpus.config for corpus in corpora]
     _bind_matrix_storage_instances(
         [corpus.config for corpus in corpora if corpus.name != "hash-cache"]
     )
-    outcomes, unsampled = _run_matrix(configs, "sqlite")
+    backend = database_factory.backend
+    outcomes, unsampled = _run_matrix(configs, backend)
     assert unsampled <= NEVER_AT_REST | NO_PRODUCTION_WRITER, sorted(unsampled)
     by_label = {
         candidate.label: candidate
@@ -449,72 +486,46 @@ def test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back
     accepted = sorted(
         label for label, outcome in outcomes.items() if outcome != "rejected"
     )
-    explained = {label: _leniency(by_label[label]) for label in accepted}
+    explain = _leniency if backend == "sqlite" else _mariadb_leniency
+    explained = {label: explain(by_label[label]) for label in accepted}
     unexplained = sorted(label for label, reason in explained.items() if reason is None)
     assert unexplained == [], unexplained
     normalizations = Counter(
         f"{by_label[label].kind}:{reason}" for label, reason in explained.items()
     )
-    assert set(normalizations) <= {"storage-integer:text-affinity-normalization"}, dict(
-        normalizations
-    )
-    assert len(outcomes) - len(accepted) > 4000
-    kinds = {label.rsplit(":", 1)[1] for label in outcomes}
-    assert {
+    if backend == "sqlite":
+        assert set(normalizations) <= {"storage-integer:text-affinity-normalization"}, (
+            dict(normalizations)
+        )
+        assert len(outcomes) - len(accepted) > 4000
+    else:
+        assert set(normalizations) == MARIADB_UNDECLARED_CHECK_CLASSES, dict(
+            normalizations
+        )
+        assert (
+            0
+            < normalizations["width-short:binary-padding"]
+            <= sum(
+                candidate.kind == "width-short"
+                and candidate.column.mariadb_type.upper().startswith("BINARY(")
+                for candidate in by_label.values()
+            )
+        )
+        assert len(outcomes) > 500
+    required = {
         "width-short",
         "width-long",
-        "storage-text",
-        "storage-integer",
-        "storage-real",
-        "storage-blob",
         "range-low",
         "range-high",
         "enum-unregistered",
         "enum-collation",
         "nil-uuid",
-    } <= kinds
-
-
-def test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_rolls_back(
-    mariadb_config: CoreConfig,
-    tmp_path: Path,
-) -> None:
-    """Every manifest column of the populated corpus receives every invalid
-    class its own manifest checks declare on live MariaDB 10.11.11; the
-    rendered CHECK constraints and strict column types own width, range, enum
-    and binary collation, storage-class coercions are owned by the writer
-    guards, and the only storage normalization (fixed-width BINARY padding)
-    is pinned as an exact inventory."""
-
-    del tmp_path
-    configs = [
-        corpus.config
-        for corpus in build_corpora(
-            Path("."), lambda name: mariadb_config, names={"ready-populated"}
-        )
-    ]
-    _bind_matrix_storage_instances(configs)
-    outcomes, _unsampled = _run_matrix(configs, "mariadb")
-    by_label = {
-        candidate.label: candidate
-        for column in manifest_columns()
-        for candidate in candidates(column)
     }
-    accepted = sorted(
-        label for label, outcome in outcomes.items() if outcome != "rejected"
-    )
-    explained = {label: _mariadb_leniency(by_label[label]) for label in accepted}
-    unexplained = sorted(label for label, reason in explained.items() if reason is None)
-    assert unexplained == [], unexplained
-    inventory = Counter(
-        f"{by_label[label].kind}:{reason}" for label, reason in explained.items()
-    )
-    # InnoDB samples a different row per run (clustered by random identities),
-    # so the exact counts move by a few columns; the normalization class is
-    # exact.
-    assert set(inventory) == MARIADB_UNDECLARED_CHECK_CLASSES, dict(inventory)
-    assert 30 <= inventory["width-short:binary-padding"] <= 50, dict(inventory)
-    assert len(outcomes) > 500
+    if backend == "sqlite":
+        required.update(
+            {"storage-text", "storage-integer", "storage-real", "storage-blob"}
+        )
+    assert required <= {label.rsplit(":", 1)[1] for label in outcomes}
 
 
 def _mariadb_leniency(candidate: Candidate) -> str | None:
