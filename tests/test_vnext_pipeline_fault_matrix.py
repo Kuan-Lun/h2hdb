@@ -28,6 +28,15 @@ from hashlib import sha256
 from typing import Any
 
 import pytest
+from vnext_collection_identities import (
+    PREFIX_NAMESPACE,
+    PREFIX_SHARD,
+    RECOVERY_NAMESPACE,
+    RECOVERY_SHARD,
+    TARGET_NAMESPACE,
+    TARGET_SHARD,
+    collection_identities,
+)
 from vnext_database_snapshot import (
     ReusableDatabaseSnapshot,
     clone_database,
@@ -180,7 +189,8 @@ class _Baseline:
     def __init__(self, databases: DatabaseFactory, scenario: Scenario) -> None:
         self.databases = databases
         self.baseline = databases.config("fault-baseline")
-        self.source, self.library = scenario.build_prefix(self.baseline)
+        with collection_identities(PREFIX_NAMESPACE, shard=PREFIX_SHARD):
+            self.source, self.library = scenario.build_prefix(self.baseline)
         self._copies = 0
         self._names: dict[str, str] = {}
         self._reusable = (
@@ -236,12 +246,13 @@ def _run_point(
 ) -> FaultInjector:
     """Interrupt the target turn at ``point``, then restart and converge."""
 
-    injector, pre_transaction = run_fault_point(
-        monkeypatch,
-        config=config,
-        point=point,
-        workflow=lambda: _turn(config, source, library, clock=Clock()),
-    )
+    with collection_identities(TARGET_NAMESPACE, shard=TARGET_SHARD):
+        injector, pre_transaction = run_fault_point(
+            monkeypatch,
+            config=config,
+            point=point,
+            workflow=lambda: _turn(config, source, library, clock=Clock()),
+        )
     if point.kind == "before_mutation":
         assert_exact_rollback(
             config,
@@ -251,7 +262,8 @@ def _run_point(
     # Restart: a fresh facade whose clock is past every earlier lease takes the
     # expired authority over and replays from durable state only.
     try:
-        _turn(config, source, library, clock=takeover_clock())
+        with collection_identities(RECOVERY_NAMESPACE, shard=RECOVERY_SHARD):
+            _turn(config, source, library, clock=takeover_clock())
     except Exception as error:
         raise AssertionError(f"restart replay failed at {point}: {error!r}") from error
     assert full_check(config).state == "READY", point
@@ -282,10 +294,11 @@ def test_sqlite_every_transaction_shape_rolls_back_exactly_and_replays_to_the_sa
 
     # Fault-free reference and the exact transaction record of the target turn.
     config, source, library = baseline.fresh_copy()
-    dry_run = count_mutations(
-        monkeypatch,
-        lambda: _turn(config, source, library, clock=Clock()),
-    )
+    with collection_identities(TARGET_NAMESPACE, shard=TARGET_SHARD):
+        dry_run = count_mutations(
+            monkeypatch,
+            lambda: _turn(config, source, library, clock=Clock()),
+        )
     reference = _reference(config, source, library)
     assert full_check(config).state == "READY"
     baseline.discard(config)
