@@ -9,7 +9,12 @@ from typing import cast
 
 import pytest
 from test_vnext_source_marker import MarkerSource
-from vnext_fault_harness import open_connector
+from vnext_fault_harness import (
+    FaultInjector,
+    fault_injection,
+    open_connector,
+    snapshot_database,
+)
 from vnext_pipeline import (
     Clock,
     MemoryLibrary,
@@ -24,12 +29,12 @@ from vnext_pipeline import (
     run_analysis,
     run_publication,
 )
+from vnext_test_database import DatabaseFactory
 
 from h2hdb import (
     CatalogPublication,
     CatalogResourceKind,
     CoreConfig,
-    DatabaseConfig,
     VNextCatalogFacade,
     VNextIngestFacade,
     VNextIngestPhase,
@@ -39,6 +44,7 @@ from h2hdb import (
     VNextSourceChangedError,
 )
 from h2hdb.database_clock import database_unix_microseconds
+from h2hdb.vnext_source_batch_repository import SourceBatchConflictError
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -112,6 +118,40 @@ def _publications(config: CoreConfig) -> tuple[CatalogPublication, ...]:
         assert page.next_cursor is None
         assert len(page.publications) == revision.publication_count
         return tuple(sorted(page.publications, key=lambda item: item.gid))
+
+
+def test_source_preparation_rejects_corrupt_published_gallery_identity_without_writes(
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_database(db_config)
+    source = MarkerSource((gallery(1001, pages=[]),))
+    library = MemoryLibrary(source)
+    _publish_batch(db_config, source, library, limit=None)
+    with VNextIngestFacade(db_config, clock=Clock()) as facade:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        with closing(open_connector(db_config)) as writer, writer.transaction():
+            gallery_id, stable_key = writer.fetch_one(
+                "SELECT gallery_id, gallery_key FROM catalog_gallery_identities"
+            )
+            corrupted = bytes([stable_key[0] ^ 0xFF]) + bytes(stable_key[1:])
+            writer.execute(
+                "UPDATE catalog_gallery_identities SET gallery_key = %s WHERE gallery_id = %s",
+                (corrupted, gallery_id),
+            )
+        # The tiny one-gallery fixture permits exact all-table row comparison;
+        # this also includes the immutable fault and operational authority.
+        before = snapshot_database(db_config)
+        observer = FaultInjector()
+        with fault_injection(monkeypatch, observer):
+            with pytest.raises(
+                SourceBatchConflictError, match="gallery identity"
+            ) as rejected:
+                with facade.prepare_source(source, policy=policy):
+                    pytest.fail("corrupt durable coordinates must refuse preparation")
+        assert isinstance(rejected.value.__cause__, ValueError)
+        assert observer.mutations == 0
+        assert snapshot_database(db_config) == before
 
 
 @pytest.mark.parametrize("gallery_count", (3, 5))
@@ -249,8 +289,9 @@ def test_batch_rejects_a_preparation_from_before_another_publication(
 
 
 def test_cumulative_batches_rebuild_global_duplicates_like_a_complete_ingest(
-    db_config: CoreConfig, tmp_path: Path
+    database_factory: DatabaseFactory,
 ) -> None:
+    db_config = database_factory.config("cumulative")
     initialize_database(db_config)
     shared = b"shared page whose third distinct artist makes it spam"
     galleries = tuple(
@@ -290,11 +331,7 @@ def test_cumulative_batches_rebuild_global_duplicates_like_a_complete_ingest(
                 or library.current[key].sha256 != descriptor.sha256
             )
 
-    reference = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "whole-source.sqlite3")
-        )
-    )
+    reference = database_factory.config("whole-source-reference")
     initialize_database(reference)
     complete_source = MarkerSource(source.galleries)
     complete_library = MemoryLibrary(complete_source)
