@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
-from shutil import copyfile
 from typing import Any
 from unittest.mock import patch
 
@@ -17,7 +16,7 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_database_snapshot import clone_database
 from vnext_manifest_fixtures import (
     seed_sealed_source_build,
     seed_snapshot_manifest,
@@ -27,9 +26,21 @@ from vnext_publication_fixtures import (
     seed_publication_commit,
     seed_publication_finalization,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_indexed_query,
+    atomic_fixture,
+    connector_backend,
+    database_connector,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+    trace_statements,
+)
 
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_ingest_fence_repository import (
     IngestFenceRepository,
     IngestTurn,
@@ -64,12 +75,13 @@ _SOURCE_ROOT = b"r" * 32
 _SCOPE_KEY = identity.source_scope_key("filesystem", _SOURCE_ROOT, 1)
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
+@atomic_fixture
 def _canonical_identity(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     value_sha256: bytes,
     *,
     domain: bytes,
@@ -88,7 +100,8 @@ def _canonical_identity(
     )
 
 
-def _seed_static_catalog(connector: SQLiteConnector) -> tuple[bytes, bytes]:
+@atomic_fixture
+def _seed_static_catalog(connector: SQLConnector) -> tuple[bytes, bytes]:
     source_root = _SOURCE_ROOT
     snapshot = b"m" * 32
     policy_component = identity.artifact_policy_digest(
@@ -161,20 +174,20 @@ def _analysis_input_digest(build_manifest: bytes) -> bytes:
     return sha256(payload).digest()
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=1_000_000,
@@ -183,7 +196,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _catalog_descriptor(
-    connector: SQLiteConnector, *, revision: int, publication_count: int
+    connector: SQLConnector, *, revision: int, publication_count: int
 ) -> None:
     connector.execute(
         "INSERT INTO catalog_revision_descriptors "
@@ -193,7 +206,7 @@ def _catalog_descriptor(
 
 
 def _source_descriptor(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     source_revision: int,
     snapshot: bytes,
@@ -205,7 +218,7 @@ def _source_descriptor(
     )
 
 
-def _publication_validation_receipts(connector: SQLiteConnector) -> None:
+def _publication_validation_receipts(connector: SQLConnector) -> None:
     stages = (
         b"VALIDATE_SELECTION",
         b"VALIDATE_CATALOG_PROJECTION",
@@ -236,7 +249,7 @@ def _publication_validation_receipts(connector: SQLiteConnector) -> None:
         )
 
 
-def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> bytes:
+def _base_publication_commit(connector: SQLConnector, *, snapshot: bytes) -> bytes:
     receipt_id = b"h" * 16
     candidate_id = b"x" * 16
     preparation_id = b"p" * 16
@@ -307,8 +320,9 @@ def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> 
     return receipt_id
 
 
+@atomic_fixture
 def _seed_candidate(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     turn: IngestTurn,
     *,
     with_base: bool = False,
@@ -481,7 +495,7 @@ def _seed_candidate(
 
 
 def _commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -493,7 +507,7 @@ def _commit(
             return_value=b"q" * 16,
         ):
             return PublicationRepository.commit(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -502,7 +516,7 @@ def _commit(
 
 
 def _finalize_empty_publication(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gate: GateLease,
     turn: IngestTurn,
@@ -510,7 +524,7 @@ def _finalize_empty_publication(
     finalized_at: int,
 ) -> None:
     with connector.transaction():
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         authority = PublicationRepository.prepare_finalized_commit_activation(
             work,
             gate_lease=gate,
@@ -529,7 +543,8 @@ def _finalize_empty_publication(
             work,
             authority=authority,
         )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT state, finalized_at FROM catalog_publication_receipts "
         "WHERE receipt_id = %s",
         (receipt_id,),
@@ -537,7 +552,7 @@ def _finalize_empty_publication(
 
 
 def _prepare_finalized_replay(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -553,13 +568,13 @@ def _prepare_finalized_replay(
     )
     with connector.transaction():
         IngestFenceRepository.complete(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             turn,
             now=110,
         )
     with connector.transaction():
         replay_turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"n" * 16,
             now=111,
             lease_duration=1_000_000,
@@ -570,7 +585,8 @@ def _prepare_finalized_replay(
         (_BUILD, replay_turn.generation),
     )
     if with_working:
-        created_at_row = connector.fetch_one(
+        created_at_row = inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (_BUILD,),
@@ -584,19 +600,22 @@ def _prepare_finalized_replay(
     return published, replay_turn
 
 
-def _candidate_lifecycle(connector: SQLiteConnector) -> str:
-    if connector.fetch_one(
+def _candidate_lifecycle(connector: SQLConnector) -> str:
+    if inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_commits WHERE candidate_id = %s",
         (_CANDIDATE,),
     ):
         return "PUBLISHED"
-    if connector.fetch_one(
+    if inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_candidate_projection_seals "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     ):
         return "SEALED"
-    if connector.fetch_one(
+    if inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     ):
@@ -606,9 +625,11 @@ def _candidate_lifecycle(connector: SQLiteConnector) -> str:
 
 @pytest.mark.parametrize("with_base", [False, True], ids=["genesis", "successor"])
 def test_atomic_publication_genesis_and_successor(
-    tmp_path: Path, with_base: bool
+    database_factory: DatabaseFactory, tmp_path: Path, with_base: bool
 ) -> None:
-    connector = _generated_database(tmp_path / f"publish-{with_base}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"publish-{with_base}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     reserved = _seed_candidate(connector, turn, with_base=with_base)
 
@@ -619,7 +640,8 @@ def test_atomic_publication_genesis_and_successor(
     assert not receipt.replayed
     expected_base = (1, 1) if with_base else ()
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT source_revision, generation FROM catalog_source_heads "
             "WHERE channel = %s",
             (_CHANNEL,),
@@ -627,33 +649,39 @@ def test_atomic_publication_genesis_and_successor(
         == expected_base
     )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT revision, generation FROM catalog_publication_commit_heads "
             "WHERE channel = %s",
             (_CHANNEL,),
         )
         == expected_base
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT source_revision, generation "
         "FROM catalog_source_revision_generations WHERE source_revision = %s",
         (reserved,),
     ) == (reserved, 2 if with_base else 1)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT revision, generation FROM catalog_publication_commits "
         "WHERE revision = %s",
         (reserved,),
     ) == (reserved, 2 if with_base else 1)
     assert _candidate_lifecycle(connector) == "PUBLISHED"
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
         (_BUILD,),
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT 1 FROM operational_catalog_working_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT base_receipt_id FROM "
         "catalog_publication_candidate_base_publication_commits "
         "WHERE candidate_id = %s",
@@ -668,37 +696,43 @@ def test_atomic_publication_genesis_and_successor(
         finalized_at=101,
     )
 
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT source_revision, generation FROM catalog_source_heads "
         "WHERE channel = %s",
         (_CHANNEL,),
     ) == (reserved, 2 if with_base else 1)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT revision, generation FROM catalog_publication_commit_heads "
         "WHERE channel = %s",
         (_CHANNEL,),
     ) == (reserved, 2 if with_base else 1)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
         (_BUILD,),
     )
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM operational_catalog_working_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_candidate_base_publication_commits "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
         "WHERE build_id = %s",
         (_BUILD,),
     ) == ((b"h" * 16,) if with_base else ())
 
     with connector.transaction():
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         authority = PublicationRepository.prepare_finalized_commit_activation(
             work,
             gate_lease=gate,
@@ -714,9 +748,12 @@ def test_atomic_publication_genesis_and_successor(
 
 
 def test_candidate_base_consumption_fault_rolls_back_head_and_authorities(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "candidate-base-consume-fault.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "candidate-base-consume-fault.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
     receipt = _commit(connector, gate, turn)
@@ -739,7 +776,7 @@ def test_candidate_base_consumption_fault_rolls_back_head_and_authorities(
 
     with pytest.raises(RuntimeError, match="candidate-base consumption"):
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             authority = PublicationRepository.prepare_finalized_commit_activation(
                 work,
                 gate_lease=gate,
@@ -765,39 +802,48 @@ def test_candidate_base_consumption_fault_rolls_back_head_and_authorities(
                 )
 
     assert consumed
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
     ) == (b"h" * 16,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT base_receipt_id FROM "
         "catalog_publication_candidate_base_publication_commits "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (b"h" * 16,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
         "WHERE build_id = %s",
         (_BUILD,),
     ) == (b"h" * 16,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
         (receipt.receipt_id,),
     ) == ("DB_COMMITTED",)
-    assert connector.fetch_one(
-        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    assert inspect_one(
+        connector,
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
     ) == (_BUILD,)
-    assert connector.fetch_one(
-        "SELECT candidate_id FROM operational_catalog_working_candidates WHERE slot = 1"
+    assert inspect_one(
+        connector,
+        "SELECT candidate_id FROM operational_catalog_working_candidates WHERE slot = 1",
     ) == (_CANDIDATE,)
     connector.close()
 
 
 def test_publication_commit_rejects_forged_source_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "publish-working-assignment.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "publish-working-assignment.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     assert (
@@ -810,12 +856,14 @@ def test_publication_commit_rejects_forged_source_working_assignment(
     )
     with pytest.raises(PublicationCorruptionError, match="assignment|created_at"):
         _commit(connector, gate, turn)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
     ) == (_BUILD, 999)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
@@ -824,9 +872,12 @@ def test_publication_commit_rejects_forged_source_working_assignment(
 
 
 def test_publication_commit_rejects_forged_catalog_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "publish-catalog-assignment.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "publish-catalog-assignment.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     assert (
@@ -839,17 +890,20 @@ def test_publication_commit_rejects_forged_catalog_working_assignment(
     )
     with pytest.raises(PublicationCorruptionError, match="assignment|created_at"):
         _commit(connector, gate, turn)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id, assigned_at FROM "
         "operational_catalog_working_candidates WHERE slot = %s",
         (1,),
     ) == (_CANDIDATE, 999)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
     ) == (_BUILD, 15)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
@@ -865,12 +919,15 @@ def test_publication_commit_rejects_forged_catalog_working_assignment(
     ],
 )
 def test_publication_commit_deletes_exact_working_assignment_capability(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     raced_table: str,
     identity_column: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"publish-assignment-cas-{identity_column}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"publish-assignment-cas-{identity_column}.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
@@ -895,7 +952,7 @@ def test_publication_commit_deletes_exact_working_assignment_capability(
     receipt = _commit(connector, gate, turn)
     with pytest.raises(PublicationHeadRaceError, match="working|changed"):
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             authority = PublicationRepository.prepare_finalized_commit_activation(
                 work,
                 gate_lease=gate,
@@ -920,17 +977,20 @@ def test_publication_commit_deletes_exact_working_assignment_capability(
                     authority=authority,
                 )
     assert raced
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
     ) == (_BUILD, 15)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id, assigned_at FROM "
         "operational_catalog_working_candidates WHERE slot = %s",
         (1,),
     ) == (_CANDIDATE, 36)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
         (receipt.receipt_id,),
     ) == ("DB_COMMITTED",)
@@ -938,27 +998,40 @@ def test_publication_commit_deletes_exact_working_assignment_capability(
 
 
 def test_finalized_current_head_replay_releases_exact_source_working_root(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "release-replayed-source.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "release-replayed-source.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     published, replay_turn = _prepare_finalized_replay(connector, gate, turn)
-    before = connector.connection.total_changes
+    writes: list[str] = []
+    with trace_statements(connector, writes):
+        with connector.transaction():
+            released = PublicationRepository.release_replayed_source_working(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                gate_lease=gate,
+                ingest_turn=replay_turn,
+                build_id=_BUILD,
+                receipt_id=published.receipt_id,
+                now=120,
+            )
 
-    with connector.transaction():
-        released = PublicationRepository.release_replayed_source_working(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            gate_lease=gate,
-            ingest_turn=replay_turn,
-            build_id=_BUILD,
-            receipt_id=published.receipt_id,
-            now=120,
+        assert released
+    assert (
+        len(
+            [
+                sql
+                for sql in writes
+                if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+            ]
         )
-
-    assert released
-    assert connector.connection.total_changes == before + 1
-    assert not connector.fetch_one(
+        == 1
+    )
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM operational_source_working_builds WHERE slot = %s",
         (1,),
     )
@@ -966,10 +1039,13 @@ def test_finalized_current_head_replay_releases_exact_source_working_root(
 
 
 def test_finalized_replay_rejects_forged_source_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "release-replay-working-assignment.sqlite3"
+        database_factory.config(
+            str(tmp_path / "release-replay-working-assignment.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
@@ -987,14 +1063,15 @@ def test_finalized_replay_rejects_forged_source_working_assignment(
         pytest.raises(PublicationCorruptionError, match="assignment|created_at"),
     ):
         PublicationRepository.release_replayed_source_working(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=replay_turn,
             build_id=_BUILD,
             receipt_id=published.receipt_id,
             now=120,
         )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
@@ -1003,9 +1080,12 @@ def test_finalized_replay_rejects_forged_source_working_assignment(
 
 
 def test_finalized_replay_deletes_exact_source_working_assignment_capability(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "release-replay-assignment-cas.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "release-replay-assignment-cas.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     published, replay_turn = _prepare_finalized_replay(connector, gate, turn)
@@ -1038,7 +1118,7 @@ def test_finalized_replay_deletes_exact_source_working_assignment_capability(
     ):
         with connector.transaction():
             PublicationRepository.release_replayed_source_working(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=replay_turn,
                 build_id=_BUILD,
@@ -1046,7 +1126,8 @@ def test_finalized_replay_deletes_exact_source_working_assignment_capability(
                 now=120,
             )
     assert raced
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
@@ -1055,9 +1136,12 @@ def test_finalized_replay_deletes_exact_source_working_assignment_capability(
 
 
 def test_finalized_replay_with_absent_source_working_root_is_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "release-replay-idempotent.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "release-replay-idempotent.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     published, replay_turn = _prepare_finalized_replay(
@@ -1066,30 +1150,42 @@ def test_finalized_replay_with_absent_source_working_root_is_zero_write(
         turn,
         with_working=False,
     )
-    before = connector.connection.total_changes
+    writes: list[str] = []
+    with trace_statements(connector, writes):
+        with connector.transaction():
+            released = PublicationRepository.release_replayed_source_working(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                gate_lease=gate,
+                ingest_turn=replay_turn,
+                build_id=_BUILD,
+                receipt_id=published.receipt_id,
+                now=120,
+            )
 
-    with connector.transaction():
-        released = PublicationRepository.release_replayed_source_working(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            gate_lease=gate,
-            ingest_turn=replay_turn,
-            build_id=_BUILD,
-            receipt_id=published.receipt_id,
-            now=120,
+        assert not released
+    assert (
+        len(
+            [
+                sql
+                for sql in writes
+                if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+            ]
         )
-
-    assert not released
-    assert connector.connection.total_changes == before
+        == 0
+    )
     connector.close()
 
 
 @pytest.mark.parametrize("corruption", ["missing", "foreign"])
 def test_finalized_replay_requires_exact_candidate_and_provenance_lineage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"release-replay-lineage-{corruption}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"release-replay-lineage-{corruption}.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
@@ -1124,7 +1220,8 @@ def test_finalized_replay_requires_exact_candidate_and_provenance_lineage(
             == 1
         )
 
-    before = connector.fetch_one(
+    before = inspect_one(
+        connector,
         "SELECT slot, build_id, assigned_at FROM "
         "operational_source_working_builds WHERE slot = %s",
         (1,),
@@ -1134,7 +1231,7 @@ def test_finalized_replay_requires_exact_candidate_and_provenance_lineage(
         pytest.raises(PublicationCorruptionError, match="lineage|provenance"),
     ):
         PublicationRepository.release_replayed_source_working(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=replay_turn,
             build_id=_BUILD,
@@ -1142,7 +1239,8 @@ def test_finalized_replay_requires_exact_candidate_and_provenance_lineage(
             now=120,
         )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT slot, build_id, assigned_at FROM "
             "operational_source_working_builds WHERE slot = %s",
             (1,),
@@ -1160,12 +1258,15 @@ def test_finalized_replay_requires_exact_candidate_and_provenance_lineage(
     ],
 )
 def test_finalized_replay_rejects_foreign_working_or_head_and_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     foreign_authority: str,
     expected_error: type[Exception],
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"release-replay-foreign-{foreign_authority}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"release-replay-foreign-{foreign_authority}.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
@@ -1196,7 +1297,7 @@ def test_finalized_replay_rejects_foreign_working_or_head_and_rolls_back(
     with pytest.raises(expected_error):
         with connector.transaction():
             PublicationRepository.release_replayed_source_working(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=replay_turn,
                 build_id=_BUILD,
@@ -1205,14 +1306,16 @@ def test_finalized_replay_rejects_foreign_working_or_head_and_rolls_back(
             )
 
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT build_id, assigned_at "
             "FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         )
         == expected_working
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
@@ -1221,9 +1324,12 @@ def test_finalized_replay_rejects_foreign_working_or_head_and_rolls_back(
 
 
 def test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "recovery.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "recovery.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     first = _commit(connector, gate, turn)
@@ -1232,25 +1338,27 @@ def test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping(
 
     with connector.transaction():
         IngestFenceRepository.complete(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             turn,
             now=110,
         )
     with connector.transaction():
         successor = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"n" * 16,
             now=111,
             lease_duration=1_000_000,
         )
     recovered = _commit(connector, gate, successor, now=112)
     assert recovered.replayed and recovered.receipt_id == first.receipt_id
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM operational_source_build_generations WHERE generation = %s",
         (successor.generation,),
     )
-    assert connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state "
+    assert inspect_one(
+        connector,
+        "SELECT generation, `cursor`, processed_count, state "
         "FROM catalog_publication_finalization_checkpoints "
         "WHERE receipt_id = %s",
         (first.receipt_id,),
@@ -1259,9 +1367,12 @@ def test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping(
 
 
 def test_v3_source_build_fresh_publication_and_replay_reject_creation_time_tamper(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "publication-v3-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "publication-v3-replay.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, recovery_created_at=15)
     recovery_build = _BUILD
@@ -1282,7 +1393,8 @@ def test_v3_source_build_fresh_publication_and_replay_reject_creation_time_tampe
     with pytest.raises(PublicationCorruptionError, match="identity|predecessor"):
         _commit(connector, gate, turn, now=102)
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
             "WHERE channel = %s",
             (_CHANNEL,),
@@ -1293,9 +1405,12 @@ def test_v3_source_build_fresh_publication_and_replay_reject_creation_time_tampe
 
 
 def test_response_loss_replay_requires_exact_source_provenance_lineage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "replay-provenance-lineage.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "replay-provenance-lineage.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
     published = _commit(connector, gate, turn)
@@ -1320,12 +1435,14 @@ def test_response_loss_replay_requires_exact_source_provenance_lineage(
     )
     with pytest.raises(PublicationCorruptionError, match="lineage|provenance"):
         _commit(connector, gate, turn, now=103)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
     ) == (b"h" * 16,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id FROM catalog_publication_commits WHERE receipt_id = %s",
         (published.receipt_id,),
     ) == (_CANDIDATE,)
@@ -1335,12 +1452,15 @@ def test_response_loss_replay_requires_exact_source_provenance_lineage(
 @pytest.mark.parametrize("pathway", ["commit", "release"])
 @pytest.mark.parametrize("corruption", ["deleted", "self"])
 def test_replayed_publication_requires_exact_generation_predecessor_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     pathway: str,
     corruption: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"replay-base-{pathway}-{corruption}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"replay-base-{pathway}-{corruption}.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
@@ -1405,7 +1525,7 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
         else:
             with connector.transaction():
                 PublicationRepository.release_replayed_source_working(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replay_turn,
                     build_id=_BUILD,
@@ -1413,7 +1533,8 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
                     now=120,
                 )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_publication_candidate_base_publication_commits "
             "WHERE candidate_id = %s",
@@ -1422,7 +1543,8 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
         == expected_candidate_base
     )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (_BUILD,),
@@ -1430,12 +1552,14 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
         == expected_build_base
     )
     if pathway == "release":
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id, assigned_at FROM operational_source_working_builds "
             "WHERE slot = %s",
             (1,),
         ) == (_BUILD, 15)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (_CHANNEL,),
@@ -1445,14 +1569,17 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
 
 @pytest.mark.parametrize("corruption", ["edge", "genesis-node"])
 def test_response_loss_replay_rejects_corrupt_generation_chain(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"chain-corrupt-{corruption}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"chain-corrupt-{corruption}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     _commit(connector, gate, turn)
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     if corruption == "edge":
         connector.execute(
             "DELETE FROM catalog_publication_generation_successors "
@@ -1462,43 +1589,47 @@ def test_response_loss_replay_rejects_corrupt_generation_chain(
         connector.execute(
             "DELETE FROM catalog_publication_generation_nodes WHERE generation = 0"
         )
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
 
     with pytest.raises(PublicationCorruptionError, match="generation"):
         _commit(connector, gate, turn, now=101)
     assert _candidate_lifecycle(connector) == "PUBLISHED"
-    assert connector.fetch_one("SELECT COUNT(*) FROM catalog_publication_receipts") == (
-        1,
-    )
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM catalog_publication_receipts"
+    ) == (1,)
     connector.close()
 
 
 def test_current_successor_replay_rejects_missing_retained_predecessor_edge(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "successor-chain-corrupt.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "successor-chain-corrupt.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn, with_base=True)
     published, replay_turn = _prepare_finalized_replay(connector, gate, turn)
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     connector.execute(
         "DELETE FROM catalog_publication_generation_successors "
         "WHERE successor_generation = %s",
         (2,),
     )
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
 
     with pytest.raises(PublicationCorruptionError, match="generation edge"):
         with connector.transaction():
             PublicationRepository.release_replayed_source_working(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=replay_turn,
                 build_id=_BUILD,
                 receipt_id=published.receipt_id,
                 now=120,
             )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
         (1,),
     ) == (_BUILD,)
@@ -1506,8 +1637,12 @@ def test_current_successor_replay_rejects_missing_retained_predecessor_edge(
 
 
 @pytest.mark.parametrize("race", ["common-head", "deletion"])
-def test_head_races_fail_without_partial_publication(tmp_path: Path, race: str) -> None:
-    connector = _generated_database(tmp_path / f"race-{race}.sqlite3")
+def test_head_races_fail_without_partial_publication(
+    database_factory: DatabaseFactory, tmp_path: Path, race: str
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"race-{race}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     reserved = _seed_candidate(connector, turn, with_base=race == "common-head")
     if race == "common-head":
@@ -1537,11 +1672,13 @@ def test_head_races_fail_without_partial_publication(tmp_path: Path, race: str) 
         _commit(connector, gate, turn)
 
     assert _candidate_lifecycle(connector) == "SEALED"
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_commits WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_source_revision_descriptors WHERE source_revision = %s",
         (reserved,),
     )
@@ -1550,10 +1687,13 @@ def test_head_races_fail_without_partial_publication(tmp_path: Path, race: str) 
 
 @pytest.mark.parametrize("authority", ["projection", "preparation"])
 def test_missing_or_conflicting_o1_authority_fails_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     authority: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"authority-{authority}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"authority-{authority}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     expected_error: type[Exception]
@@ -1577,16 +1717,17 @@ def test_missing_or_conflicting_o1_authority_fails_closed(
 
     expected_lifecycle = "OPEN" if authority == "projection" else "SEALED"
     assert _candidate_lifecycle(connector) == expected_lifecycle
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_receipts")
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_receipts")
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_commits")
     connector.close()
 
 
 def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     base_path = tmp_path / "fault-base.sqlite3"
-    base = _generated_database(base_path)
+    base = _generated_database(database_factory.config(str(base_path)))
     gate, turn = _authorities(base)
     _seed_candidate(base, turn)
     base.close()
@@ -1594,8 +1735,11 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
     # Derive the recomposed transaction's exact write count once, then inject
     # every real write/CAS point without encoding a physical decomposition.
     probe_path = tmp_path / "fault-probe.sqlite3"
-    copyfile(base_path, probe_path)
-    probe = SQLiteConnector(str(probe_path))
+    clone_database(
+        database_factory.config(str(base_path)),
+        database_factory.config(str(probe_path)),
+    )
+    probe = database_connector(database_factory.config(str(probe_path)))
     probe.connect()
     probe_execute = probe.execute
     probe_execute_affected = probe.execute_affected
@@ -1628,8 +1772,10 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
 
     for failure_at in range(1, mutation_count + 1):
         path = tmp_path / f"fault-{failure_at}.sqlite3"
-        copyfile(base_path, path)
-        connector = SQLiteConnector(str(path))
+        clone_database(
+            database_factory.config(str(base_path)), database_factory.config(str(path))
+        )
+        connector = database_connector(database_factory.config(str(path)))
         connector.connect()
         original_execute = connector.execute
         original_execute_affected = connector.execute_affected
@@ -1670,27 +1816,34 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
             _commit(connector, gate, turn)
 
         assert mutation_number == failure_at
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_revision FROM operational_revision_allocators "
             "WHERE stream = %s",
             ("SOURCE",),
         ) == (1,)
         assert _candidate_lifecycle(connector) == "SEALED"
-        assert not connector.fetch_one("SELECT 1 FROM catalog_source_revisions")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_source_head_revisions")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_source_head_advanced_ats")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commit_heads")
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_source_revision_generations"
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_source_revisions")
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_source_head_revisions")
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_source_head_advanced_ats"
         )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_receipts")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_commits")
-        assert connector.fetch_one(
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_commit_heads"
+        )
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_source_revision_generations"
+        )
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_commits")
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_receipts")
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_commits")
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         ) == (_BUILD,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_id FROM operational_catalog_working_candidates "
             "WHERE slot = %s",
             (1,),
@@ -1699,9 +1852,12 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
 
 
 def test_pointer_transaction_reads_only_o1_and_fixed_seal_authorities(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "bounded-publish.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "bounded-publish.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_candidate(connector, turn)
     statements: list[str] = []
@@ -1771,20 +1927,20 @@ def test_pointer_transaction_reads_only_o1_and_fixed_seal_authorities(
             for statement in normalized
         )
 
-    projection_plan = connector.fetch_all(
-        "EXPLAIN QUERY PLAN SELECT candidate_id "
+    assert_indexed_query(
+        connector,
+        "SELECT candidate_id "
         "FROM catalog_publication_candidate_projection_seals "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    preparation_plan = connector.fetch_all(
-        "EXPLAIN QUERY PLAN SELECT preparation_id "
+    assert_indexed_query(
+        connector,
+        "SELECT preparation_id "
         "FROM operational_publication_candidate_preparations "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert any("SEARCH" in str(row[3]).upper() for row in projection_plan)
-    assert any("SEARCH" in str(row[3]).upper() for row in preparation_plan)
     connector.close()
 
 

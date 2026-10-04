@@ -6,24 +6,25 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 import test_vnext_publication_candidate_repository as candidate_fixtures
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+)
 
 import h2hdb.vnext_ingest_publication as publication
-from h2hdb import CoreConfig, VNextDatabaseAdminFacade
-from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
-    CanonicalValueRepository,
     CanonicalValueUploadPlan,
 )
-from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
+from h2hdb.vnext_ingest_fence_repository import IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
-    MaintenanceGateRepository,
 )
 from h2hdb.vnext_publication_candidate_repository import (
     PublicationCandidateNotReadyError,
@@ -194,16 +195,16 @@ def test_canonical_allocate_stale_fence_performs_zero_allocation_writes(
 
 @contextmanager
 def _generated_catalog_plan(
-    database_path: Path,
+    config: CoreConfig,
 ) -> Iterator[
     tuple[
-        SQLiteConnector,
+        SQLConnector,
         GateLease,
         IngestTurn,
         PublicationCatalogProjectionPlan,
     ]
 ]:
-    connector = candidate_fixtures._generated_database(database_path)
+    connector = candidate_fixtures._generated_database(config)
     gate, turn = candidate_fixtures._authorities(connector)
     candidate_fixtures._seed_completed_analysis(connector, turn, with_base=False)
     candidate_fixtures._seed_selected_galleries(connector, count=1)
@@ -217,7 +218,7 @@ def _generated_catalog_plan(
     candidate_fixtures._complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -226,7 +227,7 @@ def _generated_catalog_plan(
     try:
         with PublicationCandidateRepository.prepare_catalog_projection(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as plan:
             yield connector, gate, turn, plan
@@ -252,9 +253,12 @@ def _canonical_consumers(
 
 
 def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_rebuild(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _generated_catalog_plan(tmp_path / "canonical-fence.sqlite3") as (
+    with _generated_catalog_plan(
+        database_factory.config(str(tmp_path / "canonical-fence.sqlite3"))
+    ) as (
         connector,
         gate,
         turn,
@@ -275,7 +279,8 @@ def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_re
         )
         claim_parameters = (turn.generation, value_sha256)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, value_sha256 "
                 "FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
@@ -286,14 +291,14 @@ def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_re
 
         with connector.transaction():
             PublicationCandidateRepository._lock_canonical_allocation_fence_authorized(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 candidate_id=_CANDIDATE,
                 stage=b"BUILD_CATALOG_PROJECTION",
                 first_consumer_cursor=first_consumer_cursor,
             )
         with connector.transaction():
             batch = PublicationCandidateRepository.process_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -304,7 +309,8 @@ def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_re
 
         assert batch.next_cursor >= first_consumer_cursor
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, value_sha256 "
                 "FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
@@ -318,13 +324,14 @@ def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_re
         ):
             with connector.transaction():
                 PublicationCandidateRepository._lock_canonical_allocation_fence_authorized(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     candidate_id=_CANDIDATE,
                     stage=b"BUILD_CATALOG_PROJECTION",
                     first_consumer_cursor=first_consumer_cursor,
                 )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, value_sha256 "
                 "FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
@@ -334,185 +341,15 @@ def test_generated_sqlite_fence_rejects_consumed_first_consumer_without_claim_re
         )
 
 
-def _mariadb_connector(config: CoreConfig) -> MariaDBConnector:
-    database = config.database
-    connector = MariaDBConnector(
-        host=database.host,
-        port=database.port,
-        user=database.user,
-        password=database.password,
-        database=database.database,
-    )
-    connector.connect()
-    return connector
-
-
-def _mariadb_authorities(
-    connector: MariaDBConnector,
-) -> tuple[GateLease, IngestTurn]:
-    with connector.transaction():
-        with patch(
-            "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
-            return_value=b"mariadb-gate-001",
-        ):
-            gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="mariadb"),
-                now=10,
-                lease_duration=1_000_000,
-            )
-    with connector.transaction():
-        turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="mariadb"),
-            owner_token=b"mariadb-turn-001",
-            now=11,
-            lease_duration=1_000_000,
-        )
-    return gate, turn
-
-
-def _complete_mariadb_selection(
-    connector: MariaDBConnector,
-    gate: GateLease,
-    turn: IngestTurn,
-) -> None:
-    timestamp = 101
-    for method, batch_prefix in (
-        (
-            PublicationCandidateRepository.process_selection_batch,
-            b"mariadb-build-selection-",
-        ),
-        (
-            PublicationCandidateRepository.validate_selection_batch,
-            b"mariadb-validate-selection-",
-        ),
-    ):
-        for index in range(10):
-            with connector.transaction():
-                batch = method(
-                    VNextUnitOfWork(connector, backend="mariadb"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    candidate_id=_CANDIDATE,
-                    batch_key=batch_prefix + index.to_bytes(2, "big"),
-                    now=timestamp,
-                )
-            timestamp += 1
-            if batch.terminal:
-                break
-        else:
-            raise AssertionError("MariaDB selection stage did not converge")
-
-
-def _upload_mariadb_projection_canonical_values(
-    connector: MariaDBConnector,
-    gate: GateLease,
-    turn: IngestTurn,
-    plan: PublicationCatalogProjectionPlan,
-    *,
-    now: int,
-) -> None:
-    for upload in plan.iter_canonical_value_plans():
-        try:
-            with connector.transaction():
-                CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="mariadb"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    plan=upload,
-                    now=now,
-                )
-            for page in upload.iter_pages():
-                with connector.transaction():
-                    CanonicalValueRepository.put_page(
-                        VNextUnitOfWork(connector, backend="mariadb"),
-                        gate_lease=gate,
-                        ingest_turn=turn,
-                        plan=upload,
-                        prepared_page=page,
-                        now=now,
-                    )
-            with connector.transaction():
-                CanonicalValueRepository.seal(
-                    VNextUnitOfWork(connector, backend="mariadb"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    plan=upload,
-                    now=now,
-                )
-        finally:
-            upload.close()
-
-
-@contextmanager
-def _generated_mariadb_catalog_plan(
-    config: CoreConfig,
-) -> Iterator[
-    tuple[
-        MariaDBConnector,
-        GateLease,
-        IngestTurn,
-        PublicationCatalogProjectionPlan,
-    ]
-]:
-    VNextDatabaseAdminFacade(config).initialize()
-    connector = _mariadb_connector(config)
-    gate, turn = _mariadb_authorities(connector)
-    fixture_connector = cast(Any, connector)
-    with connector.transaction():
-        candidate_fixtures._seed_completed_analysis(
-            fixture_connector,
-            turn,
-            with_base=False,
-        )
-        candidate_fixtures._seed_selected_galleries(fixture_connector, count=1)
-        candidate_fixtures._seed_projection_metadata(
-            fixture_connector,
-            count=1,
-            with_tags=True,
-        )
-    with connector.transaction():
-        with patch(
-            "h2hdb.vnext_publication_candidate_repository._new_candidate_id",
-            return_value=_CANDIDATE,
-        ):
-            PublicationCandidateRepository.begin(
-                VNextUnitOfWork(connector, backend="mariadb"),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=candidate_fixtures._ANALYSIS,
-                artifact_policy_id=1,
-                display_title_policy_id=1,
-                artifacts_required=True,
-                now=100,
-            )
-    _complete_mariadb_selection(connector, gate, turn)
-    with connector.transaction():
-        authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="mariadb"),
-            gate_lease=gate,
-            ingest_turn=turn,
-            candidate_id=_CANDIDATE,
-            now=110,
-        )
-    try:
-        with PublicationCandidateRepository.prepare_catalog_projection(
-            connector,
-            backend="mariadb",
-            authority=authority,
-        ) as plan:
-            yield connector, gate, turn, plan
-    finally:
-        connector.close()
-
-
 def _mariadb_claim(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     *,
     generation: int,
     value_sha256: bytes,
 ) -> tuple[Any, ...]:
     with connector.read_transaction():
-        return connector.fetch_one(
+        return inspect_one(
+            connector,
             "SELECT generation, value_sha256 "
             "FROM operational_canonical_value_uploads "
             "WHERE generation = %s AND value_sha256 = %s",
@@ -521,9 +358,9 @@ def _mariadb_claim(
 
 
 def test_live_mariadb_fence_rejects_consumed_first_consumer_without_claim_rebuild(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    with _generated_mariadb_catalog_plan(mariadb_config) as (
+    with _generated_catalog_plan(db_config) as (
         connector,
         gate,
         turn,
@@ -535,7 +372,7 @@ def test_live_mariadb_fence_rejects_consumed_first_consumer_without_claim_rebuil
             consumers,
             key=lambda item: item[1],
         )
-        _upload_mariadb_projection_canonical_values(
+        candidate_fixtures._upload_projection_canonical_values(
             connector,
             gate,
             turn,
@@ -554,14 +391,14 @@ def test_live_mariadb_fence_rejects_consumed_first_consumer_without_claim_rebuil
 
         with connector.transaction():
             PublicationCandidateRepository._lock_canonical_allocation_fence_authorized(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 candidate_id=_CANDIDATE,
                 stage=b"BUILD_CATALOG_PROJECTION",
                 first_consumer_cursor=first_consumer_cursor,
             )
         with connector.transaction():
             batch = PublicationCandidateRepository.process_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -600,7 +437,9 @@ def test_live_mariadb_fence_rejects_consumed_first_consumer_without_claim_rebuil
             ):
                 with connector.transaction():
                     publication._commit_canonical_work(
-                        VNextUnitOfWork(connector, backend="mariadb"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         action=publication._Action.CANONICAL_ALLOCATE,
                         canonical=delayed,
                         gate=gate,
@@ -628,9 +467,12 @@ def _projection_fingerprint(
 
 
 def test_disk_projection_plan_supports_sequential_cross_thread_reads(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _generated_catalog_plan(tmp_path / "projection-thread.sqlite3") as (
+    with _generated_catalog_plan(
+        database_factory.config(str(tmp_path / "projection-thread.sqlite3"))
+    ) as (
         _connector,
         _gate,
         _turn,
