@@ -318,6 +318,10 @@ application facades。
   複製工具可讀取 generated schema dependency order。以上例外只適用本機
   合成、可拋棄的測試資料庫，不得進入 shipped consumer runtime，不授權
   production或 live帳號的直接 SQL，也不得形成第二個 schema authoring surface。
+  本機合成資料庫的 consumer故障測試可對原生稽核 database clock結果、公開
+  ingest facade clock及 adapter session clock套用同一時間偏移；只在 owner
+  資源停止後推進到期，保留原生時間查詢、SQL、鎖定與 fencing判斷，並驗證
+  到期前接管拒絕及接管後舊 token拒絕。此時鐘例外不得進入 shipped runtime。
 - 不得重新加入 `H2HDB`、`MigrationRunner`、numbered migration ledger、legacy
   hand-written catalog repositories、compatibility view或 dual-write path。
 - Public administration與 catalog-opening entry points只能使用 wheel-resident
