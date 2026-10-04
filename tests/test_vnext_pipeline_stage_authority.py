@@ -42,14 +42,15 @@ from vnext_pipeline import (
     gallery,
     ingest_policy,
     initialize_database,
-    run_ingest_turn,
+    run_analysis,
+    run_publication,
     run_source,
 )
+from vnext_test_database import DatabaseFactory, inspect_all, inspect_one
 
 from h2hdb import (
     ArtifactSourceRole,
     CoreConfig,
-    DatabaseConfig,
     FileObservation,
     VNextIngestFacade,
     VNextIngestGalleryObservation,
@@ -82,10 +83,6 @@ ANALYSIS_STAGES = (
     "gid_winner",
     "validate_gid_winner",
 )
-
-
-def _config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
 
 
 def _corpus() -> MemorySource:
@@ -178,9 +175,10 @@ def _stored_receipts(config: CoreConfig) -> list[tuple[bytes, int]]:
         with connector.read_transaction():
             return [
                 (bytes(row[0]), int(row[1]))
-                for row in connector.fetch_all(
+                for row in inspect_all(
+                    connector,
                     "SELECT stage, page_limit FROM catalog_analysis_batch_receipt_stored "
-                    "ORDER BY stage"
+                    "ORDER BY stage",
                 )
             ]
     finally:
@@ -205,11 +203,12 @@ def _set_stored_limit(config: CoreConfig, stage: str, page_limit: int) -> None:
 
 @pytest.mark.parametrize("stage", ANALYSIS_STAGES)
 def test_every_analysis_stage_batch_rolls_back_exactly_and_then_commits(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stage: str,
 ) -> None:
-    config = _config(tmp_path / f"rollback-{stage}.sqlite3")
+    config = database_factory.config(str(tmp_path / f"rollback-{stage}.sqlite3"))
     initialize_database(config)
     injector = FaultInjector()
     snapshots: list[dict[str, Any]] = []
@@ -247,11 +246,12 @@ def test_every_analysis_stage_batch_rolls_back_exactly_and_then_commits(
 
 @pytest.mark.parametrize("stage", ANALYSIS_STAGES)
 def test_every_analysis_stage_replays_its_stored_page_limit_and_rejects_a_corrupted_limit(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stage: str,
 ) -> None:
-    config = _config(tmp_path / f"stage-{stage}.sqlite3")
+    config = database_factory.config(str(tmp_path / f"stage-{stage}.sqlite3"))
     initialize_database(config)
     injector = FaultInjector()
 
@@ -339,7 +339,7 @@ def _publication_effects(config: CoreConfig) -> dict[str, int]:
     try:
         with connector.read_transaction():
             return {
-                table: int(connector.fetch_one(f"SELECT COUNT(*) FROM {table}")[0])
+                table: int(inspect_one(connector, f"SELECT COUNT(*) FROM {table}")[0])
                 for table in (
                     "catalog_prepared_artifacts",
                     "catalog_publication_commits",
@@ -360,11 +360,12 @@ def _publication_effects(config: CoreConfig) -> dict[str, int]:
     ],
 )
 def test_forged_file_role_fails_closed_at_artifact_planning_and_stays_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     forged_name: bytes,
     role: ArtifactSourceRole,
 ) -> None:
-    config = _config(tmp_path / "forged-role.sqlite3")
+    config = database_factory.config(str(tmp_path / "forged-role.sqlite3"))
     initialize_database(config)
     source = _ForgedRoleSource(
         [gallery(7001, pages=[b"p0"], artists=["forger"])],
@@ -375,8 +376,11 @@ def test_forged_file_role_fails_closed_at_artifact_planning_and_stays_closed(
     facade = VNextIngestFacade(config, clock=Clock())
     try:
         session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        receipt = run_source(facade, session, policy, source)
+        run_analysis(facade, session, policy, receipt.build_id)
         with pytest.raises(ArtifactPreparationConflictError) as first:
-            run_ingest_turn(facade, source=source, library=library, session=session)
+            run_publication(facade, session, policy, library)
         assert _publication_effects(config) == {
             "catalog_prepared_artifacts": 0,
             "catalog_publication_commits": 0,
@@ -385,9 +389,11 @@ def test_forged_file_role_fails_closed_at_artifact_planning_and_stays_closed(
         }
         assert library.current == {} and library.staging == {}
         closed = snapshot_database(config)
-        # The same durable state refuses identically and writes nothing.
+        # Retry the same publication against the sealed source/analysis. A new
+        # full turn would first create fresh observations for this markerless
+        # adapter, which is a different operation from exact publication retry.
         with pytest.raises(ArtifactPreparationConflictError) as again:
-            run_ingest_turn(facade, source=source, library=library, session=session)
+            run_publication(facade, session, policy, library)
         assert str(again.value) == str(first.value)
         assert snapshot_difference(closed, snapshot_database(config)) == {}
     finally:

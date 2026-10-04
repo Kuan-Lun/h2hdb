@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from typing import Any
@@ -18,13 +19,21 @@ from vnext_catalog_registry_fixtures import (
 from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
 from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb import vnext_source_build_repository as source_build_module
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.sql_connector import DatabaseDuplicateKeyError
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_allocator_repository import (
     IdentityStream,
     RevisionStream,
@@ -157,71 +166,94 @@ def generated_mariadb(
         connector.close()
 
 
-def _work(connector: MariaDBConnector) -> VNextUnitOfWork:
-    return VNextUnitOfWork(connector, backend="mariadb")
+@pytest.fixture
+def generated_native(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    connector = open_generated_database(database_factory.config("operational"))
+    try:
+        seed_manifest_policy(connector)
+        connector.execute(
+            "INSERT INTO operational_operational_policys "
+            "(operational_policy_id, operational_schema_version, algorithm_version, max_batch_rows) "
+            "VALUES (%s, %s, %s, %s)",
+            (1, 1, 1, 64),
+        )
+        yield connector
+    finally:
+        connector.close()
+
+
+def _work(connector: SQLConnector) -> VNextUnitOfWork:
+    return VNextUnitOfWork(connector, backend=connector_backend(connector))
 
 
 def _read_one(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     query: str,
     data: tuple[Any, ...] = (),
 ) -> tuple[Any, ...]:
     with connector.read_transaction():
-        return connector.fetch_one(query, data)
+        return inspect_one(connector, query, data)
 
 
 def _read_all(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     query: str,
     data: tuple[Any, ...] = (),
 ) -> list[tuple[Any, ...]]:
     with connector.read_transaction():
-        return connector.fetch_all(query, data)
+        return inspect_all(connector, query, data)
 
 
-def _ingest_snapshot(connector: MariaDBConnector) -> tuple[object, ...]:
+def _ingest_snapshot(connector: SQLConnector) -> tuple[object, ...]:
     with connector.read_transaction():
         return (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT generation, started_at, completed_at "
-                "FROM operational_ingest_generations ORDER BY generation"
+                "FROM operational_ingest_generations ORDER BY generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT singleton_id, current_generation, completed_generation, phase, "
-                "last_transition_at FROM operational_ingest_coordination_heads"
+                "last_transition_at FROM operational_ingest_coordination_heads",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT generation, owner_token, claimed_at, lease_expires_at "
-                "FROM operational_ingest_generation_owners ORDER BY generation"
+                "FROM operational_ingest_generation_owners ORDER BY generation",
             ),
         )
 
 
-def _gate_snapshot(connector: MariaDBConnector) -> tuple[object, ...]:
+def _gate_snapshot(connector: SQLConnector) -> tuple[object, ...]:
     with connector.read_transaction():
         return (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT gate_generation, mode, created_at "
                 "FROM operational_maintenance_gate_generations "
-                "ORDER BY gate_generation"
+                "ORDER BY gate_generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT singleton_id, gate_generation, updated_at "
-                "FROM operational_maintenance_gate_heads"
+                "FROM operational_maintenance_gate_heads",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT owner_token, gate_generation, lease_expires_at "
-                "FROM operational_maintenance_gate_owners ORDER BY owner_token"
+                "FROM operational_maintenance_gate_owners ORDER BY owner_token",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT slot, owner_token FROM operational_maintenance_gate_holders "
-                "ORDER BY slot"
+                "ORDER BY slot",
             ),
         )
 
 
 def _claim_shared(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     token: bytes,
     *,
     now: int,
@@ -240,7 +272,7 @@ def _claim_shared(
 
 
 def _claim_exclusive(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     token: bytes,
     *,
     now: int,
@@ -259,7 +291,7 @@ def _claim_exclusive(
 
 
 def _upload(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
@@ -313,7 +345,7 @@ def _allocate_catalog_concurrently(
 
 
 def _seed_live_canonical_value(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     *,
     digest_domain: str,
     payload: bytes,
@@ -411,6 +443,10 @@ def _release_live_staging_request(
         connector.close()
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="Exercises real InnoDB SELECT FOR UPDATE row-lock serialization with concurrent connections; SQLite uses a distinct BEGIN IMMEDIATE locking mechanism.",
+)
 def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
     generated_mariadb: _LiveMariaDBConnector,
     mariadb_config: CoreConfig,
@@ -465,20 +501,38 @@ def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
     with connector.transaction():
         connector.execute(
             "INSERT INTO operational_gallery_observation_stagings "
-            "(staging_id, build_id, gallery_id, observation_id, state, "
+            "(staging_id, gallery_id, observation_id, state, "
             "created_at, sealed_at, terminal_byte_count) "
-            "VALUES (%s, %s, 1, 1, %s, 30, 31, 0)",
-            (staging_id, build_id, "RETIRING_SEALED"),
+            "VALUES (%s, 1, 1, %s, 30, 31, 0)",
+            (staging_id, "RETIRING_SEALED"),
+        )
+        connector.execute(
+            "INSERT INTO operational_gallery_staging_source_builds "
+            "(staging_id, build_id) VALUES (%s, %s)",
+            (staging_id, build_id),
         )
     with pytest.raises(DatabaseDuplicateKeyError):
         with connector.transaction():
             connector.execute(
                 "INSERT INTO operational_gallery_observation_stagings "
-                "(staging_id, build_id, gallery_id, observation_id, state, "
+                "(staging_id, gallery_id, observation_id, state, "
                 "created_at, sealed_at, terminal_byte_count) "
-                "VALUES (%s, %s, 2, 1, %s, 32, 33, 0)",
-                (b"t" * 16, build_id, "RETIRING_REUSED"),
+                "VALUES (%s, 2, 1, %s, 32, 33, 0)",
+                (b"t" * 16, "RETIRING_REUSED"),
             )
+            connector.execute(
+                "INSERT INTO operational_gallery_staging_source_builds "
+                "(staging_id, build_id) VALUES (%s, %s)",
+                (b"t" * 16, build_id),
+            )
+    assert _read_all(
+        connector,
+        "SELECT staging_id FROM operational_gallery_observation_stagings",
+    ) == [(staging_id,)]
+    assert _read_all(
+        connector,
+        "SELECT staging_id, build_id FROM operational_gallery_staging_source_builds",
+    ) == [(staging_id, build_id)]
 
     retired_request = b"r" * 32
     with connector.transaction():
@@ -560,9 +614,9 @@ def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
 
 
 def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
-    generated_mariadb: _LiveMariaDBConnector,
+    generated_native: SQLConnector,
 ) -> None:
-    connector = generated_mariadb
+    connector = generated_native
     source_identity = _seed_live_canonical_value(
         connector,
         digest_domain="filesystem_source_identity_v1",
@@ -684,9 +738,9 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
 
 
 def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
-    generated_mariadb: _LiveMariaDBConnector,
+    generated_native: SQLConnector,
 ) -> None:
-    connector = generated_mariadb
+    connector = generated_native
     with connector.transaction():
         contributor = _seed_live_canonical_value(
             connector,
@@ -777,6 +831,10 @@ def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
     )
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="Exercises real InnoDB SELECT FOR UPDATE row-lock serialization with concurrent connections; SQLite uses a distinct BEGIN IMMEDIATE locking mechanism.",
+)
 def test_live_mariadb_operational_writer_workflows(
     generated_mariadb: _LiveMariaDBConnector,
     mariadb_config: CoreConfig,
@@ -1381,7 +1439,7 @@ _DRAIN_SEEK_INDEX = "ix_operational_preparation_drain_seek"
 
 
 def _seed_mariadb_drain_preparations(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     *,
     count: int,
     policy_id: int,
@@ -1393,7 +1451,7 @@ def _seed_mariadb_drain_preparations(
     Foreign key checks are disabled only for this focused injection; the live
     physical matrix exercises FK integrity."""
 
-    connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+    set_foreign_key_checks(connector, enabled=False)
     connector.execute(
         "INSERT INTO catalog_source_build_descriptor "
         "(build_id, scope_key, manifest_policy_id, created_at) "
@@ -1433,14 +1491,14 @@ def _seed_mariadb_drain_preparations(
                 (preparation_id, _DRAIN_BUILD, generation, policy_id),
             )
             ids.append(preparation_id)
-    connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+    set_foreign_key_checks(connector, enabled=True)
     # SET opens an implicit transaction that no auto-commit statement
     # closes; commit it so the caller can start its own transactions.
     connector.commit()
     return ids
 
 
-def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
+def _mariadb_non_abandoned(connector: SQLConnector) -> int:
     return int(
         _read_one(
             connector,
@@ -1452,19 +1510,33 @@ def _mariadb_non_abandoned(connector: MariaDBConnector) -> int:
 
 
 def _assert_mariadb_drain_page_seeks_the_index(
-    connector: MariaDBConnector, *, exclusion: bool
+    connector: SQLConnector, *, exclusion: bool
 ) -> None:
-    """Query-plan evidence on live MariaDB: the page reads the preparation
+    """Native query-plan evidence: the page reads the preparation
     table through the (build_id, state, preparation_id) index as a range."""
 
     data: tuple[object, ...] = (_DRAIN_BUILD, "OPEN")
     if exclusion:
         data += (1, 0)
     data += (b"\0" * 16, 128)
+    prefix = (
+        "EXPLAIN QUERY PLAN "
+        if connector_backend(connector) == "sqlite"
+        else "EXPLAIN "
+    )
     with connector.read_transaction():
-        plan = connector.fetch_all(
-            "EXPLAIN " + drain_page_sql(exclusion=exclusion), data
+        plan = inspect_all(
+            connector, prefix + drain_page_sql(exclusion=exclusion), data
         )
+    if connector_backend(connector) == "sqlite":
+        descriptions = [str(row[3]) for row in plan]
+        assert any(
+            row.startswith("SEARCH p USING ")
+            and f"INDEX {_DRAIN_SEEK_INDEX} " in row
+            and "build_id=? AND state=? AND preparation_id>?" in row
+            for row in descriptions
+        ), plan
+        return
     rows = [row for row in plan if row[2] == "p"]
     assert len(rows) == 1, plan
     (row,) = rows
@@ -1473,14 +1545,14 @@ def _assert_mariadb_drain_page_seeks_the_index(
 
 
 def test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable(
-    generated_mariadb: _LiveMariaDBConnector,
+    generated_native: SQLConnector,
 ) -> None:
     """The source-side retiring-build drainage abandons at most 128 rows per
     transaction on live MariaDB from the durable position, converges over 257
     rows, rolls back an interrupted page, refuses a stale position and a
     non-advancing fence with zero writes, and seeks the drain index."""
 
-    connector = generated_mariadb
+    connector = generated_native
     ids = _seed_mariadb_drain_preparations(
         connector, count=257, policy_id=1, current_generation=0
     )
@@ -1542,13 +1614,13 @@ def test_live_mariadb_stale_build_preparation_drainage_is_bounded_and_replayable
 
 
 def test_live_mariadb_superseded_preparation_drainage_is_bounded_and_replayable(
-    generated_mariadb: _LiveMariaDBConnector,
+    generated_native: SQLConnector,
 ) -> None:
     """The operational superseded-preparation drainage abandons at most 128
     rows per authorized transaction on live MariaDB from the durable position,
     converges over 129 rows, refuses a stale position, and seeks the index."""
 
-    connector = generated_mariadb
+    connector = generated_native
     _seed_mariadb_drain_preparations(
         connector, count=129, policy_id=2, current_generation=0
     )
