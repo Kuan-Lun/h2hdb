@@ -128,9 +128,14 @@ def test_source_preparation_rejects_corrupt_published_gallery_identity_without_w
     source = MarkerSource((gallery(1001, pages=[]),))
     library = MemoryLibrary(source)
     _publish_batch(db_config, source, library, limit=None)
-    with VNextIngestFacade(db_config, clock=Clock()) as facade:
+    observer = FaultInjector()
+    with (
+        fault_injection(monkeypatch, observer),
+        VNextIngestFacade(db_config, clock=Clock()) as facade,
+    ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        assert observer.mutations > 0
         with closing(open_connector(db_config)) as writer, writer.transaction():
             gallery_id, stable_key = writer.fetch_one(
                 "SELECT gallery_id, gallery_key FROM catalog_gallery_identities"
@@ -143,15 +148,14 @@ def test_source_preparation_rejects_corrupt_published_gallery_identity_without_w
         # The tiny one-gallery fixture permits exact all-table row comparison;
         # this also includes the immutable fault and operational authority.
         before = snapshot_database(db_config)
-        observer = FaultInjector()
-        with fault_injection(monkeypatch, observer):
-            with pytest.raises(
-                SourceBatchConflictError, match="gallery identity"
-            ) as rejected:
-                with facade.prepare_source(source, policy=policy):
-                    pytest.fail("corrupt durable coordinates must refuse preparation")
+        prior_mutations = observer.mutations
+        with pytest.raises(
+            SourceBatchConflictError, match="gallery identity"
+        ) as rejected:
+            with facade.prepare_source(source, policy=policy):
+                pytest.fail("corrupt durable coordinates must refuse preparation")
         assert isinstance(rejected.value.__cause__, ValueError)
-        assert observer.mutations == 0
+        assert observer.mutations == prior_mutations
         assert snapshot_database(db_config) == before
 
 

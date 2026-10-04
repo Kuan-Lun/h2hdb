@@ -81,14 +81,17 @@ def test_resume_rejects_corrupt_gallery_identity_without_writes(
 
     initialize_database(db_config)
     source = MarkerSource((gallery(1001, pages=[]),))
+    observer = FaultInjector()
     with (
         _source_batch_clock(db_config) as clock,
+        fault_injection(monkeypatch, observer),
         VNextIngestFacade(db_config, clock=clock) as facade,
     ):
         session = claim_session(facade)
         policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
         _source_batch(facade, session, policy, source, None)
         assert facade.prepare_source_resume(source, policy=policy) is not None
+        assert observer.mutations > 0
         with closing(open_connector(db_config)) as writer, writer.transaction():
             gallery_id, stable_key = writer.fetch_one(
                 "SELECT gallery_id, gallery_key FROM catalog_gallery_identities"
@@ -99,14 +102,13 @@ def test_resume_rejects_corrupt_gallery_identity_without_writes(
                 (corrupted, gallery_id),
             )
         before = snapshot_database(db_config)
-        observer = FaultInjector()
-        with fault_injection(monkeypatch, observer):
-            with pytest.raises(
-                SourceBuildConflictError, match="gallery identity"
-            ) as rejected:
-                facade.prepare_source_resume(source, policy=policy)
+        prior_mutations = observer.mutations
+        with pytest.raises(
+            SourceBuildConflictError, match="gallery identity"
+        ) as rejected:
+            facade.prepare_source_resume(source, policy=policy)
         assert isinstance(rejected.value.__cause__, ValueError)
-        assert observer.mutations == 0
+        assert observer.mutations == prior_mutations
         assert snapshot_database(db_config) == before
 
 
