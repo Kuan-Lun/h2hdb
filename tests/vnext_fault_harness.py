@@ -20,7 +20,6 @@ import h2hdb.mariadb_connector as mariadb_connector_module
 import h2hdb.sqlite_connector as sqlite_connector_module
 from h2hdb import CoreConfig
 from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import SchemaObjectKind
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -306,9 +305,9 @@ def backend_of(config: CoreConfig) -> Backend:
 
 
 def open_connector(config: CoreConfig) -> SQLConnector:
-    connector = RepositoryContext.from_config(config).SQLConnector()
-    connector.connect()
-    return connector
+    from vnext_test_database import open_database
+
+    return open_database(config)
 
 
 def _row_key(row: tuple[Any, ...]) -> tuple[tuple[str, str], ...]:

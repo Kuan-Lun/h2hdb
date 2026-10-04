@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from vnext_test_database import atomic_fixture
 
+
+@atomic_fixture
 def seed_gallery_page_descriptor(
     connector: Any,
     *,
@@ -47,6 +50,7 @@ def seed_gallery_page_descriptor(
     )
 
 
+@atomic_fixture
 def seed_gallery_page_bounds(
     connector: Any,
     *,

@@ -7,6 +7,8 @@ directly so the corruption remains explicit at the callsite.
 
 from __future__ import annotations
 
+from vnext_test_database import atomic_fixture, connector_backend
+
 from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_publication_family import (
@@ -30,6 +32,7 @@ from h2hdb.vnext_publication_finalization_repository import (
 )
 
 
+@atomic_fixture
 def seed_publication_candidate(
     connector: SQLConnector,
     *,
@@ -40,7 +43,7 @@ def seed_publication_candidate(
     display_title_policy_id: int,
     artifacts_required: bool,
     created_at: int,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> PublicationCandidateFamily:
     family = PublicationCandidateFamily(
         candidate_id,
@@ -51,10 +54,13 @@ def seed_publication_candidate(
         artifacts_required,
         created_at,
     )
-    ensure_publication_candidate_family(connector, family, backend=backend)
+    ensure_publication_candidate_family(
+        connector, family, backend=backend or connector_backend(connector)
+    )
     return family
 
 
+@atomic_fixture
 def seed_publication_projection_certification(
     connector: SQLConnector,
     *,
@@ -75,6 +81,7 @@ def seed_publication_projection_certification(
     )
 
 
+@atomic_fixture
 def seed_publication_finalization_checkpoint(
     connector: SQLConnector,
     *,
@@ -89,6 +96,7 @@ def seed_publication_finalization_checkpoint(
     )
 
 
+@atomic_fixture
 def seed_publication_finalization(
     connector: SQLConnector,
     *,
@@ -127,6 +135,7 @@ def seed_publication_finalization(
     )
 
 
+@atomic_fixture
 def seed_publication_commit(
     connector: SQLConnector,
     *,
@@ -189,17 +198,21 @@ def seed_publication_commit(
         )
 
 
+@atomic_fixture
 def seed_publication_identity(
     connector: SQLConnector,
     *,
     gid: int,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> PublicationIdentityFamily:
     family = PublicationIdentityFamily(identity.publication_key(gid), gid)
-    ensure_publication_identity_family(connector, family, backend=backend)
+    ensure_publication_identity_family(
+        connector, family, backend=backend or connector_backend(connector)
+    )
     return family
 
 
+@atomic_fixture
 def seed_catalog_publication(
     connector: SQLConnector,
     *,
@@ -212,7 +225,7 @@ def seed_catalog_publication(
     source_title_sha256: bytes,
     download_time: int = 0,
     upload_time: int = 0,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> CatalogPublicationFamily:
     family = CatalogPublicationFamily(
         revision,
@@ -223,7 +236,9 @@ def seed_catalog_publication(
         modified_at,
         source_title_sha256,
     )
-    ensure_catalog_publication_family(connector, family, backend=backend)
+    ensure_catalog_publication_family(
+        connector, family, backend=backend or connector_backend(connector)
+    )
     ensure_catalog_publication_download_time_family(
         connector,
         CatalogPublicationDownloadTimeFamily(
@@ -231,16 +246,17 @@ def seed_catalog_publication(
             publication_key,
             download_time,
         ),
-        backend=backend,
+        backend=backend or connector_backend(connector),
     )
     ensure_catalog_publication_upload_time_family(
         connector,
         CatalogPublicationUploadTimeFamily(revision, publication_key, upload_time),
-        backend=backend,
+        backend=backend or connector_backend(connector),
     )
     return family
 
 
+@atomic_fixture
 def seed_catalog_publication_title(
     connector: SQLConnector,
     *,
@@ -248,7 +264,7 @@ def seed_catalog_publication_title(
     publication_key: bytes,
     source_title_sha256: bytes,
     source_gallery_name: bytes,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> CatalogPublicationTitleFamily:
     family = CatalogPublicationTitleFamily(
         revision,
@@ -256,10 +272,13 @@ def seed_catalog_publication_title(
         source_title_sha256,
         source_gallery_name,
     )
-    ensure_catalog_publication_title_family(connector, family, backend=backend)
+    ensure_catalog_publication_title_family(
+        connector, family, backend=backend or connector_backend(connector)
+    )
     return family
 
 
+@atomic_fixture
 def seed_catalog_contributor(
     connector: SQLConnector,
     *,
@@ -268,7 +287,7 @@ def seed_catalog_contributor(
     position: int,
     contributor_name_sha256: bytes,
     role: bytes,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> CatalogContributorFamily:
     family = CatalogContributorFamily(
         revision,
@@ -277,16 +296,19 @@ def seed_catalog_contributor(
         contributor_name_sha256,
         role,
     )
-    ensure_catalog_contributor_family(connector, family, backend=backend)
+    ensure_catalog_contributor_family(
+        connector, family, backend=backend or connector_backend(connector)
+    )
     return family
 
 
+@atomic_fixture
 def clone_catalog_publication_families(
     connector: SQLConnector,
     *,
     source_revision: int,
     target_revision: int,
-    backend: str = "sqlite",
+    backend: str | None = None,
 ) -> None:
     """Clone exact scalar/title/contributor families into a seeded revision."""
 
@@ -321,7 +343,7 @@ def clone_catalog_publication_families(
             modified_at=modified_at,
             source_title_sha256=source_title,
             download_time=download_time,
-            backend=backend,
+            backend=backend or connector_backend(connector),
         )
     title_rows = connector.fetch_all(
         "SELECT publication_key, source_title_sha256, source_gallery_name "
@@ -336,7 +358,7 @@ def clone_catalog_publication_families(
             publication_key=publication_key,
             source_title_sha256=source_title,
             source_gallery_name=source_gallery_name,
-            backend=backend,
+            backend=backend or connector_backend(connector),
         )
     contributor_rows = connector.fetch_all(
         "SELECT publication_key, position, contributor_name_sha256, role "
@@ -352,5 +374,5 @@ def clone_catalog_publication_families(
             position=position,
             contributor_name_sha256=contributor_name,
             role=role,
-            backend=backend,
+            backend=backend or connector_backend(connector),
         )

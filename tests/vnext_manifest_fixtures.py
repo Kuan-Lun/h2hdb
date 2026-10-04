@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from vnext_test_database import atomic_fixture
+
 from h2hdb.vnext_manifest_family import (
     BuildManifestFamily,
     GalleryManifestFamily,
@@ -16,6 +18,7 @@ from h2hdb.vnext_manifest_family import (
 )
 
 
+@atomic_fixture
 def seed_source_build(
     connector: Any,
     *,
@@ -57,6 +60,7 @@ def seed_source_build(
     return expected
 
 
+@atomic_fixture
 def seed_build_manifest(
     connector: Any,
     *,
@@ -100,6 +104,7 @@ def seed_build_manifest(
     )
 
 
+@atomic_fixture
 def seed_sealed_source_build(
     connector: Any,
     *,
@@ -170,6 +175,7 @@ def seed_sealed_source_build(
     return result
 
 
+@atomic_fixture
 def seed_gallery_manifest(
     connector: Any,
     *,
@@ -206,6 +212,7 @@ def seed_gallery_manifest(
     return expected
 
 
+@atomic_fixture
 def seed_snapshot_manifest(
     connector: Any,
     *,

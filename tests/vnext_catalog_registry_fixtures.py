@@ -7,6 +7,8 @@ that need non-bootstrap policy rows insert the same authoritative BCNF rows.
 
 from __future__ import annotations
 
+from vnext_test_database import atomic_fixture
+
 from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_catalog_registry_repository import (
@@ -34,6 +36,7 @@ def _exact_fixture_replay[T](label: str, actual: T, expected: T) -> T:
     return actual
 
 
+@atomic_fixture
 def seed_manifest_policy(
     connector: SQLConnector,
     *,
@@ -70,6 +73,7 @@ def seed_manifest_policy(
     return load_manifest_policy(connector, manifest_policy_id)
 
 
+@atomic_fixture
 def seed_analysis_policy(
     connector: SQLConnector,
     *,
@@ -118,6 +122,7 @@ def seed_analysis_policy(
     return load_analysis_policy(connector, policy_id)
 
 
+@atomic_fixture
 def seed_artifact_adapter_policy(
     connector: SQLConnector,
     *,
@@ -154,6 +159,7 @@ def seed_artifact_adapter_policy(
     )
 
 
+@atomic_fixture
 def seed_artifact_policy_semantics(
     connector: SQLConnector,
     *,
@@ -207,6 +213,7 @@ def seed_artifact_policy_semantics(
     return load_artifact_policy_semantics(connector, policy_digest)
 
 
+@atomic_fixture
 def seed_title_sort_policy(
     connector: SQLConnector,
     *,
@@ -244,6 +251,7 @@ def seed_title_sort_policy(
     return load_title_sort_policy(connector, title_sort_policy_id)
 
 
+@atomic_fixture
 def seed_display_title_policy(
     connector: SQLConnector,
     *,
@@ -281,6 +289,7 @@ def seed_display_title_policy(
     return load_display_title_policy(connector, display_title_policy_id)
 
 
+@atomic_fixture
 def seed_source_scope(
     connector: SQLConnector,
     *,
