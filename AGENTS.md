@@ -224,7 +224,9 @@
   Core connector connection guard拒絕未分類或繞過所選 backend的連線。
   直接呼叫 driver的檢查及 subprocess不在攔截範圍，必須另外檢查其實際
   database authority，不能以相鄰 SQLite檔案代替 MariaDB狀態。真正的引擎專屬
-  契約須以 `backend_specific(backend=..., reason=...)`記錄具體理由；SQLite
+  契約須在個別測試或參數以 `backend_specific(backend=..., reason=...)`
+  記錄具體理由，禁止從 module/class 繼承整批豁免；collection 檢查標記
+  來源，測試內容是否真正專屬仍須 code review。SQLite
   VM、MariaDB server crash可以使用不同原生 oracle，但不得豁免可攜語義。
   Subprocess的明確 backend輸入與跨 backend reference另行審查；collection
   配對、原生連線 guard及兩個引擎實際執行是不同證據，skip不算完成。

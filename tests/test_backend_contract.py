@@ -111,6 +111,51 @@ def test_engine():
     )
 
 
+@pytest.mark.parametrize("scope", ("module", "class"))
+def test_inherited_engine_exemption_is_rejected_before_execution(
+    pytester: pytest.Pytester, scope: str
+) -> None:
+    declaration = (
+        "pytest.mark.backend_specific(backend='sqlite', "
+        "reason='SQLite journal durability PRAGMA is engine-specific')"
+    )
+    body = (
+        f"pytestmark = {declaration}\n"
+        "def test_new_case():\n"
+        "    raise AssertionError('collection must fail first')\n"
+        if scope == "module"
+        else f"@{declaration}\n"
+        "class TestNative:\n"
+        "    def test_new_case(self):\n"
+        "        raise AssertionError('collection must fail first')\n"
+    )
+    _suite(pytester, "import pytest\n" + body)
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(
+        ["*backend_specific must be declared on the individual test or parameter*"]
+    )
+
+
+def test_explicit_parameter_engine_exemption_is_accepted(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+@pytest.mark.parametrize('journal', [pytest.param('wal', marks=pytest.mark.backend_specific(
+    backend='sqlite', reason='SQLite journal durability PRAGMA is engine-specific'))])
+def test_journal(journal):
+    SQLiteConnector().connect()
+""",
+    )
+    pytester.runpytest_subprocess("-q", "--check-backend-pairs").assert_outcomes(
+        passed=1
+    )
+
+
 def test_missing_non_backend_parameter_twin_fails_before_execution(
     pytester: pytest.Pytester,
 ) -> None:

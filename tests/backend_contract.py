@@ -88,12 +88,17 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _marker(item: pytest.Item, name: str) -> dict[str, Any] | None:
-    markers = list(item.iter_markers(name))
+    markers = list(item.iter_markers_with_node(name))
     if not markers:
         return None
     if len(markers) != 1:
         raise pytest.UsageError(f"{item.nodeid}: duplicate {name} contracts")
-    marker = markers[0]
+    owner, marker = markers[0]
+    if name == "backend_specific" and owner is not item:
+        raise pytest.UsageError(
+            f"{item.nodeid}: backend_specific must be declared on the individual "
+            "test or parameter, not inherited from a module or class"
+        )
     if marker.args or not isinstance(marker.kwargs.get("reason"), str):
         raise pytest.UsageError(f"{item.nodeid}: {name} requires keyword reason")
     if len(marker.kwargs["reason"].strip()) < 20:

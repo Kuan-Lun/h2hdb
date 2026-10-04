@@ -25,10 +25,6 @@ pytestmark = [
     pytest.mark.deep,
     pytest.mark.mariadb,
     pytest.mark.mariadb_server_crash,
-    pytest.mark.backend_specific(
-        backend="mariadb",
-        reason="Native MariaDB server SIGKILL and named-volume crash recovery; SQLite has no separate database server.",
-    ),
 ]
 
 _MARIADB_IMAGE = "mariadb:10.11.11"
@@ -190,6 +186,10 @@ def _kill_and_reap(process: Any) -> None:
         )
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="Native MariaDB server SIGKILL and named-volume crash recovery; SQLite has no separate database server.",
+)
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX SIGKILL only")
 def test_live_mariadb_server_sigkill_recreated_container_recovers_named_volume_transactions() -> (  # noqa: E501 -- test name is the exact evidence claim.
     None

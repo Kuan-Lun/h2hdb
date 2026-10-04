@@ -16,7 +16,7 @@ from h2hdb.mariadb_pool import MariaDBConnectionPool
 from h2hdb.repository import RepositoryContext
 from h2hdb.sql_connector import DatabaseConfigurationError
 
-pytestmark = pytest.mark.backend_specific(
+_MARIADB_CONTRACT = pytest.mark.backend_specific(
     backend="mariadb",
     reason="MariaDB wire packets, pooled server sessions and durability admission are engine-specific",
 )
@@ -198,6 +198,7 @@ def _flatten_batches(
     return [row for _, batch in calls for row in batch]
 
 
+@_MARIADB_CONTRACT
 def test_begin_read_bypasses_mariadb_compatibility_version_prefix() -> None:
     connection = _CompatibilityPrefixedConnection()
     connector = _connector_with(connection)
@@ -211,6 +212,7 @@ def test_begin_read_bypasses_mariadb_compatibility_version_prefix() -> None:
     assert connector._in_transaction
 
 
+@_MARIADB_CONTRACT
 def test_begin_read_rejects_an_existing_transaction() -> None:
     connection = _CompatibilityPrefixedConnection(in_transaction=True)
     connector = _connector_with(connection)
@@ -222,6 +224,7 @@ def test_begin_read_rejects_an_existing_transaction() -> None:
     assert not connector._in_transaction
 
 
+@_MARIADB_CONTRACT
 def test_check_table_exists_binds_the_exact_table_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -245,6 +248,7 @@ def test_check_table_exists_binds_the_exact_table_name(
     ]
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_caches_session_packet_limit_for_physical_connection() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -260,6 +264,7 @@ def test_execute_many_caches_session_packet_limit_for_physical_connection() -> N
     assert connection.cursors[0].closed
 
 
+@_MARIADB_CONTRACT
 @pytest.mark.parametrize("affected_rows", (0, 1))
 def test_execute_affected_returns_statement_rowcount_and_commits(
     affected_rows: int,
@@ -278,6 +283,7 @@ def test_execute_affected_returns_statement_rowcount_and_commits(
     assert connection.rollback_calls == 0
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_does_not_query_packet_limit_for_non_insert() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -294,6 +300,7 @@ def test_execute_many_does_not_query_packet_limit_for_non_insert() -> None:
     ]
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_splits_insert_by_encoded_bytes_and_preserves_order() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -311,6 +318,7 @@ def test_execute_many_splits_insert_by_encoded_bytes_and_preserves_order() -> No
     assert _flatten_batches(large_calls) == large_rows
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_splits_insert_with_leading_block_comment() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -324,6 +332,7 @@ def test_execute_many_splits_insert_with_leading_block_comment() -> None:
     assert _flatten_batches(connection.execute_many_calls) == rows
 
 
+@_MARIADB_CONTRACT
 def test_chunked_execute_many_commits_once_after_all_chunks() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -335,6 +344,7 @@ def test_chunked_execute_many_commits_once_after_all_chunks() -> None:
     assert connection.rollback_calls == 0
 
 
+@_MARIADB_CONTRACT
 def test_chunked_execute_many_rolls_back_when_second_chunk_fails() -> None:
     connection = _PacketRecordingConnection(fail_execute_many_call=2)
     connector = _packet_connector_with(connection)
@@ -347,6 +357,7 @@ def test_chunked_execute_many_rolls_back_when_second_chunk_fails() -> None:
     assert connection.rollback_calls == 1
 
 
+@_MARIADB_CONTRACT
 def test_chunked_execute_many_does_not_commit_inside_explicit_transaction() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -361,6 +372,7 @@ def test_chunked_execute_many_does_not_commit_inside_explicit_transaction() -> N
     assert connection.rollback_calls == 0
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_rejects_single_row_over_hard_packet_limit_before_send() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)
@@ -373,6 +385,7 @@ def test_execute_many_rejects_single_row_over_hard_packet_limit_before_send() ->
     assert connection.commit_calls == 0
 
 
+@_MARIADB_CONTRACT
 def test_connect_clears_cached_packet_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -404,6 +417,7 @@ def test_connect_clears_cached_packet_limit(
     assert first_connection.closed
 
 
+@_MARIADB_CONTRACT
 def test_connect_rejects_nondurable_innodb_commit_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -428,6 +442,7 @@ def test_connect_rejects_nondurable_innodb_commit_setting(
     assert connection.closed
 
 
+@_MARIADB_CONTRACT
 def test_execute_many_splits_insert_below_real_mariadb_packet_limit(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -450,6 +465,7 @@ def test_execute_many_splits_insert_below_real_mariadb_packet_limit(
         assert int(total_size) > _INTEGRATION_PACKET_LIMIT
 
 
+@_MARIADB_CONTRACT
 def test_chunked_execute_many_rolls_back_real_mariadb_late_failure(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -505,6 +521,7 @@ def _pooled_connector(
     )
 
 
+@_MARIADB_CONTRACT
 def test_pooled_connector_reuses_one_cursor_executes_immediately_and_resets() -> None:
     connection = _PooledRecordingConnection()
     pool = MariaDBConnectionPool(lambda: cast(MySQLConnectionAbstract, connection))
@@ -529,6 +546,7 @@ def test_pooled_connector_reuses_one_cursor_executes_immediately_and_resets() ->
     assert connection.closed
 
 
+@_MARIADB_CONTRACT
 def test_connector_rejects_cross_thread_lease_use_and_close() -> None:
     connection = _PooledRecordingConnection()
     pool = MariaDBConnectionPool(lambda: cast(MySQLConnectionAbstract, connection))
@@ -544,6 +562,7 @@ def test_connector_rejects_cross_thread_lease_use_and_close() -> None:
     pool.close()
 
 
+@_MARIADB_CONTRACT
 def test_commit_response_loss_is_not_retried_and_discards_lease() -> None:
     connection = _PooledRecordingConnection()
     connection.fail_commit = True
@@ -561,6 +580,7 @@ def test_commit_response_loss_is_not_retried_and_discards_lease() -> None:
     pool.close()
 
 
+@_MARIADB_CONTRACT
 def test_failed_reset_discards_session_and_returns_pool_capacity() -> None:
     first, second = _PooledRecordingConnection(), _PooledRecordingConnection()
     first.fail_reset = True
@@ -580,6 +600,7 @@ def test_failed_reset_discards_session_and_returns_pool_capacity() -> None:
     assert second.closed
 
 
+@_MARIADB_CONTRACT
 def test_failed_connector_initialization_releases_pool_capacity() -> None:
     first, second = _PooledRecordingConnection(), _PooledRecordingConnection()
     first.innodb_flush_log_at_trx_commit = 2
@@ -597,6 +618,7 @@ def test_failed_connector_initialization_releases_pool_capacity() -> None:
     pool.close()
 
 
+@_MARIADB_CONTRACT
 def test_idle_cursor_replacement_precedes_initialization_and_business_sql() -> None:
     class ExpiringConnection(_PooledRecordingConnection):
         expired = False
@@ -628,6 +650,7 @@ def test_idle_cursor_replacement_precedes_initialization_and_business_sql() -> N
     pool.close()
 
 
+@_MARIADB_CONTRACT
 @pytest.mark.parametrize(
     "failed_query",
     [INNODB_DURABILITY_QUERY, "SET SESSION TRANSACTION READ ONLY", "SELECT 42"],
@@ -670,6 +693,7 @@ def test_pooled_sql_failure_after_cursor_admission_is_never_replayed(
     pool.close()
 
 
+@_MARIADB_CONTRACT
 @pytest.mark.mariadb_smoke
 def test_runtime_pool_real_mariadb_resets_read_only_session_and_uncommitted_rows(
     mariadb_config: CoreConfig,
@@ -702,6 +726,7 @@ def test_runtime_pool_real_mariadb_resets_read_only_session_and_uncommitted_rows
         context.close()
 
 
+@_MARIADB_CONTRACT
 def test_runtime_pool_real_mariadb_commit_response_loss_reads_durable_outcome(
     mariadb_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -737,6 +762,7 @@ def test_runtime_pool_real_mariadb_commit_response_loss_reads_durable_outcome(
         context.close()
 
 
+@_MARIADB_CONTRACT
 def test_runtime_pool_real_mariadb_close_preserves_active_transaction(
     mariadb_config: CoreConfig,
 ) -> None:

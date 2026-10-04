@@ -14,12 +14,13 @@ from h2hdb.vnext_schema_provider import (
     _validate_mariadb_relation,
 )
 
-pytestmark = pytest.mark.backend_specific(
+_MARIADB_CONTRACT = pytest.mark.backend_specific(
     backend="mariadb",
     reason="MariaDB INFORMATION_SCHEMA CHECK constraint names are table-scoped and use native catalog validators",
 )
 
 
+@_MARIADB_CONTRACT
 @pytest.mark.mariadb
 def test_same_check_name_on_distinct_tables_keeps_exact_relation_validation(
     mariadb_config: CoreConfig,
@@ -55,6 +56,7 @@ def test_same_check_name_on_distinct_tables_keeps_exact_relation_validation(
             )
 
 
+@_MARIADB_CONTRACT
 @pytest.mark.mariadb
 def test_control_checks_ignore_same_names_on_another_table(
     mariadb_config: CoreConfig,
