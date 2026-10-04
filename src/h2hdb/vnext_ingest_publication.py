@@ -118,6 +118,7 @@ from .vnext_operational_event_repository import (
 )
 from .vnext_publication_candidate_repository import (
     PublicationCandidateBatch,
+    PublicationCandidateConflictError,
     PublicationCandidateRepository,
     PublicationCatalogProjectionPlan,
 )
@@ -622,7 +623,9 @@ class _PublicationPlanCache:
         self.canonical_consumer_cursor(plan)
         observed = self.__observed_sealed.get(plan.value_sha256)
         if observed is not None and sealed != observed:
-            raise RuntimeError("sealed canonical identity changed after observation")
+            raise PublicationCandidateConflictError(
+                "sealed canonical identity changed after observation"
+            )
 
     def record_sealed_observation(
         self,
@@ -632,7 +635,9 @@ class _PublicationPlanCache:
         self.canonical_consumer_cursor(plan)
         observed = self.__observed_sealed.get(plan.value_sha256)
         if observed is not None and observed != sealed:
-            raise RuntimeError("sealed canonical identity changed after observation")
+            raise PublicationCandidateConflictError(
+                "sealed canonical identity changed after observation"
+            )
         self.__observed_sealed[plan.value_sha256] = sealed
 
     def current_canonical_page(
@@ -2542,17 +2547,21 @@ def _load_checkpoints(
     )
     result = tuple((bytes(row[0]), str(row[1])) for row in rows)
     if tuple(stage for stage, _state in result) != _CANDIDATE_STAGES:
-        raise RuntimeError(
+        raise PublicationCandidateConflictError(
             "publication candidate checkpoint registry is incomplete or reordered"
         )
     if any(state not in {"OPEN", "COMPLETE"} for _stage, state in result):
-        raise RuntimeError("publication checkpoint has an invalid state")
+        raise PublicationCandidateConflictError(
+            "publication checkpoint has an invalid state"
+        )
     seen_open = False
     for _stage, state in result:
         if state == "OPEN":
             seen_open = True
         elif seen_open:
-            raise RuntimeError("publication checkpoints are not prefix-complete")
+            raise PublicationCandidateConflictError(
+                "publication checkpoints are not prefix-complete"
+            )
     return result
 
 
@@ -2674,7 +2683,9 @@ def _next_cached_canonical_work(
             cached.advance_canonical_plan(plan)
             continue
         if not required:
-            raise RuntimeError("consumed canonical value is no longer exactly sealed")
+            raise PublicationCandidateConflictError(
+                "consumed canonical value is no longer exactly sealed"
+            )
         if claim is None:
             return (
                 _CanonicalWork(plan, owner, stage_fence=fence),
@@ -2735,7 +2746,9 @@ def _prepare_canonical_window(
     try:
         sealed = load_sealed_value_identities(connector, value_sha256s=values)
     except (CanonicalValueCollisionError, CanonicalValuePartialFamilyError) as error:
-        raise RuntimeError("canonical sealed identity is partial or corrupt") from error
+        raise PublicationCandidateConflictError(
+            "canonical sealed identity is partial or corrupt"
+        ) from error
     for plan, _page in retained:
         cached.require_stable_sealed_observation(plan, sealed.get(plan.value_sha256))
     placeholders = ", ".join("%s" for _ in values)
@@ -2747,7 +2760,9 @@ def _prepare_canonical_window(
     claimed: set[bytes] = set()
     for row in claims:
         if len(row) != 2 or row[1] not in values or row[1] in claimed:
-            raise RuntimeError("canonical upload claim is malformed")
+            raise PublicationCandidateConflictError(
+                "canonical upload claim is malformed"
+            )
         claim = _require_canonical_claim(
             row, generation=generation, value_sha256=row[1]
         )
@@ -2764,7 +2779,7 @@ def _prepare_canonical_window(
             connector, references=references
         )
     except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
-        raise RuntimeError(
+        raise PublicationCandidateConflictError(
             "sealed canonical identity failed full tree validation"
         ) from error
     items: list[_CanonicalWork] = []
@@ -2781,12 +2796,14 @@ def _prepare_canonical_window(
                 plan.value_sha256, plan.digest_domain, plan.byte_count, page.page_sha256
             )
             if receipt != expected:
-                raise RuntimeError(
+                raise PublicationCandidateConflictError(
                     "sealed canonical identity differs from the plan's exact preimage"
                 )
             payload = payloads.get((plan.value_sha256, plan.digest_domain))
             if payload is None:
-                raise RuntimeError("sealed canonical single-page payload is missing")
+                raise PublicationCandidateConflictError(
+                    "sealed canonical single-page payload is missing"
+                )
             comparator = _CanonicalPreimageComparator(plan.iter_payload_parts())
             comparator.consume(payload)
             comparator.finish()
@@ -2799,7 +2816,7 @@ def _prepare_canonical_window(
                 continue
         else:
             if not required:
-                raise RuntimeError(
+                raise PublicationCandidateConflictError(
                     "consumed canonical value is no longer exactly sealed"
                 )
             _canonical_page_is_exact(connector, page)
@@ -2840,7 +2857,9 @@ def _next_canonical_plan_work(
             return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
         return None
     if not claim_required:
-        raise RuntimeError("consumed canonical value is no longer exactly sealed")
+        raise PublicationCandidateConflictError(
+            "consumed canonical value is no longer exactly sealed"
+        )
     if claim is None:
         return _CanonicalWork(plan, owner), _Action.CANONICAL_ALLOCATE
     for page in plan.iter_pages():
@@ -2868,7 +2887,9 @@ def _load_canonical_plan_state(
         CanonicalValueCollisionError,
         CanonicalValuePartialFamilyError,
     ) as error:
-        raise RuntimeError("canonical sealed identity is partial or corrupt") from error
+        raise PublicationCandidateConflictError(
+            "canonical sealed identity is partial or corrupt"
+        ) from error
     claim_row = connector.fetch_one(
         "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
         "WHERE generation = %s AND value_sha256 = %s",
@@ -2895,11 +2916,15 @@ def _canonical_page_is_exact(
         CanonicalValueCollisionError,
         CanonicalValuePartialFamilyError,
     ) as error:
-        raise RuntimeError("canonical page family is partial or corrupt") from error
+        raise PublicationCandidateConflictError(
+            "canonical page family is partial or corrupt"
+        ) from error
     if family is None:
         return False
     if family.page_bytes != page.page_bytes:
-        raise RuntimeError("canonical page digest collides with another exact preimage")
+        raise PublicationCandidateConflictError(
+            "canonical page digest collides with another exact preimage"
+        )
     return True
 
 
@@ -2912,17 +2937,21 @@ def _require_canonical_claim(
     if not row:
         return None
     if len(row) != 2:
-        raise RuntimeError("canonical upload claim is malformed")
+        raise PublicationCandidateConflictError("canonical upload claim is malformed")
     try:
         actual = (
             require_positive_int63(row[0], field="canonical claim generation"),
             require_digest32(row[1], field="canonical claim value_sha256"),
         )
     except (TypeError, ValueError) as error:
-        raise RuntimeError("canonical upload claim is malformed") from error
+        raise PublicationCandidateConflictError(
+            "canonical upload claim is malformed"
+        ) from error
     expected = (generation, value_sha256)
     if actual != expected:
-        raise RuntimeError("canonical upload claim belongs to another authority")
+        raise PublicationCandidateConflictError(
+            "canonical upload claim belongs to another authority"
+        )
     return actual
 
 
@@ -2945,7 +2974,7 @@ class _CanonicalPreimageComparator:
             except StopIteration:
                 self.__ended = True
         if bytes(self.__buffer[:needed]) != part:
-            raise RuntimeError(
+            raise PublicationCandidateConflictError(
                 "sealed canonical identity differs from the plan's exact preimage"
             )
         del self.__buffer[:needed]
@@ -2965,7 +2994,7 @@ class _CanonicalPreimageComparator:
                 self.__buffer.extend(remaining)
                 break
         if self.__buffer or not self.__ended:
-            raise RuntimeError(
+            raise PublicationCandidateConflictError(
                 "sealed canonical identity differs at exact preimage EOF"
             )
 
@@ -2985,7 +3014,7 @@ def _compare_sealed_canonical_plan(
             consume_provisional=comparator.consume,
         )
     except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
-        raise RuntimeError(
+        raise PublicationCandidateConflictError(
             "sealed canonical identity failed full tree validation"
         ) from error
     comparator.finish()
@@ -3002,7 +3031,7 @@ def _compare_sealed_canonical_plan(
         receipt.root_page_sha256,
     )
     if actual != expected:
-        raise RuntimeError(
+        raise PublicationCandidateConflictError(
             "sealed canonical identity receipt differs from the upload plan"
         )
 

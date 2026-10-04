@@ -28,6 +28,7 @@ from h2hdb.vnext_canonical_value_repository import (
 )
 from h2hdb.vnext_publication_candidate_repository import (
     PublicationCandidateBatch,
+    PublicationCandidateConflictError,
     PublicationCandidateRepository,
 )
 
@@ -995,7 +996,7 @@ def test_sealed_observation_fails_closed_if_fresh_receipt_changes(
             )
 
         with pytest.raises(
-            RuntimeError,
+            PublicationCandidateConflictError,
             match="sealed canonical identity changed after observation",
         ):
             harness.step(machine, authority=authority)
@@ -1027,7 +1028,7 @@ def test_same_receipt_preimage_drift_is_revalidated_and_rejected(
         actual_state.sealed_payload_overrides[fixture.value_sha256] = b"drifted"
 
         with pytest.raises(
-            RuntimeError,
+            PublicationCandidateConflictError,
             match="sealed canonical identity differs from the plan's exact preimage",
         ):
             harness.step(machine, authority=authority)
@@ -1068,7 +1069,7 @@ def test_corruption_remains_fail_closed_and_retires_cached_plan(
     with pytest.MonkeyPatch.context() as monkeypatch:
         harness.install(monkeypatch)
         machine = harness.machine(tmp_path / f"canonical-{corruption}.sqlite3")
-        with pytest.raises(RuntimeError) as optimized_error:
+        with pytest.raises(PublicationCandidateConflictError) as optimized_error:
             harness.step(machine, authority=object())
 
     assert str(optimized_error.value) == str(reference_error.value)

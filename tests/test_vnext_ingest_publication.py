@@ -61,6 +61,7 @@ from h2hdb.vnext_operational_event_repository import (
     RemovedGid,
 )
 from h2hdb.vnext_publication_candidate_repository import (
+    PublicationCandidateConflictError,
     PublicationCandidateRepository,
 )
 from h2hdb.vnext_publication_finalization_repository import (
@@ -884,7 +885,9 @@ def test_canonical_claim_foreign_and_malformed_rows_fail_closed(
             (1, plan.value_sha256, b"extra"),
         ):
             connector.claim = claim
-            with pytest.raises(RuntimeError, match="canonical upload claim"):
+            with pytest.raises(
+                PublicationCandidateConflictError, match="canonical upload claim"
+            ):
                 publication._next_canonical_work(
                     cast(Any, connector),
                     backend="sqlite",
@@ -947,7 +950,7 @@ def test_fresh_canonical_keeps_allocate_page_and_seal_progression(
         assert sealed[1] is publication._Action.CANONICAL_SEAL
 
         family = SimpleNamespace(page_bytes=b"collision")
-        with pytest.raises(RuntimeError, match="exact preimage"):
+        with pytest.raises(PublicationCandidateConflictError, match="exact preimage"):
             publication._next_canonical_work(
                 cast(Any, connector),
                 backend="sqlite",
@@ -993,7 +996,7 @@ def test_sealed_canonical_full_preimage_mismatch_rejects_even_exact_claim(
         staticmethod(collide),
     )
     try:
-        with pytest.raises(RuntimeError, match="exact preimage"):
+        with pytest.raises(PublicationCandidateConflictError, match="exact preimage"):
             publication._next_canonical_work(
                 cast(Any, connector),
                 backend="sqlite",
@@ -1016,7 +1019,9 @@ def test_partial_sealed_canonical_family_fails_closed(
 
     monkeypatch.setattr(publication, "load_sealed_value_identity", partial)
     try:
-        with pytest.raises(RuntimeError, match="partial or corrupt"):
+        with pytest.raises(
+            PublicationCandidateConflictError, match="partial or corrupt"
+        ):
             publication._next_canonical_work(
                 cast(Any, connector),
                 backend="sqlite",

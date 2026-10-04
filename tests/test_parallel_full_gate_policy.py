@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -151,6 +152,18 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_restart.py",
             "test_resume_rejects_corrupt_gallery_identity_without_writes",
         ),
+        # Real canonical page swaps and missing children must retain typed
+        # publication refusal, unchanged durable state and recovery to READY.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rejects_canonical_corruption_without_writes",
+        ),
+        # Missing/reordered semantic checkpoint authority and a CHECK-bypassed
+        # invalid state must be rejected before publication issue can write.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_issue_rejects_checkpoint_corruption_without_writes",
+        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
@@ -244,14 +257,28 @@ def test_reviewed_mariadb_smoke_cases_are_actually_collected_without_deep() -> N
         for line in result.stdout.splitlines()
         if line.startswith("tests/") and "::" in line
     ]
-    actual = {
+    actual = Counter(
         (Path(node.split("::")[0]).name, node.split("::")[1].split("[")[0])
         for node in nodeids
-    }
+    )
     expected = _declared_mariadb_smoke_inventory()
-    assert actual == expected
-    # Each reviewed family currently admits one representative native case.
-    assert len(nodeids) == len(expected)
+    assert set(actual) == expected
+    # Most families admit one native case; the small corruption regressions
+    # retain both canonical faults and all three checkpoint refusal branches.
+    counts = dict.fromkeys(expected, 1)
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rejects_canonical_corruption_without_writes",
+        )
+    ] = 2
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_issue_rejects_checkpoint_corruption_without_writes",
+        )
+    ] = 3
+    assert actual == counts
 
 
 @pytest.mark.parametrize(
