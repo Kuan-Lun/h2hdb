@@ -8,47 +8,44 @@ import pytest
 import test_catalog_refinement_runtime as refinement_support
 import test_vnext_cleanup_repository as cleanup_support
 import test_vnext_publication_repository as publication_support
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+    inspection_snapshot,
+    set_foreign_key_checks,
+    snapshot_rows,
+)
 
 import h2hdb.vnext_publication_repository as publication_module
 from h2hdb import catalog_refinement
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_cleanup_repository import CleanupTargetKind
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _application_state(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[tuple[str, tuple[tuple[Any, ...], ...]], ...]:
     """Capture every application base row, including allocator/working state."""
 
-    names = tuple(
-        cast(str, row[0])
-        for row in connector.fetch_all(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' "
-            "AND (name LIKE 'catalog_%' OR name LIKE 'operational_%') "
-            "ORDER BY name"
-        )
-    )
     return tuple(
-        (
-            name,
-            tuple(sorted(connector.fetch_all(f'SELECT * FROM "{name}"'), key=repr)),
-        )
-        for name in names
+        (name, rows)
+        for name, rows in snapshot_rows(connector).items()
+        if name.startswith(("catalog_", "operational_"))
     )
 
 
 def _delete_transient_candidate_definition(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     connector.execute(
         "DELETE FROM catalog_publication_candidates WHERE candidate_id = %s",
         (publication_support._CANDIDATE,),
     )
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
 
 
 @pytest.mark.parametrize(
@@ -62,12 +59,13 @@ def _delete_transient_candidate_definition(
     ),
 )
 def test_ready_rejects_common_commit_or_head_corruption(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
     error_match: str,
 ) -> None:
     connector = refinement_support._generated_catalog_database(
-        tmp_path / f"common-{corruption}.sqlite3"
+        database_factory.config(str(tmp_path / f"common-{corruption}.sqlite3"))
     )
     try:
         analysis_id = refinement_support._insert_active_source_head(connector)
@@ -75,15 +73,16 @@ def test_ready_rejects_common_commit_or_head_corruption(
         validator = catalog_refinement.builtin_semantic_validators()[
             "catalog.publication-atomicity.v1"
         ]
-        validator(connector)
+        with inspection_snapshot(connector):
+            validator(connector)
 
         if corruption == "sealed-member":
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             connector.execute(
                 "DELETE FROM catalog_publication_commits WHERE receipt_id = %s",
                 (b"t" * 16,),
             )
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         else:
             connector.execute(
                 "DELETE FROM catalog_publication_commit_head_receipts "
@@ -95,7 +94,8 @@ def test_ready_rejects_common_commit_or_head_corruption(
             catalog_refinement.CatalogSemanticValidationError,
             match=error_match,
         ):
-            validator(connector)
+            with inspection_snapshot(connector):
+                validator(connector)
     finally:
         connector.close()
 
@@ -108,17 +108,18 @@ def test_ready_rejects_common_commit_or_head_corruption(
     ),
 )
 def test_ready_rejects_common_chain_corruption(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
     error_match: str,
 ) -> None:
     connector = refinement_support._generated_catalog_database(
-        tmp_path / f"chain-{corruption}.sqlite3"
+        database_factory.config(str(tmp_path / f"chain-{corruption}.sqlite3"))
     )
     try:
         analysis_id = refinement_support._insert_active_source_head(connector)
         refinement_support._insert_active_publication(connector, analysis_id)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         if corruption == "unsealed-anchor":
             connector.execute(
                 "INSERT INTO catalog_publication_commit_anchors "
@@ -129,7 +130,7 @@ def test_ready_rejects_common_chain_corruption(
             connector.execute(
                 "DELETE FROM catalog_publication_generation_nodes WHERE generation = 0"
             )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
         validator = catalog_refinement.builtin_semantic_validators()[
             "catalog.publication-atomicity.v1"
@@ -138,18 +139,20 @@ def test_ready_rejects_common_chain_corruption(
             catalog_refinement.CatalogSemanticValidationError,
             match=error_match,
         ):
-            validator(connector)
+            with inspection_snapshot(connector):
+                validator(connector)
     finally:
         connector.close()
 
 
 @pytest.mark.parametrize("with_base", [False, True], ids=["genesis", "successor"])
 def test_commit_replay_is_read_only_after_transient_candidate_cleanup(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     with_base: bool,
 ) -> None:
     connector = publication_support._generated_database(
-        tmp_path / f"cleanup-replay-{with_base}.sqlite3"
+        database_factory.config(str(tmp_path / f"cleanup-replay-{with_base}.sqlite3"))
     )
     try:
         gate, turn = publication_support._authorities(connector)
@@ -179,12 +182,15 @@ def test_commit_replay_is_read_only_after_transient_candidate_cleanup(
     ),
 )
 def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
     error_match: str,
 ) -> None:
     connector = publication_support._generated_database(
-        tmp_path / f"cleanup-replay-corrupt-{corruption}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"cleanup-replay-corrupt-{corruption}.sqlite3")
+        )
     )
     try:
         gate, turn = publication_support._authorities(connector)
@@ -213,7 +219,8 @@ def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
             publication_support._commit(connector, gate, turn, now=101)
 
         assert _application_state(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_id FROM catalog_publication_commits "
             "WHERE receipt_id = %s",
             (committed.receipt_id,),
@@ -223,10 +230,11 @@ def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
 
 
 def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = publication_support._generated_database(
-        tmp_path / "inactive-cleanup-replay.sqlite3"
+        database_factory.config(str(tmp_path / "inactive-cleanup-replay.sqlite3"))
     )
     try:
         gate, turn = publication_support._authorities(connector)
@@ -245,7 +253,7 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
         # until publication-commit cleanup has safely retired that retry authority.
         with connector.transaction():
             MaintenanceGateRepository.release(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate,
                 now=101,
             )
@@ -257,7 +265,7 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
             ),
         ):
             cleanup_gate = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=102,
                 lease_duration=1_000_000,
             )
@@ -290,14 +298,15 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
             build_cycle,
             now=121,
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM catalog_source_build_descriptor WHERE build_id = %s",
             (b"z" * 16,),
         ) == (b"z" * 16,)
 
         with connector.transaction():
             MaintenanceGateRepository.release(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 cleanup_gate,
                 now=150,
             )
@@ -309,7 +318,7 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
             ),
         ):
             replay_gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=151,
                 lease_duration=1_000_000,
             )
@@ -317,7 +326,7 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
         before = _application_state(connector)
         with connector.transaction():
             replay = publication_module.PublicationRepository.commit(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=replay_gate,
                 ingest_turn=turn,
                 candidate_id=b"x" * 16,
@@ -327,12 +336,12 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
         assert replay.receipt_id == b"h" * 16
         assert _application_state(connector) == before
 
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "DELETE FROM catalog_publication_commits WHERE receipt_id = %s",
             (replay.receipt_id,),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         corrupted = _application_state(connector)
         with pytest.raises(
             publication_module.PublicationNotReadyError,
@@ -340,7 +349,7 @@ def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
         ):
             with connector.transaction():
                 publication_module.PublicationRepository.commit(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=replay_gate,
                     ingest_turn=turn,
                     candidate_id=replay.candidate_id,

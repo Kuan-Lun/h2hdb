@@ -3,9 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_allocator_repository import (
     AllocatorExhaustedError,
     IdentityStream,
@@ -16,17 +23,20 @@ from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_transaction import StaleWriteError, VNextUnitOfWork
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
 def test_revision_and_identity_allocators_advance_exact_seed_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "allocators.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "allocators.sqlite3"))
+    )
     try:
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             assert (
                 VNextAllocatorRepository.allocate_identity(
                     work, IdentityStream.TAG, updated_at=13
@@ -58,13 +68,15 @@ def test_revision_and_identity_allocators_advance_exact_seed_rows(
                 == 1
             )
 
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT stream, next_revision, updated_at "
-            "FROM operational_revision_allocators ORDER BY stream"
+            "FROM operational_revision_allocators ORDER BY stream",
         ) == [("CATALOG", 2, 11), ("SOURCE", 2, 10)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT stream, next_id, updated_at "
-            "FROM operational_identity_allocators ORDER BY stream"
+            "FROM operational_identity_allocators ORDER BY stream",
         ) == [("GALLERY", 2, 12), ("POLICY", 2, 14), ("TAG", 2, 13)]
     finally:
         connector.close()
@@ -88,13 +100,16 @@ def test_revision_and_identity_allocators_advance_exact_seed_rows(
     ),
 )
 def test_exhaustion_sentinel_fails_without_mutation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     table: str,
     column: str,
     stream: RevisionStream | IdentityStream,
     allocator: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"{allocator}-exhausted.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"{allocator}-exhausted.sqlite3"))
+    )
     try:
         connector.execute(
             f"UPDATE {table} SET {column} = %s WHERE stream = %s",
@@ -102,7 +117,7 @@ def test_exhaustion_sentinel_fails_without_mutation(
         )
         with pytest.raises(AllocatorExhaustedError):
             with connector.transaction():
-                work = VNextUnitOfWork(connector, backend="sqlite")
+                work = VNextUnitOfWork(connector, backend=connector_backend(connector))
                 if isinstance(stream, RevisionStream):
                     VNextAllocatorRepository.allocate_revision(
                         work,
@@ -115,7 +130,8 @@ def test_exhaustion_sentinel_fails_without_mutation(
                         stream,
                         updated_at=99,
                     )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             f"SELECT {column}, updated_at FROM {table} WHERE stream = %s",
             (stream.value,),
         ) == (INT63_MAX, 0)
@@ -123,8 +139,12 @@ def test_exhaustion_sentinel_fails_without_mutation(
         connector.close()
 
 
-def test_allocator_requires_exact_seed_authority(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "allocator-missing.sqlite3")
+def test_allocator_requires_exact_seed_authority(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "allocator-missing.sqlite3"))
+    )
     try:
         connector.execute(
             "DELETE FROM operational_revision_allocators WHERE stream = %s",
@@ -132,7 +152,7 @@ def test_allocator_requires_exact_seed_authority(tmp_path: Path) -> None:
         )
         with pytest.raises(RuntimeError, match="required allocator row"):
             with connector.transaction():
-                work = VNextUnitOfWork(connector, backend="sqlite")
+                work = VNextUnitOfWork(connector, backend=connector_backend(connector))
                 VNextAllocatorRepository.allocate_revision(
                     work,
                     RevisionStream.SOURCE,
@@ -143,10 +163,13 @@ def test_allocator_requires_exact_seed_authority(tmp_path: Path) -> None:
 
 
 def test_revision_allocator_stale_next_revision_cas_fails_and_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "allocator-stale.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "allocator-stale.sqlite3"))
+    )
     try:
         original_execute_affected = connector.execute_affected
         injected = False
@@ -166,7 +189,7 @@ def test_revision_allocator_stale_next_revision_cas_fails_and_rolls_back(
         monkeypatch.setattr(connector, "execute_affected", execute_affected)
         with pytest.raises(StaleWriteError, match="SOURCE allocator"):
             with connector.transaction():
-                work = VNextUnitOfWork(connector, backend="sqlite")
+                work = VNextUnitOfWork(connector, backend=connector_backend(connector))
                 VNextAllocatorRepository.allocate_revision(
                     work,
                     RevisionStream.SOURCE,
@@ -174,7 +197,8 @@ def test_revision_allocator_stale_next_revision_cas_fails_and_rolls_back(
                 )
 
         assert injected
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_revision, updated_at "
             "FROM operational_revision_allocators WHERE stream = %s",
             (RevisionStream.SOURCE.value,),
@@ -184,13 +208,16 @@ def test_revision_allocator_stale_next_revision_cas_fails_and_rolls_back(
 
 
 def test_revision_allocation_is_rolled_back_with_its_transaction(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "allocator-rollback.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "allocator-rollback.sqlite3"))
+    )
     try:
         with pytest.raises(RuntimeError, match="force transaction rollback"):
             with connector.transaction():
-                work = VNextUnitOfWork(connector, backend="sqlite")
+                work = VNextUnitOfWork(connector, backend=connector_backend(connector))
                 assert (
                     VNextAllocatorRepository.allocate_revision(
                         work,
@@ -199,14 +226,16 @@ def test_revision_allocation_is_rolled_back_with_its_transaction(
                     )
                     == 1
                 )
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT next_revision, updated_at "
                     "FROM operational_revision_allocators WHERE stream = %s",
                     (RevisionStream.CATALOG.value,),
                 ) == (2, 77)
                 raise RuntimeError("force transaction rollback")
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_revision, updated_at "
             "FROM operational_revision_allocators WHERE stream = %s",
             (RevisionStream.CATALOG.value,),

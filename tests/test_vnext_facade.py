@@ -17,13 +17,22 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_snapshot_manifest
 from vnext_publication_fixtures import (
     seed_catalog_publication,
     seed_catalog_publication_title,
     seed_publication_commit,
     seed_publication_identity,
+)
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    fixture_transaction,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
 )
 
 from h2hdb import (
@@ -49,7 +58,6 @@ from h2hdb.ports import CatalogReader
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import SchemaEpochAdmissionError, SchemaEpochDefinition
 from h2hdb.sql_connector import DatabaseReadOnlyError, SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_artifact_family import (
     ArtifactSemanticInputFamily,
     CatalogArtifactFamily,
@@ -107,15 +115,26 @@ def _config(
     )
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
+
+
+def readonly_config(config: CoreConfig) -> CoreConfig:
+    return config.model_copy(
+        update={
+            "database": config.database.model_copy(
+                update={"access_mode": DatabaseAccessMode.read_only}
+            )
+        }
+    )
 
 
 def test_database_admin_facade_initializes_retries_and_fully_checks_fresh_epoch(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "admin-facade.sqlite3"
-    facade = VNextDatabaseAdminFacade(_config(path))
+    facade = VNextDatabaseAdminFacade(database_factory.config(str(path)))
 
     initialized = facade.initialize()
     retried = facade.initialize()
@@ -134,84 +153,93 @@ def test_database_admin_facade_initializes_retries_and_fully_checks_fresh_epoch(
 
 
 def test_database_admin_facade_fully_checks_through_read_only_config(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "admin-read-only-check.sqlite3"
-    VNextDatabaseAdminFacade(_config(path)).initialize()
+    VNextDatabaseAdminFacade(database_factory.config(str(path))).initialize()
 
-    checked = VNextDatabaseAdminFacade(_config(path, read_only=True)).check()
+    checked = VNextDatabaseAdminFacade(
+        readonly_config(database_factory.config(str(path)))
+    ).check()
 
     assert checked.state == "READY"
     assert checked.resumed_build
     assert not checked.transitioned_to_ready
 
 
-def test_database_admin_facade_binds_storage_instance_once(tmp_path: Path) -> None:
+def test_database_admin_facade_binds_storage_instance_once(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
     path = tmp_path / "admin-storage-binding.sqlite3"
-    facade = VNextDatabaseAdminFacade(_config(path))
+    facade = VNextDatabaseAdminFacade(database_factory.config(str(path)))
     facade.initialize()
     value = bytes.fromhex("00112233445546778899aabbccddeeff")
 
     assert facade.bind_storage_instance(value) == StorageInstanceBinding(value)
     assert facade.bind_storage_instance(value) == StorageInstanceBinding(value)
 
-    with SQLiteConnector(str(path), read_only=True) as connector:
-        assert connector.fetch_one(
+    with database_connector(
+        readonly_config(database_factory.config(str(path)))
+    ) as connector:
+        assert inspect_one(
+            connector,
             "SELECT storage_instance_uuid "
-            "FROM operational_storage_instance_bindings WHERE singleton_id = 1"
+            "FROM operational_storage_instance_bindings WHERE singleton_id = 1",
         ) == (value,)
 
 
 def test_public_open_database_fully_checks_epoch_before_returning_catalog_facade(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "public-open.sqlite3"
-    VNextDatabaseAdminFacade(_config(path)).initialize()
+    VNextDatabaseAdminFacade(database_factory.config(str(path))).initialize()
 
-    reader = open_database(_config(path, read_only=True))
+    reader = open_database(readonly_config(database_factory.config(str(path))))
 
     assert isinstance(reader, VNextCatalogFacade)
     assert isinstance(reader, CatalogReader)
 
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         connector.execute("CREATE TABLE unexpected_schema_drift (id INTEGER)")
 
     with pytest.raises(SchemaEpochAdmissionError, match="outside this epoch manifest"):
-        open_database(_config(path, read_only=True))
+        open_database(readonly_config(database_factory.config(str(path))))
 
 
 def test_database_admin_facade_readiness_is_read_only_and_constant_work(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "admin-readiness.sqlite3"
-    initialized = VNextDatabaseAdminFacade(_config(path)).initialize()
+    initialized = VNextDatabaseAdminFacade(
+        database_factory.config(str(path))
+    ).initialize()
     statements: list[str] = []
 
-    class CountingReadOnlySQLiteConnector(SQLiteConnector):
-        def fetch_one(
-            self,
-            query: str,
-            data: tuple[Any, ...] = (),
-        ) -> tuple[Any, ...]:
-            statements.append(query)
-            return super().fetch_one(query, data)
+    config = readonly_config(database_factory.config(str(path)))
 
-        def fetch_all(
-            self,
-            query: str,
-            data: tuple[Any, ...] = (),
-        ) -> list[tuple[Any, ...]]:
-            statements.append(query)
-            return super().fetch_all(query, data)
+    def observed_connector() -> SQLConnector:
+        native = database_connector(config)
+        for method in ("fetch_one", "fetch_all"):
+            original = getattr(native, method)
 
-    config = _config(path, read_only=True)
+            def observed(
+                query: str,
+                data: tuple[Any, ...] = (),
+                *,
+                _original: Callable[..., Any] = original,
+            ) -> Any:
+                statements.append(query)
+                return _original(query, data)
+
+            monkeypatch.setattr(native, method, observed)
+        return native
+
     context = replace(
-        RepositoryContext.from_config(config),
-        SQLConnector=lambda: CountingReadOnlySQLiteConnector(
-            database=str(path),
-            read_only=True,
-        ),
+        RepositoryContext.from_config(config), SQLConnector=observed_connector
     )
     monkeypatch.setattr(
         RepositoryContext,
@@ -223,8 +251,16 @@ def test_database_admin_facade_readiness_is_read_only_and_constant_work(
 
     assert readiness.state == "READY"
     assert readiness.manifest_sha256 == initialized.manifest_sha256
+    if config.database.sql_type == "mariadb":
+        # Native connect validates durability before the two admission reads.
+        assert statements.pop(0) == "SELECT @@GLOBAL.innodb_flush_log_at_trx_commit"
     assert len(statements) == 2
-    assert "sqlite_master" in statements[0]
+    control_inventory = (
+        "sqlite_master"
+        if config.database.sql_type == "sqlite"
+        else "information_schema"
+    )
+    assert control_inventory in statements[0].lower()
     assert "FROM h2hdb_schema_epoch" in statements[1]
 
 
@@ -273,7 +309,7 @@ def test_database_admin_facade_blocked_default_never_opens_database(
     assert not path.exists()
 
 
-def _canonical(connector: SQLiteConnector, domain: str, payload: bytes) -> bytes:
+def _canonical(connector: SQLConnector, domain: str, payload: bytes) -> bytes:
     value_sha256 = canonical_value_digest(domain, payload)
     chunks = () if not payload else (CanonicalValueChunk(0, payload),)
     page = CanonicalValuePage(
@@ -299,14 +335,14 @@ def _canonical(connector: SQLiteConnector, domain: str, payload: bytes) -> bytes
 
 
 def _publication_commit_fixture(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     snapshot_manifest_sha256: bytes,
 ) -> None:
     """Install the sealed physical commit graph consumed by the reader."""
 
     receipt_id = b"r" * 16
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         statements: tuple[tuple[str, tuple[object, ...]], ...] = (
             (
@@ -353,10 +389,19 @@ def _publication_commit_fixture(
             channel=b"default",
         )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
-def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
+def _catalog_fixture(connector: SQLConnector) -> dict[str, object]:
+    set_foreign_key_checks(connector, enabled=False)
+    try:
+        with fixture_transaction(connector):
+            return _catalog_fixture_rows(connector)
+    finally:
+        set_foreign_key_checks(connector, enabled=True)
+
+
+def _catalog_fixture_rows(connector: SQLConnector) -> dict[str, object]:
     source_root = _canonical(
         connector,
         "source_root_v1",
@@ -606,10 +651,11 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
 
 
 def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "catalog-facade.sqlite3"
-    connector = _generated_database(path)
+    connector = _generated_database(database_factory.config(str(path)))
     try:
         values = _catalog_fixture(connector)
         assert not connector.check_table_exists("database_maintenance")
@@ -617,7 +663,7 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
     finally:
         connector.close()
 
-    facade = VNextCatalogFacade(_config(path, read_only=True))
+    facade = VNextCatalogFacade(readonly_config(database_factory.config(str(path))))
     revision = facade.get_catalog_revision()
     page = facade.discover_publications(revision=revision, limit=10)
     bundle = facade.discover_publications_with_facets(
@@ -681,11 +727,12 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
 
 
 def test_catalog_bundle_uses_one_connection_and_two_fresh_read_transactions(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "catalog-bundle-connections.sqlite3"
-    connector = _generated_database(path)
+    connector = _generated_database(database_factory.config(str(path)))
     try:
         _catalog_fixture(connector)
     finally:
@@ -693,26 +740,28 @@ def test_catalog_bundle_uses_one_connection_and_two_fresh_read_transactions(
 
     events: list[str] = []
 
-    class CountingReadOnlySQLiteConnector(SQLiteConnector):
-        def connect(self) -> None:
-            events.append("connect")
-            super().connect()
+    config = readonly_config(database_factory.config(str(path)))
 
-        def begin_read(self) -> None:
-            events.append("begin-read")
-            super().begin_read()
+    def observed_connector() -> SQLConnector:
+        native = database_connector(config)
+        for method, label in (
+            ("connect", "connect"),
+            ("begin_read", "begin-read"),
+            ("close", "close"),
+        ):
+            original = getattr(native, method)
 
-        def close(self) -> None:
-            events.append("close")
-            super().close()
+            def observed(
+                *, _original: Callable[[], None] = original, _label: str = label
+            ) -> None:
+                events.append(_label)
+                _original()
 
-    config = _config(path, read_only=True)
+            monkeypatch.setattr(native, method, observed)
+        return native
+
     context = replace(
-        RepositoryContext.from_config(config),
-        SQLConnector=lambda: CountingReadOnlySQLiteConnector(
-            database=str(path),
-            read_only=True,
-        ),
+        RepositoryContext.from_config(config), SQLConnector=observed_connector
     )
     monkeypatch.setattr(
         RepositoryContext,
@@ -737,11 +786,12 @@ class _CountingClock:
 
 
 def test_download_queue_facade_owns_short_transactions_and_bounded_reads(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "queue-facade.sqlite3"
-    connector = _generated_database(path)
+    connector = _generated_database(database_factory.config(str(path)))
     connector.close()
     tokens = iter((b"a" * 16, b"b" * 16))
     monkeypatch.setattr(
@@ -749,7 +799,7 @@ def test_download_queue_facade_owns_short_transactions_and_bounded_reads(
         lambda size: next(tokens),
     )
     clock = _CountingClock(10, 11)
-    facade = VNextDownloadQueueFacade(_config(path), clock=clock)
+    facade = VNextDownloadQueueFacade(database_factory.config(str(path)), clock=clock)
 
     first = facade.request_download(42, "https://example.invalid/42")
     second = facade.ensure_download_request(100)
@@ -765,7 +815,7 @@ def test_download_queue_facade_owns_short_transactions_and_bounded_reads(
     assert facade.get_download_request(42) is None
 
     read_only = VNextDownloadQueueFacade(
-        _config(path, read_only=True),
+        readonly_config(database_factory.config(str(path))),
         clock=_CountingClock(12),
     )
     assert read_only.get_download_request(100) == second.request
@@ -775,11 +825,12 @@ def test_download_queue_facade_owns_short_transactions_and_bounded_reads(
 
 
 def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "queue-finish-facade.sqlite3"
-    connector = _generated_database(path)
+    connector = _generated_database(database_factory.config(str(path)))
     connector.close()
     request_tokens = iter((b"a" * 16, b"b" * 16, b"c" * 16))
     monkeypatch.setattr(
@@ -792,7 +843,7 @@ def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
         lambda: next(download_tokens),
     )
     clock = _CountingClock(10, 20, 30, 31, 32, 60, 70, 80)
-    facade = VNextDownloadQueueFacade(_config(path), clock=clock)
+    facade = VNextDownloadQueueFacade(database_factory.config(str(path)), clock=clock)
 
     original = facade.request_download(42, "https://example.invalid/42")
     turn = facade.claim_download_turn(lease_duration_microseconds=100)
@@ -805,7 +856,7 @@ def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
     assert facade.finish_download_turn(turn, original) == handoff
     assert facade.get_download_request(42) == replacement
 
-    connector = SQLiteConnector(str(path))
+    connector = database_connector(database_factory.config(str(path)))
     connector.connect()
     try:
         monkeypatch.setattr(
@@ -814,13 +865,13 @@ def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
         )
         with connector.transaction():
             ingest_turn = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=40,
                 lease_duration=100,
             )
         with connector.transaction():
             DownloadIngestRepository.complete_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 ingest_turn,
                 now=50,
             )
@@ -833,10 +884,11 @@ def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
     facade.finish_missing_download_turn(missing_turn, missing, 404)
     assert facade.get_download_request(404) is None
 
-    connector = SQLiteConnector(str(path))
+    connector = database_connector(database_factory.config(str(path)))
     connector.connect()
     try:
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM operational_removed_gids WHERE gid = %s",
             (404,),
         ) == (404,)
@@ -846,11 +898,12 @@ def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
 
 
 def test_download_queue_facade_rolls_back_repository_failure(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "queue-rollback.sqlite3"
-    connector = _generated_database(path)
+    connector = _generated_database(database_factory.config(str(path)))
     connector.close()
 
     def insert_then_fail(
@@ -873,15 +926,18 @@ def test_download_queue_facade_rolls_back_repository_failure(
         "ensure_download_request",
         insert_then_fail,
     )
-    facade = VNextDownloadQueueFacade(_config(path), clock=lambda: 99)
+    facade = VNextDownloadQueueFacade(
+        database_factory.config(str(path)), clock=lambda: 99
+    )
     with pytest.raises(RuntimeError, match="injected failure"):
         facade.ensure_download_request(77, "https://example.invalid/77")
 
-    connector = SQLiteConnector(str(path))
+    connector = database_connector(database_factory.config(str(path)))
     connector.connect()
     try:
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT gid FROM operational_download_requests WHERE gid = %s",
                 (77,),
             )
@@ -1148,9 +1204,12 @@ def test_closed_facades_reject_new_calls_without_opening_a_database(
 
 
 def test_repository_context_close_preserves_existing_connector_and_rejects_new(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    context = RepositoryContext.from_config(_config(tmp_path / "active-lease.sqlite3"))
+    context = RepositoryContext.from_config(
+        database_factory.config(str(tmp_path / "active-lease.sqlite3"))
+    )
     with context.SQLConnector() as connector:
         connector.execute("CREATE TABLE lifecycle_rows (id INT PRIMARY KEY)")
         with connector.transaction():
@@ -1163,7 +1222,9 @@ def test_repository_context_close_preserves_existing_connector_and_rejects_new(
     restarted = RepositoryContext.from_config(context.config)
     try:
         with restarted.SQLConnector() as connector:
-            assert connector.fetch_all("SELECT id FROM lifecycle_rows ORDER BY id") == [
+            assert inspect_all(
+                connector, "SELECT id FROM lifecycle_rows ORDER BY id"
+            ) == [
                 (1,),
                 (2,),
             ]

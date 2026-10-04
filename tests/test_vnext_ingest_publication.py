@@ -13,6 +13,12 @@ from typing import Any, cast
 
 import pytest
 import test_vnext_publication_repository as publication_fixtures
+from vnext_test_database import (
+    DatabaseFactory,
+    inspect_one,
+    open_database,
+    track_managed_transactions,
+)
 
 import h2hdb
 import h2hdb.vnext_ingest_publication as publication
@@ -67,14 +73,12 @@ from h2hdb.vnext_publication_repository import PublicationRepository
 from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 
-def _context(path: Path) -> RepositoryContext:
-    return RepositoryContext.from_config(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-    )
+def _context(config: CoreConfig) -> RepositoryContext:
+    return RepositoryContext.from_config(config)
 
 
-def _counting_context(path: Path, begins: list[str]) -> RepositoryContext:
-    context = _context(path)
+def _counting_context(config: CoreConfig, begins: list[str]) -> RepositoryContext:
+    context = _context(config)
     original_factory = context.SQLConnector
 
     def factory() -> Any:
@@ -82,7 +86,7 @@ def _counting_context(path: Path, begins: list[str]) -> RepositoryContext:
         original_begin = connector.begin
 
         def begin() -> None:
-            begins.append("BEGIN IMMEDIATE")
+            begins.append("managed write")
             original_begin()
 
         cast(Any, connector).begin = begin
@@ -345,6 +349,7 @@ def test_checkpoint_is_receipt_scoped_and_cursor_is_spool_only() -> None:
 
 
 def test_library_activation_maps_repository_items_to_the_shared_neutral_type(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -375,7 +380,7 @@ def test_library_activation_maps_repository_items_to_the_shared_neutral_type(
         staticmethod(list_page),
     )
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "projection.sqlite3")
+        _context(database_factory.config(str(tmp_path / "projection.sqlite3")))
     )
     with adapter.publication_guard():
         prepared = cast(
@@ -392,6 +397,7 @@ def test_library_activation_maps_repository_items_to_the_shared_neutral_type(
 
 
 def test_restart_after_database_commit_uses_adapter_owned_cursor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -416,7 +422,7 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
         staticmethod(list_page),
     )
     restarted = publication.VNextIngestPublication(
-        _context(tmp_path / "restart.sqlite3")
+        _context(database_factory.config(str(tmp_path / "restart.sqlite3")))
     )
     with adapter.publication_guard():
         result = cast(
@@ -432,6 +438,7 @@ def test_restart_after_database_commit_uses_adapter_owned_cursor(
 
 
 def test_library_activation_page_hard_cap_is_always_128(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -476,7 +483,9 @@ def test_library_activation_page_hard_cap_is_always_128(
         "list_page",
         staticmethod(list_page),
     )
-    machine = publication.VNextIngestPublication(_context(tmp_path / "cap.sqlite3"))
+    machine = publication.VNextIngestPublication(
+        _context(database_factory.config(str(tmp_path / "cap.sqlite3")))
+    )
     with adapter.publication_guard():
         result = cast(Any, machine)._VNextIngestPublication__prepare_library_activation(
             publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
@@ -486,11 +495,14 @@ def test_library_activation_page_hard_cap_is_always_128(
 
 
 def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "projection-boundary.sqlite3"
-    sqlite3.connect(path).close()
+    config = database_factory.config(str(path))
+    if database_factory.backend == "sqlite":
+        sqlite3.connect(config.database.database).close()
     receipt = b"r" * 16
     checkpoint = publication.LibraryActivationCheckpoint(
         3,
@@ -501,7 +513,9 @@ def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
     probes: list[str] = []
 
     def probe() -> None:
-        _probe_begin_immediate(path)
+        assert not active, "adapter I/O must run outside native managed transactions"
+        if database_factory.backend == "sqlite":
+            _probe_begin_immediate(Path(config.database.database))
         probes.append("adapter")
 
     adapter = _LibraryActivationAdapter(checkpoint, callback=probe)
@@ -516,13 +530,18 @@ def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
         "list_page",
         staticmethod(list_page),
     )
-    machine = publication.VNextIngestPublication(_context(path))
-    with adapter.publication_guard():
+    machine = publication.VNextIngestPublication(
+        _context(database_factory.config(str(path)))
+    )
+    with track_managed_transactions(config) as active, adapter.publication_guard():
         result = cast(Any, machine)._VNextIngestPublication__prepare_library_activation(
             publication._LibraryActivationWork(receipt, 3, checkpoint), adapter
         )
         with pytest.raises(RuntimeError, match="nested publication guard"):
-            with adapter.publication_guard():
+            with (
+                track_managed_transactions(config) as active,
+                adapter.publication_guard(),
+            ):
                 pass
 
     assert result.terminal_page is True
@@ -536,6 +555,7 @@ def test_library_activation_adapter_io_runs_under_only_the_callers_outer_guard(
 
 
 def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -561,7 +581,9 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
         session=original,
         _token=publication._STEP_TOKEN,
     )
-    machine = publication.VNextIngestPublication(_context(tmp_path / "session.sqlite3"))
+    machine = publication.VNextIngestPublication(
+        _context(database_factory.config(str(tmp_path / "session.sqlite3")))
+    )
     adapter = _LibraryActivationAdapter(
         publication.LibraryActivationCheckpoint(
             1,
@@ -600,12 +622,15 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
 
 
 def test_issue_and_commit_each_own_one_short_write_transaction(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     begins: list[str] = []
     machine = publication.VNextIngestPublication(
-        _counting_context(tmp_path / "transaction-count.sqlite3", begins),
+        _counting_context(
+            database_factory.config(str(tmp_path / "transaction-count.sqlite3")), begins
+        ),
         clock=lambda: 10,
     )
     session = _session()
@@ -649,7 +674,7 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
     adapter = _LibraryActivationAdapter(checkpoint)
 
     issued = machine.issue_step(session, cast(Any, object()))
-    assert begins == ["BEGIN IMMEDIATE"]
+    assert begins == ["managed write"]
     with adapter.publication_guard():
         prepared = machine.prepare_step(
             issued,
@@ -657,12 +682,13 @@ def test_issue_and_commit_each_own_one_short_write_transaction(
             finalization_adapters={},
             library_activation=adapter,
         )
-    assert begins == ["BEGIN IMMEDIATE"]
+    assert begins == ["managed write"]
     machine.commit_step(session, prepared)
-    assert begins == ["BEGIN IMMEDIATE", "BEGIN IMMEDIATE"]
+    assert begins == ["managed write", "managed write"]
 
 
 def test_catalog_issue_reuses_the_outer_gate_and_ingest_authorization(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -746,7 +772,9 @@ def test_catalog_issue_reuses_the_outer_gate_and_ingest_authorization(
     )
 
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "catalog-issue-lock-order.sqlite3"),
+        _context(
+            database_factory.config(str(tmp_path / "catalog-issue-lock-order.sqlite3"))
+        ),
         clock=lambda: 10,
     )
     issued = machine.issue_step(_session(), cast(Any, object()))
@@ -1235,6 +1263,7 @@ def test_every_candidate_mapping_dispatches_work_as_a_keyword(
 
 
 def test_restart_after_storage_protect_reissues_same_durable_intent(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1281,7 +1310,7 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
         staticmethod(protect),
     )
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "artifact-restart.sqlite3"),
+        _context(database_factory.config(str(tmp_path / "artifact-restart.sqlite3"))),
         clock=lambda: 10,
     )
     work = publication._ArtifactWork(authority, seal, (family,))
@@ -1301,6 +1330,7 @@ def test_restart_after_storage_protect_reissues_same_durable_intent(
 
 
 def test_terminal_head_activation_continues_to_complete_library_marker(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1403,7 +1433,7 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
 
     releaser = ReleaseAdapter()
     machine = publication.VNextIngestPublication(
-        _context(database_path),
+        _context(database_factory.config(str(database_path))),
         clock=lambda: 10,
     )
     monkeypatch.setattr(publication, "_require_policy", lambda _policy: None)
@@ -1553,13 +1583,16 @@ def test_terminal_head_activation_continues_to_complete_library_marker(
 
 
 def test_complete_persisted_before_response_loss_replays_cleanup(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Recover COMPLETE from the adapter without repeating terminal effects."""
 
     database_path = tmp_path / "complete-response-loss.sqlite3"
-    connector = publication_fixtures._generated_database(database_path)
+    connector = publication_fixtures._generated_database(
+        database_factory.config(str(database_path))
+    )
     gate, first_turn = publication_fixtures._authorities(connector)
     publication_fixtures._seed_candidate(connector, first_turn)
     published, replay_turn = publication_fixtures._prepare_finalized_replay(
@@ -1596,10 +1629,12 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
     finalization_calls: list[str] = []
     cleanup_calls: list[tuple[bytes, bytes]] = []
     original_cleanup = PublicationRepository.release_replayed_source_working
-    assert connector.fetch_one(
-        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    assert inspect_one(
+        connector,
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
     ) == (build_id,)
-    original_head = connector.fetch_one(
+    original_head = inspect_one(
+        connector,
         "SELECT receipt_id, revision, generation "
         "FROM catalog_publication_commit_heads WHERE channel = %s",
         (publication_fixtures._CHANNEL,),
@@ -1687,7 +1722,7 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
     )
 
     first_machine = publication.VNextIngestPublication(
-        _context(database_path),
+        _context(database_factory.config(str(database_path))),
         clock=lambda: 120,
     )
     with adapter.publication_guard():
@@ -1708,9 +1743,10 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
     assert adapter.complete_calls == 1
     assert adapter_journal == {"present": False}
     assert cleanup_calls == []
-    connector = publication_fixtures._generated_database(database_path)
-    assert connector.fetch_one(
-        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+    connector = open_database(database_factory.config(str(database_path)))
+    assert inspect_one(
+        connector,
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
     ) == (build_id,)
     connector.close()
 
@@ -1718,7 +1754,7 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
     # the adapter, skips complete()/finalization/release, and performs only the
     # idempotent database marker cleanup that did not run before response loss.
     restarted_machine = publication.VNextIngestPublication(
-        _context(database_path),
+        _context(database_factory.config(str(database_path))),
         clock=lambda: 120,
     )
     with adapter.publication_guard():
@@ -1742,16 +1778,18 @@ def test_complete_persisted_before_response_loss_replays_cleanup(
     assert cleanup_calls == [(build_id, receipt_id)]
     assert finalization_calls == []
     assert adapter_journal == {"present": False}
-    connector = publication_fixtures._generated_database(database_path)
-    assert not connector.fetch_one(
-        "SELECT 1 FROM operational_source_working_builds WHERE slot = 1"
+    connector = open_database(database_factory.config(str(database_path)))
+    assert not inspect_one(
+        connector, "SELECT 1 FROM operational_source_working_builds WHERE slot = 1"
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
         (receipt_id,),
     ) == ("PUBLISHED",)
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT receipt_id, revision, generation "
             "FROM catalog_publication_commit_heads WHERE channel = %s",
             (publication_fixtures._CHANNEL,),

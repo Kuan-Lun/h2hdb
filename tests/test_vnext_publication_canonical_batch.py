@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 import test_vnext_publication_canonical_fencing as fixtures
+from vnext_test_database import DatabaseFactory, connector_backend, inspect_one
 
 import h2hdb.vnext_ingest_publication as publication
 from h2hdb import CoreConfig
@@ -54,14 +55,9 @@ def _database(
 ) -> Iterator[
     tuple[SQLConnector, GateLease, IngestTurn, PublicationCatalogProjectionPlan]
 ]:
-    context = (
-        fixtures._generated_catalog_plan(tmp_path / "batch.sqlite3")
-        if backend == "sqlite"
-        else fixtures._generated_mariadb_catalog_plan(
-            cast(CoreConfig, request.getfixturevalue("mariadb_config")),
-        )
-    )
-    with context as values:
+    del tmp_path
+    config = cast(CoreConfig, request.getfixturevalue(f"{backend}_config"))
+    with fixtures._generated_catalog_plan(config) as values:
         yield values
 
 
@@ -108,7 +104,8 @@ def _snapshot(
                     connector,
                     page_sha256=cast(PreparedCanonicalPage, item.page).page_sha256,
                 ),
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
                     "WHERE generation = %s AND value_sha256 = %s",
                     (
@@ -130,6 +127,7 @@ def _commit(
     turn: IngestTurn,
     batch: publication._CanonicalBatchWork,
 ) -> tuple[bytes, ...]:
+    assert backend == connector_backend(connector)
     with connector.transaction():
         return publication._commit_canonical_batch(
             VNextUnitOfWork(connector, backend=backend),
@@ -382,10 +380,12 @@ def test_batch_rejects_value_and_encoded_byte_bounds_before_authorization(
 
 
 def test_batch_claim_lock_order_follows_candidate_checkpoint_and_sorted_digests(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with (
-        fixtures._generated_catalog_plan(tmp_path / "order.sqlite3") as (
+        fixtures._generated_catalog_plan(
+            database_factory.config(str(tmp_path / "order.sqlite3"))
+        ) as (
             connector,
             gate,
             turn,
@@ -403,7 +403,7 @@ def test_batch_claim_lock_order_follows_candidate_checkpoint_and_sorted_digests(
         monkeypatch.setattr(VNextUnitOfWork, "_record_lock", observe)
         _commit(
             connector,
-            "sqlite",
+            connector_backend(connector),
             gate,
             turn,
             replace(batch, items=tuple(reversed(batch.items))),
@@ -421,7 +421,8 @@ import os
 import signal
 import sys
 from dataclasses import replace
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_canonical_value_repository import CanonicalValueUploadPlan
 from h2hdb.vnext_canonical_value_family import load_sealed_value_identities
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
@@ -429,6 +430,7 @@ from h2hdb.vnext_maintenance_gate_repository import GateLease, GateMode
 from h2hdb.vnext_transaction import VNextUnitOfWork
 import h2hdb.vnext_ingest_publication as publication
 state = json.load(sys.stdin)
+config = CoreConfig.model_validate(state["config"])
 g = state["gate"]
 gate = GateLease(bytes.fromhex(g[0]), g[1], GateMode(g[2]), tuple(g[3]), g[4])
 t = state["turn"]
@@ -440,9 +442,10 @@ for row in state["items"]:
     pages = tuple(plan.iter_pages())
     items.append(publication._CanonicalWork(plan, owner, pages[0],
         publication._CanonicalStageFence(bytes.fromhex(row[2]), publication._Action.BUILD_CATALOG, bytes.fromhex(row[3]), turn.generation)))
-with SQLiteConnector(state["database"]) as connector:
+with RepositoryContext.from_config(config).SQLConnector() as connector:
     if state["existing"]:
-        identities = load_sealed_value_identities(connector, value_sha256s=tuple(item.plan.value_sha256 for item in items))
+        with connector.read_transaction():
+            identities = load_sealed_value_identities(connector, value_sha256s=tuple(item.plan.value_sha256 for item in items))
         items = [replace(item, sealed=identities[item.plan.value_sha256]) for item in items]
     if state["phase"] == "before_commit" and state["existing"]:
         original = connector.execute_many
@@ -468,31 +471,41 @@ with SQLiteConnector(state["database"]) as connector:
             os.kill(os.getpid(), state["signal"])
         connector.commit = interrupted
     with connector.transaction():
-        result = publication._commit_canonical_batch(VNextUnitOfWork(connector, backend="sqlite"),
+        result = publication._commit_canonical_batch(VNextUnitOfWork(connector, backend=config.database.sql_type),
             batch=publication._CanonicalBatchWork(tuple(items), owner), gate=gate, turn=turn, now=120)
 print(json.dumps([value.hex() for value in result]))
 """
 
 
 @pytest.mark.skipif(
-    os.name != "posix", reason="POSIX termination and SQLite crash recovery"
+    os.name != "posix",
+    reason="POSIX process termination and native transaction recovery",
+)
+@pytest.mark.backend_external(
+    reason="Child process connects to the selected native fixture using config on stdin"
 )
 @pytest.mark.parametrize("termination", [signal.SIGTERM, signal.SIGKILL])
 @pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
 @pytest.mark.parametrize("existing", [False, True])
 def test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     termination: signal.Signals,
     phase: str,
     existing: bool,
 ) -> None:
-    database = tmp_path / "restart.sqlite3"
+    config = database_factory.config(str(tmp_path / "restart.sqlite3"))
     with (
-        fixtures._generated_catalog_plan(database) as (connector, gate, turn, plan),
+        fixtures._generated_catalog_plan(config) as (
+            connector,
+            gate,
+            turn,
+            plan,
+        ),
         _batch(plan, turn) as batch,
     ):
         if existing:
-            _commit(connector, "sqlite", gate, turn, batch)
+            _commit(connector, connector_backend(connector), gate, turn, batch)
             with connector.transaction():
                 connector.execute(
                     "DELETE FROM operational_canonical_value_uploads "
@@ -503,7 +516,7 @@ def test_fresh_process_replays_after_real_termination_at_atomic_batch_boundaries
                     ),
                 )
         manifest = {
-            "database": str(database),
+            "config": config.model_dump(mode="json"),
             "existing": existing,
             "phase": phase,
             "signal": int(termination),

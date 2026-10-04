@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -9,9 +8,15 @@ from test_vnext_publication_candidate_repository import (
     _authorities,
     _canonical_identity,
 )
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_consumer import (
     CanonicalConsumerBatch,
     CanonicalConsumerValue,
@@ -28,8 +33,8 @@ _CONSUMER = b"first-child"
 
 
 @pytest.fixture
-def connector(tmp_path: Path) -> Iterator[SQLiteConnector]:
-    database = open_generated_sqlite_database(tmp_path / "consumer.sqlite")
+def connector(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    database = open_generated_database(database_factory.config())
     try:
         _authorities(database)
         yield database
@@ -37,7 +42,7 @@ def connector(tmp_path: Path) -> Iterator[SQLiteConnector]:
         database.close()
 
 
-def _seed(connector: SQLiteConnector, count: int) -> tuple[CanonicalConsumerValue, ...]:
+def _seed(connector: SQLConnector, count: int) -> tuple[CanonicalConsumerValue, ...]:
     values: list[CanonicalConsumerValue] = []
     with connector.transaction():
         for serial in range(count):
@@ -70,11 +75,11 @@ def _require_all(
 
 @pytest.mark.parametrize("count", [1, 2, 5, 128, 129])
 def test_handoff_queries_are_per_page_and_claims_survive_until_finish(
-    connector: SQLiteConnector, count: int
+    connector: SQLConnector, count: int
 ) -> None:
     values = _seed(connector, count)
     with connector.transaction():
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as reads:
             batch = CanonicalConsumerBatch(
                 work, generation=1, values=values, consumers=(_CONSUMER,)
@@ -82,21 +87,21 @@ def test_handoff_queries_are_per_page_and_claims_survive_until_finish(
             assert reads.call_count == 2 * ((count + 127) // 128)
             _require_all(batch, values)
             assert reads.call_count == 2 * ((count + 127) // 128)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
         ) == (count,)
         with patch.object(
             connector, "execute_affected", wraps=connector.execute_affected
         ) as deletes:
             batch.finish()
             assert deletes.call_count == (count + 127) // 128
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
         ) == (0,)
 
 
 def test_partial_handoff_rolls_back_even_after_a_full_delete_page(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     values = _seed(connector, 129)
     original = connector.execute_affected
@@ -112,7 +117,7 @@ def test_partial_handoff_rolls_back_even_after_a_full_delete_page(
     with pytest.raises(RuntimeError, match="lost connection"):
         with connector.transaction():
             batch = CanonicalConsumerBatch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 generation=1,
                 values=values,
                 consumers=(_CONSUMER,),
@@ -122,25 +127,25 @@ def test_partial_handoff_rolls_back_even_after_a_full_delete_page(
                 connector, "execute_affected", side_effect=lose_second_page
             ):
                 batch.finish()
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
     ) == (129,)
     with connector.transaction():
         replay = CanonicalConsumerBatch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             generation=1,
             values=values,
             consumers=(_CONSUMER,),
         )
         _require_all(replay, values)
         replay.finish()
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
     ) == (0,)
 
 
 def test_missing_claim_at_last_page_fails_before_handoff(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     values = _seed(connector, 129)
     with connector.transaction():
@@ -151,23 +156,23 @@ def test_missing_claim_at_last_page_fails_before_handoff(
     with pytest.raises(CanonicalValueNotReadyError, match="exact generation"):
         with connector.transaction():
             CanonicalConsumerBatch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 generation=1,
                 values=values,
                 consumers=(_CONSUMER,),
             )
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
     ) == (128,)
 
 
 def test_unconsumed_claim_or_wrong_domain_cannot_finish(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     values = _seed(connector, 2)
     with connector.transaction():
         batch = CanonicalConsumerBatch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             generation=1,
             values=values,
             consumers=(_CONSUMER,),
@@ -181,29 +186,29 @@ def test_unconsumed_claim_or_wrong_domain_cannot_finish(
             )
         with pytest.raises(CanonicalValueCollisionError, match="exact planned claim"):
             batch.finish()
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
     ) == (2,)
 
 
-def test_partial_sealed_family_fails_closed(connector: SQLiteConnector) -> None:
+def test_partial_sealed_family_fails_closed(connector: SQLConnector) -> None:
     values = _seed(connector, 2)
     # Inject out-of-band corruption that the normal foreign keys prevent.
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     with connector.transaction():
         connector.execute(
             "DELETE FROM catalog_canonical_value_allocation_digest_domains WHERE value_sha256 = %s",
             (values[-1].value_sha256,),
         )
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
     with pytest.raises(CanonicalValueCollisionError, match="incomplete allocation"):
         with connector.transaction():
             CanonicalConsumerBatch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 generation=1,
                 values=values,
                 consumers=(_CONSUMER,),
             )
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
     ) == (2,)

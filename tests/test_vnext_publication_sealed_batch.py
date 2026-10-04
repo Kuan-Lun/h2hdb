@@ -12,6 +12,11 @@ from typing import Any, cast
 import pytest
 import test_vnext_publication_canonical_batch as batch_tests
 import test_vnext_publication_canonical_fencing as fixtures
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    set_foreign_key_checks,
+)
 
 import h2hdb.vnext_ingest_publication as publication
 from h2hdb import CoreConfig
@@ -36,7 +41,7 @@ from h2hdb.vnext_publication_candidate_repository import (
 
 
 class _Projection:
-    """Independent source plan, with all database operations using real SQLite."""
+    """Independent source plan, with all database operations using the selected native backend."""
 
     def __init__(self, count: int, consumer: bytes) -> None:
         self.payloads = tuple(
@@ -59,9 +64,8 @@ class _Projection:
 
 @contextmanager
 def _existing(
-    tmp_path: Path,
+    config: CoreConfig,
     count: int,
-    config: CoreConfig | None = None,
 ) -> Iterator[
     tuple[
         SQLConnector,
@@ -71,12 +75,8 @@ def _existing(
         publication._CanonicalBatchWork,
     ]
 ]:
-    backend = "sqlite" if config is None else "mariadb"
-    context = (
-        fixtures._generated_catalog_plan(tmp_path / "sealed.sqlite3")
-        if config is None
-        else fixtures._generated_mariadb_catalog_plan(config)
-    )
+    backend = config.database.sql_type
+    context = fixtures._generated_catalog_plan(config)
     with (
         context as (
             connector,
@@ -197,13 +197,13 @@ def _prepare(
 
 
 def test_existing_window_and_claim_sql_calls_are_per_batch_not_per_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: list[tuple[Counter[str], Counter[str]]] = []
     for count in (1, 16):
         directory = tmp_path / str(count)
         directory.mkdir()
-        with _existing(directory, count) as (
+        with _existing(database_factory.config(str(directory)), count) as (
             connector,
             gate,
             turn,
@@ -219,7 +219,9 @@ def test_existing_window_and_claim_sql_calls_are_per_batch_not_per_value(
                     assert len(batch.items) == count
                     assert all(item.sealed is not None for item in batch.items)
                     with _count_sql(connector, monkeypatch) as commits:
-                        batch_tests._commit(connector, "sqlite", gate, turn, batch)
+                        batch_tests._commit(
+                            connector, connector_backend(connector), gate, turn, batch
+                        )
                     observed.append((reads, commits))
                 with _lease(cache) as owner:
                     assert _prepare(connector, cache, owner, turn) is None
@@ -249,9 +251,16 @@ def _lease(
 
 
 def test_seventeen_existing_values_are_claimed_in_two_bounded_windows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _existing(tmp_path, 17) as (connector, gate, turn, projection, _expected):
+    with _existing(database_factory.config(str(tmp_path)), 17) as (
+        connector,
+        gate,
+        turn,
+        projection,
+        _expected,
+    ):
         cache = _cache(projection)
         sizes: list[int] = []
         try:
@@ -260,7 +269,9 @@ def test_seventeen_existing_values_are_claimed_in_two_bounded_windows(
                     batch = _prepare(connector, cache, owner, turn)
                     if batch is not None:
                         sizes.append(len(batch.items))
-                        batch_tests._commit(connector, "sqlite", gate, turn, batch)
+                        batch_tests._commit(
+                            connector, connector_backend(connector), gate, turn, batch
+                        )
             assert sizes == [16, 1]
         finally:
             cache.retire()
@@ -275,12 +286,8 @@ def test_existing_claim_batch_recovers_atomically_without_rewriting_values(
     backend: str,
     request: pytest.FixtureRequest,
 ) -> None:
-    config = (
-        None
-        if backend == "sqlite"
-        else cast(CoreConfig, request.getfixturevalue("mariadb_config"))
-    )
-    with _existing(tmp_path, 3, config) as (connector, gate, turn, _projection, batch):
+    config = cast(CoreConfig, request.getfixturevalue(f"{backend}_config"))
+    with _existing(config, 3) as (connector, gate, turn, _projection, batch):
         before = batch_tests._snapshot(connector, batch)
         original = connector.execute_many if fault == "rollback" else connector.commit
 
@@ -310,13 +317,19 @@ def test_existing_claim_batch_recovers_atomically_without_rewriting_values(
 
 @pytest.mark.parametrize("corruption", ["payload", "missing_anchor", "root"])
 def test_existing_window_rejects_corrupt_durable_values(
-    tmp_path: Path, corruption: str
+    database_factory: DatabaseFactory, tmp_path: Path, corruption: str
 ) -> None:
-    with _existing(tmp_path, 3) as (connector, _gate, turn, projection, batch):
+    with _existing(database_factory.config(str(tmp_path)), 3) as (
+        connector,
+        _gate,
+        turn,
+        projection,
+        batch,
+    ):
         item = batch.items[-1]
         page = cast(PreparedCanonicalPage, item.page)
         # Simulate storage corruption beyond the normal FK-protected writer.
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             match corruption:
                 case "payload":
@@ -341,7 +354,9 @@ def test_existing_window_rejects_corrupt_durable_values(
                     # Claim commit independently reads the union of all family
                     # keys, including facts whose anchor has disappeared.
                     with pytest.raises(CanonicalValuePartialFamilyError):
-                        batch_tests._commit(connector, "sqlite", _gate, turn, batch)
+                        batch_tests._commit(
+                            connector, connector_backend(connector), _gate, turn, batch
+                        )
                 else:
                     with pytest.raises(
                         RuntimeError, match="partial or corrupt|full tree validation"
@@ -351,8 +366,16 @@ def test_existing_window_rejects_corrupt_durable_values(
             cache.retire()
 
 
-def test_existing_claim_rejects_changed_root_after_preparation(tmp_path: Path) -> None:
-    with _existing(tmp_path, 2) as (connector, gate, turn, _projection, batch):
+def test_existing_claim_rejects_changed_root_after_preparation(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    with _existing(database_factory.config(str(tmp_path)), 2) as (
+        connector,
+        gate,
+        turn,
+        _projection,
+        batch,
+    ):
         first, second = batch.items
         proposed = replace(
             batch,
@@ -371,7 +394,9 @@ def test_existing_claim_rejects_changed_root_after_preparation(tmp_path: Path) -
         )
         before = batch_tests._snapshot(connector, batch)
         with pytest.raises(CanonicalValueCollisionError, match="root differs"):
-            batch_tests._commit(connector, "sqlite", gate, turn, proposed)
+            batch_tests._commit(
+                connector, connector_backend(connector), gate, turn, proposed
+            )
         assert batch_tests._snapshot(connector, batch) == before
 
 
@@ -385,9 +410,15 @@ def test_allocation_family_batch_rejects_129_keys_before_sql() -> None:
 
 @pytest.mark.parametrize("stale", ["consumer", "generation"])
 def test_existing_claims_reject_a_stale_fence_before_insertion(
-    tmp_path: Path, stale: str
+    database_factory: DatabaseFactory, tmp_path: Path, stale: str
 ) -> None:
-    with _existing(tmp_path, 3) as (connector, gate, turn, projection, batch):
+    with _existing(database_factory.config(str(tmp_path)), 3) as (
+        connector,
+        gate,
+        turn,
+        projection,
+        batch,
+    ):
         before = batch_tests._snapshot(connector, batch)
         if stale == "consumer":
             with connector.transaction():
@@ -414,5 +445,7 @@ def test_existing_claims_reject_a_stale_fence_before_insertion(
                 ),
             )
         with pytest.raises((RuntimeError, PublicationCandidateNotReadyError)):
-            batch_tests._commit(connector, "sqlite", gate, turn, batch)
+            batch_tests._commit(
+                connector, connector_backend(connector), gate, turn, batch
+            )
         assert batch_tests._snapshot(connector, batch) == before
