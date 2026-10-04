@@ -164,6 +164,12 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_publication_corruption.py",
             "test_publication_issue_rejects_checkpoint_corruption_without_writes",
         ),
+        # Reusing a local plan cannot replace the fresh durable checkpoint read
+        # between a successful issue and preparation.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rechecks_issued_checkpoint_without_writes",
+        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
@@ -278,6 +284,12 @@ def test_reviewed_mariadb_smoke_cases_are_actually_collected_without_deep() -> N
             "test_publication_issue_rejects_checkpoint_corruption_without_writes",
         )
     ] = 3
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rechecks_issued_checkpoint_without_writes",
+        )
+    ] = 2
     assert actual == counts
 
 

@@ -2581,7 +2581,9 @@ def _load_plan_checkpoint(
         (candidate, stage),
     )
     if len(row) != 2:
-        raise RuntimeError("publication plan checkpoint is missing or malformed")
+        raise PublicationCandidateConflictError(
+            "publication plan checkpoint is missing or malformed"
+        )
     cursor = require_bounded_bytes(
         row[0],
         field="publication plan checkpoint cursor",
@@ -2589,7 +2591,9 @@ def _load_plan_checkpoint(
     )
     state = str(row[1])
     if state not in {"OPEN", "COMPLETE"}:
-        raise RuntimeError("publication plan checkpoint has an invalid state")
+        raise PublicationCandidateConflictError(
+            "publication plan checkpoint has an invalid state"
+        )
     return cursor, state
 
 

@@ -141,6 +141,113 @@ def test_publication_prepare_rejects_canonical_corruption_without_writes(
 @pytest.mark.parametrize(
     ("corruption", "message"),
     (
+        ("missing-stage", "plan checkpoint is missing or malformed"),
+        ("invalid-state", "plan checkpoint has an invalid state"),
+    ),
+)
+def test_publication_prepare_rechecks_issued_checkpoint_without_writes(
+    db_config: CoreConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+    message: str,
+) -> None:
+    initialize_database(db_config)
+    source = MemorySource((gallery(1001, pages=[b"one synthetic page"]),))
+    library = MemoryLibrary(source)
+    adapters = {library.adapter_id: library}
+    observer = FaultInjector()
+    with (
+        fault_injection(monkeypatch, observer),
+        VNextIngestFacade(db_config, clock=Clock()) as facade,
+    ):
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy(artifacts_required=False))
+        receipt = run_source(facade, session, policy, source)
+        run_analysis(facade, session, policy, receipt.build_id)
+        # Commit one canonical window so the next preparation reuses its local
+        # plan. Its durable checkpoint still needs a fresh read after issue.
+        for _ in range(128):
+            issued = facade.issue_publication_step(session, policy)
+            with facade.prepare_publication_step(
+                issued,
+                artifact_adapters=adapters,
+                finalization_adapters=adapters,
+                library_activation=library,
+            ) as prepared:
+                canonical = isinstance(prepared._payload, _CanonicalBatchWork)
+                facade.commit_publication_step(session, prepared)
+            if issued.operation == "BUILD_CATALOG" and canonical:
+                break
+        else:
+            pytest.fail("fixture did not commit a catalog canonical window")
+        assert observer.mutations > 0
+        issued = facade.issue_publication_step(session, policy)
+        assert issued.operation == "BUILD_CATALOG"
+        with closing(open_connector(db_config)) as writer:
+            with writer.read_transaction():
+                original = writer.fetch_one(
+                    "SELECT candidate_id, stage, generation, `cursor`, processed_count, "
+                    "state, updated_at FROM catalog_publication_checkpoints WHERE stage = %s",
+                    (b"BUILD_CATALOG_PROJECTION",),
+                )
+            assert len(original) == 7 and original[5] == "OPEN"
+            if corruption == "invalid-state":
+                set_check_constraints(writer, enabled=False)
+            try:
+                with writer.transaction():
+                    if corruption == "missing-stage":
+                        writer.execute(
+                            "DELETE FROM catalog_publication_checkpoints "
+                            "WHERE candidate_id = %s AND stage = %s",
+                            original[:2],
+                        )
+                    else:
+                        writer.execute(
+                            "UPDATE catalog_publication_checkpoints SET state = %s "
+                            "WHERE candidate_id = %s AND stage = %s",
+                            ("CORRUPT", *original[:2]),
+                        )
+            finally:
+                if corruption == "invalid-state":
+                    set_check_constraints(writer, enabled=True)
+        before = snapshot_database(db_config)
+        prior_mutations = observer.mutations
+        with pytest.raises(PublicationCandidateConflictError, match=message):
+            with facade.prepare_publication_step(
+                issued,
+                artifact_adapters=adapters,
+                finalization_adapters=adapters,
+                library_activation=library,
+            ):
+                pytest.fail("prepare must reread the checkpoint after issue")
+        assert observer.mutations == prior_mutations
+        assert snapshot_database(db_config) == before
+        with closing(open_connector(db_config)) as writer, writer.transaction():
+            if corruption == "missing-stage":
+                writer.execute(
+                    "INSERT INTO catalog_publication_checkpoints "
+                    "(candidate_id, stage, generation, `cursor`, processed_count, state, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    original,
+                )
+            else:
+                writer.execute(
+                    "UPDATE catalog_publication_checkpoints SET state = %s "
+                    "WHERE candidate_id = %s AND stage = %s",
+                    (original[5], *original[:2]),
+                )
+        # The failed preparation retired its cache lease. Repairing only the
+        # corrupted fact must let this facade rebuild the plan and finish.
+        run_publication(facade, session, policy, library)
+        facade.complete_ingest(session)
+        drain_maintenance(facade)
+    assert full_check(db_config).state == "READY"
+
+
+@pytest.mark.mariadb_smoke
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    (
         ("missing-stage", "checkpoint registry is incomplete or reordered"),
         ("non-prefix", "checkpoints are not prefix-complete"),
         ("invalid-state", "checkpoint has an invalid state"),
