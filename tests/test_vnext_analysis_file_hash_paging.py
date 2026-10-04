@@ -5,7 +5,12 @@ from typing import cast
 from unittest.mock import patch
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import SQLConnector
@@ -190,27 +195,30 @@ def _exercise_pages(connector: SQLConnector, backend: str) -> None:
 
 
 def test_sqlite_file_hash_pages_cover_sources_orphans_and_baseline(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "file-hash-pages.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "file-hash-pages.sqlite3"))
+    )
     try:
         # These are deliberately incomplete overlay families. Full production
         # validation tests separately require their rejection with FKs enabled.
-        connector.execute("PRAGMA foreign_keys = OFF")
-        _exercise_pages(connector, "sqlite")
+        set_foreign_key_checks(connector, enabled=False)
+        _exercise_pages(connector, connector_backend(connector))
     finally:
         connector.close()
 
 
 def test_live_mariadb_file_hash_pages_cover_sources_orphans_and_baseline(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import _connector
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as connector:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
-        _exercise_pages(connector, "mariadb")
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as connector:
+        set_foreign_key_checks(connector, enabled=False)
+        _exercise_pages(connector, connector_backend(connector))
 
 
 @pytest.mark.parametrize("limit", (0, 130, True))

@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 from test_vnext_analysis_repository import (
     _authorities,
-    _generated_database,
     _map_working_build,
     _seed_build,
     _seed_gallery,
@@ -17,6 +16,14 @@ from test_vnext_analysis_repository import (
     _seed_preparation_facts,
     _seed_root,
     _source_build_id,
+)
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
 )
 
 import h2hdb
@@ -28,7 +35,7 @@ from h2hdb import (
     VNextPreparedAnalysis,
     VNextPreparedAnalysisStep,
 )
-from h2hdb.config_loader import CoreConfig, DatabaseConfig
+from h2hdb.config_loader import CoreConfig
 from h2hdb.domain import (
     VNextArtifactAdapterPolicy,
     VNextIngestPolicy,
@@ -36,7 +43,7 @@ from h2hdb.domain import (
     VNextResolvedIngestPolicy,
 )
 from h2hdb.repository import RepositoryContext
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_ingest_analysis import (
     VNextIngestAnalysisOrchestrator,
     _LocalAnalysisWork,
@@ -72,12 +79,6 @@ class _Clock:
         value = self._next
         self._next += 1
         return value
-
-
-def _config(path: Path) -> CoreConfig:
-    return CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(path)),
-    )
 
 
 def _policy() -> VNextResolvedIngestPolicy:
@@ -118,21 +119,22 @@ def _session(gate: GateLease, turn: IngestTurn) -> VNextIngestSession:
     )
 
 
-def _orchestrator(path: Path) -> VNextIngestAnalysisOrchestrator:
+def _orchestrator(config: CoreConfig) -> VNextIngestAnalysisOrchestrator:
     return VNextIngestAnalysisOrchestrator(
-        RepositoryContext.from_config(_config(path)),
+        RepositoryContext.from_config(config),
         clock=_Clock(),
         token_factory=_Tokens(),
     )
 
 
 def _snapshot_build_id(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     scope: bytes,
     summary: SourceBuildManifestSummary,
 ) -> bytes:
-    source_root = connector.fetch_one(
+    source_root = inspect_one(
+        connector,
         "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
         (scope,),
     )
@@ -176,8 +178,8 @@ def _drive(
     raise AssertionError("analysis orchestration did not converge")
 
 
-def _seed_empty(path: Path) -> tuple[bytes, GateLease, IngestTurn]:
-    connector = _generated_database(path)
+def _seed_empty(config: CoreConfig) -> tuple[bytes, GateLease, IngestTurn]:
+    connector = open_generated_database(config)
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -206,8 +208,10 @@ def _seed_empty(path: Path) -> tuple[bytes, GateLease, IngestTurn]:
         connector.close()
 
 
-def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> None:
-    database = tmp_path / "analysis-empty.sqlite3"
+def test_empty_build_runs_all_stages_and_snapshot_end_to_end(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    database = database_factory.config(str(tmp_path / "analysis-empty.sqlite3"))
     build_id, gate, turn = _seed_empty(database)
 
     result, prepared, stopped = _drive(
@@ -222,14 +226,16 @@ def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> 
     analysis_id = result.analysis_id
     prepared.close()
 
-    connector = SQLiteConnector(str(database))
+    connector = database_connector(database)
     connector.connect()
     try:
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
             (analysis_id,),
         ) == ("COMPLETE",)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_checkpoints "
             "WHERE analysis_id = %s AND state = 'COMPLETE'",
             (analysis_id,),
@@ -243,9 +249,14 @@ def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> 
     [b"changed_file_hash", b"file_hash_decision", b"validate_file_hash_decision", None],
 )
 def test_disk_work_is_closed_only_outside_issue_and_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_stage: bytes | None
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_stage: bytes | None,
 ) -> None:
-    database = tmp_path / "analysis-close-boundary.sqlite3"
+    database = database_factory.config(
+        str(tmp_path / "analysis-close-boundary.sqlite3")
+    )
     build_id, gate, turn = _seed_empty(database)
     driver = _orchestrator(database)
     session = _session(gate, turn)
@@ -310,10 +321,11 @@ def test_disk_work_is_closed_only_outside_issue_and_commit(
 
 
 def test_nonempty_gallery_preparation_uses_exact_issued_memberships(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "analysis-nonempty.sqlite3"
-    connector = _generated_database(database)
+    database = database_factory.config(str(tmp_path / "analysis-nonempty.sqlite3"))
+    connector = open_generated_database(database)
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -363,11 +375,12 @@ def test_nonempty_gallery_preparation_uses_exact_issued_memberships(
 
 
 def test_renewed_receipt_is_accepted_but_foreign_authority_is_rejected(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "analysis-renew.sqlite3"
+    database = database_factory.config(str(tmp_path / "analysis-renew.sqlite3"))
     build_id, gate, turn = _seed_empty(database)
-    facade = VNextIngestFacade(_config(database), clock=_Clock())
+    facade = VNextIngestFacade(database, clock=_Clock())
     prepared = facade.prepare_analysis(build_id, _policy(), max_rows=8)
     assert isinstance(prepared, VNextPreparedAnalysis)
     issued = facade.issue_analysis_step(_session(gate, turn), prepared)
@@ -375,11 +388,11 @@ def test_renewed_receipt_is_accepted_but_foreign_authority_is_rejected(
     local = facade.prepare_analysis_step(prepared, issued)
     assert isinstance(local, VNextPreparedAnalysisStep)
 
-    connector = SQLiteConnector(str(database))
+    connector = database_connector(database)
     connector.connect()
     try:
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             renewed_gate = MaintenanceGateRepository.renew(
                 work,
                 gate,
@@ -452,9 +465,10 @@ def test_analysis_contract_is_top_level_and_has_no_internal_compatibility_aliase
 
 
 def test_restart_after_lost_result_resumes_from_durable_checkpoint(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "analysis-restart.sqlite3"
+    database = database_factory.config(str(tmp_path / "analysis-restart.sqlite3"))
     build_id, gate, turn = _seed_empty(database)
     session = _session(gate, turn)
     orchestrator = _orchestrator(database)
@@ -477,9 +491,11 @@ def test_restart_after_lost_result_resumes_from_durable_checkpoint(
     restarted.close()
 
 
-def test_issued_gallery_page_is_hard_capped_at_128(tmp_path: Path) -> None:
-    database = tmp_path / "analysis-cap.sqlite3"
-    connector = _generated_database(database)
+def test_issued_gallery_page_is_hard_capped_at_128(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    database = database_factory.config(str(tmp_path / "analysis-cap.sqlite3"))
+    connector = open_generated_database(database)
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -538,14 +554,15 @@ def test_issued_gallery_page_is_hard_capped_at_128(tmp_path: Path) -> None:
 
 
 def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """Regression: an expired-lease takeover retains the old generation mapping
     for the same build and adds the live one.  Analysis must bind its
     preparation receipts to the newest mapping instead of an arbitrary row."""
 
-    database = tmp_path / "analysis-takeover.sqlite3"
-    connector = _generated_database(database)
+    database = database_factory.config(str(tmp_path / "analysis-takeover.sqlite3"))
+    connector = open_generated_database(database)
     try:
         _gate, first_turn = _authorities(connector)
         file_sha256 = b"t" * 32
@@ -596,13 +613,13 @@ def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
                 return_value=b"h" * 16,
             ):
                 takeover_gate = MaintenanceGateRepository.claim_shared(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     now=takeover_now,
                     lease_duration=10_000_000,
                 )
         with connector.transaction():
             takeover_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"k" * 16,
                 now=takeover_now,
                 lease_duration=10_000_000,
@@ -615,7 +632,8 @@ def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
                 generation=takeover_turn.generation,
                 replace=True,
             )
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT generation FROM operational_source_build_generations "
             "WHERE build_id = %s ORDER BY generation",
             (build_id,),
@@ -623,7 +641,7 @@ def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
         with connector.read_transaction():
             assert (
                 analysis_module._generation_for_build(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     build_id,
                 )
                 == takeover_turn.generation
@@ -632,7 +650,7 @@ def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
         connector.close()
 
     orchestrator = VNextIngestAnalysisOrchestrator(
-        RepositoryContext.from_config(_config(database)),
+        RepositoryContext.from_config(database),
         clock=_Clock(takeover_now + 1),
         token_factory=_Tokens(),
     )
@@ -646,10 +664,11 @@ def test_analysis_after_same_build_takeover_uses_the_newest_retained_generation(
     assert stopped is None
     assert result is not None
     assert result.terminal and result.stage == b"snapshot_manifest"
-    connector = SQLiteConnector(str(database))
+    connector = database_connector(database)
     connector.connect()
     try:
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
             (result.analysis_id,),
         ) == ("COMPLETE",)

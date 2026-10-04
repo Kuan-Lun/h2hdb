@@ -1,6 +1,6 @@
 """Finite SQL correspondence for GID-only preparation, not a timing SLO.
 
-Fresh SQLite fixtures drive the public source/analysis protocol. Both GID
+Fresh native SQLite/MariaDB fixtures drive the public source/analysis protocol. Both GID
 stages independently validate complete metadata streams and qualification, but
 must issue no tag or canonical-value query and prepare no content upload.
 Metadata chunk reads still scale with metadata bytes; the zero cost claim is
@@ -27,12 +27,16 @@ from vnext_pipeline import (
     run_analysis,
     run_source,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+    inspect_all,
+)
 
-from h2hdb import CoreConfig, DatabaseConfig, VNextIngestFacade
+from h2hdb import CoreConfig, VNextIngestFacade
 from h2hdb import vnext_analysis_repository as analysis_repository
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import measure_sql
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_repository import (
     AnalysisGidPreparation,
     AnalysisPreparationAuthority,
@@ -185,7 +189,7 @@ def _observe_gid_preparation(
 
 
 def _run_source_analysis(
-    tmp_path: Path,
+    config: CoreConfig,
     *,
     galleries: int,
     tags: tuple[str, ...],
@@ -203,8 +207,6 @@ def _run_source_analysis(
             for gid in range(1, galleries + 1)
         ]
     )
-    path = tmp_path / "analysis.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
     initialize_database(config)
     with VNextIngestFacade(config) as facade:
         session = claim_session(facade)
@@ -214,8 +216,9 @@ def _run_source_analysis(
         assert result.terminal
         assert result.snapshot_manifest_sha256 is not None
     # Independent result oracle: distinct contents and GIDs retain every gallery.
-    with SQLiteConnector(database=str(path)) as connector:
-        assert connector.fetch_all(
+    with database_connector(config) as connector:
+        assert inspect_all(
+            connector,
             "SELECT gid, winner_gallery_id FROM catalog_analysis_gid_winner_resolved "
             "WHERE analysis_id = %s ORDER BY gid",
             (result.analysis_id,),
@@ -249,6 +252,7 @@ def _assert_cost(
 @pytest.mark.parametrize("galleries", [1, 2])
 @pytest.mark.parametrize("tags", [0, 1, 127, 128, 129])
 def test_gid_preparation_sql_matches_constructed_lean_trace(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int, int], int],
@@ -257,7 +261,7 @@ def test_gid_preparation_sql_matches_constructed_lean_trace(
 ) -> None:
     with _observe_gid_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path,
+            database_factory.config(),
             galleries=galleries,
             tags=tuple(f"tag-{position}" for position in range(tags)),
         )
@@ -270,6 +274,7 @@ def test_gid_preparation_sql_matches_constructed_lean_trace(
 
 @pytest.mark.parametrize("preceding", [0, 1, 127, 128])
 def test_gid_preparation_ignores_marker_position(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int, int], int],
@@ -282,12 +287,13 @@ def test_gid_preparation_ignores_marker_position(
         "after-1",
     )
     with _observe_gid_preparation(monkeypatch) as samples:
-        _run_source_analysis(tmp_path, galleries=1, tags=tags)
+        _run_source_analysis(database_factory.config(), galleries=1, tags=tags)
     _assert_cost(samples, galleries=1, canonical_cost=model_costs["uniform", 1, 3])
 
 
 @pytest.mark.parametrize("location", ["helper", "wrapper"])
 def test_sql_cost_correspondence_rejects_an_extra_real_query(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int, int], int],
@@ -296,13 +302,14 @@ def test_sql_cost_correspondence_rejects_an_extra_real_query(
     with _observe_gid_preparation(
         monkeypatch, unnecessary_marker_scan=location
     ) as samples:
-        _run_source_analysis(tmp_path, galleries=1, tags=("tag-0",))
+        _run_source_analysis(database_factory.config(), galleries=1, tags=("tag-0",))
     with pytest.raises(AssertionError, match="canonical SQL cost differs"):
         _assert_cost(samples, galleries=1, canonical_cost=model_costs["uniform", 1, 1])
 
 
 @pytest.mark.parametrize("extra_bytes", [0, 1])
 def test_gid_preparation_ignores_single_and_multi_leaf_tags(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int, int], int],
@@ -310,7 +317,7 @@ def test_gid_preparation_ignores_single_and_multi_leaf_tags(
 ) -> None:
     with _observe_gid_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path,
+            database_factory.config(),
             galleries=1,
             tags=("x" * (CANONICAL_VALUE_CHUNK_BYTES + extra_bytes),),
         )

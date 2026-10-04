@@ -10,13 +10,21 @@ unrelated retained decisions. Budgets are fixed independently of measured timing
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from pathlib import Path
+from contextlib import closing
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
-from test_vnext_analysis_decision_layers import _seed_shadows
-from vnext_generated_database import open_generated_sqlite_database
+from test_vnext_analysis_decision_layers import _assert_point_plan, _seed_shadows
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+    inspection_snapshot,
+    open_generated_database,
+    set_check_constraints,
+    set_foreign_key_checks,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import SQLConnector
@@ -39,10 +47,11 @@ _KEYS = tuple(index.to_bytes(32, "big") for index in range(128))
 
 
 @pytest.fixture
-def connector(tmp_path: Path) -> Iterator[SQLiteConnector]:
-    with open_generated_sqlite_database(tmp_path / "resolution.sqlite3") as database:
-        assert isinstance(database, SQLiteConnector)
-        database.execute("PRAGMA foreign_keys = OFF")
+def connector(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    with closing(
+        open_generated_database(database_factory.config("resolution"))
+    ) as database:
+        set_foreign_key_checks(database, enabled=False)
         yield database
 
 
@@ -52,7 +61,10 @@ def _read(
     layers: tuple[bytes, ...] = _LAYERS,
     keys: tuple[bytes, ...] = _KEYS,
 ) -> dict[bytes, AnalysisFileHashDecisionShadowFamily]:
-    return load_resolved_file_decision_page(connector, ancestry=layers, digests=keys)
+    with inspection_snapshot(connector):
+        return load_resolved_file_decision_page(
+            connector, ancestry=layers, digests=keys
+        )
 
 
 def _seed_resolution(
@@ -80,7 +92,12 @@ def _seed_resolution(
     }
 
 
-def _sqlite_steps(connector: SQLiteConnector, operation: Callable[[], object]) -> int:
+def _native_steps(connector: SQLConnector, operation: Callable[[], object]) -> int:
+    if connector_backend(connector) == "mariadb":
+        before = _handler_reads(connector)
+        operation()
+        return _handler_reads(connector) - before
+    assert isinstance(connector, SQLiteConnector)
     instructions = 0
 
     def progress() -> int:
@@ -96,37 +113,34 @@ def _sqlite_steps(connector: SQLiteConnector, operation: Callable[[], object]) -
     return instructions
 
 
-def _sqlite_budget(layers: int, keys: int) -> int:
+def _native_budget(connector: SQLConnector, layers: int, keys: int) -> int:
     # Six point joins, two bounded window passes and result validation. This
     # instruction envelope is fixed before measurement; H never enters it.
-    return 4096 + 512 * layers * keys
+    return (
+        (4096 + 512 * layers * keys)
+        if connector_backend(connector) == "sqlite"
+        else (512 + 64 * layers * keys)
+    )
 
 
 @pytest.mark.parametrize("layer_count", [1, 2, 16, 17])
 @pytest.mark.parametrize("key_count", [1, 2, 45, 127, 128])
 def test_sqlite_exact_resolution_stays_within_fixed_product_budget(
-    connector: SQLiteConnector, layer_count: int, key_count: int
+    connector: SQLConnector, layer_count: int, key_count: int
 ) -> None:
     layers, keys = _LAYERS[:layer_count], _KEYS[:key_count]
     expected = _seed_resolution(connector, layers, keys)
     for _cycle in range(3):
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
-            steps = _sqlite_steps(
+            steps = _native_steps(
                 connector,
                 lambda: _assert_result(connector, layers, keys[::-1], expected),
             )
-        assert steps <= _sqlite_budget(layer_count, key_count)
+        assert steps <= _native_budget(connector, layer_count, key_count)
         assert fetched.call_count == 1
         sql, parameters = fetched.call_args.args
         assert parameters[-1] == key_count + 1
-        plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
-        descriptions = [str(row[3]) for row in plan]
-        for table in (*_TABLES, _TOMBSTONE):
-            assert any(
-                f"SEARCH {table} USING" in description
-                and "analysis_id=? AND file_sha256=?" in description
-                for description in descriptions
-            ), descriptions
+        _assert_point_plan(connector, sql, parameters, (*_TABLES, _TOMBSTONE))
 
 
 def _assert_result(
@@ -161,7 +175,7 @@ def test_invalid_or_over_capacity_inputs_issue_no_query(
 @pytest.mark.parametrize("table", _TABLES)
 @pytest.mark.parametrize("fault", ["missing-member", "orphan-only"])
 def test_hidden_incomplete_families_fail_closed(
-    connector: SQLiteConnector, table: str, fault: str
+    connector: SQLConnector, table: str, fault: str
 ) -> None:
     layers, keys = _LAYERS[:2], _KEYS[:1]
     with connector.transaction():
@@ -181,7 +195,7 @@ def test_hidden_incomplete_families_fail_closed(
 
 @pytest.mark.parametrize("fault", ["absent", "nearest-tombstone", "hidden-conflict"])
 def test_absent_tombstoned_or_conflicting_decisions_are_rejected(
-    connector: SQLiteConnector, fault: str
+    connector: SQLConnector, fault: str
 ) -> None:
     layers, keys = _LAYERS[:2], _KEYS[:1]
     with connector.transaction():
@@ -203,15 +217,19 @@ def test_absent_tombstoned_or_conflicting_decisions_are_rejected(
     ("table", "column", "value"),
     [
         (_TABLES[1], "occurrence_count", 0),
-        (_TABLES[1], "occurrence_count", 1.5),
         (_TABLES[2], "artist_count", -1),
         (_TABLES[3], "maximum_gallery_artist_count", -1),
     ],
 )
 def test_hidden_invalid_scalars_are_not_masked_by_nearer_shadows(
-    connector: SQLiteConnector, table: str, column: str, value: int | float
+    connector: SQLConnector, table: str, column: str, value: int | float
 ) -> None:
-    connector.execute("PRAGMA ignore_check_constraints = ON")
+    set_check_constraints(connector, enabled=False)
+    if connector_backend(connector) == "mariadb" and value < 0:
+        # MariaDB's unsigned storage range is independent of CHECK enforcement.
+        # This reader-corruption fixture must persist the same negative scalar
+        # as SQLite instead of stopping at the engine's physical range guard.
+        connector.execute(f"ALTER TABLE {table} MODIFY COLUMN {column} BIGINT NOT NULL")
     layers, keys = _LAYERS[:2], _KEYS[:1]
     with connector.transaction():
         _seed_shadows(connector, [(layer, keys[0]) for layer in layers])
@@ -219,12 +237,17 @@ def test_hidden_invalid_scalars_are_not_masked_by_nearer_shadows(
             f"UPDATE {table} SET {column} = %s WHERE analysis_id = %s",
             (value, layers[-1]),
         )
+    assert inspect_one(
+        connector,
+        f"SELECT {column} FROM {table} WHERE analysis_id = %s",
+        (layers[-1],),
+    ) == (value,)
     with pytest.raises(AnalysisFamilyCollisionError):
         _read(connector, layers=layers, keys=keys)
 
 
 def test_exact_int63_endpoint_is_accepted_without_float_rounding(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     layers, keys = _LAYERS[:1], _KEYS[:1]
     _seed_resolution(connector, layers, keys)
@@ -243,7 +266,7 @@ def test_exact_int63_endpoint_is_accepted_without_float_rounding(
 
 
 def test_unrelated_history_cannot_consume_product_budget_and_mutant_is_rejected(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     layers, keys = _LAYERS, _KEYS[:1]
     expected = _seed_resolution(connector, layers, keys)
@@ -260,20 +283,18 @@ def test_unrelated_history_cannot_consume_product_budget_and_mutant_is_rejected(
                 )
         retained = count
         for _cycle in range(3):
-            steps = _sqlite_steps(
+            steps = _native_steps(
                 connector, lambda: _assert_result(connector, layers, keys, expected)
             )
-            assert steps <= _sqlite_budget(len(layers), len(keys))
+            assert steps <= _native_budget(connector, len(layers), len(keys))
 
     def degraded_but_correct() -> None:
-        connector.fetch_one(
-            f"SELECT SUM(LENGTH(file_sha256)) FROM {_TABLES[0]} NOT INDEXED"
-        )
+        inspect_one(connector, f"SELECT SUM(LENGTH(file_sha256)) FROM {_TABLES[0]}")
         _assert_result(connector, layers, keys, expected)
 
     with pytest.raises(AssertionError):
-        assert _sqlite_steps(connector, degraded_but_correct) <= _sqlite_budget(
-            len(layers), len(keys)
+        assert _native_steps(connector, degraded_but_correct) <= _native_budget(
+            connector, len(layers), len(keys)
         )
 
 
@@ -287,11 +308,12 @@ def test_unrelated_history_cannot_consume_product_budget_and_mutant_is_rejected(
         [(_LAYERS[0], _KEYS[0], 1, 1, 0, 0, 0)] * 2,
         [(_LAYERS[0], _KEYS[0], 1, 1, 0, 0, True)],
         [(_LAYERS[0], _KEYS[0], True, 1, 0, 0, 0)],
+        [(_LAYERS[0], _KEYS[0], 1.5, 1, 0, 0, 0)],
         [(_LAYERS[0], _KEYS[0], 1, 0, 0, 0, 0)],
     ],
 )
 def test_driver_result_shape_identity_and_scalar_validation_fail_closed(
-    connector: SQLiteConnector, rows: list[tuple[Any, ...]]
+    connector: SQLConnector, rows: list[tuple[Any, ...]]
 ) -> None:
     with (
         patch.object(connector, "fetch_all", return_value=rows),
@@ -301,31 +323,27 @@ def test_driver_result_shape_identity_and_scalar_validation_fail_closed(
 
 
 def test_local_mariadb_maximum_product_and_hidden_corruption(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import _connector
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as database:
-        database.execute("SET FOREIGN_KEY_CHECKS = 0")
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as database:
+        set_foreign_key_checks(database, enabled=False)
         expected = _seed_resolution(database, _LAYERS, _KEYS)
         with database.read_transaction():
             for _cycle in range(3):
-                before = _handler_reads(database)
                 with patch.object(
                     database, "fetch_all", wraps=database.fetch_all
                 ) as fetched:
-                    _assert_result(database, _LAYERS, _KEYS, expected)
-                after = _handler_reads(database)
-                assert after - before <= 512 + 64 * len(_LAYERS) * len(_KEYS)
+                    steps = _native_steps(
+                        database,
+                        lambda: _assert_result(database, _LAYERS, _KEYS, expected),
+                    )
+                assert steps <= _native_budget(database, len(_LAYERS), len(_KEYS))
                 assert fetched.call_count == 1
                 sql, parameters = fetched.call_args.args
-                plan = database.fetch_all("EXPLAIN " + sql, parameters)
-                physical = [row for row in plan if row[2] in (*_TABLES, _TOMBSTONE)]
-                assert len(physical) == 6
-                assert all(
-                    row[3] == "eq_ref" and str(row[6]) == "48" for row in physical
-                )
+                _assert_point_plan(database, sql, parameters, (*_TABLES, _TOMBSTONE))
         with database.transaction():
             database.execute(
                 f"DELETE FROM {_TABLES[-1]} WHERE analysis_id = %s AND file_sha256 = %s",
@@ -340,5 +358,21 @@ def test_local_mariadb_maximum_product_and_hidden_corruption(
 def _handler_reads(connector: SQLConnector) -> int:
     return sum(
         int(row[1])
-        for row in connector.fetch_all("SHOW SESSION STATUS LIKE 'Handler_read%'")
+        for row in type(connector).fetch_all(
+            connector, "SHOW SESSION STATUS LIKE 'Handler_read%'"
+        )
     )
+
+
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite non-STRICT storage permits REAL in INTEGER columns after CHECK constraints are disabled; MariaDB BIGINT does not preserve that invalid stored value.",
+)
+def test_sqlite_hidden_real_in_integer_column_is_rejected(
+    sqlite_config: CoreConfig,
+) -> None:
+    with closing(open_generated_database(sqlite_config)) as database:
+        set_foreign_key_checks(database, enabled=False)
+        test_hidden_invalid_scalars_are_not_masked_by_nearer_shadows(
+            database, _TABLES[1], "occurrence_count", 1.5
+        )

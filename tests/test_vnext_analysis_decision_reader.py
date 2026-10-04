@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    open_generated_database,
+    set_check_constraints,
+    set_foreign_key_checks,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import SQLConnector
@@ -86,7 +94,7 @@ def _exercise_layers(connector: SQLConnector, *, backend: str, count: int) -> No
         sql, parameters = fetched.call_args.args
         assert sql.count("LIMIT %s") == len(_KEY_TABLES) + 1
         if backend == "mariadb":
-            plan = connector.fetch_all("EXPLAIN " + sql, parameters)
+            plan = inspect_all(connector, "EXPLAIN " + sql, parameters)
             physical = [row for row in plan if row[2] in _KEY_TABLES]
             assert len(physical) == len(_KEY_TABLES)
             for row in physical:
@@ -104,7 +112,7 @@ def _exercise_layers(connector: SQLConnector, *, backend: str, count: int) -> No
                     assert row[5] == "PRIMARY", row
                     assert str(row[6]) == "48", row
         else:
-            plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
+            plan = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, parameters)
             descriptions = [str(row[3]) for row in plan]
             for table in _KEY_TABLES:
                 assert any(
@@ -116,28 +124,38 @@ def _exercise_layers(connector: SQLConnector, *, backend: str, count: int) -> No
 
 @pytest.mark.parametrize("count", [0, 1, 127, 128, 129, 130])
 def test_sqlite_nearest_layers_cross_pages_and_seek_tail(
-    tmp_path: Path, count: int
+    database_factory: DatabaseFactory, tmp_path: Path, count: int
 ) -> None:
-    with open_generated_sqlite_database(tmp_path / "decisions.sqlite3") as connector:
-        connector.execute("PRAGMA foreign_keys = OFF")
-        _exercise_layers(connector, backend="sqlite", count=count)
+    with closing(
+        open_generated_database(
+            database_factory.config(str(tmp_path / "decisions.sqlite3"))
+        )
+    ) as connector:
+        set_foreign_key_checks(connector, enabled=False)
+        _exercise_layers(connector, backend=connector_backend(connector), count=count)
 
 
 def test_live_mariadb_nearest_layers_cross_pages_and_seek_tail(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import _connector
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as connector:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
-        _exercise_layers(connector, backend="mariadb", count=130)
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as connector:
+        set_foreign_key_checks(connector, enabled=False)
+        _exercise_layers(connector, backend=connector_backend(connector), count=130)
 
 
 @pytest.mark.parametrize("fault", ["partial", "shadow_and_tombstone"])
-def test_partial_or_conflicting_layer_fails_closed(tmp_path: Path, fault: str) -> None:
-    with open_generated_sqlite_database(tmp_path / "corrupt.sqlite3") as connector:
-        connector.execute("PRAGMA foreign_keys = OFF")
+def test_partial_or_conflicting_layer_fails_closed(
+    database_factory: DatabaseFactory, tmp_path: Path, fault: str
+) -> None:
+    with closing(
+        open_generated_database(
+            database_factory.config(str(tmp_path / "corrupt.sqlite3"))
+        )
+    ) as connector:
+        set_foreign_key_checks(connector, enabled=False)
         analysis = b"a" * 16
         with connector.transaction():
             _seed_layer(connector, analysis, {0: 1})
@@ -154,11 +172,14 @@ def test_partial_or_conflicting_layer_fails_closed(tmp_path: Path, fault: str) -
 
 
 def test_snapshot_still_rejects_zero_occurrences_when_schema_checks_are_bypassed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with open_generated_sqlite_database(tmp_path / "zero.sqlite3") as connector:
-        connector.execute("PRAGMA foreign_keys = OFF")
-        connector.execute("PRAGMA ignore_check_constraints = ON")
+    with closing(
+        open_generated_database(database_factory.config(str(tmp_path / "zero.sqlite3")))
+    ) as connector:
+        set_foreign_key_checks(connector, enabled=False)
+        set_check_constraints(connector, enabled=False)
         analysis = b"a" * 16
         with connector.transaction():
             _seed_layer(connector, analysis, {0: 1})
@@ -184,7 +205,8 @@ def test_snapshot_still_rejects_zero_occurrences_when_schema_checks_are_bypassed
         ):
             list(
                 _iter_snapshot_decisions(
-                    VNextUnitOfWork(connector, backend="sqlite"), authority
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    authority,
                 )
             )
         family_error = rejected.value.__cause__
@@ -196,10 +218,13 @@ def test_snapshot_still_rejects_zero_occurrences_when_schema_checks_are_bypassed
 
 
 def test_seventeen_layers_preserve_revival_and_reject_masked_orphans(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with open_generated_sqlite_database(tmp_path / "deep.sqlite3") as connector:
-        connector.execute("PRAGMA foreign_keys = OFF")
+    with closing(
+        open_generated_database(database_factory.config(str(tmp_path / "deep.sqlite3")))
+    ) as connector:
+        set_foreign_key_checks(connector, enabled=False)
         ancestry = tuple(index.to_bytes(16, "big") for index in range(17))
         with connector.transaction():
             for depth, analysis in enumerate(ancestry):

@@ -16,17 +16,21 @@ from vnext_pipeline import (
     initialize_database,
     run_source,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_one,
+)
 
 from h2hdb import (
     CoreConfig,
-    DatabaseConfig,
     VNextIngestFacade,
     VNextIngestSession,
     VNextIssuedAnalysisStep,
     VNextPreparedAnalysis,
 )
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_repository import (
     AnalysisCorruptionError,
     AnalysisGalleryPreparation,
@@ -45,13 +49,11 @@ class _GidIssue:
     session: VNextIngestSession
     analysis: VNextPreparedAnalysis
     issued: VNextIssuedAnalysisStep
-    path: Path
+    config: CoreConfig
 
 
 @contextmanager
-def _issue(tmp_path: Path, stage: bytes) -> Iterator[_GidIssue]:
-    path = tmp_path / "gid.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+def _issue(config: CoreConfig, stage: bytes) -> Iterator[_GidIssue]:
     initialize_database(config)
     source = MemorySource(
         [
@@ -76,7 +78,7 @@ def _issue(tmp_path: Path, stage: bytes) -> Iterator[_GidIssue]:
                     and payload.stage == stage
                     and payload.memberships
                 ):
-                    yield _GidIssue(facade, session, analysis, issued, path)
+                    yield _GidIssue(facade, session, analysis, issued, config)
                     return
                 prepared = facade.prepare_analysis_step(analysis, issued)
                 result = facade.commit_analysis_step(session, prepared)
@@ -94,10 +96,10 @@ def _change_normalized_gid(connector: SQLConnector) -> None:
 @pytest.mark.parametrize("stage", [b"gid_candidate", b"validate_gid_candidate"])
 @pytest.mark.parametrize("fault", ["metadata_bytes", "normalized_gid", "qualification"])
 def test_gid_preparation_revalidates_stream_and_qualification_in_each_stage(
-    tmp_path: Path, stage: bytes, fault: str
+    database_factory: DatabaseFactory, tmp_path: Path, stage: bytes, fault: str
 ) -> None:
-    with _issue(tmp_path, stage) as case:
-        with SQLiteConnector(str(case.path)) as connector, connector.transaction():
+    with _issue(database_factory.config(), stage) as case:
+        with database_connector(case.config) as connector, connector.transaction():
             match fault:
                 case "normalized_gid":
                     _change_normalized_gid(connector)
@@ -110,7 +112,8 @@ def test_gid_preparation_revalidates_stream_and_qualification_in_each_stage(
                     )
                     message = "qualification differs"
                 case _:
-                    root = connector.fetch_one(
+                    root = inspect_one(
+                        connector,
                         "SELECT root.root_page_sha256, page.page_bytes "
                         "FROM catalog_gallery_observation_tree_roots AS root "
                         "JOIN catalog_gallery_observation_page_descriptor_components AS descriptor "
@@ -137,9 +140,9 @@ def test_gid_preparation_revalidates_stream_and_qualification_in_each_stage(
     "fault", ["membership", "gid", "generation", "content_capability"]
 )
 def test_gid_commit_rejects_changed_authority_and_wrong_capability(
-    tmp_path: Path, stage: bytes, fault: str
+    database_factory: DatabaseFactory, tmp_path: Path, stage: bytes, fault: str
 ) -> None:
-    with _issue(tmp_path, stage) as case:
+    with _issue(database_factory.config(), stage) as case:
         prepared = case.facade.prepare_analysis_step(case.analysis, case.issued)
         local = prepared._payload
         assert isinstance(local, _LocalAnalysisWork)
@@ -164,10 +167,10 @@ def test_gid_commit_rejects_changed_authority_and_wrong_capability(
                 )
                 error, message = AnalysisNotReadyError, "generation is stale"
             case "content_capability":
-                with SQLiteConnector(str(case.path)) as connector:
+                with database_connector(case.config) as connector:
                     full = AnalysisRepository.prepare_gallery(
                         connector,
-                        backend="sqlite",
+                        backend=connector_backend(connector),
                         authority=gid.authority,
                         gallery_id=gid.gallery_id,
                     )
@@ -175,7 +178,7 @@ def test_gid_commit_rejects_changed_authority_and_wrong_capability(
                 error, message = AnalysisNotReadyError, "another stage family"
             case _:
                 with (
-                    SQLiteConnector(str(case.path)) as connector,
+                    database_connector(case.config) as connector,
                     connector.transaction(),
                 ):
                     _change_normalized_gid(connector)
@@ -188,9 +191,10 @@ def test_gid_commit_rejects_changed_authority_and_wrong_capability(
 
 
 def test_gid_only_capability_cannot_authorize_content_and_requires_current_seals(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _issue(tmp_path, b"gid_candidate") as case:
+    with _issue(database_factory.config(), b"gid_candidate") as case:
         prepared = case.facade.prepare_analysis_step(case.analysis, case.issued)
         local = prepared._payload
         assert isinstance(local, _LocalAnalysisWork)
@@ -200,7 +204,7 @@ def test_gid_only_capability_cannot_authorize_content_and_requires_current_seals
             _require_preparation_kind((gid,), AnalysisGalleryPreparation)
         with pytest.raises(TypeError, match="repository-issued"):
             replace(gid, _capability=object())
-        with SQLiteConnector(str(case.path)) as connector:
+        with database_connector(case.config) as connector:
             missing_owner = replace(
                 gid.authority,
                 component_seals=tuple(
@@ -214,7 +218,7 @@ def test_gid_only_capability_cannot_authorize_content_and_requires_current_seals
             ):
                 AnalysisRepository.prepare_gid_gallery(
                     connector,
-                    backend="sqlite",
+                    backend=connector_backend(connector),
                     authority=missing_owner,
                     gallery_id=gid.gallery_id,
                 )
@@ -223,7 +227,7 @@ def test_gid_only_capability_cannot_authorize_content_and_requires_current_seals
             ):
                 AnalysisRepository.prepare_gid_gallery(
                     connector,
-                    backend="sqlite",
+                    backend=connector_backend(connector),
                     authority=replace(
                         gid.authority, generation=gid.authority.generation + 1
                     ),

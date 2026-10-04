@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from vnext_test_database import (
+    database_connector,
+    inspect_all,
+    set_foreign_key_checks,
+)
+
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
-from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.vnext_analysis_overlay_family import (
     load_analysis_impacted_content_key_family,
     load_analysis_impacted_gid_key_family,
@@ -10,28 +15,17 @@ from h2hdb.vnext_analysis_overlay_family import (
 )
 
 
-def _connector(config: CoreConfig) -> MariaDBConnector:
-    database = config.database
-    return MariaDBConnector(
-        host=database.host,
-        port=database.port,
-        user=database.user,
-        password=database.password,
-        database=database.database,
-    )
-
-
 def test_live_mariadb_provenance_preflight_preserves_raw_binary_keys(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
+    VNextDatabaseAdminFacade(db_config).initialize()
     analysis = b"binary-key-test!"
     content_sha256 = bytes(range(0x80, 0xA0))
-    with _connector(mariadb_config) as connector:
+    with database_connector(db_config) as connector:
         # This storage-level regression deliberately isolates the family query
         # from unrelated analysis/gallery parents. MariaDB still enforces every
         # family primary key and raw BINARY(32) comparison exercised below.
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_source_gallery_name_gids "
@@ -69,21 +63,23 @@ def test_live_mariadb_provenance_preflight_preserves_raw_binary_keys(
                 entries=((2, 17),),
             )
 
-        content_family = load_analysis_impacted_content_key_family(
-            connector,
-            analysis_id=analysis,
-            content_sha256=content_sha256,
-        )
-        gid_family = load_analysis_impacted_gid_key_family(
-            connector,
-            analysis_id=analysis,
-            gid=17,
-        )
+        with connector.read_transaction():
+            content_family = load_analysis_impacted_content_key_family(
+                connector,
+                analysis_id=analysis,
+                content_sha256=content_sha256,
+            )
+            gid_family = load_analysis_impacted_gid_key_family(
+                connector,
+                analysis_id=analysis,
+                gid=17,
+            )
         assert content_family is not None
         assert content_family.content_sha256 == content_sha256
         assert content_family.witness_gallery_id == 1
         assert gid_family is not None and gid_family.witness_gallery_id == 1
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, content_sha256 "
             "FROM catalog_a_impacted_content_provenance "
             "WHERE analysis_id = %s ORDER BY gallery_id",

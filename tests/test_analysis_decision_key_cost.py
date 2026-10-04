@@ -1,8 +1,9 @@
 """Finite source-work contracts for depth-zero duplicate-page decision keys.
 
 These checks bound real query work, not only returned rows. The old production
-UNION and an explicit full-scan mutant must violate the predeclared VM budget.
-They are not wall-time predictions or proofs about MariaDB execution plans.
+UNION and an explicit full-scan mutant must violate the predeclared native
+SQLite VM or MariaDB Handler budget. These are finite implementation checks,
+not wall-time predictions or proofs about every database execution plan.
 """
 
 from __future__ import annotations
@@ -17,6 +18,13 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    generated_databases,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
 from h2hdb import vnext_analysis_repository as analysis
 from h2hdb.sql_connector import SQLConnector
@@ -64,25 +72,34 @@ def probe() -> Iterator[ModuleType]:
 )
 @pytest.mark.parametrize("rejected,history", [(0, 0), (1, 2)])
 def test_current_observation_stream_matches_fixed_cost_across_capacity(
-    probe: ModuleType, galleries: int, hashes: int, rejected: int, history: int
+    database_factory: DatabaseFactory,
+    probe: ModuleType,
+    galleries: int,
+    hashes: int,
+    rejected: int,
+    history: int,
 ) -> None:
     shape = probe.Shape(galleries, hashes, rejected, history)
-    with probe.databases("sqlite", 1) as connections:
-        result = probe.measure_case(next(connections), "sqlite", shape)
+    with generated_databases(database_factory, 1) as connections:
+        result = probe.measure_case(next(connections), database_factory.backend, shape)
     assert result["candidate"]["calls"] == shape.source_calls
     assert result["candidate"]["occurrences"] == shape.occurrences
     assert result["candidate"]["memberships"] == galleries
-    assert result["candidate"]["vm_steps"] <= shape.vm_budget
+    if database_factory.backend == "sqlite":
+        assert result["candidate"]["vm_steps"] <= shape.vm_budget
+    else:
+        probe.require_handler_budget(result["candidate_handlers"], shape)
     assert result["unique_keys"] == 1 + shape.occurrences
     assert result["three_traversals_without_sql"]
 
 
 def test_all_rejected_memberships_still_advance_raw_bounded_pages(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
-    with probe.databases("sqlite", 1) as connections:
+    with generated_databases(database_factory, 1) as connections:
         case = probe.measure_case(
-            next(connections), "sqlite", probe.Shape(129, 4, 129, 2)
+            next(connections), database_factory.backend, probe.Shape(129, 4, 129, 2)
         )
     assert case["candidate"]["memberships"] == 129
     assert case["candidate"]["occurrences"] == 0
@@ -92,7 +109,7 @@ def test_all_rejected_memberships_still_advance_raw_bounded_pages(
 
 @pytest.mark.parametrize("galleries", [126, 127, 128])
 def test_candidate_timing_includes_one_complete_delivery_and_owned_cleanup(
-    probe: ModuleType, galleries: int
+    database_factory: DatabaseFactory, probe: ModuleType, galleries: int
 ) -> None:
     elapsed = 0.0
     delivery_calls = 0
@@ -134,8 +151,8 @@ def test_candidate_timing_includes_one_complete_delivery_and_owned_cleanup(
         elapsed += 13
         return result
 
-    with probe.databases("sqlite", 1) as connections:
-        connector = cast(SQLConnector, next(connections))
+    with generated_databases(database_factory, 1) as connections:
+        connector = next(connections)
         original_fetch = connector.fetch_all
 
         def fetch(sql: str, parameters: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -153,7 +170,9 @@ def test_candidate_timing_includes_one_complete_delivery_and_owned_cleanup(
             patch.object(probe, "measure_old", old),
             patch.object(connector, "fetch_all", fetch),
         ):
-            case = probe.measure_case(connector, "sqlite", probe.Shape(galleries, 1))
+            case = probe.measure_case(
+                connector, database_factory.backend, probe.Shape(galleries, 1)
+            )
 
     # One changed key plus every gallery key, followed by one empty-tail call.
     calls_per_delivery = (galleries + 1 + 127) // 128 + 1
@@ -167,22 +186,33 @@ def test_candidate_timing_includes_one_complete_delivery_and_owned_cleanup(
 
 
 def test_old_production_query_and_full_scan_mutant_fail_fixed_vm_budget(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
     shape = probe.Shape(2048, 4)
-    with probe.databases("sqlite", 1) as connections:
-        connector = cast(SQLConnector, next(connections))
-        oracle = probe.seed(connector, "sqlite", shape)
-        old = probe.measure_old(connector, oracle)
+    with generated_databases(database_factory, 1) as connections:
+        connector = next(connections)
+        oracle = probe.seed(connector, database_factory.backend, shape)
+        before_old = probe.handler_counts(connector)
+        with connector.read_transaction():
+            old = probe.measure_old(connector, oracle)
+        old_handlers = {
+            key: value - before_old[key]
+            for key, value in probe.handler_counts(connector).items()
+        }
         assert (
             probe.query_fingerprint(probe.old_query(probe.digest(128))[0])
             == "cca9a391f4977cca"
         )
-        with pytest.raises(RuntimeError, match="fixed linear VM budget"):
-            probe.require_vm_budget(old, shape)
+        if database_factory.backend == "sqlite":
+            with pytest.raises(RuntimeError, match="fixed linear VM budget"):
+                probe.require_vm_budget(old, shape)
+        else:
+            with pytest.raises(RuntimeError, match="indexed MariaDB handler budget"):
+                probe.require_handler_budget(old_handlers, shape)
         # Inject a redundant table walk into every real bounded source query.
         # It returns identical results and preserves query count/page sizes;
-        # only actual VM instructions expose the degradation.
+        # Only actual engine work (VM or Handler counters) exposes degradation.
         original = connector.fetch_all
 
         def degraded(
@@ -193,6 +223,7 @@ def test_old_production_query_and_full_scan_mutant_fail_fixed_vm_budget(
             )
             return original(sql, parameters)
 
+        before_mutant = probe.handler_counts(connector)
         with (
             patch.object(connector, "fetch_all", degraded),
             probe.measure_reads(connector, source=True) as reads,
@@ -208,8 +239,16 @@ def test_old_production_query_and_full_scan_mutant_fail_fixed_vm_budget(
             shape.galleries,
             shape.occurrences,
         )
-        with pytest.raises(RuntimeError, match="fixed linear VM budget"):
-            probe.require_source_budget(reads, shape)
+        if database_factory.backend == "sqlite":
+            with pytest.raises(RuntimeError, match="fixed linear VM budget"):
+                probe.require_source_budget(reads, shape)
+        else:
+            mutant_handlers = {
+                key: value - before_mutant[key]
+                for key, value in probe.handler_counts(connector).items()
+            }
+            with pytest.raises(RuntimeError, match="indexed MariaDB handler budget"):
+                probe.require_handler_budget(mutant_handlers, shape)
 
 
 @pytest.mark.parametrize("stage", [b"changed_file_hash", b"file_hash_decision"])
@@ -241,17 +280,19 @@ def test_hash_key_capability_is_bound_to_its_stage(stage: bytes) -> None:
 
 @pytest.mark.parametrize("fault", ["working_slot", "checkpoint"])
 def test_decision_plan_rechecks_immutable_authority_and_closes_failed_preparation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
 ) -> None:
     from test_vnext_analysis_repository import (
         _authorities,
         _begin,
-        _generated_database,
         _run_stage,
         _seed_initial_snapshot,
     )
 
-    connector = _generated_database(tmp_path / "decision-plan-authority.sqlite3")
+    connector = open_generated_database(database_factory.config())
     plans: list[AnalysisHashKeyPlan] = []
     try:
         gate, turn = _authorities(connector)
@@ -275,7 +316,7 @@ def test_decision_plan_rechecks_immutable_authority_and_closes_failed_preparatio
             )
         with connector.transaction():
             issue = analysis.AnalysisRepository.issue_next_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=database_factory.backend),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -302,10 +343,13 @@ def test_decision_plan_rechecks_immutable_authority_and_closes_failed_preparatio
             analysis.AnalysisNotReadyError, match="working slot|input changed"
         ):
             analysis.AnalysisRepository.prepare_decision_hash_plan(
-                connector, backend="sqlite", authority=issue.preparation_authority
+                connector,
+                backend=database_factory.backend,
+                authority=issue.preparation_authority,
             )
         assert len(plans) == 1 and plans[0]._closed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_a_file_decision_shadow_anchors WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == (0,)
@@ -314,13 +358,14 @@ def test_decision_plan_rechecks_immutable_authority_and_closes_failed_preparatio
 
 
 def test_group_keyset_handles_unequal_fanout_empty_tails_and_unordered_union(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
     counts = (0, 1, 7, 8, 9, 15, 16, 17, 127, 128, 129, 2, 4, 10, 32, 64)
     shape = probe.Shape(16, 129)
-    with probe.databases("sqlite", 1) as connections:
-        connector = cast(SQLConnector, next(connections))
-        probe.seed(connector, "sqlite", shape)
+    with generated_databases(database_factory, 1) as connections:
+        connector = next(connections)
+        probe.seed(connector, database_factory.backend, shape)
         expected: list[bytes] = []
         with connector.transaction():
             for gallery, count in enumerate(counts, 1):
@@ -367,18 +412,17 @@ def test_group_keyset_handles_unequal_fanout_empty_tails_and_unordered_union(
 
 @pytest.mark.parametrize("compact", [False, True])
 def test_decision_plan_selected_by_depth_including_policy_compaction(
-    tmp_path: Path, compact: bool
+    database_factory: DatabaseFactory, tmp_path: Path, compact: bool
 ) -> None:
     from test_vnext_analysis_repository import (
         _authorities,
-        _generated_database,
         _independent_file_oracle,
         _prepare_incremental,
         _run_file_slice,
     )
     from vnext_catalog_registry_fixtures import seed_analysis_policy
 
-    connector = _generated_database(tmp_path / "decision-compaction.sqlite3")
+    connector = open_generated_database(database_factory.config())
     try:
         gate, first_turn = _authorities(connector)
         turn, build, unchanged, removed, added = _prepare_incremental(
@@ -396,7 +440,7 @@ def test_decision_plan_selected_by_depth_including_policy_compaction(
                     gid_winner_rule_version=1,
                 )
             run = analysis.AnalysisRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=database_factory.backend),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build,
@@ -430,7 +474,8 @@ def test_decision_plan_selected_by_depth_including_policy_compaction(
             assert plans[0]._closed
         actual = {
             row[0]: tuple(row[1:])
-            for row in connector.fetch_all(
+            for row in inspect_all(
+                connector,
                 "SELECT file_sha256, occurrence_count, artist_count, maximum_gallery_artist_count FROM catalog_analysis_file_hash_decision_resolved WHERE analysis_id = %s",
                 (run.analysis_id,),
             )

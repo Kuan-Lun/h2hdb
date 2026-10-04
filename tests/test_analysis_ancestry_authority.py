@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from typing import cast
 
 import pytest
 from analysis_ancestry_baseline import historical_validate_ancestry_suffixes
@@ -18,7 +17,6 @@ import h2hdb.vnext_analysis_repository as analysis
 from h2hdb import CoreConfig
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 pytestmark = pytest.mark.performance_acceptance
@@ -40,7 +38,7 @@ def _rollback(connector: SQLConnector) -> Iterator[None]:
 
 def _seed(connector: SQLConnector, count: int) -> tuple[bytes, ...]:
     """Only inherited scalar authority; the separate public test seals real data."""
-    fixture = cast(SQLiteConnector, connector)
+    fixture = connector
     ancestry = tuple(number.to_bytes(16, "big") for number in range(count, 0, -1))
     with connector.transaction():
         scope = _seed_root(fixture)

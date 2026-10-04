@@ -17,7 +17,6 @@ from typing import Literal, cast
 
 import pytest
 from test_content_marker_validation import _corrupt_value, _store_value, _TagRows
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_pipeline import (
     MemorySource,
     claim_session,
@@ -27,12 +26,18 @@ from vnext_pipeline import (
     run_analysis,
     run_source,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    open_generated_database,
+)
 
-from h2hdb import CoreConfig, DatabaseConfig, VNextIngestFacade
+from h2hdb import CoreConfig, VNextIngestFacade
 from h2hdb import vnext_analysis_repository as analysis_repository
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_repository import (
     AnalysisGalleryPreparation,
     AnalysisPreparationAuthority,
@@ -121,7 +126,8 @@ def _observe_content_preparation(
             if extra_tag_query:
                 # A query added outside the marker helper must also be counted.
                 with connector.read_transaction():
-                    connector.fetch_all(
+                    inspect_all(
+                        connector,
                         "SELECT position FROM catalog_gallery_observation_tags "
                         "WHERE gallery_id = %s AND observation_id = %s "
                         "ORDER BY position LIMIT 128",
@@ -158,7 +164,7 @@ def _observe_content_preparation(
 
 
 def _run_source_analysis(
-    tmp_path: Path,
+    config: CoreConfig,
     *,
     tags: tuple[str, ...],
     galleries: int = 1,
@@ -190,8 +196,6 @@ def _run_source_analysis(
             for gid in range(1, galleries + 1)
         ]
     )
-    path = tmp_path / "content.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
     initialize_database(config)
     with VNextIngestFacade(config) as facade:
         session = claim_session(facade)
@@ -200,8 +204,9 @@ def _run_source_analysis(
         result = run_analysis(facade, session, policy, receipt.build_id)
         assert result.terminal
         assert result.snapshot_manifest_sha256 is not None
-    with SQLiteConnector(database=str(path)) as connector:
-        assert connector.fetch_all(
+    with database_connector(config) as connector:
+        assert inspect_all(
+            connector,
             "SELECT gid, winner_gallery_id FROM catalog_analysis_gid_winner_resolved "
             "WHERE analysis_id = %s ORDER BY gid",
             (result.analysis_id,),
@@ -275,18 +280,20 @@ def model_costs() -> dict[tuple[str, int], tuple[int, int]]:
 
 
 def test_content_preparation_rejects_per_tag_query_growth(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The pre-fix runtime fails this budget while returning the same result."""
     with _observe_content_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path, tags=tuple(f"tag-{position}" for position in range(129))
+            database_factory.config(),
+            tags=tuple(f"tag-{position}" for position in range(129)),
         )
     _assert_cost(samples, galleries=1, list_queries=3, canonical_queries=6)
 
 
 @pytest.mark.parametrize("tags", [0, 1, 127, 128, 129, 130, 256, 512, 1024])
 def test_content_preparation_sql_matches_lean_at_page_boundaries(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int], tuple[int, int]],
@@ -294,7 +301,8 @@ def test_content_preparation_sql_matches_lean_at_page_boundaries(
 ) -> None:
     with _observe_content_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path, tags=tuple(f"tag-{position}" for position in range(tags))
+            database_factory.config(),
+            tags=tuple(f"tag-{position}" for position in range(tags)),
         )
     listings, canonical = model_costs["uniform", tags]
     _assert_cost(
@@ -304,6 +312,7 @@ def test_content_preparation_sql_matches_lean_at_page_boundaries(
 
 @pytest.mark.parametrize("preceding", [0, 1, 127, 128, 129])
 def test_content_marker_early_exit_matches_constructed_lean_trace(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int], tuple[int, int]],
@@ -316,7 +325,7 @@ def test_content_marker_early_exit_matches_constructed_lean_trace(
         "after-1",
     )
     with _observe_content_preparation(monkeypatch) as samples:
-        _run_source_analysis(tmp_path, tags=tags)
+        _run_source_analysis(database_factory.config(), tags=tags)
     listings, canonical = model_costs["marker", preceding]
     _assert_cost(
         samples,
@@ -330,6 +339,7 @@ def test_content_marker_early_exit_matches_constructed_lean_trace(
 @pytest.mark.parametrize("byte_count", [32769, 65536])
 @pytest.mark.parametrize("kind", ["multileaf", "mixed"])
 def test_content_long_values_have_a_separate_cost_regime(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int], tuple[int, int]],
@@ -340,7 +350,7 @@ def test_content_long_values_have_a_separate_cost_regime(
     if kind == "mixed":
         tags = ("short", *tags)
     with _observe_content_preparation(monkeypatch) as samples:
-        _run_source_analysis(tmp_path, tags=tags)
+        _run_source_analysis(database_factory.config(), tags=tags)
     listings, canonical = model_costs[kind, byte_count]
     _assert_cost(
         samples, galleries=1, list_queries=listings, canonical_queries=canonical
@@ -348,13 +358,14 @@ def test_content_long_values_have_a_separate_cost_regime(
 
 
 def test_content_costs_repeat_independently_for_each_gallery_and_stage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: dict[tuple[str, int], tuple[int, int]],
 ) -> None:
     with _observe_content_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path,
+            database_factory.config(),
             tags=tuple(f"shared-{position}" for position in range(128)),
             galleries=2,
         )
@@ -366,11 +377,12 @@ def test_content_costs_repeat_independently_for_each_gallery_and_stage(
 
 @pytest.mark.parametrize("marker_first", [False, True])
 def test_content_fault_replay_cost_matches_constructed_lean_trace(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     model_costs: dict[tuple[str, int], tuple[int, int]],
     marker_first: bool,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "fault-cost.sqlite3")
+    connector = open_generated_database(database_factory.config())
     try:
         marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER)
         corrupt = _corrupt_value(connector, _store_value(connector, b"bad"), "payload")
@@ -382,7 +394,7 @@ def test_content_fault_replay_cost_matches_constructed_lean_trace(
         with connector.read_transaction(), measure_sql(counter):
             work = VNextUnitOfWork(
                 instrument_connector(cast(SQLConnector, _TagRows(connector, values))),
-                backend="sqlite",
+                backend=connector_backend(connector),
             )
             if marker_first:
                 assert analysis_repository._gallery_has_already_uploaded_marker(
@@ -403,11 +415,11 @@ def test_content_fault_replay_cost_matches_constructed_lean_trace(
 
 
 def test_content_marker_preference_selects_the_unmarked_duplicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _observe_content_preparation(monkeypatch) as samples:
         _run_source_analysis(
-            tmp_path,
+            database_factory.config(),
             tags=("ordinary",),
             galleries=2,
             marked_gallery=1,
@@ -424,14 +436,19 @@ def test_content_marker_preference_selects_the_unmarked_duplicate(
 
 @pytest.mark.parametrize("fault", ["wrapper_query", "scalar_only"])
 def test_content_cost_oracle_rejects_deliberate_degradation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
 ) -> None:
     with _observe_content_preparation(
         monkeypatch,
         extra_tag_query=fault == "wrapper_query",
         scalar_only=fault == "scalar_only",
     ) as samples:
-        _run_source_analysis(tmp_path, tags=("tag-0", "tag-1", "tag-2"))
+        _run_source_analysis(
+            database_factory.config(), tags=("tag-0", "tag-1", "tag-2")
+        )
     expected = "tag-list" if fault == "wrapper_query" else "canonical"
     with pytest.raises(AssertionError, match=f"{expected} SQL cost differs"):
         _assert_cost(samples, galleries=1, list_queries=2, canonical_queries=6)
