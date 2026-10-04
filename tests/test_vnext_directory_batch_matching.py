@@ -15,7 +15,12 @@ from test_vnext_gallery_staging_repository import (
     _seed_working_gallery,
 )
 from test_vnext_live_mariadb_analysis_repository import _connector
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    open_generated_database,
+)
 
 import h2hdb.vnext_gallery_staging_repository as staging
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
@@ -124,14 +129,17 @@ def _match(
 def _state(connector: SQLConnector) -> tuple[object, ...]:
     with connector.read_transaction():
         return (
-            connector.fetch_all(
-                "SELECT * FROM operational_gallery_observation_staging_match_checkpoints"
+            inspect_all(
+                connector,
+                "SELECT * FROM operational_gallery_observation_staging_match_checkpoints",
             ),
-            connector.fetch_all(
-                "SELECT * FROM operational_gallery_observation_staging_match_receipts"
+            inspect_all(
+                connector,
+                "SELECT * FROM operational_gallery_observation_staging_match_receipts",
             ),
-            connector.fetch_all(
-                "SELECT request_sha256 FROM operational_gallery_observation_staging_requests ORDER BY request_sha256"
+            inspect_all(
+                connector,
+                "SELECT request_sha256 FROM operational_gallery_observation_staging_requests ORDER BY request_sha256",
             ),
         )
 
@@ -152,7 +160,8 @@ def _exercise_directory_batch(connector: SQLConnector, backend: str) -> None:
         root, _count = staging._component_root(
             connector, authorities[2], GalleryObservationComponent.DIRECTORY
         )
-        children = connector.fetch_all(
+        children = inspect_all(
+            connector,
             "SELECT child_sha256 FROM catalog_gallery_observation_page_children WHERE parent_sha256 = %s ORDER BY position",
             (root,),
         )
@@ -260,26 +269,29 @@ def _exercise_directory_batch(connector: SQLConnector, backend: str) -> None:
 
 
 def test_directory_grouped_batch_sqlite_exact_corruption_rollback_and_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "directory.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "directory.sqlite3"))
+    )
     try:
-        _exercise_directory_batch(connector, "sqlite")
+        _exercise_directory_batch(connector, connector_backend(connector))
     finally:
         connector.close()
 
 
 @pytest.mark.mariadb_smoke
 def test_directory_grouped_batch_live_mariadb_exact_corruption_rollback_and_replay(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    admin = VNextDatabaseAdminFacade(mariadb_config)
+    admin = VNextDatabaseAdminFacade(db_config)
     admin.initialize()
     admin.close()
-    connector = _connector(mariadb_config)
+    connector = _connector(db_config)
     connector.connect()
     try:
-        _exercise_directory_batch(connector, "mariadb")
+        _exercise_directory_batch(connector, connector_backend(connector))
     finally:
         connector.close()
 

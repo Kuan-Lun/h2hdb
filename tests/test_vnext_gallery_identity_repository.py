@@ -6,10 +6,18 @@ from unittest.mock import patch
 
 import pytest
 from vnext_catalog_registry_fixtures import seed_manifest_policy
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_indexed_query,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -38,26 +46,27 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    seed_manifest_policy(connector)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    with connector.transaction():
+        seed_manifest_policy(connector)
     return connector
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=1_000_000,
@@ -66,7 +75,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _put_plan(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
@@ -75,7 +84,7 @@ def _put_plan(
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -84,7 +93,7 @@ def _put_plan(
     for page in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -93,7 +102,7 @@ def _put_plan(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -102,7 +111,7 @@ def _put_plan(
 
 
 def _working_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[GateLease, IngestTurn, bytes, CanonicalValueUploadPlan]:
     gate, turn = _authorities(connector)
     root_command = SourceRootBuildCommand(
@@ -113,7 +122,7 @@ def _working_build(
     _put_plan(connector, gate, turn, root_plan, now=20)
     with connector.transaction():
         handoff = SourceBuildRepository.handoff_root(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             command=root_command,
@@ -125,7 +134,7 @@ def _working_build(
 
 
 def _handoff(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     build_id: bytes,
@@ -136,7 +145,7 @@ def _handoff(
 ) -> GalleryIdentityHandoff:
     with connector.transaction():
         return GalleryIdentityRepository.handoff_locator(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=build_id,
@@ -147,9 +156,12 @@ def _handoff(
 
 
 def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-identity.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-identity.sqlite3"))
+    )
     gate, turn, build_id, root_plan = _working_build(connector)
     command = SourceLocatorCommand(("nested", "畫廊 A"))
     plan = command.prepare_upload()
@@ -169,7 +181,8 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
                 plan,
                 now=33,
             )
-        scope = connector.fetch_one(
+        scope = inspect_one(
+            connector,
             "SELECT scope_key FROM catalog_source_builds WHERE build_id = %s",
             (build_id,),
         )[0]
@@ -177,30 +190,35 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
         assert result.scope_key == scope
         assert result.gallery_key == gallery_key(scope, command.locator_sha256)
         assert not result.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT source_gallery_name FROM catalog_source_locator_identity "
             "WHERE locator_sha256 = %s",
             (command.locator_sha256,),
         ) == ("畫廊 A".encode(),)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_id, gallery_key, scope_key, locator_sha256 "
-            "FROM catalog_gallery_identities WHERE gallery_id = 1"
+            "FROM catalog_gallery_identities WHERE gallery_id = 1",
         ) == (
             1,
             result.gallery_key,
             scope,
             command.locator_sha256,
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_observation_id FROM "
-            "operational_gallery_observation_allocators WHERE gallery_id = 1"
+            "operational_gallery_observation_allocators WHERE gallery_id = 1",
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (2,)
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
                 (turn.generation, command.locator_sha256),
@@ -220,7 +238,8 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
             now=34,
         )
         assert replay.replayed and replay.gallery_id == result.gallery_id
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (2,)
@@ -230,15 +249,19 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
         connector.close()
 
 
-def test_locator_command_and_upload_plan_must_be_exact(tmp_path: Path) -> None:
-    with pytest.raises(Exception):
+def test_locator_command_and_upload_plan_must_be_exact(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError):
         SourceLocatorCommand(())
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SourceLocatorCommand((".",))
     with pytest.raises(TypeError):
         SourceLocatorCommand(["gallery"])  # type: ignore[arg-type]
 
-    connector = _generated_database(tmp_path / "wrong-plan.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "wrong-plan.sqlite3"))
+    )
     gate, turn, build_id, root_plan = _working_build(connector)
     command = SourceLocatorCommand(("gallery-a",))
     other = SourceLocatorCommand(("gallery-b",))
@@ -255,8 +278,9 @@ def test_locator_command_and_upload_plan_must_be_exact(tmp_path: Path) -> None:
                 plan,
                 now=33,
             )
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
-        assert connector.fetch_one(
+        assert inspect_all(connector, "SELECT 1 FROM catalog_gallery_identities") == []
+        assert inspect_one(
+            connector,
             "SELECT generation FROM operational_canonical_value_uploads "
             "WHERE value_sha256 = %s",
             (plan.value_sha256,),
@@ -268,9 +292,12 @@ def test_locator_command_and_upload_plan_must_be_exact(tmp_path: Path) -> None:
 
 
 def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "fenced-gallery.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "fenced-gallery.sqlite3"))
+    )
     gate, turn, build_id, root_plan = _working_build(connector)
     command = SourceLocatorCommand(("gallery",))
     plan = command.prepare_upload()
@@ -287,8 +314,9 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
                 plan,
                 now=33,
             )
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
-        assert connector.fetch_one(
+        assert inspect_all(connector, "SELECT 1 FROM catalog_gallery_identities") == []
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
@@ -308,8 +336,9 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
                 plan,
                 now=34,
             )
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
-        assert connector.fetch_one(
+        assert inspect_all(connector, "SELECT 1 FROM catalog_gallery_identities") == []
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
@@ -329,11 +358,14 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
     ),
 )
 def test_handoff_rolls_back_each_major_statement_fault(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     method_name: str,
     fragment: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"fault-{method_name}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"fault-{method_name}.sqlite3"))
+    )
     gate, turn, build_id, root_plan = _working_build(connector)
     command = SourceLocatorCommand(("fault-gallery",))
     plan = command.prepare_upload()
@@ -358,20 +390,23 @@ def test_handoff_rolls_back_each_major_statement_fault(
                     now=33,
                 )
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_source_locator_identity") == []
+            inspect_all(connector, "SELECT 1 FROM catalog_source_locator_identity")
+            == []
         )
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
+        assert inspect_all(connector, "SELECT 1 FROM catalog_gallery_identities") == []
         assert (
-            connector.fetch_all(
-                "SELECT 1 FROM operational_gallery_observation_allocators"
+            inspect_all(
+                connector, "SELECT 1 FROM operational_gallery_observation_allocators"
             )
             == []
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation FROM operational_canonical_value_uploads "
             "WHERE value_sha256 = %s",
             (command.locator_sha256,),
@@ -382,8 +417,12 @@ def test_handoff_rolls_back_each_major_statement_fault(
         connector.close()
 
 
-def test_gallery_identity_lookups_use_declared_keys(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "gallery-key-plans.sqlite3")
+def test_gallery_identity_lookups_use_declared_keys(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-key-plans.sqlite3"))
+    )
     try:
         digest = b"d" * 32
         scope = b"s" * 32
@@ -410,15 +449,6 @@ def test_gallery_identity_lookups_use_declared_keys(tmp_path: Path) -> None:
             ),
         )
         for sql, parameters in lookups:
-            details = [
-                str(row[3])
-                for row in connector.fetch_all(
-                    "EXPLAIN QUERY PLAN " + sql,
-                    parameters,
-                )
-            ]
-            assert details
-            assert all("SCAN " not in detail for detail in details), details
-            assert any("SEARCH " in detail for detail in details), details
+            assert_indexed_query(connector, sql, parameters)
     finally:
         connector.close()

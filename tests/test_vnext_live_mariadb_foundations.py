@@ -5,11 +5,14 @@ from unittest.mock import patch
 
 from vnext_catalog_registry_fixtures import seed_manifest_policy
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    connector_backend,
+    inspect_one,
+    open_generated_database,
+)
 
 from h2hdb import CoreConfig
-from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.domain import ArtifactSourceRole
-from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
@@ -51,27 +54,9 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _generated_mariadb(config: CoreConfig) -> MariaDBConnector:
-    database = config.database
-    connector = MariaDBConnector(
-        host=database.host,
-        port=database.port,
-        user=database.user,
-        password=database.password,
-        database=database.database,
-    )
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["mariadb"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for seed in payload["bootstrap_seeds"]:
-        connector.execute(seed["sql"], seed["parameters"])
+def _generated_mariadb(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
     seed_manifest_policy(connector)
-    # A bootstrap replay may be read-only when the generated family is already
-    # present; Connector/Python starts an implicit transaction for that SELECT.
-    connector.commit()
     return connector
 
 
@@ -82,13 +67,13 @@ def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
             return_value=b"mariadb-gate-001",
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=10_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="mariadb"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"mariadb-turn-001",
             now=11,
             lease_duration=10_000,
@@ -106,7 +91,7 @@ def _put_plan(
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="mariadb"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -115,7 +100,7 @@ def _put_plan(
     for page in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -124,7 +109,7 @@ def _put_plan(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="mariadb"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -133,9 +118,9 @@ def _put_plan(
 
 
 def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    connector = _generated_mariadb(db_config)
     root_plan: CanonicalValueUploadPlan | None = None
     locator_plan: CanonicalValueUploadPlan | None = None
     try:
@@ -148,7 +133,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         _put_plan(connector, gate, turn, root_plan, now=20)
         with connector.transaction():
             source = SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=root_command,
@@ -175,7 +160,9 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                     with connector.transaction():
                         resolved.append(
                             SourceBuildRepository.resolve_discovery_locator(
-                                VNextUnitOfWork(connector, backend="mariadb"),
+                                VNextUnitOfWork(
+                                    connector, backend=connector_backend(connector)
+                                ),
                                 gate_lease=gate,
                                 ingest_turn=turn,
                                 batch=discovery_batch,
@@ -186,7 +173,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                         )
             with connector.transaction():
                 discovery_receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="mariadb"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=discovery_batch,
@@ -204,7 +191,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 )
             with connector.transaction():
                 terminal_receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="mariadb"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=terminal_batch,
@@ -217,7 +204,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         _put_plan(connector, gate, turn, locator_plan, now=36)
         with connector.transaction():
             identity = GalleryIdentityRepository.handoff_locator(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
@@ -227,7 +214,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
         with connector.transaction():
             replay = GalleryIdentityRepository.handoff_locator(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
@@ -237,7 +224,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
         with connector.transaction():
             handle = GalleryObservationStagingRepository.begin_from_identity(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 identity=identity,
@@ -245,7 +232,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
         with connector.transaction():
             progress = GalleryObservationStagingRepository.begin_or_resume(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=identity.build_id,
@@ -271,7 +258,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         )
         with connector.transaction():
             directory_open = GalleryObservationStagingRepository.put_directories(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -341,7 +328,9 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             with connector.transaction():
                 component_receipts.append(
                     operation(
-                        VNextUnitOfWork(connector, backend="mariadb"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         handle=handle,
@@ -351,7 +340,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 )
         with connector.transaction():
             file_replay = GalleryObservationStagingRepository.put_files(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -360,7 +349,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
         with connector.transaction():
             match = GalleryObservationStagingRepository.match_files_to_directory(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -369,7 +358,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
         with connector.transaction():
             staging_seal = GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -379,13 +368,14 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         streamed: list[bytes] = []
         with connector.read_transaction():
             receipt = CanonicalValueRepository.stream_and_validate(
-                VNextUnitOfWork(connector, backend="mariadb"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 value_sha256=locator_command.locator_sha256,
                 consume_provisional=streamed.append,
             )
             directory_root = component_receipts[1].root_page_sha256
             assert directory_root is not None
-            directory_root_child_count = connector.fetch_one(
+            directory_root_child_count = inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_gallery_observation_page_children "
                 "WHERE parent_sha256 = %s",
                 (directory_root,),
@@ -424,7 +414,8 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         assert staging_seal.state == "SEALED" and not staging_seal.replayed
         assert receipt.value_sha256 == locator_command.locator_sha256
         assert b"".join(streamed) == b"".join(locator_plan.iter_payload_parts())
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT source_gallery_name FROM catalog_source_locator_identity "
             "WHERE locator_sha256 = %s",
             (locator_command.locator_sha256,),

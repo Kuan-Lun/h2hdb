@@ -13,12 +13,21 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_source_build
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_indexed_query,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 import h2hdb.vnext_source_build_repository as source_build_module
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_family import (
     CanonicalValuePageCoordinate,
     CanonicalValuePageFamily,
@@ -71,26 +80,27 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    seed_manifest_policy(connector)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    with connector.transaction():
+        seed_manifest_policy(connector)
     return connector
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=10_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=10_000,
@@ -99,14 +109,14 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _put_plan(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -115,7 +125,7 @@ def _put_plan(
     for prepared in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -124,7 +134,7 @@ def _put_plan(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -162,8 +172,12 @@ def test_disk_backed_plan_crosses_leaf_and_branch_boundaries() -> None:
         assert over_boundary.expected_root_level == 2
 
 
-def test_writer_lookup_queries_use_declared_key_paths(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "query-plans.sqlite3")
+def test_writer_lookup_queries_use_declared_key_paths(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "query-plans.sqlite3"))
+    )
     digest = b"d" * 32
     build_id = b"b" * 16
     try:
@@ -219,16 +233,7 @@ def test_writer_lookup_queries_use_declared_key_paths(tmp_path: Path) -> None:
             ),
         )
         for sql, parameters in lookups:
-            details = [
-                str(row[3])
-                for row in connector.fetch_all(
-                    "EXPLAIN QUERY PLAN " + sql,
-                    parameters,
-                )
-            ]
-            assert details
-            assert all("SCAN " not in detail for detail in details), details
-            assert any("SEARCH " in detail for detail in details), details
+            assert_indexed_query(connector, sql, parameters)
     finally:
         connector.close()
 
@@ -276,9 +281,12 @@ def test_canonical_family_queries_keep_mariadb_placeholders_and_narrow_tables() 
 
 
 def test_batched_single_page_read_matches_streaming_and_omits_large_values(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "canonical-batch.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "canonical-batch.sqlite3"))
+    )
     root_command = SourceRootBuildCommand(
         ("canonical-batch",),
         SourceBuildManifestSummary.empty(),
@@ -297,7 +305,7 @@ def test_batched_single_page_read_matches_streaming_and_omits_large_values(
         _put_plan(connector, gate, turn, root_plan)
         with connector.transaction():
             SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=root_command,
@@ -317,7 +325,7 @@ def test_batched_single_page_read_matches_streaming_and_omits_large_values(
             for plan in plans:
                 payload = bytearray()
                 receipt = CanonicalValueRepository.stream_and_validate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     value_sha256=plan.value_sha256,
                     consume_provisional=payload.extend,
                 )
@@ -432,21 +440,27 @@ def test_mariadb_source_scope_registry_replay_uses_plain_wide_reads() -> None:
 
 
 def test_source_scope_inserts_atomically_and_natural_collision_is_not_repaired(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     root = b"r" * 32
     scope = source_scope_key("filesystem", root, 1)
-    fresh = _generated_database(tmp_path / "fresh-scope.sqlite3")
+    fresh = _generated_database(
+        database_factory.config(str(tmp_path / "fresh-scope.sqlite3"))
+    )
     try:
-        fresh.execute("PRAGMA foreign_keys = OFF")
-        with patch.object(fresh, "execute", wraps=fresh.execute) as execute:
+        set_foreign_key_checks(fresh, enabled=False)
+        with (
+            fresh.transaction(),
+            patch.object(fresh, "execute", wraps=fresh.execute) as execute,
+        ):
             inserted = ensure_source_scope(
                 fresh,
                 source_provider=b"filesystem",
                 source_root_sha256=root,
                 identity_policy_version=1,
             )
-        fresh.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(fresh, enabled=True)
         assert not inserted.replayed and inserted.record.scope_key == scope
         mutations = [
             call.args[0]
@@ -455,21 +469,26 @@ def test_source_scope_inserts_atomically_and_natural_collision_is_not_repaired(
         ]
         assert len(mutations) == 1
         assert "catalog_source_scopes" in mutations[0]
-        assert fresh.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
+        assert inspect_one(fresh, "SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
     finally:
         fresh.close()
 
-    collision = _generated_database(tmp_path / "scope-collision.sqlite3")
+    collision = _generated_database(
+        database_factory.config(str(tmp_path / "scope-collision.sqlite3"))
+    )
     try:
-        collision.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(collision, enabled=False)
         collision.execute(
             "INSERT INTO catalog_source_scopes "
             "(scope_key, source_provider, source_root_sha256, "
             "identity_policy_version) VALUES (%s, %s, %s, %s)",
             (b"x" * 32, b"filesystem", root, 1),
         )
-        collision.execute("PRAGMA foreign_keys = ON")
-        with patch.object(collision, "execute", wraps=collision.execute) as execute:
+        set_foreign_key_checks(collision, enabled=True)
+        with (
+            collision.transaction(),
+            patch.object(collision, "execute", wraps=collision.execute) as execute,
+        ):
             with pytest.raises(CatalogRegistryConflictError, match="natural"):
                 ensure_source_scope(
                     collision,
@@ -478,16 +497,21 @@ def test_source_scope_inserts_atomically_and_natural_collision_is_not_repaired(
                     identity_policy_version=1,
                 )
         execute.assert_not_called()
-        assert collision.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
+        assert inspect_one(collision, "SELECT COUNT(*) FROM catalog_source_scopes") == (
+            1,
+        )
     finally:
         collision.close()
 
 
 def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "canonical.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "canonical.sqlite3"))
+    )
     components = tuple(f"segment-{index:03d}-" + "a" * 240 for index in range(130))
     payload_parts = tuple(iter_source_root_payload(components))
     payload = b"".join(payload_parts)
@@ -501,7 +525,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
         with pytest.raises(RuntimeError, match="allocation crash"):
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -509,7 +533,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
                 )
                 raise RuntimeError("allocation crash")
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_allocations")
+            inspect_all(connector, "SELECT 1 FROM catalog_canonical_value_allocations")
             == []
         )
 
@@ -526,7 +550,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
             )
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -537,7 +561,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
         with pytest.raises(RuntimeError, match="crash"):
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -546,14 +570,16 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
                 )
                 raise RuntimeError("synthetic crash")
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_page_payloads")
+            inspect_all(
+                connector, "SELECT 1 FROM catalog_canonical_value_page_payloads"
+            )
             == []
         )
 
         for prepared in plan.iter_pages():
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -563,7 +589,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
             # Response-loss replay is a byte-for-byte no-op.
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -573,7 +599,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
         with pytest.raises(RuntimeError, match="seal crash"):
             with connector.transaction():
                 CanonicalValueRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -581,7 +607,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
                 )
                 raise RuntimeError("seal crash")
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_identities")
+            inspect_all(connector, "SELECT 1 FROM catalog_canonical_value_identities")
             == []
         )
         statement_count = {"fetch_one": 0, "execute": 0}
@@ -608,7 +634,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
             )
             with connector.transaction():
                 CanonicalValueRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -616,7 +642,8 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
                 )
         assert statement_count["fetch_one"] <= 80
         assert statement_count["execute"] <= 1
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation FROM operational_canonical_value_uploads "
             "WHERE value_sha256 = %s",
             (plan.value_sha256,),
@@ -625,7 +652,7 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
         streamed = bytearray()
         with connector.read_transaction():
             receipt = CanonicalValueRepository.stream_and_validate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 value_sha256=plan.value_sha256,
                 consume_provisional=streamed.extend,
             )
@@ -639,10 +666,13 @@ def test_canonical_upload_crash_replay_seal_and_streaming_receipt(
 
 
 def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "source-root.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "source-root.sqlite3"))
+    )
     command = SourceRootBuildCommand(
         ("Volumes", "資料 A"),
         SourceBuildManifestSummary.empty(),
@@ -675,7 +705,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
             )
             with connector.transaction():
                 result = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     command=command,
@@ -687,13 +717,15 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
         assert result.build_id != command.build_attempt_id
         assert result.scope_key == expected_scope
         assert not result.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
         ) == (expected_build_id,)
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT generation FROM operational_canonical_value_uploads "
                 "WHERE value_sha256 = %s",
                 (plan.value_sha256,),
@@ -733,7 +765,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
             )
             with connector.transaction():
                 replay = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     command=retry_command,
@@ -743,9 +775,12 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
                 )
         assert replay.replayed
         assert replay.build_id == expected_build_id
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_builds") == (1,)
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_source_builds") == (
+            1,
+        )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
                 (turn.generation, plan.value_sha256),
@@ -754,11 +789,12 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn,
                 now=34,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
@@ -768,8 +804,12 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
         connector.close()
 
 
-def test_absolute_slash_source_root_handoff(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "slash-root.sqlite3")
+def test_absolute_slash_source_root_handoff(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "slash-root.sqlite3"))
+    )
     command = SourceRootBuildCommand((), SourceBuildManifestSummary.empty())
     plan = command.prepare_root_upload()
     try:
@@ -777,7 +817,7 @@ def test_absolute_slash_source_root_handoff(tmp_path: Path) -> None:
         _put_plan(connector, gate, turn, plan)
         with connector.transaction():
             handoff = SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=command,
@@ -798,9 +838,12 @@ def test_absolute_slash_source_root_handoff(tmp_path: Path) -> None:
 
 
 def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "cross-scope.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "cross-scope.sqlite3"))
+    )
     summary = SourceBuildManifestSummary.empty()
     old_command = SourceRootBuildCommand(("old-root",), summary)
     new_command = SourceRootBuildCommand(("new-root",), summary)
@@ -836,7 +879,7 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
         with pytest.raises(SourceBuildConflictError):
             with connector.transaction():
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     command=new_command,
@@ -844,12 +887,15 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
                     policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=61,
                 )
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_source_scopes") == (
+            1,
+        )
         assert (
-            connector.fetch_all("SELECT 1 FROM operational_source_build_generations")
+            inspect_all(connector, "SELECT 1 FROM operational_source_build_generations")
             == []
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation FROM operational_canonical_value_uploads "
             "WHERE generation = %s AND value_sha256 = %s",
             (turn.generation, new_plan.value_sha256),
@@ -861,10 +907,13 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
 
 
 def test_source_handoff_rolls_back_each_major_statement_fault(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "handoff-faults.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "handoff-faults.sqlite3"))
+    )
     command = SourceRootBuildCommand(
         ("fault-root",),
         SourceBuildManifestSummary.empty(),
@@ -914,7 +963,9 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
                 ):
                     with connector.transaction():
                         SourceBuildRepository.handoff_root(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             command=command,
@@ -923,25 +974,28 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
                             now=51,
                         )
 
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_source_scopes"
+            assert inspect_one(
+                connector, "SELECT COUNT(*) FROM catalog_source_scopes"
             ) == (0,)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_source_builds"
+            assert inspect_one(
+                connector, "SELECT COUNT(*) FROM catalog_source_builds"
             ) == (0,)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_source_build_generations"
+            assert inspect_one(
+                connector, "SELECT COUNT(*) FROM operational_source_build_generations"
             ) == (0,)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_source_working_builds"
+            assert inspect_one(
+                connector, "SELECT COUNT(*) FROM operational_source_working_builds"
             ) == (0,)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_source_build_discovery_checkpoints"
+            assert inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_source_build_discovery_checkpoints",
             ) == (0,)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_source_build_assembly_checkpoints"
+            assert inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_source_build_assembly_checkpoints",
             ) == (0,)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
                 (turn.generation, plan.value_sha256),
@@ -952,10 +1006,13 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
 
 
 def test_canonical_family_statement_faults_roll_back_before_seal(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "canonical-family-faults.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "canonical-family-faults.sqlite3"))
+    )
     plan = CanonicalValueUploadPlan.from_parts(
         SOURCE_ROOT_DIGEST_DOMAIN,
         (b"\x00\x00\x00\x01\x00\x00\x00\x00",),
@@ -998,23 +1055,25 @@ def test_canonical_family_statement_faults_roll_back_before_seal(
                 ):
                     with connector.transaction():
                         CanonicalValueRepository.allocate(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             plan=plan,
                             now=20,
                         )
             for family_table in allocation_tables:
-                assert connector.fetch_one(f"SELECT COUNT(*) FROM {family_table}") == (
-                    0,
-                )
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+                assert inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {family_table}"
+                ) == (0,)
+            assert inspect_one(
+                connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
             ) == (0,)
 
         with connector.transaction():
             CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1040,7 +1099,9 @@ def test_canonical_family_statement_faults_roll_back_before_seal(
                 with pytest.raises(RuntimeError, match="injected page family fault"):
                     with connector.transaction():
                         CanonicalValueRepository.put_page(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             plan=plan,
@@ -1048,18 +1109,21 @@ def test_canonical_family_statement_faults_roll_back_before_seal(
                             now=21,
                         )
             for family_table in page_tables:
-                assert connector.fetch_one(f"SELECT COUNT(*) FROM {family_table}") == (
-                    0,
-                )
+                assert inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {family_table}"
+                ) == (0,)
     finally:
         plan.close()
         connector.close()
 
 
 def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "fenced.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "fenced.sqlite3"))
+    )
     plan = CanonicalValueUploadPlan.from_parts(
         SOURCE_ROOT_DIGEST_DOMAIN,
         (b"\x00\x00\x00\x01\x00\x00\x00\x00",),
@@ -1076,14 +1140,14 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
         with pytest.raises(MaintenanceGateUnavailableError):
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=stale_gate,
                     ingest_turn=turn,
                     plan=plan,
                     now=20,
                 )
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_allocations")
+            inspect_all(connector, "SELECT 1 FROM catalog_canonical_value_allocations")
             == []
         )
 
@@ -1095,14 +1159,14 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
         with pytest.raises(IngestFenceUnavailableError):
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     plan=plan,
                     now=20,
                 )
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_canonical_value_allocations")
+            inspect_all(connector, "SELECT 1 FROM catalog_canonical_value_allocations")
             == []
         )
 
@@ -1116,14 +1180,14 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
         with pytest.raises(CanonicalValueCollisionError):
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
                     now=20,
                 )
         assert (
-            connector.fetch_all("SELECT 1 FROM operational_canonical_value_uploads")
+            inspect_all(connector, "SELECT 1 FROM operational_canonical_value_uploads")
             == []
         )
         for table in (
@@ -1140,7 +1204,7 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
 
         with connector.transaction():
             CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1149,7 +1213,7 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
         prepared = next(plan.iter_pages())
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1164,7 +1228,7 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
         with pytest.raises(CanonicalValueCollisionError):
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -1187,11 +1251,14 @@ def test_stale_authority_and_page_collision_leave_zero_semantic_writes(
     ),
 )
 def test_allocation_replay_rejects_each_partial_family_member(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     missing_table: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"partial-allocation-{missing_table}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"partial-allocation-{missing_table}.sqlite3")
+        )
     )
     plan = CanonicalValueUploadPlan.from_parts(
         SOURCE_ROOT_DIGEST_DOMAIN,
@@ -1201,29 +1268,30 @@ def test_allocation_replay_rejects_each_partial_family_member(
         gate, turn = _authorities(connector)
         with connector.transaction():
             first = CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
                 now=20,
             )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             f"DELETE FROM {missing_table} WHERE value_sha256 = %s",
             (plan.value_sha256,),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         with pytest.raises(CanonicalValuePartialFamilyError):
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
                     now=99,
                 )
         assert first.allocated_at == 20
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_canonical_value_uploads "
             "WHERE generation = %s AND value_sha256 = %s",
             (turn.generation, plan.value_sha256),
@@ -1244,10 +1312,13 @@ def test_allocation_replay_rejects_each_partial_family_member(
     ),
 )
 def test_page_replay_rejects_each_partial_family_member(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     missing_table: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"partial-page-{missing_table}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"partial-page-{missing_table}.sqlite3"))
+    )
     plan = CanonicalValueUploadPlan.from_parts(
         SOURCE_ROOT_DIGEST_DOMAIN,
         (b"\x00\x00\x00\x01\x00\x00\x00\x00",),
@@ -1256,7 +1327,7 @@ def test_page_replay_rejects_each_partial_family_member(
         gate, turn = _authorities(connector)
         with connector.transaction():
             CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1265,23 +1336,23 @@ def test_page_replay_rejects_each_partial_family_member(
         prepared = next(plan.iter_pages())
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
                 prepared_page=prepared,
                 now=21,
             )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             f"DELETE FROM {missing_table} WHERE page_sha256 = %s",
             (prepared.page_sha256,),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         with pytest.raises(CanonicalValuePartialFamilyError):
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -1294,9 +1365,12 @@ def test_page_replay_rejects_each_partial_family_member(
 
 
 def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "canonical-exact-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "canonical-exact-replay.sqlite3"))
+    )
     plan = CanonicalValueUploadPlan.from_parts(
         SOURCE_ROOT_DIGEST_DOMAIN,
         iter_source_root_payload(("x" * 255,) * 140),
@@ -1305,7 +1379,7 @@ def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
         gate, turn = _authorities(connector)
         with connector.transaction():
             first = CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1313,14 +1387,15 @@ def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
             )
         with connector.transaction():
             replay = CanonicalValueRepository.allocate(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
                 now=99,
             )
         assert first.allocated_at == replay.allocated_at == 20
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT allocated_at FROM "
             "catalog_canonical_value_allocation_allocated_ats "
             "WHERE value_sha256 = %s",
@@ -1331,7 +1406,7 @@ def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
         for prepared in prepared_pages:
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -1362,7 +1437,7 @@ def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
         with pytest.raises(CanonicalValueCollisionError):
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
@@ -1382,7 +1457,7 @@ def test_allocation_replay_preserves_first_time_and_branch_edges_are_exact(
         with pytest.raises(CanonicalValueCollisionError):
             with connector.transaction():
                 CanonicalValueRepository.put_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=plan,
