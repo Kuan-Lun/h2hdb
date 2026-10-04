@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 
 import pytest
+from vnext_test_database import (
+    database_connector,
+    set_check_constraints,
+    trace_statements,
+)
 
 import h2hdb.database_audit as audit_module
 from h2hdb import (
@@ -19,7 +25,7 @@ from h2hdb import (
 )
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_admin import VNextSchemaAdmin
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 _LEASE = 60_000_000
@@ -61,8 +67,8 @@ def audit_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 
 @pytest.fixture
-def admin(sqlite_config: CoreConfig) -> Iterator[VNextDatabaseAdminFacade]:
-    result = VNextDatabaseAdminFacade(sqlite_config)
+def admin(db_config: CoreConfig) -> Iterator[VNextDatabaseAdminFacade]:
+    result = VNextDatabaseAdminFacade(db_config)
     try:
         result.initialize()
         yield result
@@ -79,7 +85,7 @@ def _start(admin: VNextDatabaseAdminFacade) -> DatabaseAuditReport:
 def test_first_full_clean_restart_and_exact_finish_replay(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     first = _start(admin)
     assert first.reason is DatabaseAuditReason.FIRST_RUN
@@ -92,7 +98,7 @@ def test_first_full_clean_restart_and_exact_finish_replay(
     )
     admin.finish_ingest_runtime(first.session)
     admin.close()
-    replacement = VNextDatabaseAdminFacade(sqlite_config)
+    replacement = VNextDatabaseAdminFacade(db_config)
     replacement.finish_ingest_runtime(first.session)
     second = _start(replacement)
     assert second.full_audit is None
@@ -160,10 +166,10 @@ def test_periodic_full_check_uses_measured_duration_budget(
 def test_live_runtime_contends_expired_runtime_requires_full_and_fences_old_owner(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     first = _start(admin)
-    contender = VNextDatabaseAdminFacade(sqlite_config)
+    contender = VNextDatabaseAdminFacade(db_config)
     with pytest.raises(DatabaseAuditSessionUnavailableError):
         _start(contender)
     audit_clock.advance(_LEASE)
@@ -193,7 +199,7 @@ def test_long_full_audit_can_finish_after_lease_expiry_without_takeover(
 def test_competing_takeover_prevents_old_audit_recording_success(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = VNextSchemaAdmin.check
@@ -206,7 +212,7 @@ def test_competing_takeover_prevents_old_audit_recording_success(
         if not entered:
             entered = True
             audit_clock.advance(_LEASE)
-            contender = VNextDatabaseAdminFacade(sqlite_config)
+            contender = VNextDatabaseAdminFacade(db_config)
             newer.append(_start(contender))
         return result
 
@@ -214,7 +220,7 @@ def test_competing_takeover_prevents_old_audit_recording_success(
     with pytest.raises(DatabaseAuditSessionLostError):
         _start(admin)
     assert len(newer) == 1
-    with RepositoryContext.from_config(sqlite_config).SQLConnector() as connector:
+    with RepositoryContext.from_config(db_config).SQLConnector() as connector:
         state = audit_module.read_database_audit_state(connector)
     assert state is not None
     assert state.session == newer[0].session
@@ -226,7 +232,7 @@ def test_competing_takeover_prevents_old_audit_recording_success(
 def test_failed_full_audit_retains_dirty_pending_state_without_success(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail(_value: VNextSchemaAdmin) -> SchemaEpochReport:
@@ -235,7 +241,7 @@ def test_failed_full_audit_retains_dirty_pending_state_without_success(
     monkeypatch.setattr(VNextSchemaAdmin, "check", fail)
     with pytest.raises(RuntimeError, match="semantic corruption"):
         _start(admin)
-    with RepositoryContext.from_config(sqlite_config).SQLConnector() as connector:
+    with RepositoryContext.from_config(db_config).SQLConnector() as connector:
         state = audit_module.read_database_audit_state(connector)
     assert state is not None
     assert state.last_audit_at is None
@@ -249,13 +255,13 @@ def test_failed_full_audit_retains_dirty_pending_state_without_success(
 def test_renew_during_sqlite_full_read_snapshot_is_read_only(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = VNextSchemaAdmin.check
 
     def intercepted(value: VNextSchemaAdmin) -> SchemaEpochReport:
-        with RepositoryContext.from_config(sqlite_config).SQLConnector() as connector:
+        with RepositoryContext.from_config(db_config).SQLConnector() as connector:
             with connector.read_transaction():
                 state = audit_module.read_database_audit_state(connector)
                 assert state is not None
@@ -272,7 +278,7 @@ def test_renew_during_sqlite_full_read_snapshot_is_read_only(
 def test_force_and_validator_version_changes_require_full_checks(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _start(admin)
@@ -283,7 +289,7 @@ def test_force_and_validator_version_changes_require_full_checks(
     assert forced.reason is DatabaseAuditReason.FORCED
     admin.finish_ingest_runtime(forced.session)
     monkeypatch.setattr(audit_module, "version", lambda _name: "999.0.0")
-    newer = VNextDatabaseAdminFacade(sqlite_config)
+    newer = VNextDatabaseAdminFacade(db_config)
     changed = _start(newer)
     assert changed.reason is DatabaseAuditReason.VALIDATOR_CHANGED
     assert changed.full_audit is not None
@@ -309,19 +315,22 @@ def test_clean_quick_path_uses_only_bounded_control_queries(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
     monkeypatch: pytest.MonkeyPatch,
+    db_config: CoreConfig,
 ) -> None:
     first = _start(admin)
     admin.mark_initial_catchup_complete(first.session)
     admin.finish_ingest_runtime(first.session)
     statements: list[str] = []
-    original = SQLiteConnector.connect
+    native_type = type(database_connector(db_config))
+    original = native_type.connect
+    with ExitStack() as stack:
 
-    def connect(connector: SQLiteConnector) -> None:
-        original(connector)
-        connector.connection.set_trace_callback(statements.append)
+        def connect(connector: SQLConnector) -> None:
+            original(connector)
+            stack.enter_context(trace_statements(connector, statements))
 
-    monkeypatch.setattr(SQLiteConnector, "connect", connect)
-    second = _start(admin)
+        monkeypatch.setattr(native_type, "connect", connect)
+        second = _start(admin)
     assert second.full_audit is None
     reads = [
         statement
@@ -336,10 +345,10 @@ def test_clean_quick_path_uses_only_bounded_control_queries(
 def test_explicit_check_does_not_change_scheduling_state(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     _start(admin)
-    context = RepositoryContext.from_config(sqlite_config)
+    context = RepositoryContext.from_config(db_config)
     with context.SQLConnector() as connector:
         before = audit_module.read_database_audit_state(connector)
     admin.check()
@@ -370,15 +379,16 @@ def test_decision_notification_precedes_full_check_and_failure_is_isolated(
 def test_corrupt_partial_success_cannot_select_quick(
     admin: VNextDatabaseAdminFacade,
     audit_clock: _Clock,
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     first = _start(admin)
     admin.finish_ingest_runtime(first.session)
-    with RepositoryContext.from_config(sqlite_config).SQLConnector() as connector:
-        connector.execute("PRAGMA ignore_check_constraints = ON")
-        connector.execute(
-            "UPDATE operational_database_audit_states SET validator_version = NULL"
-        )
+    with RepositoryContext.from_config(db_config).SQLConnector() as connector:
+        set_check_constraints(connector, enabled=False)
+        with connector.transaction():
+            connector.execute(
+                "UPDATE operational_database_audit_states SET validator_version = NULL"
+            )
     with pytest.raises(DatabaseAuditStateError, match="incomplete"):
         _start(admin)
     assert audit_clock.full_checks == 1
@@ -394,15 +404,14 @@ def test_invalid_audit_policy_is_rejected(minimum: int, multiplier: int) -> None
         )
 
 
-@pytest.mark.mariadb
 @pytest.mark.mariadb_smoke
 @pytest.mark.cleanup_acceptance
 def test_mariadb_full_clean_quick_and_interrupted_runtime_fencing(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
     audit_clock: _Clock,
 ) -> None:
-    admin = VNextDatabaseAdminFacade(mariadb_config)
-    replacement = VNextDatabaseAdminFacade(mariadb_config)
+    admin = VNextDatabaseAdminFacade(db_config)
+    replacement = VNextDatabaseAdminFacade(db_config)
     try:
         admin.initialize()
         first = _start(admin)

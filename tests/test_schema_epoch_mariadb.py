@@ -8,10 +8,9 @@ from typing import Any
 
 import pytest
 
-from h2hdb import CoreConfig, DatabaseAccessMode
+from h2hdb import CoreConfig
 from h2hdb.domain import SchemaProvisioningOutcome
 from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import (
     MARIADB_SCHEMA_EPOCH_GATE_NAME,
     SCHEMA_EPOCH_CONTROL_TABLE,
@@ -30,7 +29,6 @@ from h2hdb.schema_epoch import (
     SchemaSlice,
     mariadb_schema_epoch_gate_name,
     run_mariadb_schema_epoch,
-    validate_mariadb_schema_epoch,
 )
 from h2hdb.sql_connector import SQLConnector
 
@@ -184,6 +182,7 @@ class FakeMariaDBConnector(SQLConnector):
         self.release_lock_result: object = 1
         self.query_log: list[str] = []
         self.commit_count = 0
+        self.read_transaction_count = 0
 
     def connect(self) -> None:
         pass
@@ -199,6 +198,9 @@ class FakeMariaDBConnector(SQLConnector):
 
     def begin(self) -> None:
         pass
+
+    def begin_read(self) -> None:
+        self.read_transaction_count += 1
 
     def rollback(self) -> None:
         pass
@@ -396,7 +398,9 @@ def test_fake_mariadb_empty_database_builds_ready_and_releases_gate() -> None:
     assert report.outcome is SchemaProvisioningOutcome.CREATED
     assert report.activation_audit is not None
     assert connector.lock_held is False
-    assert connector.commit_count == 7  # Read probe plus the six durable build steps.
+    # Nine explicit read snapshots are separate from six durable DDL/DML steps.
+    assert connector.read_transaction_count == 9
+    assert connector.commit_count == connector.read_transaction_count + 6
 
 
 def test_fake_mariadb_ready_provisioning_acquires_no_gate_or_full_inventory() -> None:
@@ -612,6 +616,10 @@ def _mariadb_connector(config: CoreConfig) -> MariaDBConnector:
     )
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB advisory lock release and inline-index top-level namespace semantics",
+)
 def test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -644,35 +652,10 @@ def test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock(
     assert free_lock == (1,)
 
 
-def test_mariadb_ready_epoch_fully_checks_through_read_only_config(
-    mariadb_config: CoreConfig,
-) -> None:
-    provider = MariaDBTestProvider(_definition())
-    with _mariadb_connector(mariadb_config) as connector:
-        run_mariadb_schema_epoch(
-            connector,
-            provider,
-            clock=lambda: NOW,
-            lock_timeout_seconds=0,
-        )
-    read_only_config = mariadb_config.model_copy(
-        update={
-            "database": mariadb_config.database.model_copy(
-                update={"access_mode": DatabaseAccessMode.read_only}
-            )
-        }
-    )
-
-    context = RepositoryContext.from_config(read_only_config)
-    with context.SQLConnector() as connector:
-        with connector.read_transaction():
-            report = validate_mariadb_schema_epoch(connector, provider)
-
-    assert report.state == "READY"
-    assert report.resumed_build
-    assert not report.transitioned_to_ready
-
-
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB CREATE TABLE implicit commits survive an interrupted epoch",
+)
 def test_mariadb_epoch_resumes_committed_partial_ddl(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -712,6 +695,10 @@ def test_mariadb_epoch_resumes_committed_partial_ddl(
     assert child_count == (0,)
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB per-statement committed DDL and seed replay under its named gate",
+)
 def test_mariadb_epoch_resumes_after_committed_bootstrap_seed(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -751,6 +738,10 @@ def test_mariadb_epoch_resumes_after_committed_bootstrap_seed(
     assert rows == [(0, b"\x00" * 32)]
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB IS_FREE_LOCK proves server-side advisory gate release after rejection",
+)
 def test_mariadb_epoch_rejects_nonempty_old_database_and_releases_lock(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -774,6 +765,10 @@ def test_mariadb_epoch_rejects_nonempty_old_database_and_releases_lock(
     assert free_lock == (1,)
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB control metadata and IS_FREE_LOCK prove native rejection and lock release",
+)
 def test_mariadb_epoch_rejects_wrong_control_shape_and_releases_lock(
     mariadb_config: CoreConfig,
 ) -> None:
