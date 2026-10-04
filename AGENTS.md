@@ -79,6 +79,8 @@
 - Breaking API、CLI、config、schema、protocol、資料格式或 Python/platform
   support變更必須提高 compatibility lane或 major。
 - tests、一般文件、IDE、hooks、CI與 dev-only tooling 單獨變更時不升版。
+- 整個 task只判定一次升版；commit的 breaking／feature訊號僅在該 commit
+  實際修改 release surface時影響 project version，不由 dev-only訊號升版。
 - 未分類路徑必須明確判定 impact，不得靜默當作 `none`。
 - 已證實不改 artifact或行為的格式化、註解或重構可在 task commits加入
   `Version-Impact: none` 與非空白的 `Version-Reason:`；最終回覆也必須揭露。

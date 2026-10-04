@@ -97,6 +97,65 @@ def _matches(path: str, patterns: tuple[str, ...] | list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
+def _release_patterns(document: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        document.get("tool", {})
+        .get("h2h", {})
+        .get("version", {})
+        .get("release-paths", ())
+    )
+
+
+def _changed_paths(base: str, candidate: str) -> tuple[str, ...]:
+    # A move out of a public release path still retires its old surface.
+    return tuple(
+        path
+        for path in _git(
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "--diff-filter=ACDMRT",
+            base,
+            candidate,
+        ).splitlines()
+        if path
+    )
+
+
+def _release_changed(
+    base: dict[str, Any],
+    candidate: dict[str, Any],
+    paths: tuple[str, ...],
+    patterns: tuple[str, ...],
+) -> bool:
+    return _release_metadata(base) != _release_metadata(candidate) or any(
+        _matches(path, patterns) for path in paths
+    )
+
+
+def _release_messages(message_range: str, patterns: tuple[str, ...]) -> str:
+    """Classify release signals without promoting dev-only commit messages.
+
+    The task's final diff still decides whether a single bump is required.
+    Each message contributes its severity only when that commit changes a
+    release surface. Both sides' declarations preserve retired public paths.
+    """
+
+    messages = []
+    for revision in _git("rev-list", message_range).splitlines():
+        parent = f"{revision}^1"
+        base = _load_toml(parent)
+        candidate = _load_toml(revision)
+        commit_patterns = (
+            patterns + _release_patterns(base) + _release_patterns(candidate)
+        )
+        if _release_changed(
+            base, candidate, _changed_paths(parent, revision), commit_patterns
+        ):
+            messages.append(_git("show", "-s", "--format=%B", revision))
+    return "\n\0\n".join(messages)
+
+
 def _parse_version(value: str) -> tuple[int, int, int]:
     match = _VERSION_PATTERN.fullmatch(value)
     if match is None:
@@ -190,22 +249,13 @@ def main() -> int:
     base_version = _parse_version(base_version_text)
     candidate_version = _parse_version(candidate_version_text)
 
-    changed_paths = tuple(
-        path
-        for path in _git(
-            "diff", "--name-only", "--diff-filter=ACDMRT", base_tree, candidate_tree
-        ).splitlines()
-        if path
-    )
-    release_patterns = (
-        candidate_document.get("tool", {})
-        .get("h2h", {})
-        .get("version", {})
-        .get("release-paths", [])
-    )
-    release_changed = _release_metadata(base_document) != _release_metadata(
+    changed_paths = _changed_paths(base_tree, candidate_tree)
+    release_patterns = _release_patterns(base_document) + _release_patterns(
         candidate_document
-    ) or any(_matches(path, release_patterns) for path in changed_paths)
+    )
+    release_changed = _release_changed(
+        base_document, candidate_document, changed_paths, release_patterns
+    )
     unknown = [
         path
         for path in changed_paths
@@ -238,11 +288,12 @@ def main() -> int:
     if not version_changed:
         return 0
 
+    release_messages = _release_messages(message_range, release_patterns)
     breaking = bool(
-        re.search(r"^[a-z]+(?:\([^\n)]+\))?!:", messages, re.MULTILINE)
-        or re.search(r"^BREAKING CHANGE:", messages, re.MULTILINE)
+        re.search(r"^[a-z]+(?:\([^\n)]+\))?!:", release_messages, re.MULTILINE)
+        or re.search(r"^BREAKING CHANGE:", release_messages, re.MULTILINE)
     )
-    feature = bool(re.search(r"^feat(?:\([^\n)]+\))?:", messages, re.MULTILINE))
+    feature = bool(re.search(r"^feat(?:\([^\n)]+\))?:", release_messages, re.MULTILINE))
     expected = _expected_version(
         base_version,
         breaking=breaking,
