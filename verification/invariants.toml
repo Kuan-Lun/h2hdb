@@ -907,7 +907,7 @@ path = "tests/test_vnext_state_machine_contract.py"
 symbol = "test_generated_state_enum_drift_fails_closed"
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
-symbol = "test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states"
+symbol = "test_native_fixture_enforces_positive_revisions_states_and_bounds"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_repository.py"
 symbol = "test_abandon_rejects_complete_and_stale_ingest_authority"
@@ -1113,7 +1113,10 @@ claim = "SQLite negative integration exercises generated storage-class, positive
 assumptions = []
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
-symbol = "test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states"
+symbol = "test_native_fixture_enforces_positive_revisions_states_and_bounds"
+[[evidence.location]]
+path = "tests/test_verification_schema_refinement.py"
+symbol = "test_sqlite_fixture_rejects_dynamic_storage_classes_and_short_binary"
 
 [[evidence]]
 id = "integration.data.bootstrap-sqlite"
@@ -1818,7 +1821,7 @@ claim = "MariaDB 10.11.11 enforces the unique per-build staging slot for RETIRIN
 assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run this manual deep case, which is not attested by the bounded release receipt; the focused concurrency case does not execute all seven retirement phases on MariaDB."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
-symbol = "test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize"
+symbol = "test_gallery_staging_budget_and_retiring_slot_serialize"
 
 [[evidence]]
 id = "runtime.production.cleanup"
@@ -2244,6 +2247,9 @@ assumptions = ["This is manual deep evidence and is not attested by the bounded 
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_operational_writer_workflows"
 
 [[evidence]]
 id = "runtime.production.writer-bindings"
@@ -2568,6 +2574,9 @@ symbol = "test_revision_allocation_is_rolled_back_with_its_transaction"
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_operational_writer_workflows"
 
 [[evidence]]
 id = "lean.operational.preparation-drain"

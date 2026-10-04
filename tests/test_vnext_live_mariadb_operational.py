@@ -24,6 +24,7 @@ from vnext_test_database import (
     connector_backend,
     inspect_all,
     inspect_one,
+    open_database,
     open_generated_database,
     set_foreign_key_checks,
 )
@@ -331,7 +332,7 @@ def _allocate_catalog_concurrently(
     barrier: Barrier,
     updated_at: int,
 ) -> int:
-    connector = _connector(config)
+    connector = open_database(config)
     try:
         barrier.wait(timeout=10)
         with connector.transaction():
@@ -378,7 +379,7 @@ def _reserve_live_staging_request(
     staging_id: bytes,
     request_sha256: bytes,
 ) -> str:
-    connector = _connector(config)
+    connector = open_database(config)
     try:
         barrier.wait(timeout=10)
         with connector.transaction():
@@ -410,7 +411,7 @@ def _release_live_staging_request(
     staging_id: bytes,
     request_sha256: bytes,
 ) -> str:
-    connector = _connector(config)
+    connector = open_database(config)
     try:
         barrier.wait(timeout=10)
         with connector.transaction():
@@ -443,15 +444,12 @@ def _release_live_staging_request(
         connector.close()
 
 
-@pytest.mark.backend_specific(
-    backend="mariadb",
-    reason="Exercises real InnoDB SELECT FOR UPDATE row-lock serialization with concurrent connections; SQLite uses a distinct BEGIN IMMEDIATE locking mechanism.",
-)
-def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
-    generated_mariadb: _LiveMariaDBConnector,
-    mariadb_config: CoreConfig,
+def test_gallery_staging_budget_and_retiring_slot_serialize(
+    generated_native: SQLConnector,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = generated_mariadb
+    connector = generated_native
+    config = database_factory.config("operational")
     root_sha256 = _seed_live_canonical_value(
         connector,
         digest_domain="source_root_v1",
@@ -551,14 +549,14 @@ def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
     with ThreadPoolExecutor(max_workers=2) as pool:
         reserve = pool.submit(
             _reserve_live_staging_request,
-            mariadb_config,
+            config,
             barrier,
             staging_id=staging_id,
             request_sha256=inserted_request,
         )
         release = pool.submit(
             _release_live_staging_request,
-            mariadb_config,
+            config,
             barrier,
             staging_id=staging_id,
             request_sha256=retired_request,
@@ -831,15 +829,10 @@ def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
     )
 
 
-@pytest.mark.backend_specific(
-    backend="mariadb",
-    reason="Exercises real InnoDB SELECT FOR UPDATE row-lock serialization with concurrent connections; SQLite uses a distinct BEGIN IMMEDIATE locking mechanism.",
-)
-def test_live_mariadb_operational_writer_workflows(
-    generated_mariadb: _LiveMariaDBConnector,
-    mariadb_config: CoreConfig,
+def _exercise_operational_writer_workflows(
+    connector: SQLConnector,
+    config: CoreConfig,
 ) -> None:
-    connector = generated_mariadb
 
     # Ingest authority: exact response replay, live contention, renewal fencing,
     # expired takeover, stale zero-write rejection, and quiescent completion.
@@ -970,7 +963,7 @@ def test_live_mariadb_operational_writer_workflows(
     )
 
     # All four allocator streams advance from generated seeds. A deliberate
-    # exception demonstrates real MariaDB rollback, then two live connections
+    # exception demonstrates native rollback, then two live connections
     # serialize on the CATALOG row and receive distinct consecutive revisions.
     with connector.transaction():
         source_revision = VNextAllocatorRepository.allocate_revision(
@@ -1013,7 +1006,7 @@ def test_live_mariadb_operational_writer_workflows(
         futures = tuple(
             pool.submit(
                 _allocate_catalog_concurrently,
-                mariadb_config,
+                config,
                 barrier,
                 timestamp,
             )
@@ -1416,6 +1409,27 @@ def test_live_mariadb_operational_writer_workflows(
         "ORDER BY sequence_no",
     ) == [(0, "REMOVED_GID"), (1, "DELETION_CONSUMPTION")]
     assert not hasattr(OperationalEffectRepository, "acknowledge_through")
+
+
+def test_operational_writer_workflows(
+    generated_native: SQLConnector,
+    database_factory: DatabaseFactory,
+) -> None:
+    _exercise_operational_writer_workflows(
+        generated_native, database_factory.config("operational")
+    )
+
+
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="The native SQL oracle verifies actual FOR UPDATE clauses across the shared paired writer workflow; portable assertions execute on both engines separately.",
+)
+def test_live_mariadb_operational_writer_workflows(
+    generated_mariadb: _LiveMariaDBConnector,
+    mariadb_config: CoreConfig,
+) -> None:
+    _exercise_operational_writer_workflows(generated_mariadb, mariadb_config)
+    connector = generated_mariadb
 
     # These were real MariaDB SELECT ... FOR UPDATE statements, not a recorder.
     locked_sql = "\n".join(connector.for_update_queries)

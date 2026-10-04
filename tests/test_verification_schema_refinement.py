@@ -705,80 +705,92 @@ def test_canonical_value_physical_protocol_is_owner_scoped_and_chunked() -> None
     )
 
 
-@pytest.mark.backend_specific(
-    backend="sqlite",
-    reason="SQLite BLOB width CHECKs reject short binary encodings; Maria BINARY padding is separately covered by the native physical-domain matrix",
-)
-def test_sqlite_raw_u64_signed_i64_and_int63_boundaries_are_exact() -> None:
+def test_native_raw_u64_signed_i64_and_int63_boundaries_are_exact(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
         high_u64 = ((1 << 64) - 1).to_bytes(8, "big")
         negative_i64 = ((1 << 64) - 1).to_bytes(8, "big")
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
-            "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, device) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), high_u64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_inodes "
-            "(gallery_id, observation_id, file_key, inode) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, inode) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), high_u64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_modified_nses "
-            "(gallery_id, observation_id, file_key, modified_ns) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, modified_ns) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), negative_i64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
-            "(gallery_id, observation_id, file_key, changed_ns) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, changed_ns) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), negative_i64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_anchors "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_file_nos "
-            "(gallery_id, observation_id, file_key, file_no) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, file_no) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), (1 << 63) - 1),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_file_sha256s "
             "(gallery_id, observation_id, file_key, file_sha256) "
-            "VALUES (?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_seals "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
-            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (?, ?)",
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (%s, %s)",
             (bytes.fromhex("01" * 32), (1 << 63) - 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
-                "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
-                (3, 1, bytes(32), bytes(7)),
-            )
+        assert inspect_one(
+            connection,
+            "SELECT device, inode, modified_ns, changed_ns FROM "
+            "catalog_gallery_observation_file_filesystem_anchors AS a "
+            "JOIN catalog_gallery_observation_file_filesystem_devices AS d "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_inodes AS i "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_modified_nses AS m "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_changed_nses AS c "
+            "USING (gallery_id, observation_id, file_key)",
+        ) == (high_u64, high_u64, negative_i64, negative_i64)
+        assert inspect_one(
+            connection,
+            "SELECT file_no FROM catalog_gallery_observation_file_file_nos",
+        ) == ((1 << 63) - 1,)
+        assert inspect_one(
+            connection, "SELECT size_bytes FROM catalog_content_blobs"
+        ) == ((1 << 63) - 1,)
     finally:
         connection.close()
 
@@ -2066,82 +2078,64 @@ def test_analysis_native_fixture_enforces_group_membership_and_checks(
         connection.close()
 
 
-@pytest.mark.backend_specific(
-    backend="sqlite",
-    reason="SQLite dynamic storage-class CHECKs reject TEXT and REAL values that native Maria typed columns coerce; Maria coercion/refinement is covered by the physical-domain matrix",
-)
-def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states() -> (
-    None
-):
+def test_native_fixture_enforces_positive_revisions_states_and_bounds(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
 
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)", ("a" * 32, 1)
-            )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)", (b"a" * 32, 1.5)
-            )
-
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+                "INSERT INTO catalog_source_revision_descriptors VALUES (%s, %s, %s)",
                 (0, b"default", b"s" * 32),
             )
         connection.execute(
-            "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+            "INSERT INTO catalog_source_revision_descriptors VALUES (%s, %s, %s)",
             (1, b"default", b"s" * 32),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)",
+                "INSERT INTO catalog_revision_descriptors VALUES (%s, %s, %s)",
                 (0, 0, 0),
             )
         connection.execute(
-            "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)", (1, 0, 0)
+            "INSERT INTO catalog_revision_descriptors VALUES (%s, %s, %s)", (1, 0, 0)
         )
 
         connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (0,)
+            "INSERT INTO catalog_publication_generation_nodes VALUES (%s)", (0,)
         )
         connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (1,)
+            "INSERT INTO catalog_publication_generation_nodes VALUES (%s)", (1,)
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_publication_generation_successors VALUES (?, ?)",
+                "INSERT INTO catalog_publication_generation_successors VALUES (%s, %s)",
                 (0, 0),
             )
         connection.execute(
-            "INSERT INTO catalog_publication_generation_successors VALUES (?, ?)",
+            "INSERT INTO catalog_publication_generation_successors VALUES (%s, %s)",
             (1, 0),
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
-                (b"b" * 16, b"r" * 15),
-            )
         connection.execute(
-            "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+            "INSERT INTO catalog_source_build_base_publication_commits VALUES (%s, %s)",
             (b"b" * 16, b"r" * 16),
         )
 
         connection.execute(
-            "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+            "INSERT INTO catalog_title_sort_policy VALUES (%s, %s, %s)",
             (1, 1, b"16.0.0"),
         )
         for policy_id, malformed_unicode_version in enumerate(
-            (b"", b"v" * 33, "16.0.0"), start=2
+            (b"", b"v" * 33), start=2
         ):
-            with pytest.raises(sqlite3.IntegrityError):
+            with constraint_violation(connection):
                 connection.execute(
-                    "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                    "INSERT INTO catalog_title_sort_policy VALUES (%s, %s, %s)",
                     (policy_id, policy_id, malformed_unicode_version),
                 )
 
@@ -2153,32 +2147,33 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         for build_id, scope_key, state, sealed_at in builds:
             connection.execute(
-                "INSERT INTO catalog_source_build_descriptor VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_source_build_descriptor VALUES (%s, %s, %s, %s)",
                 (build_id, scope_key, 1, 1),
             )
             connection.execute(
-                "INSERT INTO catalog_source_build_states VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_states VALUES (%s, %s)",
                 (build_id, state),
             )
             if sealed_at is not None:
                 connection.execute(
-                    "INSERT INTO catalog_source_build_sealed_ats VALUES (?, ?)",
+                    "INSERT INTO catalog_source_build_sealed_ats VALUES (%s, %s)",
                     (build_id, sealed_at),
                 )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_source_build_states VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_states VALUES (%s, %s)",
                 (b"z" * 16, "BROKEN"),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_source_build_sealed_ats VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_sealed_ats VALUES (%s, %s)",
                 (b"z" * 16, None),
             )
-        assert connection.execute(
+        assert inspect_all(
+            connection,
             "SELECT build_id, state, sealed_at FROM catalog_source_builds "
-            "ORDER BY build_id"
-        ).fetchall() == [
+            "ORDER BY build_id",
+        ) == [
             (b"c" * 16, "OPEN", None),
             (b"i" * 16, "ABANDONED", None),
         ]
@@ -2191,36 +2186,37 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         for analysis_id, build_id, policy_id, state, completed_at in analyses:
             connection.execute(
-                "INSERT INTO catalog_analysis_run_descriptor VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_analysis_run_descriptor VALUES (%s, %s, %s, %s, %s)",
                 (analysis_id, build_id, policy_id, bytes([policy_id]) * 32, 1),
             )
             connection.execute(
-                "INSERT INTO catalog_analysis_run_states VALUES (?, ?)",
+                "INSERT INTO catalog_analysis_run_states VALUES (%s, %s)",
                 (analysis_id, state),
             )
             if completed_at is not None:
                 connection.execute(
-                    "INSERT INTO catalog_analysis_run_completed_ats VALUES (?, ?)",
+                    "INSERT INTO catalog_analysis_run_completed_ats VALUES (%s, %s)",
                     (analysis_id, completed_at),
                 )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_run_completed_ats VALUES (?, ?)",
+                "INSERT INTO catalog_analysis_run_completed_ats VALUES (%s, %s)",
                 (b"z" * 16, None),
             )
-        assert connection.execute(
+        assert inspect_all(
+            connection,
             "SELECT analysis_id, state, completed_at FROM catalog_analysis_runs "
-            "ORDER BY analysis_id"
-        ).fetchall() == [
+            "ORDER BY analysis_id",
+        ) == [
             (b"k" * 16, "COMPLETE", 2),
             (b"n" * 16, "ABANDONED", None),
         ]
 
         for invalid_page_limit in (0, 129):
-            with pytest.raises(sqlite3.IntegrityError):
+            with constraint_violation(connection):
                 connection.execute(
                     "INSERT INTO catalog_analysis_batch_receipt_stored "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         b"x" * 16,
                         b"changed_gallery",
@@ -2235,36 +2231,35 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                     ),
                 )
 
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_page_counts VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_page_counts VALUES (%s, %s, %s)",
                 (1, 1, 4_294_967_296),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_scans VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_scans VALUES (%s, %s, %s, %s, %s)",
                 (1, 1, b"s" * 32, 4_294_967_296, 0),
             )
-        for malformed in (b"f" * 39, b"f" * 41):
-            with pytest.raises(sqlite3.IntegrityError):
-                connection.execute(
-                    "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
-                    "VALUES (?, ?, ?)",
-                    (1, 1, malformed),
-                )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
+                "VALUES (%s, %s, %s)",
+                (1, 1, b"f" * 41),
+            )
+        with constraint_violation(connection):
+            connection.execute(
+                "INSERT INTO catalog_analysis_checkpoints VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (b"a" * 16, b"changed_gallery", 1, b"c" * 2049, 0, "OPEN", 1),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_publication_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_publication_checkpoints VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (b"p" * 16, b"ITEMS", 1, b"c" * 2049, 0, "OPEN", 1),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_prepared_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_prepared_artifacts VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     b"q" * 16,
                     b"k" * 32,
@@ -2274,6 +2269,51 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                     b"t" * 185,
                     "PENDING",
                 ),
+            )
+    finally:
+        connection.close()
+
+
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite rejects TEXT/REAL storage classes and short BLOB widths; Maria typed columns coerce TEXT/REAL and pad short BINARY values, covered by the native physical-domain matrix",
+)
+def test_sqlite_fixture_rejects_dynamic_storage_classes_and_short_binary() -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", ("a" * 32, 1)
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", (b"a" * 32, 1.5)
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+                (b"b" * 16, b"r" * 15),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                (4, 4, "16.0.0"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
+                "VALUES (?, ?, ?)",
+                (1, 1, b"f" * 39),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
+                "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
+                (3, 1, bytes(32), bytes(7)),
             )
     finally:
         connection.close()
