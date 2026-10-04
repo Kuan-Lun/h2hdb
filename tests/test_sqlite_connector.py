@@ -5,6 +5,11 @@ import pytest
 from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 
+pytestmark = pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite file locking, connection PRAGMAs and DB-API connector behavior are engine-specific",
+)
+
 
 @pytest.fixture
 def connector(tmp_path: Path) -> SQLiteConnector:

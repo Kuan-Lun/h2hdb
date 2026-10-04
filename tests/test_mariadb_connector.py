@@ -16,6 +16,11 @@ from h2hdb.mariadb_pool import MariaDBConnectionPool
 from h2hdb.repository import RepositoryContext
 from h2hdb.sql_connector import DatabaseConfigurationError
 
+pytestmark = pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB wire packets, pooled server sessions and durability admission are engine-specific",
+)
+
 _MAX_ALLOWED_PACKET_QUERY = "SELECT @@SESSION.max_allowed_packet"
 _INSERT_QUERY = "INSERT INTO widgets (id, value) VALUES (%s, %s)"
 _PACKET_LIMIT = 4096

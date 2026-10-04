@@ -7,6 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This CLI exports a standalone SQLite file and receipt; its native catalog seed/read contract is separately exercised on MariaDB by the shared integration fixtures",
+)
+
 _ROOT = Path(__file__).resolve().parents[1]
 _BENCHMARK = _ROOT / "benchmarks" / "sqlite_catalog_scalability.py"
 _SMOKE_PUBLICATION_COUNT = 165

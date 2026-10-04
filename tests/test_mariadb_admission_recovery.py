@@ -19,6 +19,11 @@ from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.repository import RepositoryContext
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
+pytestmark = pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB server KILL CONNECTION and stale pooled-session admission have no SQLite server analogue",
+)
+
 
 def _kill_idle(config: CoreConfig, identity: int) -> None:
     # The disposable test user can kill its own connections. This deliberately
