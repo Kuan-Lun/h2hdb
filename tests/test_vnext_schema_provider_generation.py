@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_test_database import DatabaseFactory, inspection_snapshot, open_database
 
 from h2hdb import _schema_artifact_codec as codec
 from h2hdb import vnext_schema_provider as provider_module
@@ -23,7 +24,6 @@ from h2hdb._schema_artifact_codec import (
     encode_schema_artifact,
 )
 from h2hdb.schema_epoch import SchemaEpochValidationError, SchemaSeedStatement
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_schema_provider import (
     GeneratedVNextSchemaProvider,
     VNextSchemaProviderUnavailableError,
@@ -1100,23 +1100,26 @@ def test_generated_seed_statements_are_backend_specific_and_idempotent() -> None
     )
 
 
-def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
-    payload = ARTIFACT_DATA["backends"]["sqlite"]
-    connector = SQLiteConnector(str(tmp_path / "generated-seeds.sqlite3"))
-    connector.connect()
+def test_native_bootstrap_validation_is_exact(
+    database_factory: DatabaseFactory,
+) -> None:
+    payload = ARTIFACT_DATA["backends"][database_factory.backend]
+    connector = open_database(database_factory.config())
     try:
         for _slice_id, statements in payload["slices"]:
             for _statement_id, _kind, _name, sql in statements:
                 connector.execute(sql)
-        for seed in payload["bootstrap_seeds"]:
-            connector.execute(seed["sql"], seed["parameters"])
-            connector.execute(seed["sql"], seed["parameters"])
+        with connector.transaction():
+            for seed in payload["bootstrap_seeds"]:
+                connector.execute(seed["sql"], seed["parameters"])
+                connector.execute(seed["sql"], seed["parameters"])
 
         expected_ids = tuple(value["seed_id"] for value in payload["bootstrap_seeds"])
-        assert (
-            provider_module._validate_bootstrap_seed_records(connector, payload)
-            == expected_ids
-        )
+        with inspection_snapshot(connector):
+            assert (
+                provider_module._validate_bootstrap_seed_records(connector, payload)
+                == expected_ids
+            )
 
         connector.execute(
             "UPDATE operational_revision_allocators "
@@ -1124,7 +1127,8 @@ def test_sqlite_bootstrap_validation_is_exact(tmp_path: Path) -> None:
             ("SOURCE",),
         )
         with pytest.raises(SchemaEpochValidationError, match="exact generated row"):
-            provider_module._validate_bootstrap_seed_records(connector, payload)
+            with inspection_snapshot(connector):
+                provider_module._validate_bootstrap_seed_records(connector, payload)
     finally:
         connector.close()
 

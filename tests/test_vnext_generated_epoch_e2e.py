@@ -220,14 +220,8 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     assert len(bootstrap_seeds) == 6_357
 
 
-def test_default_generated_epoch_end_to_end_on_sqlite(
-    sqlite_config: CoreConfig,
-) -> None:
-    _exercise_generated_epoch(sqlite_config)
-
-
 @pytest.mark.mariadb_smoke
-def test_default_generated_epoch_end_to_end_on_live_mariadb(
-    mariadb_config: CoreConfig,
+def test_default_generated_epoch_end_to_end_on_both_backends(
+    db_config: CoreConfig,
 ) -> None:
-    _exercise_generated_epoch(mariadb_config)
+    _exercise_generated_epoch(db_config)

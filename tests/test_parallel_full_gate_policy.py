@@ -57,6 +57,17 @@ def test_live_mariadb_group_does_not_classify_string_only_backend_cases() -> Non
     assert live_mariadb_xdist_group(("sqlite_config",), {}) is None
 
 
+def test_declared_live_backend_case_is_grouped_before_dynamic_fixture_setup() -> None:
+    assert (
+        live_mariadb_xdist_group(
+            ("backend", "request"),
+            {"backend": "mariadb"},
+            declared_live=True,
+        )
+        == MARIADB_XDIST_GROUP
+    )
+
+
 def test_live_mariadb_group_rejects_a_conflicting_existing_group() -> None:
     matching_marker = pytest.mark.xdist_group(name=MARIADB_XDIST_GROUP).mark
     conflicting_marker = pytest.mark.xdist_group(name="other-live-service").mark
@@ -138,7 +149,7 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
         ),
         (
             "test_vnext_generated_epoch_e2e.py",
-            "test_default_generated_epoch_end_to_end_on_live_mariadb",
+            "test_default_generated_epoch_end_to_end_on_both_backends",
         ),
         (
             "test_vnext_pipeline_workflows.py",
