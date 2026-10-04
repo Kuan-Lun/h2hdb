@@ -372,21 +372,20 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
         yield config
 
 
-@pytest.fixture(
-    params=(
-        pytest.param("sqlite", id="sqlite"),
-        pytest.param(
-            "mariadb", id="mariadb", marks=(pytest.mark.mariadb, pytest.mark.deep)
-        ),
-    )
+_FACTORY_BACKENDS = (
+    pytest.param("sqlite", id="sqlite"),
+    pytest.param(
+        "mariadb", id="mariadb", marks=(pytest.mark.mariadb, pytest.mark.deep)
+    ),
 )
-def database_factory(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> Iterator[DatabaseFactory]:
-    """Own every explicitly named native database used by one portable test."""
 
+
+@contextmanager
+def _owned_database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path, backend: str
+) -> Iterator[DatabaseFactory]:
     with ExitStack() as cleanup:
-        if request.param == "sqlite":
+        if backend == "sqlite":
 
             def allocate(name: str) -> CoreConfig:
                 key = sha256(name.encode()).hexdigest()
@@ -428,6 +427,39 @@ def database_factory(
                 DatabaseFactory("mariadb", allocate_mariadb, dispose_mariadb)
             ) as factory:
                 yield factory
+
+
+@pytest.fixture(params=_FACTORY_BACKENDS)
+def database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[DatabaseFactory]:
+    """Own every named native database used by one portable test."""
+    with _owned_database_factory(request, tmp_path, request.param) as factory:
+        yield factory
+
+
+@pytest.fixture(scope="module", params=_FACTORY_BACKENDS)
+def module_database_factory(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[DatabaseFactory]:
+    """Own immutable fault corpora and reusable targets across one module."""
+    with _owned_database_factory(
+        request, tmp_path_factory.mktemp("fault-corpora"), request.param
+    ) as factory:
+        yield factory
+
+
+@pytest.fixture
+def mariadb_database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[DatabaseFactory]:
+    """Named native databases for explicitly engine-specific MariaDB contracts.
+
+    The connection guard still requires a backend_specific reason on each case;
+    portable cases must instead use the parametrized database_factory.
+    """
+    with _owned_database_factory(request, tmp_path, "mariadb") as factory:
+        yield factory
 
 
 @pytest.fixture

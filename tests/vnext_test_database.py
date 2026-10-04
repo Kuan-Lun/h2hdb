@@ -267,6 +267,19 @@ class DatabaseFactory:
             if _OWNERS.get(key) is owner:
                 del _OWNERS[key]
 
+    def close_connections(self, config: CoreConfig) -> None:
+        """Close raw fixture handles without dropping an explicitly owned DB.
+
+        Public facades must already have been closed by their caller. This
+        method never adopts a path or a database allocated outside this factory.
+        """
+
+        for name, owned in self._databases.items():
+            if config is owned:
+                self._owners[name].close()
+                return
+        raise ValueError("snapshot requires a database owned by this factory")
+
     def close(self) -> None:
         errors: list[BaseException] = []
         for name in tuple(self._databases):

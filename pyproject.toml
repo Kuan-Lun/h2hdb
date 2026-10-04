@@ -45,7 +45,7 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb/issues"
 packages = ["src/h2hdb"]
 
 [tool.pytest.ini_options]
-backend_contract_fixtures = ["db_config", "database_factory", "backend"]
+backend_contract_fixtures = ["db_config", "database_factory", "module_database_factory", "backend"]
 required_plugins = ["pytest-xdist>=3.8.0,<4.0.0"]
 addopts = [
     "-m",
