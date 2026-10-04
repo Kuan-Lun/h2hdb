@@ -8,8 +8,17 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
+from vnext_probe_databases import (
+    assert_probe_claim_sequence,
+    observe_probe_claims,
+    owned_probe_database_factory,
+)
+from vnext_test_database import Backend, DatabaseFactory
+
+from h2hdb import CoreConfig, VNextIngestFacade
 
 
 @pytest.fixture
@@ -32,6 +41,18 @@ def probe() -> ModuleType:
     return module
 
 
+@pytest.fixture
+def probe_backend(
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
+) -> Backend:
+    monkeypatch.setattr(
+        probe.probe, "database", owned_probe_database_factory(database_factory)
+    )
+    return database_factory.backend
+
+
 @pytest.mark.parametrize(
     "value", ("", "1:2", "0:1:1", "2:3:1", "4097:1:1", "4096:1:17")
 )
@@ -48,9 +69,10 @@ def _calls(result: dict[str, Any]) -> int:
 
 def test_fewer_publications_reduce_real_sql_and_preserve_public_oracle(
     probe: ModuleType,
+    probe_backend: Backend,
 ) -> None:
-    repeated = probe.run_case("sqlite", 4, 1, 2)
-    combined = probe.run_case("sqlite", 4, 4, 2)
+    repeated = probe.run_case(probe_backend, 4, 1, 2)
+    combined = probe.run_case(probe_backend, 4, 4, 2)
     assert repeated["oracle"] == combined["oracle"]
     assert repeated["full_ready_audit"] == combined["full_ready_audit"] == "passed"
     assert _calls(repeated) > _calls(combined)
@@ -63,12 +85,45 @@ def test_fewer_publications_reduce_real_sql_and_preserve_public_oracle(
 
 def test_neutral_artifact_mode_checks_complete_public_pipeline(
     probe: ModuleType,
+    probe_backend: Backend,
 ) -> None:
-    result = probe.run_case("sqlite", 2, 1, 2, artifacts=True)
+    result = probe.run_case(probe_backend, 2, 1, 2, artifacts=True)
     assert result["artifacts"]
     assert result["full_ready_audit"] == "passed"
     assert [turn["selected"] for turn in result["turns"]] == [1, 2]
     assert all(turn["deep_reads"] == 1 for turn in result["turns"])
+
+
+def test_real_next_claim_checks_use_the_next_measured_turn(
+    probe: ModuleType,
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configs: list[CoreConfig] = []
+    monkeypatch.setattr(
+        probe.probe,
+        "database",
+        owned_probe_database_factory(database_factory, created=configs),
+    )
+    claims = observe_probe_claims(monkeypatch)
+    result = probe.run_case(database_factory.backend, 2, 1, 1, query_limit=None)
+    assert len(configs) == 1
+    assert result["full_ready_audit"] == "passed"
+    assert result["ready_audit"]["state"] == "READY"
+    assert_probe_claim_sequence(result, claims, configs[0])
+
+
+def test_direct_claim_does_not_retry_or_drain_pending_maintenance(
+    probe: ModuleType,
+) -> None:
+    facade = Mock(spec=VNextIngestFacade)
+    facade.try_claim_ingest.return_value = None
+    with pytest.raises(AssertionError, match="did not admit the next direct claim"):
+        probe.require_direct_claim(facade)
+    facade.try_claim_ingest.assert_called_once_with(True, probe.LEASE_MICROSECONDS)
+    assert facade.method_calls == [
+        ("try_claim_ingest", (True, probe.LEASE_MICROSECONDS), {})
+    ]
 
 
 @pytest.mark.parametrize("failure", ["case_failure", "source_drift"])

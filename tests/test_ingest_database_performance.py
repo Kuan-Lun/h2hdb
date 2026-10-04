@@ -23,6 +23,14 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from vnext_probe_databases import (
+    assert_probe_claim_sequence,
+    observe_probe_claims,
+    owned_probe_database_factory,
+)
+from vnext_test_database import Backend, DatabaseFactory
+
+from h2hdb import CoreConfig
 
 
 @pytest.fixture(scope="module")
@@ -43,6 +51,19 @@ def acceptance() -> ModuleType:
     finally:
         sys.path[:] = previous
     return module
+
+
+@pytest.fixture
+def acceptance_backend(
+    acceptance: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
+) -> Backend:
+    monkeypatch.setattr(
+        acceptance.probe, "database", owned_probe_database_factory(database_factory)
+    )
+    assert acceptance.batch_probe.probe is acceptance.probe
+    return database_factory.backend
 
 
 def _turn(acceptance: ModuleType, *, calls: int = 1) -> dict[str, Any]:
@@ -637,10 +658,31 @@ def test_progress_never_duplicates_full_query_details(
 
 
 @pytest.mark.deep
+def test_real_replacement_next_claims_do_not_insert_empty_generations(
+    acceptance: ModuleType,
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configs: list[CoreConfig] = []
+    monkeypatch.setattr(
+        acceptance.probe,
+        "database",
+        owned_probe_database_factory(database_factory, created=configs),
+    )
+    claims = observe_probe_claims(monkeypatch)
+    result = acceptance.run_replacement(database_factory.backend, 1, 1)
+    assert len(configs) == 1
+    assert all(turn["full_ready_audit"] == "passed" for turn in result["turns"])
+    assert all(turn["ready_audit"]["state"] == "READY" for turn in result["turns"])
+    assert_probe_claim_sequence(result, claims, configs[0])
+
+
+@pytest.mark.deep
 def test_real_metadata_only_replacement_retires_exact_facts(
     acceptance: ModuleType,
+    acceptance_backend: Backend,
 ) -> None:
-    result = acceptance.run_replacement("sqlite", 0, 1)
+    result = acceptance.run_replacement(acceptance_backend, 0, 1)
     assert len(result["turns"]) == 2
     for turn in result["turns"]:
         assert turn["cleanup"] == "DONE"
@@ -656,6 +698,7 @@ def test_real_metadata_only_replacement_retires_exact_facts(
 @pytest.mark.parametrize("scalar_cleanup", [False, True])
 def test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost(
     acceptance: ModuleType,
+    acceptance_backend: Backend,
     monkeypatch: pytest.MonkeyPatch,
     scalar_cleanup: bool,
 ) -> None:
@@ -674,7 +717,7 @@ def test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost(
                     for spec in plan.phases[phase]
                 ),
             )
-    result = acceptance.run_replacement("sqlite", 64, 3)
+    result = acceptance.run_replacement(acceptance_backend, 64, 3)
     assert len(result["turns"]) == 4
     for turn in result["turns"]:
         assert turn["cleanup"] == "DONE"
@@ -694,6 +737,7 @@ def test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost(
 @pytest.mark.deep
 def test_real_redundant_read_mutant_preserves_oracle_but_fails_fixed_cost(
     acceptance: ModuleType,
+    acceptance_backend: Backend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2hdb.sql_performance import _MeasuredConnector
@@ -712,13 +756,12 @@ def test_real_redundant_read_mutant_preserves_oracle_but_fails_fixed_cost(
 
     monkeypatch.setattr(_MeasuredConnector, "fetch_one", repeated_read)
     result = acceptance.batch_probe.run_case(
-        "sqlite",
+        acceptance_backend,
         1,
         1,
         1,
         query_limit=None,
         observer_factory=acceptance.AcceptanceObserver,
-        check_next_claim=True,
     )
     assert result["full_ready_audit"] == "passed"
     assert result["turns"][0]["next_claim"] == "passed"
@@ -728,6 +771,7 @@ def test_real_redundant_read_mutant_preserves_oracle_but_fails_fixed_cost(
 @pytest.mark.deep
 def test_real_full_audit_delay_mutant_preserves_ready_but_fails_cost(
     acceptance: ModuleType,
+    acceptance_backend: Backend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # An injected clock advance models an extra minute spent in the actual
@@ -750,13 +794,12 @@ def test_real_full_audit_delay_mutant_preserves_ready_but_fails_cost(
         SimpleNamespace(perf_counter=lambda: original_clock() + clock_offset),
     )
     result = acceptance.batch_probe.run_case(
-        "sqlite",
+        acceptance_backend,
         1,
         1,
         1,
         query_limit=None,
         observer_factory=acceptance.AcceptanceObserver,
-        check_next_claim=True,
     )
     assert result["full_ready_audit"] == "passed"
     assert result["ready_audit"]["measurements"]["sql_calls"] > 0

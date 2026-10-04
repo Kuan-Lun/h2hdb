@@ -127,10 +127,8 @@ import ingest_batch_scaling_probe as batch_probe  # noqa: E402 - checkout-only t
 import ingest_pipeline_probe as probe  # noqa: E402 - shared exact SQL observer.
 from performance_attribution import assess_attribution  # noqa: E402
 from vnext_pipeline import (  # noqa: E402 - public protocol fixtures.
-    LEASE_MICROSECONDS,
     MemoryLibrary,
     MemorySource,
-    claim_session,
     drain_maintenance,
     gallery,
     ingest_policy,
@@ -506,7 +504,7 @@ def run_replacement(
         initialize_database(config)
         source = MemorySource()
         library = MemoryLibrary(source)
-        turns = []
+        turns: list[dict[str, Any]] = []
         for cycle in range(cycles + 1):
             source.put(
                 gallery(
@@ -532,7 +530,15 @@ def run_replacement(
                     phases[phase] = time.perf_counter() - started
 
             with VNextIngestFacade(config) as facade, observer.installed():
-                session = measured("claim", lambda: claim_session(facade))
+                session = measured(
+                    "claim", lambda: batch_probe.require_direct_claim(facade)
+                )
+                if turns:
+                    turns[-1].update(
+                        next_claim="passed",
+                        next_claim_generation=session.ingest_generation,
+                        next_claim_kind="next_pipeline_turn",
+                    )
                 policy = measured(
                     "policy",
                     lambda: facade.ensure_policy(
@@ -562,14 +568,6 @@ def run_replacement(
                         "cleanup", lambda: drain_maintenance(facade, attempts=4096)
                     )
             oracle = verify_replacement(config, cycle, pages)
-            # A direct claim must succeed after DONE; do not hide pending cleanup
-            # behind claim_session's retry/drain helper. Release the disposable
-            # probe's empty claim so the following cycle starts normally.
-            with VNextIngestFacade(config) as facade:
-                next_session = facade.try_claim_ingest(True, LEASE_MICROSECONDS)
-                if next_session is None:
-                    raise AssertionError("cleanup DONE did not admit the next claim")
-                facade.complete_ingest(next_session)
             audit = batch_probe.measure_ready_audit(
                 config, observer_factory=AcceptanceObserver, progress=progress
             )
@@ -577,6 +575,7 @@ def run_replacement(
                 "cycle": cycle,
                 "selected": 1,
                 "added": 1,
+                "ingest_generation": session.ingest_generation,
                 "phases": phases,
                 "measurements": observer.report(),
                 "cleanup": "DONE",
@@ -585,7 +584,7 @@ def run_replacement(
                 "audit_acceptance": assess_ready_audit(
                     audit, retained_galleries=1, pages=pages
                 ),
-                "next_claim": "passed",
+                "next_claim": "pending",
                 "oracle": oracle,
                 "retirement_samples": samples,
             }
@@ -593,12 +592,14 @@ def run_replacement(
             if cycle:
                 turn["retirement_acceptance"] = assess_retirement(samples, pages)
             turns.append(turn)
+        next_claim = batch_probe.finish_next_claim_probe(config, turns[-1])
         return {
             "kind": "replacement",
             "backend": backend,
             "pages": pages,
             "replacement_cycles": cycles,
             "turns": turns,
+            "post_measurement_next_claim": next_claim,
         }
 
 
@@ -734,7 +735,8 @@ def main() -> int:
             "No raster, CBZ, physical disk I/O, network-latency model or wall-clock SLO.",
             "SQL calls are completed connector methods; rows are returned, not examined.",
             "Whole-phase ceilings are regression targets, not fitted current-code models.",
-            "Setup/catalog oracles and post-cleanup claims are outside phase costs; full READY has a separate mandatory wall-cost verdict.",
+            "Setup/catalog oracles and the single final empty claim are outside phase costs; each intervening next-claim check is the next measured real turn. Full READY has a separate mandatory wall-cost verdict.",
+            "The final empty claim changes durable generation after measured cleanup DONE and READY; its resulting state is not rechecked for cleanup DONE or READY.",
             "Full READY is observed after hot pipeline/catalog reads, including probe overhead; its fixed local ceiling is not a NAS deadline.",
             "Replacement uses neutral no-artifact fixture, including when --artifacts is set.",
         ],
@@ -758,7 +760,6 @@ def main() -> int:
                 artifacts=args.artifacts,
                 query_limit=None,
                 observer_factory=AcceptanceObserver,
-                check_next_claim=True,
                 progress=print_progress,
             )
             result["kind"] = "append"

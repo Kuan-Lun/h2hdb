@@ -41,7 +41,6 @@ from vnext_pipeline import (  # noqa: E402 - production public API driver.
     LEASE_MICROSECONDS,
     MemoryGallery,
     MemoryLibrary,
-    claim_session,
     ingest_policy,
     initialize_database,
     run_analysis,
@@ -56,6 +55,7 @@ from h2hdb import (  # noqa: E402 - select this checkout's sources.
     VNextCurrentOnlyMaintenanceOutcome,
     VNextDatabaseAdminFacade,
     VNextIngestFacade,
+    VNextIngestSession,
 )
 from h2hdb.sql_performance import (  # noqa: E402 - independent physical call observer.
     _current_scope,
@@ -395,6 +395,14 @@ def drain(
     raise RuntimeError("cleanup exceeded 256-attempt budget")
 
 
+def require_direct_claim(facade: VNextIngestFacade) -> VNextIngestSession:
+    """Observe one natural successor claim without draining hidden maintenance."""
+    session = facade.try_claim_ingest(True, LEASE_MICROSECONDS)
+    if session is None:
+        raise RuntimeError("next ingest claim after DONE was refused")
+    return session
+
+
 def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
     config = config.model_copy(
         update={"logger": LoggerConfig.model_validate({"level": level})}
@@ -402,7 +410,7 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
     initialize_database(config)
     source = source_for(case.shape)
     library = MemoryLibrary(source)
-    records = []
+    records: list[dict[str, Any]] = []
     with VNextIngestFacade(config) as facade:
         for ordinal in range(1, case.revisions + 1):
             # Change one gallery per revision, retaining all other observations.
@@ -412,7 +420,14 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
                 source.put(
                     replace(item, title=f"Revision {ordinal}", comment=item.comment)
                 )
-            session = claim_session(facade)
+            session, claim = measured(lambda: require_direct_claim(facade))
+            if records:
+                records[-1]["next_claim"] = {
+                    "granted": True,
+                    "ingest_generation": session.ingest_generation,
+                    "kind": "next_revision",
+                    "measurement_revision": ordinal,
+                }
             policy = facade.ensure_policy(
                 session,
                 ingest_policy(
@@ -467,20 +482,10 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
             analyses, builds = retained_compaction_roots(config)
             if after != before:
                 raise RuntimeError("cleanup changed published facts")
-            next_session, claim = measured(
-                lambda: facade.try_claim_ingest(True, LEASE_MICROSECONDS)
-            )
-            if next_session is None:
-                raise RuntimeError("next ingest claim after DONE was refused")
-            facade.complete_ingest(next_session)
-            followup = drain(
-                facade,
-                diagnostics_required=level != "warning",
-                allow_quiet=level == "info",
-            )
             records.append(
                 {
                     "ordinal": ordinal,
+                    "ingest_generation": session.ingest_generation,
                     "overlay_depth": layout.depth,
                     "retained_analysis_count": len(analyses),
                     "retained_source_build_count": len(builds),
@@ -489,8 +494,8 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
                     "publication": publication_report,
                     "audits": audits,
                     "cleanup": cleanup,
-                    "next_claim": {"granted": True, **claim},
-                    "post_claim_cleanup": followup,
+                    "claim": claim,
+                    "next_claim": {"granted": None, "kind": "pending"},
                     "publication_oracle": after,
                 }
             )
@@ -513,9 +518,33 @@ def run_case(config: CoreConfig, case: Case, level: str) -> dict[str, Any]:
     if final_ready.state != "READY":
         raise RuntimeError("post-cleanup full READY audit failed")
     verify_diagnostic_counters(final_audit, required=level != "warning")
+    # This final oracle is deliberately outside the natural revision sequence.
+    # Its empty generation can expose new retirement work; neither DONE nor
+    # READY below describes the database after this state-changing probe.
+    with VNextIngestFacade(config) as facade:
+        final_session, final_claim = measured(lambda: require_direct_claim(facade))
+        _, final_completion = measured(lambda: facade.complete_ingest(final_session))
+    records[-1]["next_claim"] = {
+        "granted": True,
+        "ingest_generation": final_session.ingest_generation,
+        "kind": "post_measurement_probe",
+        "measurement": "post_measurement_next_claim.claim",
+    }
     return {
         "name": case.name,
         "final_full_ready_audit": final_audit,
+        "final_full_ready_audit_scope": "after_final_cleanup_before_final_claim_probe",
+        "post_measurement_next_claim": {
+            "granted": True,
+            "ingest_generation": final_session.ingest_generation,
+            "claim": final_claim,
+            "completion": final_completion,
+            "completed": True,
+            "state_changed": True,
+            "included_in_revision_costs": False,
+            "cleanup_after_probe": "not_checked",
+            "ready_audit_after_probe": "not_checked",
+        },
         "shape": asdict(case.shape),
         "log_level": level,
         "revisions": records,
@@ -630,6 +659,7 @@ def main() -> None:
             "Diagnostic messages use an in-memory sink; remote log transport and disk handler latency are excluded.",
             "Fresh facade is not a cold database/OS cache; setup and public oracles warm caches.",
             "Nested diagnostic durations overlap; only physical observer categories are additive.",
+            "Each next-claim check references the following real revision's claim measurement. Only the final probe starts an empty generation, after final cleanup and READY; its resulting state is not rechecked for DONE or READY.",
             "All statements retained up to a hard budget; a budget overflow invalidates the run.",
             "No performance target is declared achieved merely because correctness passes.",
         ],
