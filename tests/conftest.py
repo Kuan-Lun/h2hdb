@@ -164,6 +164,21 @@ def item_requires_deep_profile(
     return heavy_file_requires_deep or live_mariadb_requires_deep
 
 
+def validate_smoke_profile_markers(
+    *, test_file_name: str, marker_names: Collection[str], live_mariadb: bool
+) -> None:
+    if (
+        live_mariadb
+        and {"mariadb_smoke", "deep"}.issubset(marker_names)
+        and not item_requires_deep_profile(
+            test_file_name=test_file_name,
+            marker_names=marker_names,
+            live_mariadb=live_mariadb,
+        )
+    ):
+        raise ValueError("eligible MariaDB smoke case also explicitly declares deep")
+
+
 def _item_fixture_names(item: pytest.Item) -> tuple[str, ...]:
     raw_fixture_names: object = getattr(item, "fixturenames", ())
     if not isinstance(raw_fixture_names, (list, tuple)):
@@ -242,9 +257,18 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 )
             item.add_marker(pytest.mark.mariadb, append=False)
 
+        markers = {marker.name for marker in item.iter_markers()}
+        try:
+            validate_smoke_profile_markers(
+                test_file_name=item.path.name,
+                marker_names=markers,
+                live_mariadb=live_mariadb,
+            )
+        except ValueError as error:
+            raise pytest.UsageError(f"{item.nodeid} {error}") from error
         if item_requires_deep_profile(
             test_file_name=item.path.name,
-            marker_names={marker.name for marker in item.iter_markers()},
+            marker_names=markers,
             live_mariadb=live_mariadb,
         ):
             item.add_marker(pytest.mark.deep, append=False)
@@ -374,9 +398,8 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
 
 _FACTORY_BACKENDS = (
     pytest.param("sqlite", id="sqlite"),
-    pytest.param(
-        "mariadb", id="mariadb", marks=(pytest.mark.mariadb, pytest.mark.deep)
-    ),
+    # The centralized classifier owns deep selection, including smoke exemptions.
+    pytest.param("mariadb", id="mariadb", marks=pytest.mark.mariadb),
 )
 
 

@@ -1,5 +1,7 @@
 import ast
+import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from unittest.mock import Mock
@@ -19,6 +21,7 @@ from conftest import (
     live_mariadb_xdist_group,
     macos_performance_core_count,
     select_pytest_worker_count,
+    validate_smoke_profile_markers,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +140,17 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_collection.py",
             "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work",
         ),
+        # One committed identity fault covers each durable constructor boundary:
+        # fresh inventory and sealed-cut resume must refuse with typed errors,
+        # zero native mutations and an unchanged exact database snapshot.
+        (
+            "test_vnext_source_batches.py",
+            "test_source_preparation_rejects_corrupt_published_gallery_identity_without_writes",
+        ),
+        (
+            "test_vnext_source_restart.py",
+            "test_resume_rejects_corrupt_gallery_identity_without_writes",
+        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
@@ -174,6 +188,10 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_live_mariadb_fresh_facades_serialize_competing_first_bind",
         ),
     }
+    assert _declared_mariadb_smoke_inventory() == expected
+
+
+def _declared_mariadb_smoke_inventory() -> set[tuple[str, str]]:
     observed: set[tuple[str, str]] = set()
     for path in sorted((REPOSITORY_ROOT / "tests").glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -192,7 +210,85 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
                     ):
                         observed.add((path.name, node.name))
 
-    assert observed == expected
+    return observed
+
+
+def test_reviewed_mariadb_smoke_cases_are_actually_collected_without_deep() -> None:
+    environment = dict(os.environ, H2HDB_TEST_MARIADB="0")
+    environment.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "-n",
+            "0",
+            "--collect-only",
+            "--strict-markers",
+            "-m",
+            "mariadb_smoke and mariadb and not deep",
+            "-q",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nodeids = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    actual = {
+        (Path(node.split("::")[0]).name, node.split("::")[1].split("[")[0])
+        for node in nodeids
+    }
+    expected = _declared_mariadb_smoke_inventory()
+    assert actual == expected
+    # Each reviewed family currently admits one representative native case.
+    assert len(nodeids) == len(expected)
+
+
+@pytest.mark.parametrize(
+    ("filename", "markers", "live", "reject"),
+    [
+        ("test_small.py", ("mariadb_smoke", "deep"), True, True),
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("mariadb_smoke", "merge_smoke", "deep"),
+            True,
+            True,
+        ),
+        # Heavy files still need their independent merge-smoke exemption.
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("mariadb_smoke", "deep"),
+            True,
+            False,
+        ),
+        ("test_small.py", ("deep",), True, False),
+        ("test_small.py", ("mariadb_smoke", "deep"), False, False),
+    ],
+)
+def test_explicit_deep_cannot_silently_hide_an_eligible_native_smoke(
+    filename: str, markers: tuple[str, ...], live: bool, reject: bool
+) -> None:
+    if reject:
+        with pytest.raises(
+            ValueError, match="smoke case also explicitly declares deep"
+        ):
+            validate_smoke_profile_markers(
+                test_file_name=filename, marker_names=markers, live_mariadb=live
+            )
+    else:
+        validate_smoke_profile_markers(
+            test_file_name=filename, marker_names=markers, live_mariadb=live
+        )
 
 
 @pytest.mark.parametrize(
