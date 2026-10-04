@@ -10,6 +10,7 @@ from typing import BinaryIO
 
 import pytest
 from test_catalog_plan_preparation_performance import _source
+from vnext_test_database import DatabaseFactory, connector_backend
 
 from h2hdb import vnext_canonical_value_repository as canonical
 from h2hdb import vnext_identity as identity
@@ -179,9 +180,12 @@ def test_search_dedup_keeps_full_field_budget_and_trailing_utf8_validation(
 
 
 def test_projection_uses_upload_spools_only_for_unbounded_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with _source(tmp_path, tags=(b"english", b"Shared Shared Artist")) as (
+    with _source(
+        database_factory.config(str(tmp_path)),
+        tags=(b"english", b"Shared Shared Artist"),
+    ) as (
         connector,
         authority,
         _digests,
@@ -205,7 +209,9 @@ def test_projection_uses_upload_spools_only_for_unbounded_metadata(
             projection.PublicationCandidateRepository.prepare_catalog_projection_validation,
         ):
             uploaded_domains.clear()
-            with prepare(connector, backend="sqlite", authority=authority) as plan:
+            with prepare(
+                connector, backend=connector_backend(connector), authority=authority
+            ) as plan:
                 assert plan.publication_count == 3
                 assert len(uploaded_domains) == 4 * plan.publication_count
                 assert set(uploaded_domains) == {

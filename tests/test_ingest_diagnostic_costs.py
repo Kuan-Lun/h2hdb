@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from vnext_test_database import DatabaseFactory, database_connector
 
 from h2hdb.database_performance import DatabasePerformance, database_phase
 from h2hdb.ingest_performance import IngestPerformance
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import SQLTransactionStatistics, instrument_connector
-from h2hdb.sqlite_connector import SQLiteConnector
 
 
 def test_info_aggregates_short_queries_across_steps_and_reports_bounds(
@@ -57,38 +58,43 @@ def test_real_transaction_error_and_nested_boundaries_are_conserved(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     logger = logging.getLogger("diagnostic-costs.database")
     caplog.set_level(logging.INFO, logger=logger.name)
     now = 0.0
-    original_commit = SQLiteConnector.commit
-    original_rollback = SQLiteConnector.rollback
+    original_commit = connector_type.commit
+    original_rollback = connector_type.rollback
 
-    def commit(self: SQLiteConnector) -> None:
+    def commit(self: SQLConnector) -> None:
         nonlocal now
         now += 7.0
         original_commit(self)
 
-    def rollback(self: SQLiteConnector) -> None:
+    def rollback(self: SQLConnector) -> None:
         nonlocal now
         now += 2.0
         original_rollback(self)
 
-    monkeypatch.setattr(SQLiteConnector, "commit", commit)
-    monkeypatch.setattr(SQLiteConnector, "rollback", rollback)
+    monkeypatch.setattr(connector_type, "commit", commit)
+    monkeypatch.setattr(connector_type, "rollback", rollback)
     performance = DatabasePerformance(
-        logger, backend="sqlite", level=logging.INFO, clock=lambda: now
+        logger, backend=database_factory.backend, level=logging.INFO, clock=lambda: now
     )
     with performance.operation("acceptance"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as db:
+        with instrument_connector(connectors["db"]) as db:
             with db.transaction():
-                db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)")
+                db.execute("CREATE TABLE measured_rows (id INTEGER PRIMARY KEY)")
             with database_phase("failed_write"), pytest.raises(RuntimeError):
                 with db.transaction():
-                    db.execute("INSERT INTO rows VALUES (1)")
+                    db.execute("INSERT INTO measured_rows VALUES (1)")
                     raise RuntimeError("secret failure")
             with db.read_transaction():
-                assert db.fetch_all("SELECT * FROM rows") == []
+                assert db.fetch_all("SELECT * FROM measured_rows") == []
     records: list[dict[str, Any]] = [
         json.loads(record.getMessage().removeprefix("database_performance "))
         for record in caplog.records
@@ -135,8 +141,13 @@ def test_info_nested_preparation_preserves_cumulative_sql_and_transaction_detail
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     failure: BaseException | None,
+    database_factory: DatabaseFactory,
 ) -> None:
     """Real nested connector calls stay visible without folding them into parent SQL."""
+    connectors = {
+        "nested.db": database_connector(database_factory.config("nested.db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     from contextlib import nullcontext
 
     from h2hdb.ingest_performance import prepare_ingest_operation
@@ -145,38 +156,38 @@ def test_info_nested_preparation_preserves_cumulative_sql_and_transaction_detail
     caplog.set_level(logging.INFO, logger=logger.name)
     now = 0.0
     query = "SELECT %s AS private_authority"
-    original_fetch = SQLiteConnector.fetch_one
-    original_begin = SQLiteConnector.begin_read
-    original_commit = SQLiteConnector.commit
+    original_fetch = connector_type.fetch_one
+    original_begin = connector_type.begin_read
+    original_commit = connector_type.commit
 
     def fetch(
-        self: SQLiteConnector, sql: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, sql: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         nonlocal now
         if sql == query:
             now += 0.01
         return original_fetch(self, sql, data)
 
-    def begin(self: SQLiteConnector) -> None:
+    def begin(self: SQLConnector) -> None:
         nonlocal now
         now += 0.25
         original_begin(self)
 
-    def commit(self: SQLiteConnector) -> None:
+    def commit(self: SQLConnector) -> None:
         nonlocal now
         now += 2.0
         original_commit(self)
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", fetch)
-    monkeypatch.setattr(SQLiteConnector, "begin_read", begin)
-    monkeypatch.setattr(SQLiteConnector, "commit", commit)
+    monkeypatch.setattr(connector_type, "fetch_one", fetch)
+    monkeypatch.setattr(connector_type, "begin_read", begin)
+    monkeypatch.setattr(connector_type, "commit", commit)
     performance = IngestPerformance(
-        logger, backend="sqlite", level=logging.INFO, clock=lambda: now
+        logger, backend=database_factory.backend, level=logging.INFO, clock=lambda: now
     )
     expectation = pytest.raises(type(failure)) if failure is not None else nullcontext()
     with (
         expectation,
-        SQLiteConnector(str(tmp_path / "nested.db")) as raw_connector,
+        connectors["nested.db"] as raw_connector,
     ):
         with performance.step(
             "analysis", "prepare", "validate_file_hash_decision", 9

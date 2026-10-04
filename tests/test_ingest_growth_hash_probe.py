@@ -13,6 +13,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from vnext_probe_databases import generated_probe_databases
+from vnext_test_database import DatabaseFactory
 
 
 @pytest.fixture
@@ -47,10 +49,13 @@ def test_fixture_refuses_unbounded_shapes(
 
 def test_real_validation_crosses_page_boundary_and_matches_independent_oracle(
     probe: ModuleType,
+    database_factory: DatabaseFactory,
 ) -> None:
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
-        result = probe.measure_case(connector, "sqlite", probe.Shape(65, 1))
+        result = probe.measure_case(
+            connector, database_factory.backend, probe.Shape(65, 1)
+        )
         assert result["oracle_matches"]
         assert result["active_hashes"] == 130
         assert result["all_occurrence_rows"] == 260
@@ -73,9 +78,18 @@ def test_real_validation_crosses_page_boundary_and_matches_independent_oracle(
             assert query["rows"] <= (
                 129 if query["kind"] == "validation_actual_union" else 128
             )
-            assert query["sqlite_vm_steps"] >= 0
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        connector.connection.execute("SELECT 1")
+            if database_factory.backend == "sqlite":
+                assert query["sqlite_vm_steps"] >= 0
+            else:
+                assert query["sqlite_vm_steps"] is None
+                assert query["plan"]["handler_read_delta"]
+        assert result["point_work_bound"] == (
+            "passed"
+            if database_factory.backend == "mariadb"
+            else "not measured on SQLite"
+        )
+    with pytest.raises((sqlite3.ProgrammingError, RuntimeError), match="closed"):
+        connector.fetch_one("SELECT 1")
 
 
 def test_first_page_membership_stays_fixed_as_fixture_grows(probe: ModuleType) -> None:
@@ -159,38 +173,56 @@ def test_atomic_report_failure_keeps_previous_valid_evidence(
 
 
 def test_missing_query_classification_cannot_report_success(
-    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
     monkeypatch.setattr(probe, "query_kind", lambda _sql: None)
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         with pytest.raises(RuntimeError, match="incomplete query measurement"):
-            probe.measure_case(next(connections), "sqlite", probe.Shape(2))
+            probe.measure_case(
+                next(connections), database_factory.backend, probe.Shape(2)
+            )
 
 
 def test_validation_source_work_scales_with_current_facts_not_retained_history(
     probe: ModuleType,
+    database_factory: DatabaseFactory,
 ) -> None:
     shapes = [probe.Shape(64), probe.Shape(256), probe.Shape(256, 8, 2, True)]
-    with probe.databases("sqlite", len(shapes)) as connections:
+    with generated_probe_databases(database_factory, len(shapes)) as connections:
         cases = [
-            probe.measure_case(connector, "sqlite", shape)
+            probe.measure_case(connector, database_factory.backend, shape)
             for connector, shape in zip(connections, shapes, strict=True)
         ]
     assert [case["source_rows_read"] for case in cases] == [128, 512, 512]
     assert all(case["validation_source_aggregates"] == 0 for case in cases)
-    steps = [
-        sum(
-            query["sqlite_vm_steps"]
-            for query in case["queries"]
-            if query["kind"] == "source_occurrences"
-        )
-        for case in cases
-    ]
-    # Four times the selected facts may perform four times the source VM work,
-    # plus one 100-opcode sampling interval for each of six bounded reads.
-    # Unselected distinct history (with a long hash gap) adds no source reads.
-    assert steps[1] <= 4 * steps[0] + 600
-    assert abs(steps[2] - steps[1]) <= 600
+    if database_factory.backend == "sqlite":
+        steps = [
+            sum(
+                query["sqlite_vm_steps"]
+                for query in case["queries"]
+                if query["kind"] == "source_occurrences"
+            )
+            for case in cases
+        ]
+        # Four times the selected facts may perform four times the source VM work,
+        # plus one 100-opcode sampling interval for each of six bounded reads.
+        # Unselected distinct history (with a long hash gap) adds no source reads.
+        assert steps[1] <= 4 * steps[0] + 600
+        assert abs(steps[2] - steps[1]) <= 600
+    else:
+        for case in cases:
+            queries = [q for q in case["queries"] if q["kind"] == "source_occurrences"]
+            counters = [q["plan"]["handler_read_delta"] for q in queries]
+            # Each equality/range query seeks once then visits its returned
+            # source facts; unrelated retained observations are outside the range.
+            assert sum(row["Handler_read_key"] for row in counters) <= len(queries)
+            assert (
+                sum(row["Handler_read_next"] for row in counters)
+                <= case["source_rows_read"]
+            )
+            assert sum(row["Handler_read_prev"] for row in counters) == 0
 
 
 @pytest.mark.parametrize(

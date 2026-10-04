@@ -6,7 +6,6 @@ import logging
 import re
 from contextlib import closing
 from hashlib import sha256
-from pathlib import Path
 
 import pytest
 from vnext_pipeline import (
@@ -18,10 +17,9 @@ from vnext_pipeline import (
     initialize_database,
     run_ingest_turn,
 )
+from vnext_test_database import DatabaseFactory
 
 from h2hdb import (
-    CoreConfig,
-    DatabaseConfig,
     LoggerConfig,
     VNextCatalogFacade,
     VNextIngestFacade,
@@ -30,13 +28,10 @@ from h2hdb.vnext_identity import effective_content_digest
 
 
 def test_two_publications_seal_real_sources_and_validate_across_bounded_pages(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture, database_factory: DatabaseFactory
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "catalog.db")
-        ),
-        logger=LoggerConfig.model_validate({"level": "debug"}),
+    config = database_factory.config().model_copy(
+        update={"logger": LoggerConfig.model_validate({"level": "debug"})}
     )
     initialize_database(config)
     pages = {

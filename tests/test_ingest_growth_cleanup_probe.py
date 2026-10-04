@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from vnext_test_database import DatabaseFactory, database_connector
 
 from h2hdb import CoreConfig, DatabaseConfig
 from h2hdb.database_performance import DatabasePerformance
@@ -63,10 +64,15 @@ def test_recorder_keeps_sql_and_discovery_groups_separate(probe: ModuleType) -> 
 
 
 def test_actual_sql_call_is_measured_and_measurement_context_is_restored(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType, tmp_path: Path, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "unmeasured.db": database_connector(database_factory.config("unmeasured.db")),
+        "probe.db": database_connector(database_factory.config("probe.db")),
+    }
+
     def read_value() -> tuple[object, ...] | None:
-        with instrument_connector(SQLiteConnector(str(tmp_path / "probe.db"))) as db:
+        with instrument_connector(connectors["probe.db"]) as db:
             return db.fetch_one("SELECT 42")
 
     result, record = probe.measure(read_value)
@@ -75,19 +81,26 @@ def test_actual_sql_call_is_measured_and_measurement_context_is_restored(
     assert record["logical_phase_rows"] == 0
     assert record["advance_count"] == 0
     assert record["seconds"] >= record["sql_seconds"] >= 0
-    raw = SQLiteConnector(str(tmp_path / "unmeasured.db"))
+    raw = connectors["unmeasured.db"]
     assert instrument_connector(raw) is raw
 
 
 def test_nested_diagnostic_families_preserve_exact_physical_counts(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType, tmp_path: Path, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "nested.db": database_connector(database_factory.config("nested.db")),
+    }
     logger = logging.getLogger("h2hdb.cleanup-probe-test")
-    database = DatabasePerformance(logger, backend="sqlite", level=logging.DEBUG)
-    ingest = IngestPerformance(logger, backend="sqlite", level=logging.DEBUG)
+    database = DatabasePerformance(
+        logger, backend=database_factory.backend, level=logging.DEBUG
+    )
+    ingest = IngestPerformance(
+        logger, backend=database_factory.backend, level=logging.DEBUG
+    )
 
     def read_values() -> None:
-        with instrument_connector(SQLiteConnector(str(tmp_path / "nested.db"))) as db:
+        with instrument_connector(connectors["nested.db"]) as db:
             assert db.fetch_one("SELECT 1") == (1,)
             with database.operation("cleanup"):
                 assert db.fetch_one("SELECT 2") == (2,)
@@ -120,6 +133,10 @@ def test_failed_probe_preserves_original_exception_and_restores_patches(
     assert probe.VNextCleanupRepository.current_only_maintenance_state is original
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite progress-handler VM instructions have no equivalent MariaDB connector API.",
+)
 def test_sqlite_progress_sample_measures_real_work_and_unwraps_connector(
     probe: ModuleType, tmp_path: Path
 ) -> None:
@@ -146,6 +163,10 @@ def test_sqlite_progress_sample_measures_real_work_and_unwraps_connector(
     assert samples[1] > samples[0]
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite progress-handler VM instructions have no equivalent MariaDB connector API.",
+)
 def test_sqlite_progress_handler_is_cleared_after_measured_exception(
     probe: ModuleType, tmp_path: Path
 ) -> None:
@@ -173,11 +194,11 @@ def test_non_sqlite_progress_sample_explicitly_reports_unmeasured(
 
 
 def test_idle_mode_measures_each_target_and_preserves_real_catalog(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "idle.db"))
-    )
+    config = database_factory.config("catalog")
     output = tmp_path / "report.json"
     report = probe.run_case(
         config,
@@ -207,15 +228,26 @@ def test_idle_mode_measures_each_target_and_preserves_real_catalog(
             candidates = operation["candidate_probes"]
             assert {row["target"] for row in candidates} == targets
             assert all(not row["candidate_found"] for row in candidates)
-            assert all(
-                row["sqlite_progress_operations_estimate"]
-                == row["sqlite_progress_callbacks"] * probe.SQLITE_PROGRESS_QUANTUM
-                for row in candidates
-            )
-            assert (
-                sum(row["sqlite_progress_operations_estimate"] for row in candidates)
-                > 0
-            )
+            if database_factory.backend == "sqlite":
+                assert all(
+                    row["sqlite_progress_operations_estimate"]
+                    == row["sqlite_progress_callbacks"] * probe.SQLITE_PROGRESS_QUANTUM
+                    for row in candidates
+                )
+                assert (
+                    sum(
+                        row["sqlite_progress_operations_estimate"] for row in candidates
+                    )
+                    > 0
+                )
+            else:
+                # VM instruction estimates are SQLite-specific. The same native
+                # candidate SQL, outcome, and immutable-catalog oracles still apply.
+                assert all(
+                    row["sqlite_progress_operations_estimate"] is None
+                    and row["sqlite_progress_callbacks"] is None
+                    for row in candidates
+                )
             queries = [
                 row
                 for row in operation["queries"]
@@ -498,10 +530,9 @@ def test_idle_failure_retains_partial_measurements_without_interim_serialization
 def test_real_fixture_crosses_locator_decimal_width_without_reordering(
     probe: ModuleType,
     tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "ten.db"))
-    )
+    config = database_factory.config("catalog")
     report = probe.run_case(
         config,
         gallery_count=10,
@@ -576,14 +607,12 @@ def test_idle_oracle_rejects_unexpected_work_or_changed_facts(
         assert facade.drain_current_only_maintenance.call_count == 3
 
 
-def test_two_real_sqlite_publications_advance_and_publish_latest_content(
-    probe: ModuleType, tmp_path: Path
+def test_two_real_publications_advance_and_publish_latest_content(
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "catalog.db")
-        )
-    )
+    config = database_factory.config("catalog")
     output = tmp_path / "report.json"
     report = probe.run_case(config, gallery_count=2, revisions=2, output=output)
     assert report == json.loads(output.read_text())
@@ -625,13 +654,11 @@ def test_replayed_revision_is_rejected_before_catalog_hydration(
 
 @pytest.mark.cleanup_acceptance
 def test_three_round_policy_change_compacts_real_history(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "catalog.db")
-        )
-    )
+    config = database_factory.config("catalog")
     report = probe.run_case(
         config,
         gallery_count=2,

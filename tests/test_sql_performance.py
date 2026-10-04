@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from vnext_test_database import DatabaseFactory, open_database
 
 from h2hdb import sql_performance
 from h2hdb.sql_performance import (
@@ -211,16 +213,19 @@ def test_slowest_capacity_cycles_and_degraded_first_five_counterexample(
 
 
 def test_fingerprint_failure_cannot_prevent_connector_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken_hash(*args: Any) -> None:
         raise RuntimeError("diagnostic hash failed")
 
     monkeypatch.setattr(sql_performance, "sha256", broken_hash)
     recorder = _Recorder()
-    with measure_sql(recorder):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
-            assert connector.fetch_one("SELECT 1") == (1,)
+    with (
+        closing(open_database(database_factory.config())) as raw,
+        measure_sql(recorder),
+    ):
+        connector = instrument_connector(raw)
+        assert connector.fetch_one("SELECT 1") == (1,)
     assert sum(category == "sql" for category, *_rest in recorder.observations) == 1
 
 

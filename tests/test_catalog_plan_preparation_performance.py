@@ -15,14 +15,23 @@ from vnext_canonical_value_fixtures import (
     seed_canonical_page,
 )
 from vnext_catalog_identity_fixtures import seed_tag_term
+from vnext_test_database import (
+    DatabaseFactory,
+    atomic_fixture,
+    connector_backend,
+    inspect_one,
+    set_foreign_key_checks,
+)
 
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb import vnext_publication_candidate_repository as projection
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _seed_tag_value(connector: SQLiteConnector, value: bytes) -> bytes:
+@atomic_fixture
+def _seed_tag_value(connector: SQLConnector, value: bytes) -> bytes:
     digest = identity.canonical_value_digest("tag_value_utf8_v1", value)
     tree = identity.build_canonical_value_tree(digest, len(value), (value,))
     seed_canonical_allocation(
@@ -60,14 +69,14 @@ def _seed_tag_value(connector: SQLiteConnector, value: bytes) -> bytes:
 
 @contextmanager
 def _source(
-    tmp_path: Path,
+    config: CoreConfig,
     *,
     galleries: int = 3,
     tags: tuple[bytes, ...] = (b"english", b"Shared Artist"),
 ) -> Iterator[
-    tuple[SQLiteConnector, projection.PublicationProjectionAuthority, tuple[bytes, ...]]
+    tuple[SQLConnector, projection.PublicationProjectionAuthority, tuple[bytes, ...]]
 ]:
-    connector = fixture._generated_database(tmp_path / "catalog.sqlite3")
+    connector = fixture._generated_database(config)
     try:
         gate, turn = fixture._authorities(connector)
         with connector.transaction():
@@ -102,7 +111,7 @@ def _source(
         with connector.transaction():
             authority = (
                 projection.PublicationCandidateRepository.issue_projection_authority(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=fixture._CANDIDATE,
@@ -129,14 +138,18 @@ def _plan_digest(
 
 
 def test_catalog_preparation_batches_unique_tag_bytes_and_rebuilds_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tags = (
         b"english",
         b"Shared Artist",
         *(f"tag {index}".encode() for index in range(128)),
     )
-    with _source(tmp_path, tags=tags) as (connector, authority, digests):
+    with _source(database_factory.config(str(tmp_path)), tags=tags) as (
+        connector,
+        authority,
+        digests,
+    ):
         reads: list[tuple[bytes, ...]] = []
         fetch_all = connector.fetch_all
         fetch_one = connector.fetch_one
@@ -163,7 +176,9 @@ def test_catalog_preparation_batches_unique_tag_bytes_and_rebuilds_validation(
             projection.PublicationCandidateRepository.prepare_catalog_projection_validation,
         ):
             reads.clear()
-            with prepare(connector, backend="sqlite", authority=authority) as plan:
+            with prepare(
+                connector, backend=connector_backend(connector), authority=authority
+            ) as plan:
                 # Three galleries share 130 values, across the 128-tag boundary.
                 # SQL must scale with unique bounded pages, not 390 occurrences.
                 assert sorted(len(batch) for batch in reads) == [2, 128]
@@ -186,11 +201,14 @@ def test_catalog_preparation_batches_unique_tag_bytes_and_rebuilds_validation(
 
 @pytest.mark.parametrize("byte_count", [32769, 65536])
 def test_catalog_preparation_streams_long_tag_values_without_truncation(
-    tmp_path: Path, byte_count: int
+    database_factory: DatabaseFactory, tmp_path: Path, byte_count: int
 ) -> None:
     long_tag = b"x" * byte_count
     assert len(long_tag) > identity.CANONICAL_VALUE_CHUNK_BYTES
-    with _source(tmp_path, tags=(b"english", b"Shared Artist", b"", long_tag)) as (
+    with _source(
+        database_factory.config(str(tmp_path)),
+        tags=(b"english", b"Shared Artist", b"", long_tag),
+    ) as (
         connector,
         authority,
         _digests,
@@ -199,7 +217,9 @@ def test_catalog_preparation_streams_long_tag_values_without_truncation(
             projection.PublicationCandidateRepository.prepare_catalog_projection,
             projection.PublicationCandidateRepository.prepare_catalog_projection_validation,
         ):
-            with prepare(connector, backend="sqlite", authority=authority) as plan:
+            with prepare(
+                connector, backend=connector_backend(connector), authority=authority
+            ) as plan:
                 assert (
                     plan._database.execute(
                         "SELECT tag_value FROM subjects WHERE tag_id = 4 ORDER BY publication_key"
@@ -216,21 +236,27 @@ def test_catalog_preparation_streams_long_tag_values_without_truncation(
 
 @pytest.mark.parametrize("corruption", ["payload", "domain", "unsealed", "extra_edge"])
 def test_catalog_validation_rejects_corruption_after_a_prior_cached_build(
-    tmp_path: Path, corruption: str
+    database_factory: DatabaseFactory, tmp_path: Path, corruption: str
 ) -> None:
-    with _source(tmp_path) as (connector, authority, digests):
+    with _source(database_factory.config(str(tmp_path))) as (
+        connector,
+        authority,
+        digests,
+    ):
         with projection.PublicationCandidateRepository.prepare_catalog_projection(
-            connector, backend="sqlite", authority=authority
+            connector, backend=connector_backend(connector), authority=authority
         ):
             pass
         digest = digests[0]
-        (root,) = connector.fetch_one(
+        (root,) = inspect_one(
+            connector,
             "SELECT root_page_sha256 FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
             (digest,),
         )
         match corruption:
             case "payload":
-                (payload,) = connector.fetch_one(
+                (payload,) = inspect_one(
+                    connector,
                     "SELECT page_bytes FROM catalog_canonical_value_page_payloads WHERE page_sha256 = %s",
                     (root,),
                 )
@@ -245,14 +271,14 @@ def test_catalog_validation_rejects_corruption_after_a_prior_cached_build(
                 )
             case "unsealed":
                 # Fault injection bypasses the FK that normally protects this seal.
-                connector.execute("PRAGMA foreign_keys = OFF")
+                set_foreign_key_checks(connector, enabled=False)
                 try:
                     connector.execute(
                         "DELETE FROM catalog_canonical_value_allocation_seals WHERE value_sha256 = %s",
                         (digest,),
                     )
                 finally:
-                    connector.execute("PRAGMA foreign_keys = ON")
+                    set_foreign_key_checks(connector, enabled=True)
             case _:
                 connector.execute(
                     "INSERT INTO catalog_canonical_value_page_parents (parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
@@ -262,15 +288,22 @@ def test_catalog_validation_rejects_corruption_after_a_prior_cached_build(
             projection.PublicationCandidateConflictError, match="corrupt"
         ):
             projection.PublicationCandidateRepository.prepare_catalog_projection_validation(
-                connector, backend="sqlite", authority=authority
+                connector, backend=connector_backend(connector), authority=authority
             )
 
 
 @pytest.mark.parametrize("failure", ["populate", "commit"])
 def test_failed_scratch_plan_is_discarded_and_next_attempt_starts_fresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
-    with _source(tmp_path) as (connector, authority, _digests):
+    with _source(database_factory.config(str(tmp_path))) as (
+        connector,
+        authority,
+        _digests,
+    ):
         directories: list[Path] = []
         databases: list[sqlite3.Connection] = []
         original_directory = TemporaryDirectory
@@ -318,13 +351,13 @@ def test_failed_scratch_plan_is_discarded_and_next_attempt_starts_fresh(
         monkeypatch.setattr(projection, "_populate_projection_children", children)
         with pytest.raises(OSError, match="scratch"):
             projection.PublicationCandidateRepository.prepare_catalog_projection(
-                connector, backend="sqlite", authority=authority
+                connector, backend=connector_backend(connector), authority=authority
             )
         assert all(not path.exists() for path in directories)
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             databases[0].execute("SELECT 1")
         with projection.PublicationCandidateRepository.prepare_catalog_projection(
-            connector, backend="sqlite", authority=authority
+            connector, backend=connector_backend(connector), authority=authority
         ) as plan:
             assert plan.publication_count == 3
             assert not plan._database.in_transaction
@@ -332,12 +365,17 @@ def test_failed_scratch_plan_is_discarded_and_next_attempt_starts_fresh(
 
 
 def test_corrupt_batched_tag_edges_are_rejected_with_a_bounded_sql_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tags = tuple(f"tag {index}".encode() for index in range(10))
-    with _source(tmp_path, tags=tags) as (connector, authority, digests):
+    with _source(database_factory.config(str(tmp_path)), tags=tags) as (
+        connector,
+        authority,
+        digests,
+    ):
         roots = tuple(
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT root_page_sha256 FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
                 (digest,),
             )[0]
@@ -349,7 +387,8 @@ def test_corrupt_batched_tag_edges_are_rejected_with_a_bounded_sql_result(
             "(parent_sha256, position, child_sha256) VALUES (%s, %s, %s)",
             [(roots[0], index, child) for index, child in enumerate(roots[1:])],
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_canonical_value_page_parents WHERE parent_sha256 = %s",
             (roots[0],),
         ) == (9,)
@@ -370,7 +409,7 @@ def test_corrupt_batched_tag_edges_are_rejected_with_a_bounded_sql_result(
             projection.PublicationCandidateConflictError, match="corrupt"
         ):
             projection.PublicationCandidateRepository.prepare_catalog_projection(
-                connector, backend="sqlite", authority=authority
+                connector, backend=connector_backend(connector), authority=authority
             )
         # Verify the SQL connector delivered one sentinel row, rather than all
         # corrupt edges being materialized and truncated later in Python.

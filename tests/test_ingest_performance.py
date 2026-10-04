@@ -13,12 +13,21 @@ from threading import Event, Thread
 from typing import Literal
 
 import pytest
+from mysql.connector.errors import ProgrammingError
+from vnext_test_database import DatabaseFactory, database_connector
 
-from h2hdb.config_loader import CoreConfig, DatabaseConfig, LoggerConfig
+from h2hdb.config_loader import LoggerConfig
 from h2hdb.ingest_performance import IngestPerformance, describe_ingest_step
 from h2hdb.repository import RepositoryContext
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
+
+
+def _native_in_transaction(connector: SQLConnector) -> bool:
+    connection = getattr(connector, "connection", None)
+    assert connection is not None
+    return bool(connection.in_transaction)
 
 
 @dataclass
@@ -36,14 +45,17 @@ def performance_log(caplog: pytest.LogCaptureFixture) -> Iterator[logging.Logger
         yield logger
 
 
-def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+def test_info_counts_real_database_work_without_sql_or_parameter_logging(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    database_factory: DatabaseFactory,
 ) -> None:
     clock = _Clock()
-    performance = IngestPerformance(performance_log, backend="sqlite", clock=clock)
-    config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "db"))
+    performance = IngestPerformance(
+        performance_log, backend=database_factory.backend, clock=clock
     )
+    config = database_factory.config("catalog")
     assert int(LoggerConfig().level) == logging.INFO
     with performance.step("publication", "commit", "BUILD_CATALOG", 42) as sample:
         context = RepositoryContext.from_config(config)
@@ -51,7 +63,7 @@ def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
             with context.SQLConnector() as connector:
                 with connector.transaction():
                     connector.execute(
-                        "CREATE TABLE private_value (value TEXT PRIMARY KEY)"
+                        "CREATE TABLE private_value (value VARCHAR(64) PRIMARY KEY)"
                     )
                     connector.execute_many(
                         "INSERT INTO private_value VALUES (%s)",
@@ -94,19 +106,24 @@ def test_info_counts_real_sqlite_work_without_sql_or_parameter_logging(
 
 
 def test_failure_rolls_back_and_restores_instrumentation_context(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    database_factory: DatabaseFactory,
 ) -> None:
-    performance = IngestPerformance(performance_log, backend="sqlite")
-    path = tmp_path / "rollback"
-    with SQLiteConnector(str(path)) as setup:
+    connectors = {
+        "rollback": database_connector(database_factory.config("rollback")),
+    }
+    performance = IngestPerformance(performance_log, backend=database_factory.backend)
+    with connectors["rollback"] as setup:
         setup.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)")
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises((sqlite3.OperationalError, ProgrammingError)):
         with performance.step("publication", "commit", "BUILD_CATALOG", 1):
-            with instrument_connector(SQLiteConnector(str(path))) as connector:
+            with instrument_connector(connectors["rollback"]) as connector:
                 with connector.transaction():
                     connector.execute("INSERT INTO items VALUES (1)")
                     connector.execute("SELECT missing_column FROM items")
-    raw = SQLiteConnector(str(path))
+    raw = connectors["rollback"]
     assert instrument_connector(raw) is raw
     with raw:
         assert raw.fetch_all("SELECT * FROM items") == []
@@ -116,13 +133,19 @@ def test_failure_rolls_back_and_restores_instrumentation_context(
 
 
 def test_debug_query_statistics_are_bounded_and_redacted(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
     performance = IngestPerformance(
-        performance_log, backend="sqlite", level=logging.DEBUG
+        performance_log, backend=database_factory.backend, level=logging.DEBUG
     )
     with performance.step("publication", "prepare", "VALIDATE_CATALOG", 1) as sample:
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+        with instrument_connector(connectors["db"]) as connector:
             for position in range(100):
                 connector.fetch_one(
                     f"SELECT %s AS field_{position}", ("secret-payload",)
@@ -186,12 +209,18 @@ def test_info_collects_cumulative_query_statistics(
 
 
 def test_info_groups_placeholder_arities_across_steps_and_preserves_totals(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    database_factory: DatabaseFactory,
 ) -> None:
-    performance = IngestPerformance(performance_log, backend="sqlite")
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    performance = IngestPerformance(performance_log, backend=database_factory.backend)
     for _cycle in range(3):
         with performance.step("analysis", "prepare", "PREPARE_SNAPSHOT", 1) as sample:
-            with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as db:
+            with instrument_connector(connectors["db"]) as db:
                 for count in range(1, 130):
                     placeholders = ", ".join(["%s"] * count)
                     assert db.fetch_one(
@@ -340,20 +369,22 @@ def test_long_step_defers_sql_metrics_until_the_safe_call_boundary(
 def test_nested_scopes_and_threads_do_not_mix_metrics(
     performance_log: logging.Logger,
     tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    performance = IngestPerformance(performance_log, backend="sqlite")
+    connectors = {
+        "raw": database_connector(database_factory.config("raw")),
+        "outer": database_connector(database_factory.config("outer")),
+        "inner": database_connector(database_factory.config("inner")),
+    }
+    performance = IngestPerformance(performance_log, backend=database_factory.backend)
     with performance.step("publication", "prepare", "BUILD_CATALOG", 1) as outer:
         with ThreadPoolExecutor(max_workers=1) as pool:
-            raw = SQLiteConnector(str(tmp_path / "raw"))
+            raw = connectors["raw"]
             assert pool.submit(instrument_connector, raw).result() is raw
         with performance.step("analysis", "prepare", "content_owner", 1) as inner:
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "inner"))
-            ) as connector:
+            with instrument_connector(connectors["inner"]) as connector:
                 assert connector.fetch_one("SELECT 1") == (1,)
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "outer"))
-        ) as connector:
+        with instrument_connector(connectors["outer"]) as connector:
             assert connector.fetch_one("SELECT 2") == (2,)
         assert outer.counters.sql_calls == inner.counters.sql_calls == 1
     performance.close()
@@ -389,18 +420,25 @@ def test_broken_log_handler_does_not_change_success_or_exception() -> None:
     performance.close()
 
 
-def test_sql_logging_happens_after_transaction_and_call_exit(tmp_path: Path) -> None:
+def test_sql_logging_happens_after_transaction_and_call_exit(
+    tmp_path: Path, database_factory: DatabaseFactory
+) -> None:
+    connectors = {
+        "transaction": database_connector(database_factory.config("transaction")),
+    }
     clock = _Clock()
     in_transaction: list[bool] = []
-    raw = SQLiteConnector(str(tmp_path / "transaction"))
+    raw = connectors["transaction"]
 
     class _Observer(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            in_transaction.append(raw.connection.in_transaction)
+            in_transaction.append(_native_in_transaction(raw))
 
     logger = logging.Logger("transaction-boundary", logging.INFO)
     logger.addHandler(_Observer())
-    performance = IngestPerformance(logger, backend="sqlite", clock=clock)
+    performance = IngestPerformance(
+        logger, backend=database_factory.backend, clock=clock
+    )
     with raw:
         raw.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)")
         with performance.step("publication", "commit", "BUILD_CATALOG", 1):
@@ -519,8 +557,13 @@ def test_overlapping_calls_do_not_share_a_sequential_stage(
 
 
 def test_clock_and_recorder_failures_preserve_sql_results_and_original_errors(
-    tmp_path: Path, performance_log: logging.Logger
+    tmp_path: Path, performance_log: logging.Logger, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "clock": database_connector(database_factory.config("clock")),
+        "record": database_connector(database_factory.config("record")),
+    }
+
     def broken_clock() -> float:
         raise OSError("diagnostic clock unavailable")
 
@@ -535,21 +578,21 @@ def test_clock_and_recorder_failures_preserve_sql_results_and_original_errors(
             raise RuntimeError("diagnostic sink unavailable")
 
     performance = IngestPerformance(
-        performance_log, backend="sqlite", clock=broken_clock
+        performance_log, backend=database_factory.backend, clock=broken_clock
     )
     with performance.step("publication", "commit", "BUILD_CATALOG", 1):
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "clock"))
-        ) as connector:
+        with instrument_connector(connectors["clock"]) as connector:
             assert connector.fetch_one("SELECT 1") == (1,)
-            with pytest.raises(sqlite3.OperationalError, match="missing_column"):
+            with pytest.raises(
+                (sqlite3.OperationalError, ProgrammingError), match="missing_column"
+            ):
                 connector.fetch_one("SELECT missing_column")
     with measure_sql(_BrokenRecorder()):
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "record"))
-        ) as connector:
+        with instrument_connector(connectors["record"]) as connector:
             assert connector.fetch_one("SELECT 2") == (2,)
-            with pytest.raises(sqlite3.OperationalError, match="missing_column"):
+            with pytest.raises(
+                (sqlite3.OperationalError, ProgrammingError), match="missing_column"
+            ):
                 connector.fetch_one("SELECT missing_column")
     with pytest.raises(ValueError, match="original"):
         with performance.step("publication", "commit", "BUILD_CATALOG", 1):
@@ -558,21 +601,26 @@ def test_clock_and_recorder_failures_preserve_sql_results_and_original_errors(
 
 
 def test_copied_context_and_escaped_connector_cannot_extend_scope_lifetime(
-    tmp_path: Path, performance_log: logging.Logger
+    tmp_path: Path, performance_log: logging.Logger, database_factory: DatabaseFactory
 ) -> None:
-    performance = IngestPerformance(performance_log, backend="sqlite")
+    connectors = {
+        "after": database_connector(database_factory.config("after")),
+        "escaped": database_connector(database_factory.config("escaped")),
+        "thread": database_connector(database_factory.config("thread")),
+    }
+    performance = IngestPerformance(performance_log, backend=database_factory.backend)
     with performance.step("publication", "prepare", "BUILD_CATALOG", 1) as sample:
         copied = copy_context()
-        connector = instrument_connector(SQLiteConnector(str(tmp_path / "escaped")))
+        connector = instrument_connector(connectors["escaped"])
         with connector:
             assert connector.fetch_one("SELECT 1") == (1,)
         with ThreadPoolExecutor(max_workers=1) as pool:
-            raw = SQLiteConnector(str(tmp_path / "thread"))
+            raw = connectors["thread"]
             assert pool.submit(copied.run, instrument_connector, raw).result() is raw
     counts = sample.counters.sql_calls
     with connector:
         assert copied.run(connector.fetch_one, "SELECT 2") == (2,)
-    raw = SQLiteConnector(str(tmp_path / "after"))
+    raw = connectors["after"]
     assert copied.run(instrument_connector, raw) is raw
     assert sample.counters.sql_calls == counts == 1
     performance.close()
@@ -600,19 +648,25 @@ def test_validated_step_description_is_bounded_and_scoped(
 
 
 def test_close_defers_other_owner_logs_until_the_outer_transaction_exits(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, performance_log: logging.Logger
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    performance_log: logging.Logger,
+    database_factory: DatabaseFactory,
 ) -> None:
-    closing = IngestPerformance(performance_log, backend="sqlite")
-    outer = IngestPerformance(performance_log, backend="sqlite")
+    connectors = {
+        "close": database_connector(database_factory.config("close")),
+    }
+    closing = IngestPerformance(performance_log, backend=database_factory.backend)
+    outer = IngestPerformance(performance_log, backend=database_factory.backend)
     with closing.step("publication", "prepare", "BUILD_CATALOG", 1):
         pass
     caplog.clear()
-    connector = SQLiteConnector(str(tmp_path / "close"))
+    connector = connectors["close"]
     with connector:
         with outer.step("publication", "commit", "BUILD_CATALOG", 2):
             with connector.transaction():
                 closing.close()
-                assert connector.connection.in_transaction
+                assert _native_in_transaction(connector)
                 assert not caplog.records
             assert not caplog.records
     assert "stage reporting closed before completion was confirmed" in caplog.text
@@ -848,19 +902,24 @@ def test_local_preparation_reports_live_boundaries_and_inclusive_stage_cost(
     stage: str,
     operation: str,
     description: str,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "progress.db": database_connector(database_factory.config("progress.db")),
+    }
     from h2hdb.ingest_performance import prepare_ingest_operation
 
     clock = _Clock()
     performance = IngestPerformance(
-        performance_log, backend="sqlite", clock=clock, level=logging.DEBUG
+        performance_log,
+        backend=database_factory.backend,
+        clock=clock,
+        level=logging.DEBUG,
     )
     with performance.step("analysis", "prepare", stage, 9) as outer:
         with prepare_ingest_operation(operation=operation, generation=9) as progress:
             assert f"preparation started: {description}" in caplog.text
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "progress.db"))
-            ) as connector:
+            with instrument_connector(connectors["progress.db"]) as connector:
                 with connector.read_transaction():
                     assert connector.fetch_one("SELECT 1") == (1,)
             clock.now = 59
