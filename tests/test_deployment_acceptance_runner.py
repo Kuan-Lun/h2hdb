@@ -303,6 +303,8 @@ def _argv(tmp_path: Path) -> list[str]:
         "opds:unit",
         "--mariadb-image",
         "mariadb:unit",
+        "--backend",
+        "mariadb",
     ]
 
 
@@ -495,6 +497,7 @@ def _acceptance(
         for service in runner.SERVICES.values()
     ]
     result.http = lambda: {"/health": 200, "/opds/v2": 200}
+    result.database_authorities = lambda _oracle: {"unit_stub": True}
     return result
 
 
@@ -859,3 +862,252 @@ def test_http_probe_budget_finishes_before_outer_command_timeout(
         assert command[command.index("--deadline-seconds") + 1] == "45"
         assert "--no-range" not in command
         assert "/acceptance/http_probe.py" in command
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_database_initialization_uses_only_selected_engine(
+    tmp_path: Path, backend: str
+) -> None:
+    acceptance = runner.Acceptance.__new__(runner.Acceptance)
+    acceptance.args = SimpleNamespace(backend=backend)
+    acceptance.report = {}
+    commands: list[list[str]] = []
+    waits: list[str] = []
+
+    def compose(command: list[str]) -> str:
+        commands.append(command)
+        return json.dumps(
+            {"status": "passed", "backend": "sqlite", "journal_mode": "wal"}
+        )
+
+    def wait(predicate: Callable[[], bool], description: str, **_kwargs: Any) -> None:
+        assert predicate()
+        waits.append(description)
+
+    acceptance.compose = compose
+    acceptance.wait = wait
+    acceptance.statuses = lambda: [{"Service": "database", "Health": "healthy"}]
+    acceptance.initialize_database()
+    assert len(commands) == 1
+    if backend == "sqlite":
+        assert commands[0][-2:] == [
+            "deployment_acceptance.database",
+            "initialize-sqlite",
+        ]
+        assert commands[0][commands[0].index("--user") + 1] == "0:0"
+        assert "--rm" in commands[0] and "--no-deps" in commands[0]
+        assert waits == []
+    else:
+        assert commands[0] == ["up", "-d", "--no-build", "--pull", "never", "database"]
+        assert waits == ["disposable MariaDB"]
+
+
+def test_database_authority_failure_prevents_scenario_pass(tmp_path: Path) -> None:
+    acceptance = _acceptance(tmp_path, logs=[_log()], verify=lambda _name: _oracle())
+
+    def refuse(_oracle: dict[str, Any]) -> None:
+        raise AssertionError("wrong native Core database")
+
+    acceptance.database_authorities = refuse
+    with pytest.raises(AssertionError, match="wrong native Core database"):
+        acceptance.phase("fresh", lambda: None)
+    assert acceptance.report["scenarios"][0]["status"] == "running"
+
+
+def test_sqlite_cli_rejects_unused_mariadb_image_before_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(_args: object) -> None:
+        raise AssertionError("Invalid backend inputs reached allocation")
+
+    monkeypatch.setattr(runner, "Acceptance", forbidden)
+    with pytest.raises(SystemExit) as error:
+        runner.main([*_argv(tmp_path), "--backend", "sqlite"])
+    assert error.value.code == 2
+
+
+def _pair_arguments(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        backend="both",
+        output=tmp_path / "paired",
+        deadline_seconds=1800,
+        phase_seconds=300,
+        instrumented=True,
+        mariadb_image="mariadb:unit",
+        base_count=2,
+        append_count=2,
+        pages=2,
+        image_profile="mixed",
+        cleanup_faults=True,
+        http_artifacts=True,
+        growth_batches=0,
+        lifecycle=False,
+        faults=False,
+        concurrent_http=False,
+    )
+
+
+def _successful_backend_report() -> dict[str, Any]:
+    return {
+        "cleanup": {"verified_empty": True},
+        "evidence": {"status": "exported"},
+        "measurement": {"status": "passed"},
+        "scenarios": [
+            {"name": name, "status": "passed"}
+            for name in (
+                "fresh",
+                "unchanged-restart",
+                "append",
+                "recover-cleanup-sigterm",
+                "recover-cleanup-sigkill",
+                "post-cleanup-fault-handoff",
+            )
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "first-exit",
+        "first-cleanup",
+        "first-budget",
+        "second-exit",
+        "second-budget",
+        "scenario-drift",
+    ],
+)
+def test_paired_runner_preserves_scenarios_budget_and_cleanup_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+) -> None:
+    args = _pair_arguments(tmp_path)
+    starts: list[SimpleNamespace] = []
+    clock = [100.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+
+    class FakeAcceptance:
+        def __init__(self, selected: SimpleNamespace) -> None:
+            starts.append(selected)
+            self.args = selected
+            self.report = _successful_backend_report()
+
+        def run(self) -> int:
+            if self.args.backend == "sqlite":
+                clock[0] += 1800 if failure == "first-budget" else 200
+                if failure == "first-exit":
+                    return 1
+                if failure == "first-cleanup":
+                    self.report["cleanup"]["verified_empty"] = False
+            elif failure == "second-exit":
+                return 1
+            elif failure == "second-budget":
+                clock[0] += 1800
+            elif failure == "scenario-drift":
+                self.report["scenarios"].pop()
+            return 0
+
+    monkeypatch.setattr(runner, "Acceptance", FakeAcceptance)
+    code = runner.run_selected_backends(args)
+    assert code == (0 if failure is None else 1)
+    assert [entry.backend for entry in starts] == (
+        ["sqlite"]
+        if failure in {"first-exit", "first-cleanup", "first-budget"}
+        else ["sqlite", "mariadb"]
+    )
+    for entry in starts:
+        assert entry.absolute_deadline == 1900.0
+        for key in (
+            "phase_seconds",
+            "base_count",
+            "append_count",
+            "pages",
+            "image_profile",
+            "cleanup_faults",
+            "http_artifacts",
+        ):
+            assert getattr(entry, key) == getattr(args, key)
+        assert entry.output == args.output / entry.backend
+    if len(starts) == 2:
+        assert starts[1].deadline_seconds == 1600
+        assert starts[1].mariadb_image == "mariadb:unit"
+    assert starts[0].mariadb_image is None
+    report = json.loads((args.output / "backend-pair-report.json").read_text())
+    assert report["status"] == ("passed" if failure is None else "failed")
+    assert report["required_backends"] == ["sqlite", "mariadb"]
+    if failure in {"first-budget", "second-budget"}:
+        backend = "sqlite" if failure == "first-budget" else "mariadb"
+        assert report["backends"][backend]["verified_empty"] is True
+        assert report["backends"][backend]["deadline_exceeded"] is True
+        assert report["elapsed_seconds"] >= 1800
+
+
+def test_cli_defaults_to_paired_backends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[str] = []
+
+    def selected(args: SimpleNamespace) -> int:
+        captured.append(args.backend)
+        return 0
+
+    monkeypatch.setattr(runner, "run_selected_backends", selected)
+    argv = _argv(tmp_path)
+    assert argv[-2:] == ["--backend", "mariadb"]
+    assert runner.main(argv[:-2]) == 0
+    assert captured == ["both"]
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_individual_report_cannot_be_confused_with_pair_acceptance(
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    args = _pair_arguments(tmp_path)
+    args.backend = backend
+    args.context = "offline-unit"
+    acceptance = runner.Acceptance(args)
+    try:
+        assert acceptance.report["backend"] == backend
+        assert "single-backend" in acceptance.report["backend_scope"]
+        assert "incomplete-pair" in acceptance.report["backend_scope"]
+    finally:
+        acceptance.root.rmdir()
+
+
+def test_pair_cannot_pass_if_control_work_exhausts_budget_after_last_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _pair_arguments(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+
+    # Mutating the last scenario's name equality models host-side comparison
+    # work after the per-backend completion check, without a sleeping test.
+    class Name(str):
+        def __eq__(self, other: object) -> bool:
+            clock[0] = 1901.0
+            return super().__eq__(other)
+
+        __hash__ = str.__hash__
+
+    class FakeAcceptance:
+        def __init__(self, selected: SimpleNamespace) -> None:
+            self.report = _successful_backend_report()
+            if selected.backend == "mariadb":
+                self.report["scenarios"][-1]["name"] = Name(
+                    "post-cleanup-fault-handoff"
+                )
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setattr(runner, "Acceptance", FakeAcceptance)
+    assert runner.run_selected_backends(args) == 1
+    report = json.loads((args.output / "backend-pair-report.json").read_text())
+    assert report["status"] == "failed"
+    assert "aggregate completion" in report["failure"]
+    assert all(row["verified_empty"] for row in report["backends"].values())
