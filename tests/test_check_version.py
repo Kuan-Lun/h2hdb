@@ -229,11 +229,11 @@ def _bump(root: Path, original: str, target: str) -> None:
 def test_history_isolates_hostile_signing_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
-    unavailable_gpg = tmp_path / "unavailable-fixture-gpg"
+    unavailable_gpg = tmp_path / "簽章 tools" / "unavailable-fixture-gpg"
     config = tmp_path / "hostile.gitconfig"
     content = (
         "[commit]\n    gpgsign = true\n"
-        f"[gpg]\n    program = {json.dumps(unavailable_gpg.as_posix())}\n"
+        f"[gpg]\n    program = {json.dumps(unavailable_gpg.as_posix(), ensure_ascii=False)}\n"
     )
     config.write_text(content, encoding="utf-8")
     environment = {
@@ -266,6 +266,18 @@ def test_history_isolates_hostile_signing_configuration(
         text=True,
         timeout=5,
     )
+    configured_program = subprocess.check_output(
+        ["git", "-C", str(control), "config", "--get", "gpg.program"],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        timeout=5,
+    ).strip()
+    expected_program = (
+        str(unavailable_gpg) if source == "environment" else unavailable_gpg.as_posix()
+    )
+    assert configured_program == expected_program
     rejected = subprocess.run(
         [
             "git",
