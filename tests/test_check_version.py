@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -148,7 +150,11 @@ def test_retired_offline_commands_require_a_breaking_release(
 
 def _history_git(root: Path, *arguments: str) -> str:
     return subprocess.check_output(
-        ["git", "-C", str(root), *arguments], text=True, stderr=subprocess.STDOUT
+        ["git", "-C", str(root), *arguments],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        stderr=subprocess.STDOUT,
+        timeout=5,
     ).strip()
 
 
@@ -167,6 +173,19 @@ def _commit_files(root: Path, changes: dict[str, str | None], message: str) -> N
 def _history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str = "0.45.2"
 ) -> list[str]:
+    # Isolate every Git subprocess, including the policy's own history reads.
+    # Clear command-level config/identity/repository overrides before git init.
+    for name in tuple(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
+    for name, value in {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_ALLOW_PROTOCOL": "file",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_EDITOR": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
     _history_git(tmp_path, "init", "-q")
     _history_git(tmp_path, "config", "user.name", "Version policy test")
     _history_git(tmp_path, "config", "user.email", "version@example.invalid")
@@ -204,6 +223,95 @@ def _bump(root: Path, original: str, target: str) -> None:
         {"pyproject.toml": path.read_text().replace(original, target)},
         f"chore(release): bump version to {target}",
     )
+
+
+@pytest.mark.parametrize("source", ["global", "system", "environment"])
+def test_history_isolates_hostile_signing_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    unavailable_gpg = tmp_path / "unavailable-fixture-gpg"
+    config = tmp_path / "hostile.gitconfig"
+    content = (
+        "[commit]\n    gpgsign = true\n"
+        f"[gpg]\n    program = {json.dumps(unavailable_gpg.as_posix())}\n"
+    )
+    config.write_text(content, encoding="utf-8")
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(
+        GIT_CONFIG_NOSYSTEM="0" if source == "system" else "1",
+        GIT_CONFIG_SYSTEM=str(config) if source == "system" else os.devnull,
+        GIT_CONFIG_GLOBAL=str(config) if source == "global" else os.devnull,
+        GIT_ALLOW_PROTOCOL="file",
+        GIT_TERMINAL_PROMPT="0",
+        LC_ALL="C",
+    )
+    if source == "environment":
+        environment.update(
+            GIT_CONFIG_COUNT="2",
+            GIT_CONFIG_KEY_0="commit.gpgsign",
+            GIT_CONFIG_VALUE_0="true",
+            GIT_CONFIG_KEY_1="gpg.program",
+            GIT_CONFIG_VALUE_1=str(unavailable_gpg),
+        )
+    control = tmp_path / "unisolated"
+    control.mkdir()
+    subprocess.run(
+        ["git", "-C", str(control), "init", "-q"],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    rejected = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(control),
+            "-c",
+            "user.name=Version policy test",
+            "-c",
+            "user.email=version@example.invalid",
+            "-c",
+            f"core.hooksPath={tmp_path / 'no-hooks'}",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "test: unisolated signing control",
+        ],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert rejected.returncode != 0
+    assert unavailable_gpg.name in rejected.stderr
+    assert "failed to sign" in rejected.stderr
+
+    for name in tuple(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
+    for name, value in environment.items():
+        if name.startswith("GIT_"):
+            monkeypatch.setenv(name, value)
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    audits = _history(isolated, monkeypatch)
+    _commit_files(isolated, {"src/sample.py": "VALUE = 2\n"}, "fix: correct runtime")
+    _bump(isolated, "0.45.2", "0.45.3")
+    assert policy.main() == 0
+    assert audits == ["0.45.3"]
+    assert _history_git(isolated, "rev-list", "--count", "HEAD") == "3"
+    assert _history_git(isolated, "log", "-1", "--format=%an <%ae>") == (
+        "Version policy test <version@example.invalid>"
+    )
+    assert config.read_text(encoding="utf-8") == content
+    assert not unavailable_gpg.exists()
 
 
 @pytest.mark.parametrize(
