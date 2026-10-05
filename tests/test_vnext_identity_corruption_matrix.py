@@ -355,22 +355,13 @@ def _matrix(
                     corruption = Corruption(column, kind)
                     current_label = corruption.label
                     selected += 1
-                    if not _apply_sampled_corruption(
-                        prepared.snapshot, corruption, sample
-                    ):
-                        outcomes["not-applicable"] += 1
-                        continue
-                    copy_config = prepared.snapshot.target
-                    if corpus.mid_flight:
-                        outcome = _resume_outcome(
-                            corpus, copy_config, prepared.reference
-                        )
-                    else:
-                        outcome = _audit_outcome(copy_config)
-                        if outcome == "audit-accepted" and corpus.consumable:
-                            outcome = _consumer_outcome(
-                                corpus, copy_config, prepared.reference
-                            )
+                    outcome = _reported_corruption(
+                        prepared,
+                        corruption,
+                        sample,
+                        bucket=bucket,
+                        ordinal=ordinal,
+                    )
                     outcomes[outcome] += 1
                     if outcome in {
                         "audit-accepted",
@@ -405,6 +396,130 @@ def _matrix(
                 flush=True,
             )
     return outcomes, detail
+
+
+def _diagnostic_cell(value: object) -> object:
+    """Bound fixture diagnostics while preserving small identity coordinates.
+
+    A large-value SHA-256 is evidence under collision resistance, not exact
+    byte equality. These values come only from the synthetic native fixture.
+    """
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        encoded: dict[str, object] = {"type": "bytes", "length": len(raw)}
+        if len(raw) <= 64:
+            encoded["hex"] = raw.hex()
+        else:
+            encoded["sha256"] = sha256(raw).hexdigest()
+        return encoded
+    text = value if isinstance(value, str) else repr(value)
+    payload = text.encode("utf-8", errors="backslashreplace")
+    encoded = {"type": type(value).__name__, "utf8_bytes": len(payload)}
+    if len(payload) <= 256:
+        encoded["text"] = text
+    else:
+        encoded["sha256"] = sha256(payload).hexdigest()
+    return encoded
+
+
+def _diagnostic_row(names: tuple[str, ...], row: tuple[Any, ...]) -> dict[str, object]:
+    return {
+        name: _diagnostic_cell(value) for name, value in zip(names, row, strict=True)
+    }
+
+
+def _not_applicable_reason(corruption: Corruption, sample: TableSample) -> str:
+    index = sample.names.index(corruption.column.name)
+    value = sample.rows[0][index]
+    if value is None:
+        return "null-value"
+    if not value:
+        return "empty-value"
+    if corruption.kind == "swap":
+        if len(sample.rows) < 2:
+            return "single-row-swap"
+        if sample.rows[1][index] == value:
+            return "equal-swap"
+    # The existing boolean mutation API does not distinguish these native
+    # outcomes. Do not infer a specific constraint from a False result.
+    return "native-constraint-or-zeroaffected"
+
+
+def _reported_corruption(
+    prepared: PreparedCorpus,
+    corruption: Corruption,
+    sample: TableSample,
+    *,
+    bucket: int,
+    ordinal: int,
+) -> str:
+    """Retain each actual native sample and its result, including exceptions.
+
+    Manual matrices use ``python -u`` and pytest ``-s`` so flush reaches the
+    owned log file. Collection pairing does not prove equal sampled rows on
+    two engines: the diagnostic deliberately records their actual choices.
+    """
+    corpus = prepared.corpus
+    mutation = _plan_corruption(corruption, sample)
+    event: dict[str, object] = {
+        "schema": 1,
+        "backend": corpus.config.database.sql_type,
+        "corpus": corpus.name,
+        "bucket": bucket,
+        "ordinal": ordinal,
+        "table": corruption.column.table,
+        "column": corruption.column.name,
+        "kind": corruption.kind,
+    }
+    start = {
+        **event,
+        "event": "start",
+        "target": _diagnostic_row(sample.names, sample.rows[0]),
+        "replacement_source": (
+            _diagnostic_row(sample.names, sample.rows[1])
+            if corruption.kind == "swap" and len(sample.rows) > 1
+            else None
+        ),
+        "replacement_value": (
+            _diagnostic_cell(mutation.replacement) if mutation is not None else None
+        ),
+        "value_applicable": mutation is not None,
+    }
+    print("IDENTITY_MUTATION " + json.dumps(start, sort_keys=True), flush=True)
+    result = {**event, "event": "result"}
+    try:
+        if not _apply_sampled_corruption(prepared.snapshot, corruption, sample):
+            outcome = "not-applicable"
+            result["not_applicable_reason"] = _not_applicable_reason(corruption, sample)
+        elif corpus.mid_flight:
+            outcome = _resume_outcome(
+                corpus, prepared.snapshot.target, prepared.reference
+            )
+        else:
+            outcome = _audit_outcome(prepared.snapshot.target)
+            if outcome == "audit-accepted" and corpus.consumable:
+                outcome = _consumer_outcome(
+                    corpus, prepared.snapshot.target, prepared.reference
+                )
+        result["outcome"] = outcome
+        return outcome
+    except BaseException as error:
+        result["outcome"] = "exception"
+        result["exception"] = {
+            "type": f"{type(error).__module__}.{type(error).__qualname__}",
+            "message": _diagnostic_cell(str(error)),
+            "cause_type": (
+                f"{type(error.__cause__).__module__}."
+                f"{type(error.__cause__).__qualname__}"
+                if error.__cause__ is not None
+                else None
+            ),
+        }
+        raise
+    finally:
+        print("IDENTITY_MUTATION " + json.dumps(result, sort_keys=True), flush=True)
 
 
 def _present_rows(config: CoreConfig, tables: set[str]) -> dict[str, TableSample]:

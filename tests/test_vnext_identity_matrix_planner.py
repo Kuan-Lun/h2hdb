@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from hashlib import sha256
+from unittest.mock import Mock
 
 import pytest
 import test_vnext_identity_corruption_matrix as matrix
@@ -15,10 +18,11 @@ from test_vnext_identity_corruption_matrix import (
     _present_rows,
 )
 from test_vnext_physical_domain_fault_matrix import Column
+from vnext_corpora import Corpus
 from vnext_database_snapshot import ReusableDatabaseSnapshot, database_digest
 from vnext_test_database import DatabaseFactory, database_connector
 
-from h2hdb import CoreConfig
+from h2hdb import CoreConfig, DatabaseConfig
 
 _ROWS: tuple[tuple[object, ...], ...] = (
     (1, b"\x01", None),
@@ -216,3 +220,196 @@ def test_identity_preflight_false_candidate_still_rejects_schema_drift(
     with pytest.raises(ValueError, match="schema drift"):
         _apply_sampled_corruption(snapshot, corruption, empty)
     assert snapshot.copies == 0
+
+
+def _diagnostic_prepared() -> matrix.PreparedCorpus:
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=":memory:"))
+    snapshot = Mock(spec=ReusableDatabaseSnapshot, target=config)
+    return matrix.PreparedCorpus(
+        Corpus("diagnostic-unit", config, None, None), snapshot, {}, {}, None, b""
+    )
+
+
+def _diagnostic_events(captured: str) -> list[dict[str, object]]:
+    prefix = "IDENTITY_MUTATION "
+    return [
+        json.loads(line[len(prefix) :])
+        for line in captured.splitlines()
+        if line.startswith(prefix)
+    ]
+
+
+@pytest.mark.parametrize(
+    "value", [b"x" * 64, bytearray(b"x" * 64), memoryview(b"x" * 64)]
+)
+def test_identity_diagnostic_preserves_small_binary_coordinates(value: object) -> None:
+    assert matrix._diagnostic_cell(value) == {
+        "type": "bytes",
+        "length": 64,
+        "hex": (b"x" * 64).hex(),
+    }
+
+
+def test_identity_diagnostic_bounds_large_payloads_and_messages() -> None:
+    value = b"secret-synthetic-payload" * 1000
+    encoded = matrix._diagnostic_cell(value)
+    assert encoded == {
+        "type": "bytes",
+        "length": len(value),
+        "sha256": sha256(value).hexdigest(),
+    }
+    assert len(json.dumps(encoded)) < 160
+    message = "synthetic error " * 1000
+    assert matrix._diagnostic_cell(message) == {
+        "type": "str",
+        "utf8_bytes": len(message.encode()),
+        "sha256": sha256(message.encode()).hexdigest(),
+    }
+    assert matrix._diagnostic_cell(None) is None
+    assert matrix._diagnostic_cell(7) == 7
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda case: case.name)
+def test_identity_diagnostic_preserves_each_candidate_outcome(
+    case: _Case, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prepared = _diagnostic_prepared()
+    sample = TableSample(_NAMES, tuple(_ROWS[index - 1] for index in case.sampled_ids))
+    corruption = Corruption(
+        Column("fault_values", case.column, "BLOB", "VARBINARY(32)", True, ()),
+        case.kind,
+    )
+    apply = Mock(return_value=case.applied)
+    audit = Mock(return_value="audit-rejected")
+    monkeypatch.setattr(matrix, "_apply_sampled_corruption", apply)
+    monkeypatch.setattr(matrix, "_audit_outcome", audit)
+    result = matrix._reported_corruption(
+        prepared, corruption, sample, bucket=3, ordinal=19
+    )
+    assert result == ("audit-rejected" if case.applied else "not-applicable")
+    apply.assert_called_once_with(prepared.snapshot, corruption, sample)
+    assert audit.call_count == int(case.applied)
+    events = _diagnostic_events(capsys.readouterr().out)
+    assert [event["event"] for event in events] == ["start", "result"]
+    assert all(event["bucket"] == 3 and event["ordinal"] == 19 for event in events)
+    assert events[0]["value_applicable"] == case.planned
+    assert events[1]["outcome"] == result
+    if not case.applied:
+        assert (
+            events[1]["not_applicable_reason"]
+            == {
+                "empty": "empty-value",
+                "native-unique-rejection": "native-constraint-or-zeroaffected",
+                "null": "null-value",
+                "one-row-swap": "single-row-swap",
+                "equal-swap": "equal-swap",
+            }[case.name]
+        )
+
+
+def test_identity_diagnostic_pairs_exception_result_and_preserves_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prepared = _diagnostic_prepared()
+    corruption = Corruption(
+        Column("fault_values", "identity_value", "BLOB", "VARBINARY(32)", True, ()),
+        "flip",
+    )
+    failure = RuntimeError("synthetic " * 1000)
+    failure.__cause__ = ValueError("original cause")
+    monkeypatch.setattr(matrix, "_apply_sampled_corruption", Mock(side_effect=failure))
+    with pytest.raises(RuntimeError) as raised:
+        matrix._reported_corruption(
+            prepared, corruption, TableSample(_NAMES, _ROWS[:2]), bucket=1, ordinal=1
+        )
+    assert raised.value is failure
+    events = _diagnostic_events(capsys.readouterr().out)
+    assert [event["event"] for event in events] == ["start", "result"]
+    assert events[1]["outcome"] == "exception"
+    assert events[1]["exception"] == {
+        "type": "builtins.RuntimeError",
+        "message": matrix._diagnostic_cell(str(failure)),
+        "cause_type": "builtins.ValueError",
+    }
+
+
+@pytest.mark.parametrize(
+    ("bucket", "count", "outcome"),
+    [(0, 75, "not-applicable"), (1, 76, "audit-rejected")],
+)
+def test_identity_diagnostic_keeps_matrix_aggregate_and_global_ordinal(
+    bucket: int,
+    count: int,
+    outcome: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prepared = _diagnostic_prepared()
+    prepared.samples["fault_values"] = TableSample(_NAMES, _ROWS[:2])
+    unchanged = Mock()
+    monkeypatch.setattr(prepared, "assert_unchanged", unchanged)
+    column = Column("fault_values", "identity_value", "BLOB", "VARBINARY(32)", True, ())
+    monkeypatch.setattr(matrix, "identity_columns", lambda: [column] * 303)
+    monkeypatch.setattr(
+        matrix,
+        "_apply_sampled_corruption",
+        lambda _snapshot, corruption, _sample: corruption.kind == "flip",
+    )
+    monkeypatch.setattr(matrix, "_audit_outcome", lambda _config: "audit-rejected")
+    outcomes, detail = matrix._matrix([prepared], bucket)
+    assert outcomes == {outcome: count}
+    assert detail == []
+    assert unchanged.call_count == 2
+    events = _diagnostic_events(capsys.readouterr().out)
+    expected_ordinals = [ordinal for ordinal in range(1, 607) if ordinal % 8 == bucket]
+    assert [
+        event["ordinal"] for event in events if event["event"] == "start"
+    ] == expected_ordinals
+    assert [
+        event["ordinal"] for event in events if event["event"] == "result"
+    ] == expected_ordinals
+
+
+def test_identity_diagnostic_observes_native_mutation_and_constraint_refusal(
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshot = _snapshot(database_factory)
+    original_digest = database_digest(snapshot.source)
+    prepared = matrix.PreparedCorpus(
+        Corpus("native-diagnostic", snapshot.source, None, None),
+        snapshot,
+        {},
+        {},
+        original_digest,
+        b"",
+    )
+
+    # This narrow oracle verifies committed mutation visibility; complete READY
+    # and consumer contracts remain the unchanged exhaustive matrix's oracle.
+    def observed_audit(_config: CoreConfig) -> str:
+        assert _read_rows(snapshot)[0] == (1, b"\xfe", None)
+        return "audit-rejected"
+
+    monkeypatch.setattr(matrix, "_audit_outcome", observed_audit)
+    column = Column("fault_values", "identity_value", "BLOB", "VARBINARY(32)", True, ())
+    sample = TableSample(_NAMES, _ROWS[:2])
+    results = [
+        matrix._reported_corruption(
+            prepared, Corruption(column, kind), sample, bucket=ordinal, ordinal=ordinal
+        )
+        for ordinal, kind in enumerate(("flip", "swap"), start=1)
+    ]
+    assert results == ["audit-rejected", "not-applicable"]
+    assert _read_rows(snapshot) == _ROWS
+    assert database_digest(snapshot.source) == original_digest
+    events = _diagnostic_events(capsys.readouterr().out)
+    assert [event["event"] for event in events] == [
+        "start",
+        "result",
+        "start",
+        "result",
+    ]
+    assert all(event["backend"] == database_factory.backend for event in events)
+    assert events[-1]["not_applicable_reason"] == "native-constraint-or-zeroaffected"
