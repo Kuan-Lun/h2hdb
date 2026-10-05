@@ -1054,6 +1054,7 @@ def test_cli_defaults_to_paired_backends(
         return 0
 
     monkeypatch.setattr(runner, "run_selected_backends", selected)
+    monkeypatch.setattr(runner, "require_evidence_support", lambda: None)
     argv = _argv(tmp_path)
     assert argv[-2:] == ["--backend", "mariadb"]
     assert runner.main(argv[:-2]) == 0
