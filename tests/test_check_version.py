@@ -152,7 +152,7 @@ def _history_git(root: Path, *arguments: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(root), *arguments],
         stdin=subprocess.DEVNULL,
-        text=True,
+        encoding="utf-8",
         stderr=subprocess.STDOUT,
         timeout=5,
     ).strip()
@@ -263,7 +263,7 @@ def test_history_isolates_hostile_signing_configuration(
         stdin=subprocess.DEVNULL,
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=5,
     )
     configured_program = subprocess.check_output(
@@ -298,7 +298,7 @@ def test_history_isolates_hostile_signing_configuration(
         stdin=subprocess.DEVNULL,
         check=False,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=5,
     )
     assert rejected.returncode != 0
