@@ -6,11 +6,12 @@ import signal
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from vnext_probe_databases import generated_probe_databases
@@ -213,34 +214,319 @@ def test_validation_source_work_scales_with_current_facts_not_retained_history(
         assert abs(steps[2] - steps[1]) <= 600
     else:
         for case in cases:
-            queries = [q for q in case["queries"] if q["kind"] == "source_occurrences"]
-            counters = [q["plan"]["handler_read_delta"] for q in queries]
-            # Each equality/range query seeks once then visits its returned
-            # source facts; unrelated retained observations are outside the range.
-            assert sum(row["Handler_read_key"] for row in counters) <= len(queries)
-            assert (
-                sum(row["Handler_read_next"] for row in counters)
-                <= case["source_rows_read"]
-            )
-            assert sum(row["Handler_read_prev"] for row in counters) == 0
+            for values in case["queries"]:
+                if values["kind"] == "source_occurrences":
+                    probe.require_source_work_bound(probe.Query(**values), "mariadb")
+
+
+def _cost_query(
+    probe: ModuleType, kind: str, *, analyses: int = 1, hashes: int = 128
+) -> Any:
+    rows = 128 if kind == "source_occurrences" else analyses * hashes
+    parameters = (
+        ()
+        if kind == "source_occurrences"
+        else (
+            *(value.to_bytes(16, "big") for value in range(analyses)),
+            *(value.to_bytes(32, "big") for value in range(hashes)),
+            rows + 1,
+        )
+    )
+    query = probe.Query(kind, "", parameters, rows, 0, None)
+    query.plan = {
+        "handler_read_delta": dict.fromkeys(probe.HANDLER_READ_COUNTERS, 0),
+        "analyze": [
+            {
+                "table": table,
+                "type": "eq_ref",
+                "key": "PRIMARY",
+                "key_len": "48",
+                "rows": 1,
+                "r_rows": 1.0,
+            }
+            for table in probe._POINT_TABLES.get(kind, ())
+        ],
+    }
+    return query
+
+
+def _require_cost(probe: ModuleType, query: Any) -> None:
+    if query.kind == "source_occurrences":
+        probe.require_source_work_bound(query, "mariadb")
+    else:
+        probe.require_point_work_bound(query)
 
 
 @pytest.mark.parametrize(
-    "kind,families", [("shadow_family_points", 5), ("tombstone_points", 1)]
+    "kind,families",
+    [("source_occurrences", 0), ("shadow_family_points", 5), ("tombstone_points", 1)],
 )
-def test_mariadb_point_work_contract_rejects_prefix_scans(
-    probe: ModuleType,
-    kind: str,
-    families: int,
+@pytest.mark.parametrize(
+    "counter",
+    ["first", "key", "last", "next", "prev", "rnd", "rnd_deleted", "rnd_next", "retry"],
+)
+def test_complete_handler_budget_rejects_every_excess_read(
+    probe: ModuleType, kind: str, families: int, counter: str
 ) -> None:
-    query = probe.Query(kind, "", (), 128, 0, None)
-    counters = {
-        "Handler_read_key": families * 128,
-        "Handler_read_next": 0,
-        "Handler_read_prev": 0,
-    }
-    query.plan = {"handler_read_delta": counters}
+    query = _cost_query(probe, kind)
+    maximum = (
+        {"key": 1, "next": 128}
+        if families == 0
+        else {"key": families * 128, "rnd": 128, "rnd_next": 514}
+    )
+    values = query.plan["handler_read_delta"]
+    values.update({"Handler_read_" + name: value for name, value in maximum.items()})
+    _require_cost(probe, query)
+    values["Handler_read_" + counter] = maximum.get(counter, 0) + 1
+    with pytest.raises(RuntimeError, match="work exceeded"):
+        _require_cost(probe, query)
+
+
+@pytest.mark.parametrize(
+    "kind", ["source_occurrences", "shadow_family_points", "tombstone_points"]
+)
+@pytest.mark.parametrize(
+    "damage",
+    ["missing", "unknown", "negative", "float", "nan", "bool", "string", "no-evidence"],
+)
+def test_cost_oracles_reject_incomplete_or_invalid_counters(
+    probe: ModuleType, kind: str, damage: str
+) -> None:
+    query = _cost_query(probe, kind)
+    values = query.plan["handler_read_delta"]
+    if damage == "missing":
+        for name in tuple(values):
+            removed = values.pop(name)
+            with pytest.raises(RuntimeError, match="Handler"):
+                _require_cost(probe, query)
+            values[name] = removed
+        return
+    if damage == "unknown":
+        values["Handler_read_unknown"] = 0
+    elif damage == "no-evidence":
+        query.plan.pop("handler_read_delta")
+    else:
+        values["Handler_read_key"] = {
+            "negative": -1,
+            "float": 1.0,
+            "nan": float("nan"),
+            "bool": True,
+            "string": "1",
+        }[damage]
+    with pytest.raises(RuntimeError, match="Handler"):
+        _require_cost(probe, query)
+
+
+@pytest.mark.parametrize("kind", ["shadow_family_points", "tombstone_points"])
+@pytest.mark.parametrize(
+    "analyses,hashes",
+    [(1, 1), (1, 127), (1, 128), (17, 1), (17, 128), (0, 1), (18, 1), (1, 0), (1, 129)],
+)
+def test_point_grid_boundary_has_fixed_input_derived_budget(
+    probe: ModuleType, kind: str, analyses: int, hashes: int
+) -> None:
+    query = _cost_query(probe, kind, analyses=analyses, hashes=hashes)
+    if not 1 <= analyses <= 17 or not 1 <= hashes <= 128:
+        with pytest.raises(RuntimeError, match="requested grid"):
+            probe.require_point_work_bound(query)
+        return
+    query.plan["handler_read_delta"].update(
+        {
+            "Handler_read_key": (5 if kind == "shadow_family_points" else 1)
+            * analyses
+            * hashes,
+            "Handler_read_rnd": analyses * hashes,
+            "Handler_read_rnd_next": 2 * analyses * hashes
+            + 2 * max(analyses, hashes)
+            + 2,
+        }
+    )
     probe.require_point_work_bound(query)
-    counters["Handler_read_next"] = 512
-    with pytest.raises(RuntimeError, match="point work exceeded"):
+
+
+@pytest.mark.parametrize("kind", ["shadow_family_points", "tombstone_points"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing-table",
+        "extra-table",
+        "duplicate-table",
+        "scan",
+        "partial-key",
+        "wrong-key",
+        "nan",
+        "bool",
+        "missing-native-rows",
+        "empty",
+        "unvisited",
+    ],
+)
+def test_point_plan_cannot_hide_family_scan_in_temporary_grid_allowance(
+    probe: ModuleType, kind: str, damage: str
+) -> None:
+    query = _cost_query(probe, kind)
+    rows = query.plan["analyze"]
+    if damage == "missing-table":
+        rows.pop()
+    elif damage == "extra-table":
+        rows.append(
+            {"table": "unrelated_base", "type": "ALL", "rows": 1, "r_rows": 1.0}
+        )
+    elif damage == "duplicate-table":
+        rows.append(dict(rows[0]))
+    elif damage == "missing-native-rows":
+        rows[0].pop("r_rows")
+    elif damage == "empty":
+        rows[0].update(type="ALL", key=None, key_len=None, rows=0, r_rows=0.0)
+    elif damage == "unvisited":
+        rows[0]["r_rows"] = None
+    else:
+        rows[0].update(
+            {
+                "scan": {"type": "ALL"},
+                "partial-key": {"key_len": "16"},
+                "wrong-key": {"key": "other"},
+                "nan": {"r_rows": float("nan")},
+                "bool": {"r_rows": True},
+            }[damage]
+        )
+    if damage in {"empty", "unvisited"}:
         probe.require_point_work_bound(query)
+    else:
+        # All old key/next/prev counters are zero, so the previous oracle passed.
+        assert not any(query.plan["handler_read_delta"].values())
+        with pytest.raises(RuntimeError, match="point work"):
+            probe.require_point_work_bound(query)
+
+
+@pytest.mark.parametrize(
+    "estimated,actual,accepted",
+    [
+        ("1", "1.00", True),
+        ("1", "0.25", True),
+        ("0", "0.00", True),
+        (None, None, True),
+        ("1", "1.01", False),
+        ("1.0", "1.00", False),
+        (True, "1.00", False),
+        ("1", True, False),
+        ("1", "NaN", False),
+        ("1", "Infinity", False),
+        ("1", float("inf"), False),
+        ("1", "-1", False),
+        ("1", "+1", False),
+        ("1", "1e0", False),
+        ("1", " 1", False),
+        ("1", "１", False),
+        ("-1", "1.00", False),
+    ],
+)
+def test_point_native_numeric_rows_are_exact_and_fail_closed(
+    probe: ModuleType, estimated: Any, actual: Any, *, accepted: bool
+) -> None:
+    query = _cost_query(probe, "shadow_family_points")
+    query.plan["analyze"][0].update(rows=estimated, r_rows=actual)
+    if accepted:
+        probe.require_point_work_bound(query)
+    else:
+        with pytest.raises(RuntimeError, match="point work"):
+            probe.require_point_work_bound(query)
+
+
+@pytest.mark.parametrize(
+    "damage", ["decreased", "missing", "unknown", "duplicate", "nan", "bool"]
+)
+def test_profile_rejects_unusable_native_counter_snapshots(
+    probe: ModuleType, damage: str
+) -> None:
+    before = dict.fromkeys(probe.HANDLER_READ_COUNTERS, 1)
+    after: dict[str, Any] = dict(before)
+    if damage == "decreased":
+        after["Handler_read_key"] = 0
+    elif damage == "missing":
+        after.pop("Handler_read_rnd_next")
+    elif damage == "unknown":
+        after["Handler_read_unknown"] = 0
+    elif damage == "nan":
+        after["Handler_read_key"] = float("nan")
+    elif damage == "bool":
+        after["Handler_read_key"] = True
+    raw_after = list(after.items())
+    if damage == "duplicate":
+        raw_after.append(raw_after[0])
+    connector = Mock()
+    connector.fetch_all.side_effect = [list(before.items()), raw_after]
+    connector.connection.cursor.return_value.__enter__ = Mock(return_value=Mock())
+    connector.connection.cursor.return_value.__exit__ = Mock(return_value=False)
+    with pytest.raises(RuntimeError, match="[Hh]andler|counter"):
+        probe.profile_mariadb(connector, _cost_query(probe, "source_occurrences"))
+
+
+def test_same_source_rows_reject_a_real_full_scan(
+    probe: ModuleType,
+    database_factory: DatabaseFactory,
+    record_property: Callable[[str, object], None],
+) -> None:
+    shape = probe.Shape(64, 8, 2, True)
+    table = "catalog_gallery_observation_file_hash_occurrences"
+    suffix = (
+        "WHERE gallery_id = %s AND observation_id = %s ORDER BY file_sha256 LIMIT %s"
+    )
+    prefix = f"SELECT file_sha256, occurrence_count FROM {table} "
+    scan_hint = (
+        "NOT INDEXED "
+        if database_factory.backend == "sqlite"
+        else "IGNORE INDEX (PRIMARY, ix_observation_hash_occurrence_group) "
+    )
+    queries = []
+    expected = [(key, 1) for key in shape.keys[::2]]
+    with generated_probe_databases(database_factory, 1) as connections:
+        connector = next(connections)
+        probe.seed(connector, database_factory.backend, shape)
+        for hint in ("", scan_hint):
+            with probe.record(connector) as observed:
+                rows = connector.fetch_all(prefix + hint + suffix, (1, 1, 128))
+            assert rows == expected
+            assert len(observed.queries) == 1
+            query = observed.queries[0]
+            if database_factory.backend == "mariadb":
+                query.plan = probe.profile_mariadb(connector, query)
+            else:
+                query.plan = connector.fetch_all(
+                    "EXPLAIN QUERY PLAN " + query.sql, query.parameters
+                )
+            queries.append(query)
+        indexed, scanned = queries
+        probe.require_source_work_bound(indexed, database_factory.backend)
+        if database_factory.backend == "mariadb":
+            counts = scanned.plan["handler_read_delta"]
+            # The previous three-counter contract incorrectly accepts this scan.
+            assert counts["Handler_read_key"] <= 1
+            assert counts["Handler_read_next"] <= len(expected)
+            assert counts["Handler_read_prev"] == 0
+            assert counts["Handler_read_rnd_next"] >= 1152
+            assert any(
+                row.get("table") == table and row.get("type") == "ALL"
+                for row in scanned.plan["analyze"]
+            )
+        else:
+            assert any(str(row[3]).startswith(f"SCAN {table}") for row in scanned.plan)
+            assert scanned.sqlite_vm_steps > indexed.sqlite_vm_steps
+        with pytest.raises(RuntimeError, match="source work exceeded"):
+            probe.require_source_work_bound(scanned, database_factory.backend)
+    record_property(
+        "full_scan_control",
+        json.dumps(
+            {
+                "backend": database_factory.backend,
+                "selected_rows": len(expected),
+                "physical_rows": 1152,
+                "exact_rows_equal": True,
+                "indexed_vm_steps": indexed.sqlite_vm_steps,
+                "scan_vm_steps": scanned.sqlite_vm_steps,
+                "indexed_plan": indexed.plan,
+                "scan_plan": scanned.plan,
+            },
+            default=str,
+        ),
+    )

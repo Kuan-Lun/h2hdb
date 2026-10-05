@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 import signal
 import sys
 import tempfile
@@ -18,6 +20,7 @@ from collections import Counter
 from collections.abc import Callable, Generator, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -359,14 +362,59 @@ def run_validation(
             plan.close()
 
 
+HANDLER_READ_COUNTERS = frozenset(
+    f"Handler_read_{suffix}"
+    for suffix in (
+        "first",
+        "key",
+        "last",
+        "next",
+        "prev",
+        "rnd",
+        "rnd_deleted",
+        "rnd_next",
+    )
+)
+_POINT_TABLES = {
+    "shadow_family_points": (
+        "catalog_a_file_decision_shadow_anchors",
+        "catalog_a_file_decision_shadow_occurrences",
+        "catalog_a_file_decision_shadow_artists",
+        "catalog_a_file_decision_shadow_gallery_artist_max",
+        "catalog_a_file_decision_shadow_seals",
+    ),
+    "tombstone_points": ("catalog_analysis_file_hash_decision_tombstone",),
+}
+
+
+def _require_handler_counts(values: dict[str, Any]) -> dict[str, int]:
+    if (
+        not isinstance(values, dict)
+        or not HANDLER_READ_COUNTERS <= values.keys()
+        or any(
+            name not in HANDLER_READ_COUNTERS | {"Handler_read_retry"}
+            or type(value) is not int
+            or value < 0
+            for name, value in values.items()
+        )
+    ):
+        raise RuntimeError("incomplete or invalid MariaDB Handler read counters")
+    return values
+
+
 def profile_mariadb(connector: MariaDBConnector, query: Query) -> dict[str, Any]:
     def counters() -> dict[str, int]:
-        return {
-            str(key): int(value)
-            for key, value in connector.fetch_all(
-                "SHOW SESSION STATUS LIKE 'Handler_read_%'"
-            )
-        }
+        rows = connector.fetch_all("SHOW SESSION STATUS LIKE 'Handler_read_%'")
+        values = {}
+        for key, value in rows:
+            if type(value) not in (int, str) or (
+                isinstance(value, str) and (not value.isascii() or not value.isdigit())
+            ):
+                raise RuntimeError("invalid MariaDB Handler counter value")
+            values[str(key)] = int(value)
+        if len(values) != len(rows):
+            raise RuntimeError("duplicate MariaDB Handler counter name")
+        return _require_handler_counts(values)
 
     assert connector.connection is not None
     before = counters()
@@ -374,15 +422,18 @@ def profile_mariadb(connector: MariaDBConnector, query: Query) -> dict[str, Any]
         cursor.execute("ANALYZE " + query.sql, query.parameters)
         actual = cursor.fetchall()
     after = counters()
+    if before.keys() != after.keys():
+        raise RuntimeError("MariaDB Handler counter set changed")
+    delta = _require_handler_counts(
+        {key: after[key] - value for key, value in before.items()}
+    )
     with connector.connection.cursor(dictionary=True) as cursor:
         cursor.execute("EXPLAIN " + query.sql, query.parameters)
         explain = cursor.fetchall()
     return {
         "analyze": actual,
         "explain": explain,
-        "handler_read_delta": {
-            key: after[key] - value for key, value in before.items()
-        },
+        "handler_read_delta": delta,
         # MariaDB can emit invalid JSON for binary conditions. Retain this exact
         # server text without parsing or attempting to repair its SQL strings.
         "raw_analyze_json": connector.fetch_one(
@@ -391,20 +442,146 @@ def profile_mariadb(connector: MariaDBConnector, query: Query) -> dict[str, Any]
     }
 
 
-def require_point_work_bound(query: Query) -> None:
-    """Reject the observed full-prefix/full-index regressions on MariaDB 10.11."""
-    if query.kind not in {"shadow_family_points", "tombstone_points"}:
+def _require_handler_budget(query: Query, budget: dict[str, int], label: str) -> None:
+    if not isinstance(query.plan, dict) or "handler_read_delta" not in query.plan:
+        raise RuntimeError("incomplete MariaDB Handler read evidence")
+    counters = _require_handler_counts(query.plan["handler_read_delta"])
+    # Unlisted reads, including a newly reported/retry counter, have zero budget.
+    if any(value > budget.get(name, 0) for name, value in counters.items()):
+        raise RuntimeError(f"file-decision {label} work exceeded: {counters}")
+
+
+def require_source_work_bound(query: Query, backend: str) -> None:
+    """Require an indexed source range, independent of unrelated history size."""
+    if query.kind != "source_occurrences":
         return
-    families = 5 if query.kind == "shadow_family_points" else 1
-    counters = query.plan["handler_read_delta"]
-    if (
-        counters["Handler_read_next"] != 0
-        or counters["Handler_read_prev"] != 0
-        or counters["Handler_read_key"] > families * query.rows
-    ):
-        raise RuntimeError(
-            f"file-decision point work exceeded {families} lookups per requested key: {counters}"
+    if type(query.rows) is not int or not 0 <= query.rows <= 128:
+        raise RuntimeError("source work exceeded the bounded returned-row contract")
+    if backend == "mariadb":
+        # One exact PK-prefix/range seek; at most one next access per returned
+        # row, including a possible range-end/EOF probe. No derived table exists.
+        _require_handler_budget(
+            query, {"Handler_read_key": 1, "Handler_read_next": query.rows}, "source"
         )
+    elif backend == "sqlite":
+        # SQLite exposes VM instructions, not MariaDB Handler operations. Require
+        # the actual indexed access plan separately from the VM growth checks.
+        table = "catalog_gallery_observation_file_hash_occurrences"
+        plans = [str(row[3]) for row in query.plan]
+        if len(plans) != 1 or not plans[0].startswith(f"SEARCH {table} USING INDEX "):
+            raise RuntimeError(f"source work exceeded indexed SQLite access: {plans}")
+    else:
+        raise ValueError("unknown source work backend")
+
+
+def _point_grid(query: Query) -> tuple[int, int]:
+    parameters = query.parameters[:-1]
+    analyses = tuple(
+        value for value in parameters if isinstance(value, bytes) and len(value) == 16
+    )
+    hashes = tuple(
+        value for value in parameters if isinstance(value, bytes) and len(value) == 32
+    )
+    if (
+        type(query.rows) is not int
+        or not 1 <= len(analyses) <= 17
+        or not 1 <= len(hashes) <= 128
+        or len(set(analyses)) != len(analyses)
+        or len(set(hashes)) != len(hashes)
+        or parameters != analyses + hashes
+        or query.rows != len(analyses) * len(hashes)
+        or query.parameters[-1:] != (query.rows + 1,)
+    ):
+        raise RuntimeError("point work requires the complete bounded requested grid")
+    return len(analyses), len(hashes)
+
+
+def _native_plan_rows(value: Any, *, estimate: bool) -> Decimal | None:
+    # MariaDB ANALYZE returns rows/r_rows as ASCII numeric strings with this
+    # driver. Preserve exact decimal values; do not coerce booleans, non-finite
+    # numbers, localized digits, signs, exponents, or whitespace into evidence.
+    if value is None:
+        return None
+    if type(value) is int and value >= 0:
+        return Decimal(value)
+    if not estimate and type(value) is float and math.isfinite(value) and value >= 0:
+        return Decimal(str(value))
+    pattern = r"[0-9]+" if estimate else r"[0-9]+(?:\.[0-9]+)?"
+    if type(value) is str and re.fullmatch(pattern, value):
+        return Decimal(value)
+    raise ValueError("invalid native row count")
+
+
+def _require_point_access(query: Query) -> None:
+    expected = _POINT_TABLES[query.kind]
+    if not isinstance(query.plan, dict) or not isinstance(
+        query.plan.get("analyze"), list
+    ):
+        raise RuntimeError("point work lacks native ANALYZE evidence")
+    if any(not isinstance(row, dict) for row in query.plan["analyze"]):
+        raise RuntimeError("point work has invalid native ANALYZE evidence")
+    for row in query.plan["analyze"]:
+        table = row.get("table")
+        # g/h are this query's two CTE aliases. MariaDB also reports their
+        # numbered derived/UNION nodes and NULL for literal-only SELECT arms.
+        if table in (*expected, "g", "h", None):
+            continue
+        if isinstance(table, str) and re.fullmatch(
+            r"<(?:derived[0-9]+|union[0-9]+(?:,[0-9]+)*)>", table
+        ):
+            continue
+        raise RuntimeError(f"point work has an unexpected physical table: {table}")
+    rows = [row for row in query.plan["analyze"] if row.get("table") in expected]
+    if Counter(row["table"] for row in rows) != Counter(expected):
+        raise RuntimeError("point work lacks physical family access evidence")
+    for row in rows:
+        try:
+            estimated = _native_plan_rows(row["rows"], estimate=True)
+            actual = _native_plan_rows(row["r_rows"], estimate=False)
+        except (KeyError, ValueError) as error:
+            types = {
+                name: f"{type(row.get(name)).__module__}.{type(row.get(name)).__qualname__}"
+                for name in ("rows", "r_rows")
+            }
+            raise RuntimeError(
+                f"point work has invalid native row evidence: types={types!r}, row={row!r}"
+            ) from error
+        # A natively empty, unvisited table consumes no family-row work. It may
+        # be optimized away from singleton access, but cannot hide a nonempty scan.
+        if estimated == 0 and actual == 0:
+            continue
+        if (
+            row.get("type") not in {"eq_ref", "const"}
+            or row.get("key") != "PRIMARY"
+            or str(row.get("key_len")) != "48"
+            or (actual is not None and not 0 <= actual <= 1)
+        ):
+            raise RuntimeError(f"point work exceeded full-PK singleton access: {row}")
+
+
+def require_point_work_bound(query: Query) -> None:
+    """Enforce a fixed accepted grid plan, not every possible optimizer plan."""
+    if query.kind not in _POINT_TABLES:
+        return
+    analyses, hashes = _point_grid(query)
+    families = len(_POINT_TABLES[query.kind])
+    _require_point_access(query)
+    # Each of F physical families is probed once per requested coordinate M.
+    # The accepted plan permits either nested-loop direction for its two finite
+    # inputs (M + 2*max(A,K) + 1 reads including EOF), plus one M+1 result
+    # materialization and at most M sorted-row position reads. This is an explicit
+    # plan/cost contract, not an SQL-level proof of all optimizer strategies.
+    # Physical singleton access is checked independently: a base scan must not
+    # consume the allowance reserved for these bounded intermediate relations.
+    _require_handler_budget(
+        query,
+        {
+            "Handler_read_key": families * query.rows,
+            "Handler_read_rnd": query.rows,
+            "Handler_read_rnd_next": 2 * query.rows + 2 * max(analyses, hashes) + 2,
+        },
+        "point",
+    )
 
 
 def measure_case(
@@ -459,6 +636,7 @@ def measure_case(
             query.plan = connector.fetch_all(
                 "EXPLAIN QUERY PLAN " + query.sql, query.parameters
             )
+        require_source_work_bound(query, backend)
         measured.append(asdict(query))
     return {
         "shape": asdict(shape),
