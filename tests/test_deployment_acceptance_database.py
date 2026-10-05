@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import os
 import sqlite3
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -194,7 +195,9 @@ def test_volume_initializer_refuses_existing_data_without_connecting(
     marker.write_bytes(b"retained")
     monkeypatch.setattr(database, "SQLITE_DIRECTORY", tmp_path)
     monkeypatch.setattr(database, "SQLITE_DATABASE", marker)
-    monkeypatch.setattr(database.os, "geteuid", lambda: 0)
+    # Root admission is independent of the host; retained data must be refused
+    # before any POSIX ownership or permission operation can be reached.
+    monkeypatch.setattr(database, "os", SimpleNamespace(geteuid=lambda: 0))
     connect = Mock(side_effect=AssertionError("must not connect"))
     monkeypatch.setattr(database.sqlite3, "connect", connect)
     with pytest.raises(ValueError, match="not empty"):
@@ -203,6 +206,10 @@ def test_volume_initializer_refuses_existing_data_without_connecting(
     assert marker.read_bytes() == b"retained"
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="Linux volume ownership uses POSIX geteuid/chown and chmod permission bits",
+)
 def test_volume_initializer_leaves_empty_wal_for_ingest_schema_owner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
