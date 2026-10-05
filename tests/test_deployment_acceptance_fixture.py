@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import closing
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from h2hdb import CoreConfig
+from h2hdb import CoreConfig, DatabaseAccessMode, VNextCatalogFacade
 
 _SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -368,6 +369,38 @@ def _integration_python() -> str:
     )
 
 
+def _verify_native_parent_catalog(
+    config: CoreConfig,
+    *,
+    revision_number: int,
+    expected: dict[int, int],
+) -> None:
+    """Read the fixture-owned native database, independently of the child output.
+
+    The child receipt alone is not backend authority. A child that silently uses
+    an adjacent SQLite file cannot populate this MariaDB catalog. Native Core
+    connections here remain subject to the selected-backend test guard.
+    """
+    reader = config.model_copy(
+        update={
+            "database": config.database.model_copy(
+                update={
+                    "access_mode": DatabaseAccessMode.read_only,
+                }
+            ),
+        }
+    )
+    with closing(VNextCatalogFacade(reader)) as catalog:
+        revision = catalog.get_catalog_revision()
+        assert revision.revision == revision_number
+        assert revision.publication_count == revision.artifact_count == len(expected)
+        page = catalog.discover_publications(revision=revision, limit=128)
+        assert page.next_cursor is None and page.total == len(expected)
+        assert len(page.publications) == len(expected)
+        assert {value.gid: value.page_count for value in page.publications} == expected
+        assert catalog.get_catalog_revision() == revision
+
+
 @pytest.mark.backend_external(
     reason="Installed ingest child receives the fixture-owned native database through stdin."
 )
@@ -519,7 +552,7 @@ except ValueError as error:
 else:
     raise AssertionError("independent oracle accepted a corrupted archive")
 assert not (root / "corrupt.json").exists()
-print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"], "oracle": "passed", "database_backend": config.core.database.sql_type}))
+print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"], "oracle": "passed", "database_backend": config.core.database.sql_type, "catalog_revision": report["revision"]}))
 """
     result = subprocess.run(
         [interpreter, "-c", program, str(_SCRIPT), str(tmp_path)],
@@ -538,6 +571,18 @@ print(json.dumps({"actual_galleries": 6, "actual_pages": report["verified_pages"
     report = json.loads(result.stdout.splitlines()[-1])
     assert report["oracle"] == "passed"
     assert report["database_backend"] == db_config.database.sql_type
+    _verify_native_parent_catalog(
+        db_config,
+        revision_number=report["catalog_revision"],
+        expected={
+            1000001: 3,
+            1000002: 1,
+            1000003: 1,
+            1000004: 1,
+            1000005: 2,
+            1000006: 2,
+        },
+    )
 
 
 @pytest.mark.parametrize(
@@ -610,7 +655,8 @@ assert saved["artifacts"] == report["artifacts"]
 print(json.dumps({"actual_galleries": 2, "actual_pages": 6,
     "large_source_pages": 2, "dimensions": dimensions,
     "maximum_rgb_rms": max(max(a["page_rgb_rms"]) for a in report["artifacts"]),
-    "oracle": "passed", "database_backend": config.core.database.sql_type}))
+    "oracle": "passed", "database_backend": config.core.database.sql_type,
+    "catalog_revision": report["revision"]}))
 """
     result = subprocess.run(
         [
@@ -632,3 +678,64 @@ print(json.dumps({"actual_galleries": 2, "actual_pages": 6,
     report = json.loads(result.stdout.splitlines()[-1])
     assert report["oracle"] == "passed"
     assert report["database_backend"] == db_config.database.sql_type
+    _verify_native_parent_catalog(
+        db_config,
+        revision_number=report["catalog_revision"],
+        expected={1000019: 3, 1000020: 3},
+    )
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+@pytest.mark.parametrize(
+    "change", [None, "revision", "empty", "wrong-gid", "pages", "partial"]
+)
+def test_parent_catalog_oracle_requires_native_results_not_child_echo(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    change: str | None,
+) -> None:
+    config = CoreConfig.model_validate(
+        {"database": {"sql_type": backend, "database": "synthetic-unused"}}
+    )
+    revision = SimpleNamespace(
+        revision=7 if change != "revision" else 8, publication_count=2, artifact_count=2
+    )
+    publications = [
+        SimpleNamespace(gid=1000019, page_count=3),
+        SimpleNamespace(gid=1000020, page_count=3),
+    ]
+    if change == "empty":
+        publications = []
+    elif change == "wrong-gid":
+        publications[0].gid = 999
+    elif change == "pages":
+        publications[0].page_count = 4
+    page = SimpleNamespace(
+        next_cursor="more" if change == "partial" else None,
+        total=2,
+        publications=tuple(publications),
+    )
+    closed: list[bool] = []
+
+    def open_catalog(reader: CoreConfig) -> Any:
+        assert reader.database.sql_type == backend
+        assert reader.database.database == config.database.database
+        assert reader.database.access_mode is DatabaseAccessMode.read_only
+        return SimpleNamespace(
+            get_catalog_revision=lambda: revision,
+            discover_publications=lambda **_kwargs: page,
+            close=lambda: closed.append(True),
+        )
+
+    monkeypatch.setattr(sys.modules[__name__], "VNextCatalogFacade", open_catalog)
+    if change is None:
+        _verify_native_parent_catalog(
+            config, revision_number=7, expected={1000019: 3, 1000020: 3}
+        )
+    else:
+        with pytest.raises(AssertionError):
+            _verify_native_parent_catalog(
+                config, revision_number=7, expected={1000019: 3, 1000020: 3}
+            )
+    assert closed == [True]
+    assert config.database.access_mode is DatabaseAccessMode.read_write
