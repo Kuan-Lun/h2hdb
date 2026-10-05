@@ -101,7 +101,24 @@ def test_retired_offline_commands_require_a_breaking_release(
     )
 
     def git(*arguments: str) -> str:
-        if arguments[0] == "diff":
+        if arguments in {
+            (
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "--diff-filter=ACDMRT",
+                "base",
+                "candidate",
+            ),
+            (
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "--diff-filter=ACDMRT",
+                "release-commit^1",
+                "release-commit",
+            ),
+        }:
             return removed_path
         if arguments == ("rev-list", "task"):
             return "release-commit"
