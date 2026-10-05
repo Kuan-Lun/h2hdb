@@ -1,5 +1,6 @@
 """Native database fixtures preserve lifetime, dialect and integrity evidence."""
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
@@ -18,6 +19,36 @@ from vnext_test_database import (
     set_foreign_key_checks,
     table_columns,
 )
+
+from h2hdb import CoreConfig
+
+
+@pytest.fixture(scope="module")
+def native_module_resource(
+    module_database_factory: DatabaseFactory,
+) -> Iterator[CoreConfig]:
+    config = module_database_factory.config("module-finalizer")
+    with database_connector(config) as connector:
+        connector.execute("CREATE TABLE finalizer_probe (id INTEGER PRIMARY KEY)")
+        connector.execute("INSERT INTO finalizer_probe VALUES (1)")
+    yield config
+
+    def verify_durable_rows() -> None:
+        with database_connector(config) as connector:
+            assert inspect_one(connector, "SELECT id FROM finalizer_probe") == (1,)
+
+    # Pytest may execute this old backend's finalizer during the next backend's
+    # setup. Its real native connection must retain the old fixture's authority.
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        workers.submit(verify_durable_rows).result(timeout=20)
+
+
+def test_module_fixture_can_reopen_its_native_backend_during_finalization(
+    native_module_resource: CoreConfig,
+) -> None:
+    with database_connector(native_module_resource) as connector:
+        assert connector_backend(connector) == native_module_resource.database.sql_type
+        assert inspect_one(connector, "SELECT id FROM finalizer_probe") == (1,)
 
 
 def test_worker_closed_connections_are_not_closed_again_by_the_fixture_owner(

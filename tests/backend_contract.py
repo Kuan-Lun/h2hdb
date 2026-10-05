@@ -9,7 +9,8 @@ that bypass the registered backend fixtures; subprocesses need explicit review.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +18,33 @@ import pytest
 
 BACKENDS = frozenset({"sqlite", "mariadb"})
 _CONNECTED_BACKENDS = pytest.StashKey[set[str]]()
+
+
+@dataclass(frozen=True)
+class _ConnectionScope:
+    nodeid: str
+    allowed: frozenset[str]
+    connected: set[str]
+
+
+@dataclass
+class _ScopeState:
+    current: _ConnectionScope | None = None
+
+
+_SCOPE = _ScopeState()
+
+
+@contextmanager
+def _connection_scope(owner: _ConnectionScope) -> Generator[None]:
+    # Like the connector monkeypatch, admission is process-wide. Pytest runs
+    # cases serially within each worker process; a fixture's joined worker
+    # threads must see the same cleanup authority as its main thread.
+    previous, _SCOPE.current = _SCOPE.current, owner
+    try:
+        yield
+    finally:
+        _SCOPE.current = previous
 
 
 @dataclass(frozen=True)
@@ -188,7 +216,10 @@ def pytest_runtest_protocol(
         allowed.update(BACKENDS)
     connected: set[str] = set()
     item.stash[_CONNECTED_BACKENDS] = connected
-    with pytest.MonkeyPatch.context() as patcher:
+    with (
+        _connection_scope(_ConnectionScope(item.nodeid, frozenset(allowed), connected)),
+        pytest.MonkeyPatch.context() as patcher,
+    ):
         for name, connector_type in (
             ("sqlite", SQLiteConnector),
             ("mariadb", MariaDBConnector),
@@ -198,17 +229,45 @@ def pytest_runtest_protocol(
             def guarded(
                 self: Any, *, _name: str = name, _original: Any = original
             ) -> None:
-                if _name not in allowed:
+                scope = _SCOPE.current
+                if scope is None or _name not in scope.allowed:
+                    owner = item.nodeid if scope is None else scope.nodeid
                     pytest.fail(
-                        f"{item.nodeid}: native {_name} connection lacks its paired backend "
+                        f"{owner}: native {_name} connection lacks its paired backend "
                         "fixture or an explicit engine-specific contract",
                         pytrace=False,
                     )
                 _original(self)
-                connected.add(_name)
+                scope.connected.add(_name)
 
             patcher.setattr(connector_type, "connect", guarded)
         return (yield)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_fixture_setup(
+    fixturedef: pytest.FixtureDef[Any], request: pytest.FixtureRequest
+) -> Generator[None, Any, Any]:
+    del fixturedef
+    owner = _SCOPE.current
+    if owner is not None:
+        register = request.addfinalizer
+
+        def add_owned_finalizer(finalizer: Callable[[], object]) -> None:
+            def finish() -> None:
+                with _connection_scope(owner):
+                    finalizer()
+
+            register(finish)
+
+        # A SubRequest belongs to one fixture instance, including its parameter.
+        # Keep registration wrapped for its lifetime: yield cleanup may itself
+        # register another finalizer. Module/session fixtures can finish while a
+        # different backend's case is being set up; that case grants no authority
+        # to the old fixture and receives no connection credit from its cleanup.
+        # Each request owns its registration callback for this fixture instance.
+        request.addfinalizer = add_owned_finalizer  # type: ignore[method-assign]
+    return (yield)
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)

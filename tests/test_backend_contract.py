@@ -296,3 +296,187 @@ def test_failed_connection(database):
     result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["*never opened its selected native mariadb backend*"])
+
+
+@pytest.mark.parametrize("order", (("sqlite", "mariadb"), ("mariadb", "sqlite")))
+@pytest.mark.parametrize("scope", ("module", "session"))
+@pytest.mark.parametrize("cleanup", ("yield", "explicit", "late", "threaded"))
+def test_fixture_cleanup_keeps_its_backend_without_relaxing_the_next_case(
+    pytester: pytest.Pytester,
+    order: tuple[str, str],
+    scope: str,
+    cleanup: str,
+) -> None:
+    _suite(
+        pytester,
+        f"""
+import pytest
+from concurrent.futures import ThreadPoolExecutor
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+
+CONNECTORS = {{"sqlite": SQLiteConnector, "mariadb": MariaDBConnector}}
+
+@pytest.fixture(scope={scope!r}, params={order!r})
+def database(request):
+    return request.param
+
+@pytest.fixture(scope={scope!r})
+def parent(database, request):
+    connector = CONNECTORS[database]()
+    request.addfinalizer(connector.connect)
+    yield
+    connector.connect()
+
+@pytest.fixture(scope={scope!r})
+def resource(database, parent, request):
+    connector = CONNECTORS[database]()
+    connector.connect()
+    if {cleanup!r} == "explicit":
+        request.addfinalizer(connector.connect)
+    yield connector
+    if {cleanup!r} == "yield":
+        connector.connect()
+    elif {cleanup!r} == "late":
+        request.addfinalizer(connector.connect)
+    elif {cleanup!r} == "threaded":
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(connector.connect).result(timeout=10)
+
+def test_correct(database, resource):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(resource.connect).result(timeout=10)
+
+def test_wrong_body(database, resource):
+    wrong = CONNECTORS["mariadb" if database == "sqlite" else "sqlite"]()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(wrong.connect).result(timeout=10)
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=2, failed=2)
+    result.stdout.fnmatch_lines(["*native * connection lacks its paired backend*"])
+
+
+def test_old_fixture_cleanup_cannot_credit_the_next_reference_case(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+
+@pytest.fixture(scope="module", params=("sqlite", "mariadb"))
+def database(request):
+    return request.param
+
+@pytest.fixture(scope="module")
+def resource(database):
+    yield
+    MariaDBConnector().connect()
+
+@pytest.mark.backend_reference(reason="Independent reference cleanup uses both native engines")
+def test_reference(database, resource):
+    SQLiteConnector().connect()
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*never opened its selected native mariadb backend*"])
+
+
+def test_failed_fixture_cleanup_restores_the_next_case_guard(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+
+@pytest.fixture(scope="module", params=("sqlite", "mariadb"))
+def database(request):
+    return request.param
+
+@pytest.fixture(scope="module")
+def resource(database):
+    yield
+    (SQLiteConnector if database == "sqlite" else MariaDBConnector)().connect()
+    raise RuntimeError("intentional fixture cleanup failure")
+
+def test_first(database, resource):
+    pass
+
+def test_second(database, resource):
+    (MariaDBConnector if database == "sqlite" else SQLiteConnector)().connect()
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=1, failed=2, errors=2)
+    result.stdout.fnmatch_lines(
+        ["*intentional fixture cleanup failure*", "*native * connection lacks*"]
+    )
+
+
+def test_failed_setup_finalizer_keeps_its_original_backend(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+
+@pytest.fixture(scope="module", params=("sqlite", "mariadb"))
+def database(request):
+    return request.param
+
+@pytest.fixture(scope="module")
+def resource(database, request):
+    connector = (SQLiteConnector if database == "sqlite" else MariaDBConnector)()
+    request.addfinalizer(connector.connect)
+    raise RuntimeError("intentional setup failure")
+
+def test_first(database, resource):
+    raise AssertionError("setup must fail first")
+
+def test_second(database):
+    (SQLiteConnector if database == "sqlite" else MariaDBConnector)().connect()
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=2, errors=2)
+    result.stdout.fnmatch_lines(
+        [
+            "ERROR test_contract.py::test_first[[]sqlite] - RuntimeError: intentional setup*",
+            "ERROR test_contract.py::test_first[[]mariadb] - RuntimeError: intentional setup*",
+        ]
+    )
+
+
+def test_fixture_cleanup_still_rejects_the_wrong_backend(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+
+@pytest.fixture
+def resource(database):
+    yield
+    (MariaDBConnector if database == "sqlite" else SQLiteConnector)().connect()
+
+def test_body(database, resource):
+    (SQLiteConnector if database == "sqlite" else MariaDBConnector)().connect()
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=2, errors=2)
+    result.stdout.fnmatch_lines(["*native * connection lacks its paired backend*"])
