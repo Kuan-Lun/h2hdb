@@ -21,9 +21,11 @@ from h2hdb import (
     VNextDatabaseAdminFacade,
 )
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.operational_refinement import _manifest_sha256
 from h2hdb.schema_epoch import MariaDBSchemaEpochCatalog, SQLiteSchemaEpochCatalog
 from h2hdb.sql_connector import SQLConnector
+from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_storage_instance_repository import (
     StorageInstanceBindingMismatchError,
     StorageInstanceBindingUnavailableError,
@@ -232,29 +234,44 @@ def test_facade_rejects_uninitialized_database_with_typed_error(
         assert catalog.list_objects(connection) == frozenset()
 
 
-def test_facade_rejects_blocked_provider_before_opening_database(
-    database_factory: DatabaseFactory,
-    tmp_path: Path,
+def _assert_blocked_provider_opens_no_database(
+    config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import h2hdb.vnext_schema_provider as provider_module
 
-    path = tmp_path / "provider-blocked.sqlite3"
-    config = database_factory.config(str(path))
+    calls: list[str] = []
+    sqlite_connect = SQLiteConnector.connect
+    mariadb_connect = MariaDBConnector.connect
+
+    def observed_sqlite_connect(connector: SQLiteConnector) -> None:
+        calls.append("sqlite")
+        sqlite_connect(connector)
+
+    def observed_mariadb_connect(connector: MariaDBConnector) -> None:
+        calls.append("mariadb")
+        mariadb_connect(connector)
 
     def blocked_provider(_backend: str) -> object:
         raise RuntimeError("generated provider is blocked")
 
-    monkeypatch.setattr(
-        provider_module,
-        "GeneratedVNextSchemaProvider",
-        blocked_provider,
-    )
-    with pytest.raises(
-        StorageInstanceBindingUnavailableError,
-        match="schema provider is unavailable",
-    ):
-        VNextDatabaseAdminFacade(config).bind_storage_instance(_FIRST_UUID)
+    # Allocation precedes this scope; the independent schema inspection follows
+    # it. Count attempted native opens even if the facade wraps their exception.
+    with monkeypatch.context() as observed:
+        observed.setattr(SQLiteConnector, "connect", observed_sqlite_connect)
+        observed.setattr(MariaDBConnector, "connect", observed_mariadb_connect)
+        observed.setattr(
+            provider_module, "GeneratedVNextSchemaProvider", blocked_provider
+        )
+        with pytest.raises(
+            StorageInstanceBindingUnavailableError,
+            match="schema provider is unavailable",
+        ):
+            VNextDatabaseAdminFacade(config).bind_storage_instance(_FIRST_UUID)
+    assert calls == [], f"opened database before provider refusal: {calls}"
+
+
+def _assert_empty_schema(config: CoreConfig) -> None:
     with database_connector(config) as connection:
         catalog = (
             SQLiteSchemaEpochCatalog()
@@ -262,6 +279,38 @@ def test_facade_rejects_blocked_provider_before_opening_database(
             else MariaDBSchemaEpochCatalog()
         )
         assert catalog.list_objects(connection) == frozenset()
+
+
+def test_facade_rejects_blocked_provider_before_opening_database(
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = database_factory.config(str(tmp_path / "provider-blocked.sqlite3"))
+    _assert_blocked_provider_opens_no_database(config, monkeypatch)
+    _assert_empty_schema(config)
+
+
+def test_blocked_provider_oracle_rejects_open_before_provider(
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = database_factory.config(str(tmp_path / "provider-open-first.sqlite3"))
+    original = VNextDatabaseAdminFacade.bind_storage_instance
+
+    def opens_first(
+        facade: VNextDatabaseAdminFacade, storage_instance_uuid: bytes
+    ) -> StorageInstanceBinding:
+        with database_connector(config):
+            pass
+        return original(facade, storage_instance_uuid)
+
+    monkeypatch.setattr(VNextDatabaseAdminFacade, "bind_storage_instance", opens_first)
+    with pytest.raises(AssertionError, match="opened database before provider refusal"):
+        _assert_blocked_provider_opens_no_database(config, monkeypatch)
+    # This deliberate regression still satisfies the old, weaker schema oracle.
+    _assert_empty_schema(config)
 
 
 @pytest.mark.parametrize("value", (b"", bytes(15), bytes(16), bytes(17)))
