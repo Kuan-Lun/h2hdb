@@ -2232,6 +2232,158 @@ def test_ready_rejects_canonical_reference_sealed_under_another_domain(
         connector.close()
 
 
+@pytest.mark.parametrize(
+    "case",
+    (
+        "valid",
+        "absent",
+        "orphan",
+        "other_revision",
+        "wrong_domain",
+        "missing_identity",
+        "missing_allocation",
+    ),
+)
+def test_retained_publication_content_requires_both_authorities(
+    database_factory: DatabaseFactory, case: str
+) -> None:
+    """Small native relation fixture; full public lifecycle is tested separately."""
+
+    connector = _generated_catalog_database(database_factory.config())
+    try:
+        value = _insert_exact_canonical_payload(
+            connector,
+            domain=(
+                "source_title_utf8_v1"
+                if case == "wrong_domain"
+                else "effective_content_v1"
+            ),
+            payload=b"content-reference-fixture",
+        )
+        key = vnext_identity.publication_key(1001)
+        set_foreign_key_checks(connector, enabled=False)
+        with connector.transaction():
+            if case != "orphan":
+                parent_revision = 1 if case == "other_revision" else 2
+                connector.execute(
+                    "INSERT INTO catalog_publication_occurrence_identities "
+                    "(catalog_occurrence_sha256, revision, publication_key) "
+                    "VALUES (%s, %s, %s)",
+                    (
+                        vnext_identity.catalog_publication_occurrence_sha256(
+                            parent_revision, key
+                        ),
+                        parent_revision,
+                        key,
+                    ),
+                )
+            if case != "absent":
+                connector.execute(
+                    "INSERT INTO catalog_publication_contents "
+                    "(revision, publication_key, content_sha256) VALUES (2, %s, %s)",
+                    (key, value),
+                )
+            if case == "missing_identity":
+                connector.execute(
+                    "DELETE FROM catalog_canonical_value_identities "
+                    "WHERE value_sha256 = %s",
+                    (value,),
+                )
+            elif case == "missing_allocation":
+                connector.execute(
+                    "DELETE FROM catalog_canonical_value_allocation_seals "
+                    "WHERE value_sha256 = %s",
+                    (value,),
+                )
+        set_foreign_key_checks(connector, enabled=True)
+        recorder = _ReadRecorder(connector)
+        if case in {"valid", "absent"}:
+            catalog_refinement._validate_retained_publication_content_references(
+                cast(SQLConnector, recorder), b"effective_content_v1"
+            )
+        else:
+            message = (
+                "no occurrence in its revision"
+                if case in {"orphan", "other_revision"}
+                else "is not sealed under effective_content_v1"
+            )
+            with pytest.raises(
+                catalog_refinement.CatalogSemanticValidationError, match=message
+            ):
+                catalog_refinement._validate_retained_publication_content_references(
+                    cast(SQLConnector, recorder), b"effective_content_v1"
+                )
+        # One scan for both authorities. This is a call/result bound, not a
+        # claim that the native engine examines only one retained row.
+        assert len(recorder.reads) == 1
+        assert recorder.reads[0][2] <= 1
+    finally:
+        connector.close()
+
+
+def _legacy_publication_content_domain_only(
+    connector: SQLConnector, expected_domain: bytes
+) -> None:
+    """Deliberate pre-fix degradation: a sealed value with no parent passes."""
+
+    invalid = connector.fetch_all(
+        "SELECT reference_row.content_sha256 "
+        "FROM catalog_publication_contents AS reference_row "
+        "LEFT JOIN catalog_canonical_value_identities AS identity_row "
+        "ON identity_row.value_sha256 = reference_row.content_sha256 "
+        "LEFT JOIN catalog_canonical_value_allocations AS allocation "
+        "ON allocation.value_sha256 = reference_row.content_sha256 "
+        "WHERE identity_row.value_sha256 IS NULL "
+        "OR allocation.value_sha256 IS NULL "
+        "OR allocation.digest_domain <> %s LIMIT 1",
+        (expected_domain,),
+    )
+    if invalid:
+        raise catalog_refinement.CatalogSemanticValidationError(
+            "content canonical reference is not sealed under its registered domain"
+        )
+
+
+def test_publication_content_orphan_oracle_rejects_domain_only_degradation(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connector = _generated_catalog_database(database_factory.config())
+    try:
+        value = _insert_exact_canonical_payload(
+            connector, domain="effective_content_v1", payload=b"orphan-control"
+        )
+        set_foreign_key_checks(connector, enabled=False)
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_publication_contents "
+                "(revision, publication_key, content_sha256) VALUES (1, %s, %s)",
+                (vnext_identity.publication_key(1001), value),
+            )
+        set_foreign_key_checks(connector, enabled=True)
+
+        def require_orphan_rejection() -> None:
+            with pytest.raises(
+                catalog_refinement.CatalogSemanticValidationError,
+                match="no occurrence in its revision",
+            ):
+                catalog_refinement._validate_retained_canonical_reference_domains(
+                    connector
+                )
+
+        require_orphan_rejection()
+        with monkeypatch.context() as degraded:
+            degraded.setattr(
+                catalog_refinement,
+                "_validate_retained_publication_content_references",
+                _legacy_publication_content_domain_only,
+            )
+            with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+                require_orphan_rejection()
+        require_orphan_rejection()
+    finally:
+        connector.close()
+
+
 def test_live_source_working_snapshot_pin_requires_payload(
     database_factory: DatabaseFactory,
 ) -> None:

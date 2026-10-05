@@ -934,11 +934,14 @@ id = "runtime.production.retained-canonical-integrity"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production READY audit checks the wheel-resident canonical-reference registry against every retained stored reference, requires its exact registered digest domain, and streams both inputs of every retained title-sort row to recompute the pinned Unicode casefold result with bounded memory. Deterministic writers remain responsible for collision-comparing exact canonical payloads before sealing them."
-assumptions = ["Opaque repository-issued UUIDs are assigned authority rather than byte-derived codecs; externally supplied file-content digests and same-domain source facts are validated at their writer/adapter boundary and are not falsely treated as re-derivable from unrelated catalog rows."]
+claim = "The production READY audit checks the wheel-resident canonical-reference registry against every retained stored reference, requires its exact registered digest domain, and streams both inputs of every retained title-sort row to recompute the pinned Unicode casefold result with bounded memory. In the existing publication-content reference scan, every present optional child must also have an occurrence parent with its exact revision and publication key, including candidate and historical children; absent optional content remains valid. Deterministic writers remain responsible for collision-comparing exact canonical payloads before sealing them."
+assumptions = ["Opaque repository-issued UUIDs are assigned authority rather than byte-derived codecs; externally supplied file-content digests and same-domain source facts are validated at their writer/adapter boundary and are not falsely treated as re-derivable from unrelated catalog rows.", "Content-parent membership rejects orphan children but does not infer that absent optional content is corrupt or re-derive arbitrary substitutions between two existing same-revision parents. LIMIT bounds returned violations, not the retained rows the engine scans."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
 symbol = "_validate_retained_canonical_reference_domains"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validate_retained_publication_content_references"
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
 symbol = "_validate_retained_title_sort_identities"
@@ -951,7 +954,7 @@ id = "fault.production.retained-canonical-integrity"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Focused READY negative controls repoint a retained canonical reference to a sealed value from another registered domain and replace a retained derived title-sort value with a different valid same-domain canonical value; both are rejected."
+claim = "Focused READY negative controls repoint a retained canonical reference to a sealed value from another registered domain and replace a retained derived title-sort value with a different valid same-domain canonical value; both are rejected. Exact cross-revision publication-content moves at COMMIT_PUBLICATION, FINALIZE and completed-before-cleanup cuts exercise candidate, active and historical orphans with the same test body on SQLite and MariaDB. Small native relation controls preserve canonical-domain checks, accept an absent optional child and reject the old domain-only validator. Separately, the public pipeline controls use positive content owners and preserve clean restart, subsequent consumption and cleanup DONE; they do not claim that the pipeline publishes metadata-only galleries."
 assumptions = ["The canonical-value writer's existing collision controls establish exact preimage sealing; these tests target the retained-reference and deterministic-derivation seams added to READY."]
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
@@ -959,6 +962,15 @@ symbol = "test_ready_rejects_canonical_reference_sealed_under_another_domain"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_ready_rejects_retained_title_sort_that_differs_from_casefold"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_retained_publication_content_requires_both_authorities"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_publication_content_orphan_oracle_rejects_domain_only_degradation"
+[[evidence.location]]
+path = "tests/test_vnext_publication_content_binding.py"
+symbol = "test_ready_rejects_cross_revision_publication_content_binding"
 
 [[evidence]]
 id = "runtime.production.role-materialization"
