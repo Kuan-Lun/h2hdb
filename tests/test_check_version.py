@@ -184,6 +184,7 @@ def _history(
         "GIT_ALLOW_PROTOCOL": "file",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_EDITOR": "true",
+        "LC_ALL": "C",
     }.items():
         monkeypatch.setenv(name, value)
     _history_git(tmp_path, "init", "-q")
